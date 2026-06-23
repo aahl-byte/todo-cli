@@ -9,6 +9,7 @@ argument parsing and the thin handlers that glue it to the rest of the package:
     yamlio   the comment-preserving, atomic-write YAML core (durability)
     store    CRUD over the todos sequence + fuzzy item lookup
     render   terminal output for list/get
+    init     the `todo init` skill installer
 
 The durability contract mirrors the web TODO drawer's (manager/sources/todos.ts
 in the claude-tmux-manager repo) — keep the two in sync if the contract or the
@@ -19,6 +20,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import init as init_mod
 from . import render, store
 from .status import SHORTCUT_HELP, SHORTCUTS, STATUSES
 from .util import die, now
@@ -112,6 +114,15 @@ def cmd_archive(file: Path, args) -> None:
         print(f"Archived {count} item(s) → {shown}")
 
 
+def cmd_init(file: Path, args) -> None:
+    try:
+        results = init_mod.do_init(force=args.force)
+    except FileNotFoundError as e:
+        die(str(e), 1)
+    for label, status in results:
+        print(f"{label}\n    {status}")
+
+
 # ── argument parsing ──────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -119,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage a project's structured TODO.yaml from the command line.",
         epilog="lifecycle:\n"
                "  todo → in-triage (planning) → in-progress (developing) → done\n"
+               "  `review` awaits user review, `blocked` can't proceed,\n"
                "  `deferred` parks an item off the main path.\n\n"
                "<query> matches an id or part of a title, case-insensitively\n"
                "(exact id → exact title → substring); ambiguous queries list candidates.\n\n"
@@ -130,7 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
                '  todo note skill-todo "shipped in <commit>; tests pass"\n'
                "  todo done skill-todo            # finished + verified\n"
                '  todo add "NEW THING TO DO"\n'
-               "  todo archive                    # move done items to ARCHIVE/TODO/\n\n"
+               "  todo archive                    # move done items to ARCHIVE/TODO/\n"
+               "  todo init                       # install the todo skill on this machine\n\n"
                "Defaults to ./TODO.yaml; pass --file to point elsewhere.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -186,6 +199,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("archive", parents=[common], help="move done items to ARCHIVE/TODO/")
     p.set_defaults(func=cmd_archive)
 
+    p = sub.add_parser("init", help="install the todo skill into ~/.agents and ~/.claude")
+    p.add_argument("--force", action="store_true",
+                   help="repoint/replace an existing ~/.claude/skills/todo")
+    p.set_defaults(func=cmd_init)
+
     return parser
 
 
@@ -195,5 +213,6 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    file = Path(args.file).resolve()
+    # `init` is machine-level, not tied to a project's TODO.yaml.
+    file = None if args.command == "init" else Path(args.file).resolve()
     args.func(file, args)

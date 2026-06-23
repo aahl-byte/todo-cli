@@ -15,3 +15,6 @@ todo = "todo.cli:main"
 
 [tool.setuptools]
 packages = ["todo"]
+
+[tool.setuptools.package-data]
+todo = ["skill/SKILL.md"]

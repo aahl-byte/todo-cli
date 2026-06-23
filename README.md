@@ -17,7 +17,14 @@ Requires Python 3.9+.
 pip install -e ~/git/todo   # editable install; `pyenv rehash` if using pyenv
 ```
 
-This puts a `todo` command on your PATH.
+This puts a `todo` command on your PATH. Then install the companion agent skill:
+
+```bash
+todo init   # copies the skill to ~/.agents/skills/todo and symlinks ~/.claude/skills/todo
+```
+
+`todo init` is idempotent and won't clobber an existing real file/dir at the
+symlink path without `--force`.
 
 ## Lifecycle
 
@@ -28,8 +35,14 @@ Move an item along as your relationship to it changes:
 | `todo`        | not started (default for new items)  | `todo reopen <q>`  |
 | `in-triage`   | you're writing a plan / scoping it   | `todo triage <q>`  |
 | `in-progress` | you're actively building it          | `todo start <q>`   |
+| `review`      | awaiting user review (purple)        | `todo review <q>`  |
+| `blocked`     | can't proceed (red)                  | `todo block <q>`   |
 | `done`        | complete (stamps `completed`)        | `todo done <q>`    |
 | `deferred`    | parked off the main path             | `todo defer <q>`   |
+
+`review` and `blocked` are special states an item enters on demand — not every
+item passes through them. In a TTY the list/get views colorize each status
+(purple for `review`, red for `blocked`).
 
 ## Usage
 
@@ -41,6 +54,8 @@ todo list [--status S] [--all]   # list items (hides done by default)
 todo get <query>                 # show one item in full
 todo triage <query>              # → in-triage  (planning)
 todo start  <query>              # → in-progress (developing)
+todo review <query>              # → review     (awaiting user review)
+todo block  <query>              # → blocked    (can't proceed)
 todo done   <query>              # → done       (stamps completed)
 todo defer  <query>              # → deferred
 todo reopen <query>              # → todo
@@ -50,6 +65,7 @@ todo notes  <query>              # list notes with indices
 todo unnote <query> <index>      # remove note #index
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
+todo init                        # install the todo skill on this machine
 ```
 
 `--file <path>` (on either side of the command) overrides the default
