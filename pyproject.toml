@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "todo"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "ruamel.yaml>=0.18",
+]
+
+[project.scripts]
+todo = "todo.cli:main"
+
+[tool.setuptools]
+packages = ["todo"]
