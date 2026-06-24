@@ -20,4 +20,4 @@ todo = "todo.cli:main"
 packages = ["todo"]
 
 [tool.setuptools.package-data]
-todo = ["skill/SKILL.md"]
+todo = ["skill/*", "skill/**/*"]

@@ -1,5 +1,6 @@
 ---
 name: todo
+version: 0.1.0
 description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred), or add/edit notes. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
 ---
 
