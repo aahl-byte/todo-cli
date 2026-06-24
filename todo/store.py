@@ -27,6 +27,16 @@ def _find_node(seq, item_id: str):
 def _to_item(node) -> dict:
     notes_raw = node.get("notes")
     notes = [to_str(n) for n in notes_raw] if isinstance(notes_raw, list) else []
+    tasks_raw = node.get("tasks")
+    tasks = []
+    if isinstance(tasks_raw, list):
+        for t in tasks_raw:
+            if isinstance(t, dict):
+                tasks.append({
+                    "title": to_str(t.get("title")),
+                    "status": to_str(t.get("status")) or "todo",
+                })
+    calc = node.get("calc-status")
     phase = node.get("phase")
     created = node.get("created")
     completed = node.get("completed")
@@ -38,6 +48,8 @@ def _to_item(node) -> dict:
         "priority": to_str(node.get("priority")) if node.get("priority") is not None else None,
         "phase": int(phase) if phase not in (None, "") else None,
         "notes": notes,
+        "tasks": tasks,
+        "calc_status": to_str(calc) if calc not in (None, "") else None,
         "created": to_str(created) if created not in (None, "") else None,
         "completed": to_str(completed) if completed not in (None, "") else None,
     }
