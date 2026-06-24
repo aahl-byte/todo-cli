@@ -10,6 +10,9 @@ dependencies = [
     "ruamel.yaml>=0.18",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.scripts]
 todo = "todo.cli:main"
 
