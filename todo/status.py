@@ -59,3 +59,28 @@ def colorize(status: str, text: str, enabled: bool) -> str:
     if not enabled or code is None:
         return text
     return f"\033[{code}m{text}\033[0m"
+
+
+# Precedence for the DERIVED parent scalar (calc-status), highest first.
+# `done` (all non-deferred done) and `deferred` (all deferred) are handled
+# separately; this list ranks the in-flight states.
+CALC_PRECEDENCE = ["in-progress", "blocked", "review", "in-triage", "todo"]
+
+
+def derive_calc_status(task_statuses):
+    """Roll a list of child task statuses up to one scalar, or None when there
+    are no tasks. `deferred` children are excluded from the completion math: an
+    item is `done` only when every non-deferred task is done; if every task is
+    deferred the item is `deferred`; otherwise it's the highest-ranked state
+    present (see CALC_PRECEDENCE)."""
+    if not task_statuses:
+        return None
+    non_deferred = [s for s in task_statuses if s != "deferred"]
+    if not non_deferred:
+        return "deferred"
+    if all(s == "done" for s in non_deferred):
+        return "done"
+    for s in CALC_PRECEDENCE:
+        if s in non_deferred:
+            return s
+    return "todo"
