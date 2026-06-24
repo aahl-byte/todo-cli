@@ -51,6 +51,24 @@ Move an item along as your relationship to it changes:
 item passes through them. In a TTY the list/get views colorize each status
 (purple for `review`, red for `blocked`).
 
+## Child tasks
+
+An item can own a list of **child tasks**, each with its own status from the same
+seven above — for breaking an item into trackable pieces without spawning extra
+top-level items or overloading notes:
+
+```bash
+todo task add sub-tasks "split status.py"
+todo task start sub-tasks 0      # move task 0 → in-progress
+todo tasks sub-tasks             # list tasks with [i] indices
+```
+
+The item's own `status` stays manual. A derived **`calc-status`** field is
+auto-maintained from the tasks (all `done` → `done`; any `in-progress` →
+`in-progress`; etc.) and is purely informational — `archive`, `--status`
+filtering, and done-hiding still key on the manual `status`. How the individual
+task statuses are visualized (e.g. colored dots) is left to the web TODO drawer.
+
 ## Usage
 
 `<query>` matches an id or part of a title, **case-insensitively** (exact id →
@@ -70,6 +88,11 @@ todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note
 todo notes  <query>              # list notes with indices
 todo unnote <query> <index>      # remove note #index
+todo tasks  <query>              # list an item's child tasks with indices
+todo task add <query> "<title>"  # add a child task (status: todo)
+todo task start  <query> <i>     # task → in-progress (triage/review/block/defer/done/reopen too)
+todo task status <query> <i> <S> # set a task's status explicitly
+todo task rm <query> <i>         # remove task #i
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
 todo init                        # install the todo skill on this machine
@@ -109,6 +132,10 @@ todos:
       - |-
         a longer
         multi-line note
+    calc-status: in-progress  # DERIVED from tasks; omitted when there are none
+    tasks:                    # child tasks, each with its own status
+      - {title: split status.py, status: done}
+      - {title: rollup render, status: in-progress}
 ```
 
 Other keys (`description`, `acceptance`, `subtasks`, `depends_on`, …) are

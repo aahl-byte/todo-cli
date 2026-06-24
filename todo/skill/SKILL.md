@@ -41,6 +41,21 @@ Move an item along as your relationship to it changes:
 item passes through them. Use `review` when you specifically want the user to
 look at something, and `blocked` when you couldn't continue.
 
+## Child tasks
+
+An item can own a list of **child tasks** — discrete units of the item, each with
+its own status from the same seven above. Use tasks (not extra top-level items,
+not notes) when you break an item into pieces while working it, so the list stays
+uncluttered and the item's fine-grained progress is visible.
+
+- The item's own `status` stays **manual** — you set it as always.
+- A derived **`calc-status`** is auto-maintained from the tasks (e.g. all tasks
+  `done` → `calc-status: done`; any `in-progress` → `in-progress`). It's
+  informational; `done`/`archive`/hiding still key on the manual `status`, so you
+  still flip the item to `done` yourself once it's verified.
+- Notes still exist alongside tasks — notes are the journal, tasks are tracked
+  units.
+
 ## Commands
 
 Run `todo` from the project root (the one with `TODO.yaml`); it defaults to
@@ -62,6 +77,11 @@ todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note
 todo notes  <query>              # list notes with indices
 todo unnote <query> <index>      # remove note #index
+todo tasks  <query>              # list an item's child tasks with indices
+todo task add <query> "<title>"  # add a child task (status: todo)
+todo task start  <query> <i>     # task → in-progress (triage/review/block/defer/done/reopen too)
+todo task status <query> <i> <S> # set a task's status explicitly
+todo task rm <query> <i>         # remove task #i
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
 todo init                        # install this skill on a fresh machine
