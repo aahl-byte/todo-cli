@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from . import yamlio
+from .status import derive_calc_status
 from .util import die, to_str
 
 
@@ -130,6 +131,67 @@ def update_todo(file: Path, item_id: str, patch: dict, now_iso=None) -> bool:
         node["type"] = patch["type"]
     yamlio.save(y, file, data)
     return True
+
+
+# ── child tasks ─────────────────────────────────────────────────────────────
+def _tasks_of(node) -> list:
+    raw = node.get("tasks")
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"title": to_str(t.get("title")), "status": to_str(t.get("status")) or "todo"}
+        for t in raw if isinstance(t, dict)
+    ]
+
+
+def _write_tasks(node, tasks) -> None:
+    """Rewrite the node's tasks and recompute its derived calc-status. Never
+    touches the manual `status` or `completed` — those stay human-driven."""
+    node["tasks"] = yamlio.tasks_node(tasks)
+    calc = derive_calc_status([t["status"] for t in tasks])
+    if calc is None:
+        node.pop("calc-status", None)
+    else:
+        node["calc-status"] = calc
+
+
+def _mutate_tasks(file: Path, item_id: str, transform) -> bool:
+    """Load fresh, find the item, hand its task list to `transform` (which
+    mutates it in place), then rewrite + recompute + save. Returns False if the
+    item doesn't exist."""
+    y, data = yamlio.load_or_empty(file)
+    seq = _seq(data)
+    if seq is None:
+        return False
+    node = _find_node(seq, item_id)
+    if node is None:
+        return False
+    tasks = _tasks_of(node)
+    transform(tasks)
+    _write_tasks(node, tasks)
+    yamlio.save(y, file, data)
+    return True
+
+
+def add_task(file: Path, item_id: str, title: str) -> bool:
+    t = title.strip()
+    if not t:
+        return False
+    return _mutate_tasks(file, item_id, lambda tasks: tasks.append({"title": t, "status": "todo"}))
+
+
+def set_task_status(file: Path, item_id: str, index: int, status: str) -> bool:
+    def _set(tasks):
+        if 0 <= index < len(tasks):
+            tasks[index]["status"] = status
+    return _mutate_tasks(file, item_id, _set)
+
+
+def remove_task(file: Path, item_id: str, index: int) -> bool:
+    def _rm(tasks):
+        if 0 <= index < len(tasks):
+            del tasks[index]
+    return _mutate_tasks(file, item_id, _rm)
 
 
 def archive_todos(file: Path, stamp: str):
