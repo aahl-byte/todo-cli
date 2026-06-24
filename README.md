@@ -14,10 +14,17 @@ preserved via `ruamel.yaml`'s round-trip API.
 Requires Python 3.9+.
 
 ```bash
-pip install -e ~/git/todo   # editable install; `pyenv rehash` if using pyenv
+pip install git+https://github.com/aahl-byte/todo-cli.git
 ```
 
-This puts a `todo` command on your PATH. Then install the companion agent skill:
+Or for local development, an editable install from a clone:
+
+```bash
+pip install -e ~/git/todo   # `pyenv rehash` if using pyenv
+```
+
+Either way puts a `todo` command on your PATH. Then install the companion agent
+skill:
 
 ```bash
 todo init   # copies the skill to ~/.agents/skills/todo and symlinks ~/.claude/skills/todo
