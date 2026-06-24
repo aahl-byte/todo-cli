@@ -55,6 +55,10 @@ uncluttered and the item's fine-grained progress is visible.
   still flip the item to `done` yourself once it's verified.
 - Notes still exist alongside tasks — notes are the journal, tasks are tracked
   units.
+- Tasks can carry a **`phase`** number (`--phase N` on add, or `task phase`).
+  Tasks auto-sort by phase (phase 1, 2, … then unphased), so you can stage an
+  item's work — phase 1 first, then phase 2 — and read it back in order. The
+  `[i]` indices follow the sorted order.
 
 ## Commands
 
@@ -78,9 +82,10 @@ todo note   <query> <text...>    # append a note
 todo notes  <query>              # list notes with indices
 todo unnote <query> <index>      # remove note #index
 todo tasks  <query>              # list an item's child tasks with indices
-todo task add <query> "<title>"  # add a child task (status: todo)
+todo task add <query> "<title>" [--phase N]   # add a child task (status: todo)
 todo task start  <query> <i>     # task → in-progress (triage/review/block/defer/done/reopen too)
 todo task status <query> <i> <S> # set a task's status explicitly
+todo task phase  <query> <i> <N> # set/clear a task's phase (N, or "none")
 todo task rm <query> <i>         # remove task #i
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/

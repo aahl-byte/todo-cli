@@ -36,8 +36,8 @@ def print_item(it) -> None:
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
     print(f'priority:  {it["priority"] or "—"}')
-    if it["phase"] is not None:
-        print(f'phase:     {it["phase"]}')
+    if it["super_phase"] is not None:
+        print(f'super-phase: {it["super_phase"]}')
     print(f'created:   {it["created"] or "—"}')
     if it["completed"]:
         print(f'completed: {it["completed"]}')
@@ -47,9 +47,26 @@ def print_item(it) -> None:
             print(f'  [{i}] ' + str(n).replace("\n", "\n      "))
     if it["tasks"]:
         print("tasks:")
-        for i, t in enumerate(it["tasks"]):
-            cell = colorize(t["status"], f'{t["status"]:<12}', color)
-            print(f'  [{i}] {cell} {t["title"]}')
+        for line in _task_lines(it["tasks"], color):
+            print(line)
+
+
+def _task_lines(tasks, color) -> list:
+    """One `  [i] <status> [phase N] <title>` line per task. The phase column
+    appears only when at least one task carries a phase, so phase-less items
+    render exactly as before."""
+    phased = [t for t in tasks if t.get("phase") is not None]
+    pw = max((len(f'phase {t["phase"]}') for t in phased), default=0)
+    lines = []
+    for i, t in enumerate(tasks):
+        cell = colorize(t["status"], f'{t["status"]:<12}', color)
+        if pw:
+            ptxt = f'phase {t["phase"]}' if t.get("phase") is not None else ""
+            pcell = f'{ptxt:<{pw}}  '
+        else:
+            pcell = ""
+        lines.append(f'  [{i}] {cell} {pcell}{t["title"]}')
+    return lines
 
 
 def print_tasks(it) -> None:
@@ -58,8 +75,7 @@ def print_tasks(it) -> None:
         print("(no tasks)")
         return
     color = _use_color()
-    for i, t in enumerate(tasks):
-        cell = colorize(t["status"], f'{t["status"]:<12}', color)
-        print(f'  [{i}] {cell} {t["title"]}')
+    for line in _task_lines(tasks, color):
+        print(line)
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')

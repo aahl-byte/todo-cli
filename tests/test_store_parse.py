@@ -20,7 +20,7 @@ def test_item_with_tasks_parsed(todo_file):
     )
     it = store.resolve_item(todo_file, "gamma")
     assert it["tasks"] == [
-        {"title": "one", "status": "done"},
-        {"title": "two", "status": "in-progress"},
+        {"title": "one", "status": "done", "phase": None},
+        {"title": "two", "status": "in-progress", "phase": None},
     ]
     assert it["calc_status"] == "in-progress"

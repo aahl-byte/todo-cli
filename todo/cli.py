@@ -105,8 +105,29 @@ def cmd_task_add(file: Path, args) -> None:
     title = " ".join(args.title).strip()
     if not title:
         die('Missing title. Usage: todo task add <item> "<title>"', 2)
-    store.add_task(file, it["id"], title)
-    print(f'{it["id"]}: added task [{len(it["tasks"])}] {title}')
+    store.add_task(file, it["id"], title, args.phase)
+    where = f" (phase {args.phase})" if args.phase is not None else ""
+    print(f'{it["id"]}: added task [{len(it["tasks"])}] {title}{where}')
+
+
+def _parse_phase(value: str):
+    """A phase is an integer, or one of none/-/clear/null to unset it."""
+    v = value.strip().lower()
+    if v in ("none", "-", "clear", "null", ""):
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        die(f'Invalid phase "{value}" (an integer, or "none" to clear).', 2)
+
+
+def cmd_task_phase(file: Path, args) -> None:
+    it = store.resolve_item(file, args.query)
+    _task_index(it, args.index)
+    phase = _parse_phase(args.value)
+    store.set_task_phase(file, it["id"], args.index, phase)
+    label = f"phase {phase}" if phase is not None else "no phase"
+    print(f'{it["id"]}: task [{args.index}] → {label}')
 
 
 def _set_task_status(file: Path, query: str, index: int, status: str) -> None:
@@ -246,7 +267,15 @@ def build_parser() -> argparse.ArgumentParser:
     ta = tsub.add_parser("add", parents=[common], help="append a task")
     ta.add_argument("query", help="id or part of a title")
     ta.add_argument("title", nargs="+", help="the task title")
+    ta.add_argument("--phase", type=int, default=None, metavar="N",
+                    help="phase number (tasks auto-sort by it)")
     ta.set_defaults(func=cmd_task_add)
+
+    tph = tsub.add_parser("phase", parents=[common], help="set/clear a task's phase")
+    tph.add_argument("query", help="id or part of a title")
+    tph.add_argument("index", type=int, help="task index (see `todo tasks`)")
+    tph.add_argument("value", help='phase number, or "none" to clear')
+    tph.set_defaults(func=cmd_task_phase)
 
     tst = tsub.add_parser("status", parents=[common], help="set a task's status explicitly")
     tst.add_argument("query", help="id or part of a title")

@@ -12,7 +12,7 @@ todos:
     type: feature
     status: in-progress
     priority: medium
-    phase: null
+    super-phase: null
     created: 2026-06-24T10:00:00.000Z
     completed: null
     notes:
@@ -22,7 +22,7 @@ todos:
     type: feature
     status: todo
     priority: medium
-    phase: null
+    super-phase: null
     created: 2026-06-24T11:00:00.000Z
     completed: null
     notes: []

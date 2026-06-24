@@ -91,13 +91,16 @@ def notes_node(notes) -> CommentedSeq:
 
 def tasks_node(tasks) -> CommentedSeq:
     """Build the `tasks:` sequence — one compact flow map `{title, status}` per
-    task. Rebuilt wholesale on each mutation (like notes); tasks don't carry
-    inline comments, so nothing is lost."""
+    task, with `phase` appended only when set (keeps phase-less tasks and old
+    files byte-identical). Rebuilt wholesale on each mutation (like notes);
+    tasks don't carry inline comments, so nothing is lost."""
     seq = CommentedSeq()
     for t in tasks:
         m = CommentedMap()
         m["title"] = str(t["title"])
         m["status"] = str(t["status"])
+        if t.get("phase") is not None:
+            m["phase"] = int(t["phase"])
         m.fa.set_flow_style()
         seq.append(m)
     return seq

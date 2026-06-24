@@ -69,6 +69,12 @@ auto-maintained from the tasks (all `done` → `done`; any `in-progress` →
 filtering, and done-hiding still key on the manual `status`. How the individual
 task statuses are visualized (e.g. colored dots) is left to the web TODO drawer.
 
+Tasks can also carry an optional **`phase`** number (`--phase N` on add, or
+`todo task phase <item> <i> <N>`). Tasks auto-sort by phase — phase 1, 2, … then
+unphased — so you can stage an item's work and read it back in order; the `[i]`
+indices follow the sorted order. (The item-level `super-phase` field is a
+separate, passive cross-item grouping; phasing the *work* lives in child tasks.)
+
 ## Usage
 
 `<query>` matches an id or part of a title, **case-insensitively** (exact id →
@@ -89,9 +95,10 @@ todo note   <query> <text...>    # append a note
 todo notes  <query>              # list notes with indices
 todo unnote <query> <index>      # remove note #index
 todo tasks  <query>              # list an item's child tasks with indices
-todo task add <query> "<title>"  # add a child task (status: todo)
+todo task add <query> "<title>" [--phase N]   # add a child task (status: todo)
 todo task start  <query> <i>     # task → in-progress (triage/review/block/defer/done/reopen too)
 todo task status <query> <i> <S> # set a task's status explicitly
+todo task phase  <query> <i> <N> # set/clear a task's phase (N, or "none")
 todo task rm <query> <i>         # remove task #i
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
@@ -124,7 +131,7 @@ todos:
     type: feature             # bug | feature | refactor | question
     status: in-progress       # see lifecycle above
     priority: medium          # high | medium | low
-    phase: null               # optional grouping
+    super-phase: null         # optional cross-item grouping (passive)
     created: 2026-06-23T17:41:40.683Z
     completed: null           # ISO timestamp once done, else null
     notes:                    # running notes; multi-line notes become `|` blocks
@@ -133,9 +140,9 @@ todos:
         a longer
         multi-line note
     calc-status: in-progress  # DERIVED from tasks; omitted when there are none
-    tasks:                    # child tasks, each with its own status
-      - {title: split status.py, status: done}
-      - {title: rollup render, status: in-progress}
+    tasks:                    # child tasks, each with its own status (+ optional phase)
+      - {title: split status.py, status: done, phase: 1}
+      - {title: rollup render, status: in-progress, phase: 2}
 ```
 
 Other keys (`description`, `acceptance`, `subtasks`, `depends_on`, …) are

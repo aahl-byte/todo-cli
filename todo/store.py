@@ -4,6 +4,8 @@ All mutations route through yamlio's fresh-read + atomic-write core, so they're
 safe to run alongside another writer (e.g. the web drawer editing the same file).
 """
 
+from __future__ import annotations  # `int | None` hints stay valid on Python 3.9
+
 import re
 from pathlib import Path
 
@@ -28,17 +30,9 @@ def _find_node(seq, item_id: str):
 def _to_item(node) -> dict:
     notes_raw = node.get("notes")
     notes = [to_str(n) for n in notes_raw] if isinstance(notes_raw, list) else []
-    tasks_raw = node.get("tasks")
-    tasks = []
-    if isinstance(tasks_raw, list):
-        for t in tasks_raw:
-            if isinstance(t, dict):
-                tasks.append({
-                    "title": to_str(t.get("title")),
-                    "status": to_str(t.get("status")) or "todo",
-                })
+    tasks = _tasks_of(node)
     calc = node.get("calc-status")
-    phase = node.get("phase")
+    super_phase = node.get("super-phase")
     created = node.get("created")
     completed = node.get("completed")
     return {
@@ -47,7 +41,7 @@ def _to_item(node) -> dict:
         "type": to_str(node.get("type")) or "feature",
         "status": to_str(node.get("status")) or "todo",
         "priority": to_str(node.get("priority")) if node.get("priority") is not None else None,
-        "phase": int(phase) if phase not in (None, "") else None,
+        "super_phase": int(super_phase) if super_phase not in (None, "") else None,
         "notes": notes,
         "tasks": tasks,
         "calc_status": to_str(calc) if calc not in (None, "") else None,
@@ -96,13 +90,13 @@ def add_todo(file: Path, title: str, now_iso: str):
     item["type"] = "feature"
     item["status"] = "todo"
     item["priority"] = "medium"
-    item["phase"] = None
+    item["super-phase"] = None
     item["created"] = now_iso
     item["completed"] = None
     seq.append(item)
     yamlio.save(y, file, data)
     return {"id": item_id, "title": t, "type": "feature", "status": "todo",
-            "priority": "medium", "phase": None, "notes": [],
+            "priority": "medium", "super_phase": None, "notes": [],
             "created": now_iso, "completed": None}
 
 
@@ -134,19 +128,37 @@ def update_todo(file: Path, item_id: str, patch: dict, now_iso=None) -> bool:
 
 
 # ── child tasks ─────────────────────────────────────────────────────────────
+def _task_phase(t) -> int | None:
+    ph = t.get("phase")
+    return int(ph) if ph not in (None, "") else None
+
+
 def _tasks_of(node) -> list:
     raw = node.get("tasks")
     if not isinstance(raw, list):
         return []
     return [
-        {"title": to_str(t.get("title")), "status": to_str(t.get("status")) or "todo"}
+        {
+            "title": to_str(t.get("title")),
+            "status": to_str(t.get("status")) or "todo",
+            "phase": _task_phase(t),
+        }
         for t in raw if isinstance(t, dict)
     ]
 
 
+def _sort_tasks(tasks) -> list:
+    """Order tasks by phase: phased first (ascending), unphased last. Stable, so
+    tasks sharing a phase keep their insertion order. The stored order IS the
+    display order, so `[i]` indices stay meaningful after an auto-sort."""
+    return sorted(tasks, key=lambda t: (t.get("phase") is None, t.get("phase") or 0))
+
+
 def _write_tasks(node, tasks) -> None:
-    """Rewrite the node's tasks and recompute its derived calc-status. Never
-    touches the manual `status` or `completed` — those stay human-driven."""
+    """Rewrite the node's tasks (auto-sorted by phase) and recompute its derived
+    calc-status. Never touches the manual `status` or `completed` — those stay
+    human-driven."""
+    tasks = _sort_tasks(tasks)
     node["tasks"] = yamlio.tasks_node(tasks)
     calc = derive_calc_status([t["status"] for t in tasks])
     if calc is None:
@@ -173,17 +185,27 @@ def _mutate_tasks(file: Path, item_id: str, transform) -> bool:
     return True
 
 
-def add_task(file: Path, item_id: str, title: str) -> bool:
+def add_task(file: Path, item_id: str, title: str, phase: int | None = None) -> bool:
     t = title.strip()
     if not t:
         return False
-    return _mutate_tasks(file, item_id, lambda tasks: tasks.append({"title": t, "status": "todo"}))
+    return _mutate_tasks(
+        file, item_id,
+        lambda tasks: tasks.append({"title": t, "status": "todo", "phase": phase}),
+    )
 
 
 def set_task_status(file: Path, item_id: str, index: int, status: str) -> bool:
     def _set(tasks):
         if 0 <= index < len(tasks):
             tasks[index]["status"] = status
+    return _mutate_tasks(file, item_id, _set)
+
+
+def set_task_phase(file: Path, item_id: str, index: int, phase: int | None) -> bool:
+    def _set(tasks):
+        if 0 <= index < len(tasks):
+            tasks[index]["phase"] = phase
     return _mutate_tasks(file, item_id, _set)
 
 
