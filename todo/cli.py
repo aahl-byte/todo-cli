@@ -62,6 +62,12 @@ def cmd_shortcut(file: Path, args) -> None:
     _set_status(file, args.query, SHORTCUTS[args.command])
 
 
+def cmd_status_alias(file: Path, args) -> None:
+    # Legacy: the bare status name used as a command (`todo in-progress X`).
+    # The subcommand name IS the target status.
+    _set_status(file, args.query, args.command)
+
+
 def cmd_note(file: Path, args) -> None:
     it = store.resolve_item(file, args.query)
     text = " ".join(args.text).strip()
@@ -305,6 +311,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="repoint/replace an existing ~/.claude/skills/todo")
     p.set_defaults(func=cmd_init)
+
+    # Legacy aliases: each status name usable directly as a command
+    # (`todo in-progress X`). Hidden from help (the verb shortcuts above are the
+    # intended UX); names already taken as commands — review, done — are skipped
+    # since their shortcut sets the same status.
+    for status in STATUSES:
+        if status in sub.choices:
+            continue
+        # No `help=`: argparse keeps the subcommand callable but leaves it out
+        # of the listed commands (SUPPRESS would print a literal "==SUPPRESS==").
+        p = sub.add_parser(status, parents=[common])
+        p.add_argument("query", help="id or part of a title")
+        p.set_defaults(func=cmd_status_alias)
 
     return parser
 

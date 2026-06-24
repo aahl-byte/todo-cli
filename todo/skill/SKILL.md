@@ -115,6 +115,10 @@ todo done skill-todo                      # finished + verified
   corruption.
 - `done` stamps `completed` with the current ISO time; moving off `done` clears
   it. Don't set `done` until the work is actually verified.
+- Notes accept **multi-line Markdown** — pass a note containing newlines (lists,
+  `inline code`, fenced blocks, links) and the CLI stores it as a YAML `|` block
+  literal, kept readable and byte-stable on round-trip. Single-line notes stay
+  plain scalars.
 - Status values are free-form in the file, but stick to the seven above so the
   web drawer colors and the click-to-cycle ring stay meaningful.
 - If `todo` isn't found on PATH, install it: `pip install -e ~/git/todo` (then

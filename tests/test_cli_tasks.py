@@ -80,3 +80,11 @@ def test_tasks_render_shows_phase_sorted(todo_file, capsys):
     out = capsys.readouterr().out
     assert "phase 1" in out and "phase 2" in out
     assert out.index("first") < out.index("second")  # sorted by phase
+
+
+def test_status_name_as_legacy_command(todo_file):
+    # every one of the 7 statuses works as a bare subcommand
+    for status in ["todo", "in-triage", "in-progress", "review",
+                   "blocked", "deferred", "done"]:
+        run(todo_file, [status, "beta"])
+        assert store.resolve_item(todo_file, "beta")["status"] == status
