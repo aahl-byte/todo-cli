@@ -91,6 +91,50 @@ def cmd_unnote(file: Path, args) -> None:
     print(f'{it["id"]}: removed note [{idx}]')
 
 
+def _task_index(it, idx: int) -> None:
+    if idx < 0 or idx >= len(it["tasks"]):
+        die(f"Bad task index {idx} (have {len(it['tasks'])} tasks).", 2)
+
+
+def cmd_tasks(file: Path, args) -> None:
+    render.print_tasks(store.resolve_item(file, args.query))
+
+
+def cmd_task_add(file: Path, args) -> None:
+    it = store.resolve_item(file, args.query)
+    title = " ".join(args.title).strip()
+    if not title:
+        die('Missing title. Usage: todo task add <item> "<title>"', 2)
+    store.add_task(file, it["id"], title)
+    print(f'{it["id"]}: added task [{len(it["tasks"])}] {title}')
+
+
+def _set_task_status(file: Path, query: str, index: int, status: str) -> None:
+    if status not in STATUSES:
+        die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
+    it = store.resolve_item(file, query)
+    _task_index(it, index)
+    store.set_task_status(file, it["id"], index, status)
+    nxt = store.resolve_item(file, it["id"])
+    calc = nxt["calc_status"] or "—"
+    print(f'{it["id"]}: task [{index}] → {status}  (calc-status: {calc})')
+
+
+def cmd_task_status(file: Path, args) -> None:
+    _set_task_status(file, args.query, args.index, args.status)
+
+
+def cmd_task_shortcut(file: Path, args) -> None:
+    _set_task_status(file, args.query, args.index, SHORTCUTS[args.taskcmd])
+
+
+def cmd_task_rm(file: Path, args) -> None:
+    it = store.resolve_item(file, args.query)
+    _task_index(it, args.index)
+    store.remove_task(file, it["id"], args.index)
+    print(f'{it["id"]}: removed task [{args.index}]')
+
+
 def cmd_add(file: Path, args) -> None:
     title = " ".join(args.title).strip()
     if not title:
@@ -192,6 +236,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("index", type=int, help="note index (see `todo notes`)")
     p.set_defaults(func=cmd_unnote)
 
+    p = sub.add_parser("tasks", parents=[common], help="list an item's child tasks")
+    p.add_argument("query", help="id or part of a title")
+    p.set_defaults(func=cmd_tasks)
+
+    tp = sub.add_parser("task", parents=[common], help="manage an item's child tasks")
+    tsub = tp.add_subparsers(dest="taskcmd", metavar="<taskcmd>")
+
+    ta = tsub.add_parser("add", parents=[common], help="append a task")
+    ta.add_argument("query", help="id or part of a title")
+    ta.add_argument("title", nargs="+", help="the task title")
+    ta.set_defaults(func=cmd_task_add)
+
+    tst = tsub.add_parser("status", parents=[common], help="set a task's status explicitly")
+    tst.add_argument("query", help="id or part of a title")
+    tst.add_argument("index", type=int, help="task index (see `todo tasks`)")
+    tst.add_argument("status", choices=STATUSES, help="new status")
+    tst.set_defaults(func=cmd_task_status)
+
+    trm = tsub.add_parser("rm", parents=[common], help="remove a task")
+    trm.add_argument("query", help="id or part of a title")
+    trm.add_argument("index", type=int, help="task index (see `todo tasks`)")
+    trm.set_defaults(func=cmd_task_rm)
+
+    for name, helptext in SHORTCUT_HELP.items():
+        tv = tsub.add_parser(name, parents=[common], help=f"task {helptext}")
+        tv.add_argument("query", help="id or part of a title")
+        tv.add_argument("index", type=int, help="task index (see `todo tasks`)")
+        tv.set_defaults(func=cmd_task_shortcut)
+
     p = sub.add_parser("add", parents=[common], help="add a new item")
     p.add_argument("title", nargs="+", help="the item title")
     p.set_defaults(func=cmd_add)
@@ -212,6 +285,9 @@ def main():
     args = parser.parse_args()
     if not getattr(args, "command", None):
         parser.print_help()
+        sys.exit(0)
+    if args.command == "task" and not getattr(args, "func", None):
+        parser.parse_args(["task", "--help"])
         sys.exit(0)
     # `init` is machine-level, not tied to a project's TODO.yaml.
     file = None if args.command == "init" else Path(args.file).resolve()
