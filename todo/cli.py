@@ -338,5 +338,21 @@ def main():
         parser.parse_args(["task", "--help"])
         sys.exit(0)
     # `init` is machine-level, not tied to a project's TODO.yaml.
-    file = None if args.command == "init" else Path(args.file).resolve()
+    file = None if args.command == "init" else _resolve_file(args.file)
     args.func(file, args)
+
+
+def _resolve_file(raw: str) -> Path:
+    """Resolve --file to a TODO.yaml path. Pointing at a directory (the common
+    `--file /some/project/` slip) resolves to a YAML inside it rather than
+    crashing later with a raw IsADirectoryError: prefer <dir>/TODO.yaml, else a
+    lone *.yaml/*.yml. With no (or several) yaml files it resolves to
+    <dir>/TODO.yaml so the normal "No TODO.yaml found" message fires."""
+    file = Path(raw).resolve()
+    if file.is_dir():
+        default = file / "TODO.yaml"
+        if default.exists():
+            return default
+        yamls = sorted(p for p in file.glob("*.y*ml") if p.is_file())
+        return yamls[0] if len(yamls) == 1 else default
+    return file
