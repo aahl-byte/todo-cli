@@ -17,10 +17,12 @@ YAML shape changes.
 """
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
 from . import init as init_mod
+from . import link as link_mod
 from . import render, store
 from .status import SHORTCUT_HELP, SHORTCUTS, STATUSES
 from .util import die, now
@@ -185,6 +187,32 @@ def cmd_archive(file: Path, args) -> None:
         print(f"Archived {count} item(s) → {shown}")
 
 
+def _local_path(args) -> Path:
+    """The repo-root TODO.yaml path, UNRESOLVED — link/unlink act on the symlink
+    itself, not the global store it resolves to."""
+    p = Path(getattr(args, "file", "TODO.yaml"))
+    return p / "TODO.yaml" if p.is_dir() else p
+
+
+def cmd_link(file: Path, args) -> None:
+    print(link_mod.link(_local_path(args), args.name))
+
+
+def cmd_unlink(file: Path, args) -> None:
+    print(link_mod.unlink(_local_path(args)))
+
+
+def cmd_projects(file: Path, args) -> None:
+    rows = link_mod.projects()
+    if not rows:
+        print(f"(no linked projects in {link_mod.global_root()})")
+        return
+    width = max(len(r["key"]) for r in rows)
+    for r in rows:
+        origin = f"  ← {r['linked_from']}" if r["linked_from"] else ""
+        print(f"{r['key']:<{width}}  {r['count']:>3} item(s){origin}")
+
+
 def cmd_init(file: Path, args) -> None:
     try:
         results = init_mod.do_init(force=args.force)
@@ -307,6 +335,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("archive", parents=[common], help="move done items to ARCHIVE/TODO/")
     p.set_defaults(func=cmd_archive)
 
+    p = sub.add_parser("link", parents=[common],
+                       help="store this project's todos in the global store (~/.todo), via a symlink")
+    p.add_argument("--name", default=None, metavar="KEY",
+                   help="store key (default: repo basename)")
+    p.set_defaults(func=cmd_link)
+
+    p = sub.add_parser("unlink", parents=[common],
+                       help="inline the global store back into a real ./TODO.yaml")
+    p.set_defaults(func=cmd_unlink)
+
+    p = sub.add_parser("projects", help="list all global-stored projects (~/.todo/projects/*)")
+    p.set_defaults(func=cmd_projects)
+
     p = sub.add_parser("init", help="install the todo skill into ~/.agents and ~/.claude")
     p.add_argument("--force", action="store_true",
                    help="repoint/replace an existing ~/.claude/skills/todo")
@@ -337,8 +378,12 @@ def main():
     if args.command == "task" and not getattr(args, "func", None):
         parser.parse_args(["task", "--help"])
         sys.exit(0)
-    # `init` is machine-level, not tied to a project's TODO.yaml.
-    file = None if args.command == "init" else _resolve_file(args.file)
+    # `init`/`projects` are machine-level; `link`/`unlink` act on the unresolved
+    # repo-root path themselves — none of them want a resolved store path.
+    if args.command in ("init", "projects", "link", "unlink"):
+        file = None
+    else:
+        file = _resolve_file(args.file)
     args.func(file, args)
 
 
@@ -355,4 +400,30 @@ def _resolve_file(raw: str) -> Path:
             return default
         yamls = sorted(p for p in file.glob("*.y*ml") if p.is_file())
         return yamls[0] if len(yamls) == 1 else default
+    # A git worktree with no local TODO.yaml falls back to the primary worktree's
+    # — which may itself be a symlink into the global store, so all worktrees of a
+    # linked repo share one list. Only for the implicit default, never for --file.
+    if raw == "TODO.yaml" and not file.exists():
+        shared = _worktree_todo(Path.cwd())
+        if shared is not None:
+            return shared
     return file
+
+
+def _worktree_todo(start: Path) -> Path | None:
+    """Resolve the primary worktree's TODO.yaml from inside a linked worktree.
+    `git rev-parse --git-common-dir` points at the main repo's .git; its parent
+    is the primary worktree root. Returns the resolved (symlink-followed) path
+    if that TODO.yaml exists, else None."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                             cwd=start, capture_output=True, text=True).stdout.strip()
+    except (FileNotFoundError, OSError):
+        return None
+    if not out:
+        return None
+    common = Path(out)
+    if not common.is_absolute():
+        common = (start / common).resolve()
+    candidate = common.parent / "TODO.yaml"
+    return candidate.resolve() if candidate.exists() else None

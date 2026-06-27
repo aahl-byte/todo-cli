@@ -55,4 +55,30 @@ todos: [{id: init, title: INIT, type: feature, status: done, priority: medium,
             unaffected.", "Shipped in 6c9e0ca: task-level 'phase' (task add --phase
             / task phase <i> <N|none>), auto-sort by phase (unphased last, stable),
             render phase column; item 'phase'→'super-phase' (this file migrated).
-            40 tests green; SKILL.md re-installed."]}]
+            40 tests green; SKILL.md re-installed."]}, {id: global-todo, title:
+        global-todo, type: question, status: review, priority: medium,
+        super-phase: null, created: 2026-06-26T15:52:46.941Z, completed: null,
+        notes: ["Drivers for an opt-in global store (~/.todo/projects/<key>/): repos
+            I can't commit a TODO.yaml into; cross-project overview (one pane); non-git
+            scratch dirs; and worktrees sharing ONE list instead of each checkout
+            fragmenting its own (the sharpest pain).", 'Decided 2026-06-27: opt-in
+            **symlink** ./TODO.yaml -> ~/.todo/projects/<key>/TODO.yaml, gitignored.
+            Committed ./TODO.yaml stays the default. Symlink beats a redirect-pointer
+            YAML: resolve() at cli.py:351 already follows it, so the CLI, web drawer,
+            and any reader work with ZERO redirect code. Self-doc via a header comment
+            + `meta:` block in the store (visible through the link). New cmds: link
+            / unlink / projects. No pointer fallback — if os.symlink fails (Windows
+            w/o Dev Mode, permissions) show the real OSError + a guidance hint and
+            abort cleanly. Full design: docs/plans/2026-06-26-global-store-design.md.',
+        "Implemented 2026-06-27. New module todo/link.py (link/unlink/projects) +
+            worktree-resolution fallback in cli.py (_worktree_todo via git rev-parse
+            --git-common-dir). link migrates ./TODO.yaml into ~/.todo/projects/<key>/,
+            writes the store FIRST then swaps in an absolute symlink, injects a header
+            comment + meta: block, gitignores TODO.yaml, and on os.symlink OSError
+            restores the repo + surfaces the real error. unlink atomically replaces
+            the symlink with the inlined real file (meta/header stripped) then removes
+            the empty store dir. meta survives mutations free via ruamel round-trip.
+            10 new tests in tests/test_link.py (real symlinks + real git worktree,
+            skip on symlink-hostile platforms); 54 total pass. Docs: SKILL.md + README
+            'Global store (opt-in)' sections; design doc marked implemented with open
+            questions resolved."]}]

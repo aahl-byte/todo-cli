@@ -102,11 +102,26 @@ todo task phase  <query> <i> <N> # set/clear a task's phase (N, or "none")
 todo task rm <query> <i>         # remove task #i
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
+todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
+todo unlink                      # inline the global store back into ./TODO.yaml
+todo projects                    # list all global-stored projects
 todo init                        # install the todo skill on this machine
 ```
 
 `--file <path>` (on either side of the command) overrides the default
 `./TODO.yaml`.
+
+### Global store (opt-in)
+
+`./TODO.yaml` committed in-repo is the default. `todo link` instead moves the
+todos to `~/.todo/projects/<key>/TODO.yaml` and leaves a **symlink** at
+`./TODO.yaml` (gitignored). Because reads and writes follow the symlink, the CLI
+and web drawer keep working unchanged. It's handy for repos that can't host a
+committed `TODO.yaml`, and it lets **git worktrees share one list** — a worktree
+without a local `TODO.yaml` resolves to the primary checkout's linked store.
+`todo unlink` inlines the store back into a real file. There is no pointer-file
+fallback: if the OS can't create a symlink (e.g. Windows without Developer Mode),
+`link` reports the error and changes nothing.
 
 ### Typical flow
 
