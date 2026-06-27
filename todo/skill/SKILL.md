@@ -8,11 +8,10 @@ description: Use when reading, updating, or tracking work in a project's structu
 
 ## Overview
 
-Some projects track work in a structured `TODO.yaml` at the repo root, backed by
-a web "TODO drawer" and the **`todo`** CLI (a real command on PATH — source at
-`~/git/todo`). The file is a precious, comment-rich planning artifact — **edit it
-through the CLI, not by hand**, so comments and structure are preserved and
-writes stay atomic.
+Some projects track work in a structured `TODO.yaml` at the repo root, managed by
+the **`todo`** CLI (a real command on PATH). The file is a precious, comment-rich
+planning artifact — **edit it through the CLI, not by hand**, so comments and
+structure are preserved and writes stay atomic.
 
 **Core principle:** keep the item's status honest as you work — flip it the
 moment you change what you're doing, and leave a note when you learn something.
@@ -33,8 +32,8 @@ Move an item along as your relationship to it changes:
 | `todo`        | not started                               | (default for new items)         |
 | `in-triage`   | you're writing a plan / scoping it        | you begin planning              |
 | `in-progress` | you're actively building it               | you start writing code          |
-| `review`      | awaiting user review (purple)             | you specifically want user eyes |
-| `blocked`     | can't proceed (red)                       | something blocks you / you stop |
+| `review`      | awaiting user review                      | you specifically want user eyes |
+| `blocked`     | can't proceed                             | something blocks you / you stop |
 | `done`        | complete (stamps `completed`)             | it's finished and verified      |
 | `deferred`    | parked off the main path                  | you decide not to do it now     |
 
@@ -108,7 +107,7 @@ By default `./TODO.yaml` is a committed, in-repo artifact — that's the norm an
 usually what you want. `todo link` instead moves an item's todos to
 `~/.todo/projects/<key>/TODO.yaml` and replaces `./TODO.yaml` with a **symlink**
 to it (and gitignores it). Reads and writes follow the link transparently, so the
-CLI and web drawer work unchanged. Use it when a repo can't host a committed
+CLI works unchanged. Use it when a repo can't host a committed
 `TODO.yaml`, or when **git worktrees** should share one list instead of each
 checkout carrying its own — a worktree with no local `TODO.yaml` resolves to the
 primary checkout's linked store automatically. `todo unlink` reverses it (inlines
@@ -134,8 +133,8 @@ todo done skill-todo                      # finished + verified
 ## Notes & gotchas
 
 - The CLI re-reads `TODO.yaml` fresh on every mutation and writes atomically, so
-  it's safe to run alongside a live server that's also editing the file (the web
-  drawer). Worst case under a true simultaneous write is one clobbered edit, not
+  it's safe to run alongside another writer editing the same file (e.g. a web UI).
+  Worst case under a true simultaneous write is one clobbered edit, not
   corruption.
 - `done` stamps `completed` with the current ISO time; moving off `done` clears
   it. Don't set `done` until the work is actually verified.
@@ -143,9 +142,9 @@ todo done skill-todo                      # finished + verified
   `inline code`, fenced blocks, links) and the CLI stores it as a YAML `|` block
   literal, kept readable and byte-stable on round-trip. Single-line notes stay
   plain scalars.
-- Status values are free-form in the file, but stick to the seven above so the
-  web drawer colors and the click-to-cycle ring stay meaningful.
-- If `todo` isn't found on PATH, install it: `pip install -e ~/git/todo` (then
-  `pyenv rehash` if using pyenv). Source lives at `~/git/todo`. After installing,
-  `todo init` drops this skill into `~/.agents/skills/todo/` and symlinks it into
-  `~/.claude/skills/todo`.
+- Status values are free-form in the file, but stick to the seven above so any UI
+  that colors or cycles them stays meaningful.
+- If `todo` isn't found on PATH, install the package from its source checkout:
+  `pip install -e <path-to-checkout>` (run `pyenv rehash` afterward if you use
+  pyenv). Then `todo init` drops this skill into `~/.agents/skills/todo/` and
+  symlinks it into `~/.claude/skills/todo`.
