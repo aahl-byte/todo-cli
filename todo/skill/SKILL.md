@@ -54,8 +54,14 @@ uncluttered and the item's fine-grained progress is visible.
   `done` → `calc-status: done`; any `in-progress` → `in-progress`). It's
   informational; `done`/`archive`/hiding still key on the manual `status`, so you
   still flip the item to `done` yourself once it's verified.
-- Notes still exist alongside tasks — notes are the journal, tasks are tracked
-  units.
+- **Tasks vs. notes — keep them separate.** A unit of work goes in the **task
+  section**, never in a note. Notes are for **context** — the why, the decision,
+  the gotcha, a pointer to the design doc — not a to-do list or a log of what you
+  did. If you catch yourself writing "did X, did Y" in a note, those are tasks;
+  add them as child tasks (mark them `done`) and keep the note for the reasoning.
+- **Write notes in Markdown.** Notes render as Markdown — use `**bold**`,
+  `` `inline code` ``, bullet lists, and links. Multi-line notes are stored as a
+  YAML `|` block literal, so structure survives round-trips.
 - Tasks can carry a **`phase`** number (`--phase N` on add, or `task phase`).
   Tasks auto-sort by phase (phase 1, 2, … then unphased), so you can stage an
   item's work — phase 1 first, then phase 2 — and read it back in order. The
