@@ -6,3 +6,5 @@ __pycache/**/*
 .venv
 build
 dist
+TODO.yaml
+/ARCHIVE/
