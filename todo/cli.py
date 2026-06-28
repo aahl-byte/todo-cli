@@ -251,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
                "(exact id → exact title → substring); ambiguous queries list candidates.\n\n"
                "examples:\n"
                "  todo list                       # open items (hides done)\n"
+               "  todo list -g                    # active items across all linked projects\n"
                "  todo get skill-todo             # show one item in full\n"
                "  todo triage skill-todo          # I'm writing the plan\n"
                "  todo start skill-todo           # I'm building it\n"
