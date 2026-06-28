@@ -58,9 +58,22 @@ uncluttered and the item's fine-grained progress is visible.
   the gotcha, a pointer to the design doc — not a to-do list or a log of what you
   did. If you catch yourself writing "did X, did Y" in a note, those are tasks;
   add them as child tasks (mark them `done`) and keep the note for the reasoning.
-- **Write notes in Markdown.** Notes render as Markdown — use `**bold**`,
-  `` `inline code` ``, bullet lists, and links. Multi-line notes are stored as a
-  YAML `|` block literal, so structure survives round-trips.
+- **Write notes in legible Markdown — never a wall of text.** Notes render as
+  Markdown, so a note longer than one line should be *structured*, not a single
+  run-on paragraph. Lead with a **bold takeaway**, break reasoning into bullets,
+  put `` `inline code` `` around identifiers/paths/commands, link with
+  `[text](url)`, and separate distinct thoughts with a blank line. Multi-line
+  notes are stored as a YAML `|` block literal, so this structure survives
+  round-trips verbatim. For example, prefer:
+
+  ```markdown
+  **Auth must stay backward-compatible** — old tokens lack the `scope` claim.
+
+  - `verify_token()` falls back to `scope: "*"` when the claim is missing.
+  - Drop the fallback only once [PR #412](https://example/412) ships.
+  ```
+
+  over cramming all of that into one undifferentiated sentence.
 - Tasks can carry a **`phase`** number (`--phase N` on add, or `task phase`).
   Tasks auto-sort by phase (phase 1, 2, … then unphased), so you can stage an
   item's work — phase 1 first, then phase 2 — and read it back in order. The
@@ -84,7 +97,7 @@ todo done   <query>              # → done       (stamps completed)
 todo defer  <query>              # → deferred
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
-todo note   <query> <text...>    # append a note
+todo note   <query> <text...>    # append a note (write it as legible Markdown)
 todo notes  <query>              # list notes with indices
 todo unnote <query> <index>      # remove note #index
 todo tasks  <query>              # list an item's child tasks with indices
@@ -141,7 +154,8 @@ todo done skill-todo                      # finished + verified
 - Notes accept **multi-line Markdown** — pass a note containing newlines (lists,
   `inline code`, fenced blocks, links) and the CLI stores it as a YAML `|` block
   literal, kept readable and byte-stable on round-trip. Single-line notes stay
-  plain scalars.
+  plain scalars. Reach for the multi-line form whenever a note carries more than
+  one idea — a structured note is worth re-reading; a wall of text isn't.
 - Status values are free-form in the file, but stick to the seven above so any UI
   that colors or cycles them stays meaningful.
 - If `todo` isn't found on PATH, install the package from its source checkout:
