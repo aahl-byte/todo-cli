@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.1.1
+version: 0.1.2
 description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred), or add/edit notes. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
 ---
 
@@ -87,7 +87,7 @@ Run `todo` from the project root (the one with `TODO.yaml`); it defaults to
 query lists the candidates.
 
 ```
-todo list [--status S] [--all]   # list (hides done by default)
+todo list [--status S] [--all]   # list (hides done by default; --all includes done)
 todo list -g                     # active items across all linked projects (grouped)
 todo get <query>                 # show one item in full
 todo triage <query>              # → in-triage  (planning)
@@ -156,6 +156,11 @@ todo done skill-todo                      # finished + verified
   it's safe to run alongside another writer editing the same file (e.g. a web UI).
   Worst case under a true simultaneous write is one clobbered edit, not
   corruption.
+- `todo list` shows every item **except** `done` (so finished work drops out of
+  the everyday view); `todo list --all` adds the `done` items back in for the
+  full picture. `--status S` narrows to a single status. (The *active-only*
+  filter — `in-progress`/`blocked`/`review` — applies only to the cross-project
+  `-g` view, not to plain local `list`.)
 - `done` stamps `completed` with the current ISO time; moving off `done` clears
   it. Don't set `done` until the work is actually verified.
 - Notes accept **multi-line Markdown** — pass a note containing newlines (lists,
