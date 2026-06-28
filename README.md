@@ -82,6 +82,7 @@ exact title → substring); an ambiguous query lists the candidates.
 
 ```bash
 todo list [--status S] [--all]   # list items (hides done by default)
+todo list -g                     # active items across every linked project (grouped)
 todo get <query>                 # show one item in full
 todo triage <query>              # → in-triage  (planning)
 todo start  <query>              # → in-progress (developing)
@@ -122,6 +123,13 @@ without a local `TODO.yaml` resolves to the primary checkout's linked store.
 `todo unlink` inlines the store back into a real file. There is no pointer-file
 fallback: if the OS can't create a symlink (e.g. Windows without Developer Mode),
 `link` reports the error and changes nothing.
+
+Once you've linked a few repos, **`todo list -g`** (`--all-projects`) gives one
+cross-project view: every linked project's active items (`in-progress`,
+`blocked`, `review`), grouped by project. It only sees linked projects — an
+in-repo `TODO.yaml` that was never `todo link`ed won't appear. `--status S`
+narrows to one status across all projects; `--all` widens to every item
+(including `done`).
 
 ### Typical flow
 

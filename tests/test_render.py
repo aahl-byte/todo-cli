@@ -65,3 +65,30 @@ def test_no_phase_column_when_no_task_has_one(capsys):
 def test_print_item_shows_super_phase(capsys):
     render.print_item(_item(super_phase=3))
     assert "super-phase: 3" in capsys.readouterr().out
+
+
+def test_print_grouped_headers_and_indented_items(capsys):
+    groups = [
+        {"key": "alpha", "items": [_item(id="a1", title="One")]},
+        {"key": "beta", "items": [_item(id="b1", title="Two", status="blocked")]},
+    ]
+    render.print_grouped(groups)
+    out = capsys.readouterr().out
+    assert "alpha\n" in out and "beta\n" in out          # project headers
+    assert "  a1" in out and "  b1" in out               # items indented
+    assert out.index("alpha") < out.index("beta")        # discovery order kept
+
+
+def test_print_grouped_drops_empty_groups(capsys):
+    groups = [
+        {"key": "alpha", "items": []},                   # filtered out entirely
+        {"key": "beta", "items": [_item(id="b1")]},
+    ]
+    render.print_grouped(groups)
+    out = capsys.readouterr().out
+    assert "alpha" not in out and "beta" in out
+
+
+def test_print_grouped_empty(capsys):
+    render.print_grouped([{"key": "alpha", "items": []}])
+    assert "no items" in capsys.readouterr().out

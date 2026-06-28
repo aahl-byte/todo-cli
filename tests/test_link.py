@@ -4,6 +4,7 @@ These exercise real symlinks and (where available) real `git`, mirroring how the
 feature works in the field. Symlink-hostile platforms skip rather than fail.
 """
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -170,6 +171,37 @@ def test_projects_lists_linked_stores(tmp_path):
     assert rows[0]["key"] == "repo"
     assert rows[0]["count"] == 1
     assert rows[0]["linked_from"] == str(repo)
+
+
+def test_project_stores_exposes_file_paths(tmp_path):
+    repo = _repo(tmp_path)
+    if not _supports_symlink(repo):
+        pytest.skip("platform has no symlink support")
+    link.link(repo / "TODO.yaml", None)
+
+    stores = link.project_stores()
+    assert len(stores) == 1
+    assert stores[0]["key"] == "repo"
+    assert stores[0]["file"] == link.global_root() / "repo" / "TODO.yaml"
+    assert store.list_todos(stores[0]["file"])[0]["id"] == "foo"
+
+
+# ── cross-project list (todo list -g) ─────────────────────────────────────────
+def test_list_all_projects_defaults_to_active(tmp_path, monkeypatch, capsys):
+    if not _supports_symlink(tmp_path):
+        pytest.skip("platform has no symlink support")
+    body = ("todos:\n"
+            "  - id: hot\n    title: HOT\n    status: in-progress\n"
+            "  - id: cold\n    title: COLD\n    status: todo\n"
+            "  - id: gone\n    title: GONE\n    status: done\n")
+    repo = _repo(tmp_path, body=body)
+    link.link(repo / "TODO.yaml", None)
+
+    args = argparse.Namespace(all_projects=True, status=None, all=False)
+    cli.cmd_list(repo / "TODO.yaml", args)
+    out = capsys.readouterr().out
+    assert "hot" in out                       # in-progress is active
+    assert "cold" not in out and "gone" not in out   # todo/done are not
 
 
 # ── worktree resolution fallback ──────────────────────────────────────────────

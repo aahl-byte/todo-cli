@@ -17,6 +17,11 @@ proceed, and `deferred` an item pushed off the main path.
 # valid statuses everywhere.
 STATUSES = ["todo", "in-triage", "in-progress", "review", "blocked", "deferred", "done"]
 
+# The "active" set — items actually in motion right now. Drives the default of
+# the cross-project view (`todo list -g`): what's on my plate across every repo,
+# excluding not-yet-started (todo/in-triage), parked (deferred), and done.
+ACTIVE = ["in-progress", "blocked", "review"]
+
 # Shortcut subcommand → status it sets.
 SHORTCUTS = {
     "triage": "in-triage",

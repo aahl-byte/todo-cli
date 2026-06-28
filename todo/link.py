@@ -197,8 +197,10 @@ def unlink(local: Path) -> str:
     return "\n".join(lines)
 
 
-def projects() -> list[dict]:
-    """Every global-stored project: key, open-item count, originating repo."""
+def project_stores() -> list[dict]:
+    """Every global-stored project's location: key, TODO.yaml path, originating
+    repo. The raw discovery shared by `projects()` (counts) and the cross-project
+    view in the CLI (which loads each store's items)."""
     root = global_root()
     out = []
     if not root.exists():
@@ -207,9 +209,14 @@ def projects() -> list[dict]:
         f = d / "TODO.yaml"
         if not f.exists():
             continue
-        out.append({
-            "key": d.name,
-            "count": len(store.list_todos(f)),
-            "linked_from": _linked_from(f),
-        })
+        out.append({"key": d.name, "file": f, "linked_from": _linked_from(f)})
     return out
+
+
+def projects() -> list[dict]:
+    """Every global-stored project: key, open-item count, originating repo."""
+    return [
+        {"key": p["key"], "count": len(store.list_todos(p["file"])),
+         "linked_from": p["linked_from"]}
+        for p in project_stores()
+    ]

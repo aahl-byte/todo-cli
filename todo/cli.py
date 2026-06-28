@@ -24,7 +24,7 @@ from pathlib import Path
 from . import init as init_mod
 from . import link as link_mod
 from . import render, store
-from .status import SHORTCUT_HELP, SHORTCUTS, STATUSES
+from .status import ACTIVE, SHORTCUT_HELP, SHORTCUTS, STATUSES
 from .util import die, now
 
 
@@ -42,13 +42,29 @@ def _set_status(file: Path, query: str, status: str) -> None:
     print(f'{it["id"]}: {it["status"]} → {status}')
 
 
-def cmd_list(file: Path, args) -> None:
-    _require_file(file)
-    items = store.list_todos(file)
+def _filter_list(items, args, *, default_active: bool):
+    """Apply --status / --all / default filtering to a list of items. The
+    default (no flags) is non-done locally, but the active set across projects."""
     if args.status:
-        items = [it for it in items if it["status"] == args.status]
-    elif not args.all:
-        items = [it for it in items if it["status"] != "done"]
+        return [it for it in items if it["status"] == args.status]
+    if args.all:
+        return items
+    if default_active:
+        return [it for it in items if it["status"] in ACTIVE]
+    return [it for it in items if it["status"] != "done"]
+
+
+def cmd_list(file: Path, args) -> None:
+    if getattr(args, "all_projects", False):
+        groups = [
+            {"key": p["key"],
+             "items": _filter_list(store.list_todos(p["file"]), args, default_active=True)}
+            for p in link_mod.project_stores()
+        ]
+        render.print_grouped(groups)
+        return
+    _require_file(file)
+    items = _filter_list(store.list_todos(file), args, default_active=False)
     render.print_list(items)
 
 
@@ -261,6 +277,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list", parents=[common], aliases=["ls"], help="list items (hides done by default)")
     p.add_argument("--status", metavar="S", help="only items with this status")
     p.add_argument("--all", action="store_true", help="include done items")
+    p.add_argument("-g", "--all-projects", action="store_true",
+                   help="aggregate active items across every linked project "
+                        "(grouped by project; defaults to in-progress/blocked/review)")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("get", parents=[common], aliases=["show"], help="show one item in full")

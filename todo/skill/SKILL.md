@@ -88,6 +88,7 @@ query lists the candidates.
 
 ```
 todo list [--status S] [--all]   # list (hides done by default)
+todo list -g                     # active items across all linked projects (grouped)
 todo get <query>                 # show one item in full
 todo triage <query>              # → in-triage  (planning)
 todo start  <query>              # → in-progress (developing)
@@ -127,6 +128,12 @@ primary checkout's linked store automatically. `todo unlink` reverses it (inline
 the content back into a real file). If `os.symlink` isn't supported (e.g. Windows
 without Developer Mode), `link` prints the OS error and aborts without changing
 anything.
+
+`todo list -g` (`--all-projects`) gives a cross-project view: every linked
+project's **active** items (`in-progress`, `blocked`, `review`), grouped by
+project. It only sees linked projects — an unlinked in-repo `TODO.yaml` won't
+appear. `--status S` narrows to one status across all projects; `--all` widens
+to every item including `done`.
 
 `--file <path>` (on either side of the command) overrides the default
 `./TODO.yaml`.

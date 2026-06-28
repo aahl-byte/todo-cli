@@ -11,6 +11,16 @@ def _use_color() -> bool:
     return sys.stdout.isatty()
 
 
+def _item_line(it, w, color, indent="") -> str:
+    status = it["status"]
+    cell = colorize(status, f"{status:<12}", color)
+    mark = ""
+    if it["tasks"]:
+        done = sum(1 for t in it["tasks"] if t["status"] == "done")
+        mark = f'  ({done}/{len(it["tasks"])} tasks)'
+    return f'{indent}{it["id"]:<{w}}  {cell} {(it["priority"] or "—"):<8} {it["title"]}{mark}'
+
+
 def print_list(items) -> None:
     if not items:
         print("(no items)")
@@ -18,13 +28,26 @@ def print_list(items) -> None:
     color = _use_color()
     w = min(28, max(len(i["id"]) for i in items))
     for it in items:
-        status = it["status"]
-        cell = colorize(status, f"{status:<12}", color)
-        mark = ""
-        if it["tasks"]:
-            done = sum(1 for t in it["tasks"] if t["status"] == "done")
-            mark = f'  ({done}/{len(it["tasks"])} tasks)'
-        print(f'{it["id"]:<{w}}  {cell} {(it["priority"] or "—"):<8} {it["title"]}{mark}')
+        print(_item_line(it, w, color))
+
+
+def print_grouped(groups) -> None:
+    """Cross-project view: one header per project, its items indented beneath.
+    `groups` is a list of {key, items}. The id column is aligned across every
+    item in every group so the status/priority columns line up globally."""
+    groups = [g for g in groups if g["items"]]
+    if not groups:
+        print("(no items)")
+        return
+    color = _use_color()
+    all_items = [it for g in groups for it in g["items"]]
+    w = min(28, max(len(i["id"]) for i in all_items))
+    for i, g in enumerate(groups):
+        if i:
+            print()
+        print(g["key"])
+        for it in g["items"]:
+            print(_item_line(it, w, color, indent="  "))
 
 
 def print_item(it) -> None:
