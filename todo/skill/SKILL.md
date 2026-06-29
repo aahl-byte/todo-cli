@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.1.2
+version: 0.1.3
 description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred), or add/edit notes. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
 ---
 
@@ -32,14 +32,26 @@ Move an item along as your relationship to it changes:
 | `todo`        | not started                               | (default for new items)         |
 | `in-triage`   | you're writing a plan / scoping it        | you begin planning              |
 | `in-progress` | you're actively building it               | you start writing code          |
-| `review`      | awaiting user review                      | you specifically want user eyes |
+| `review`      | finished, awaiting user sign-off          | **your default when work lands** |
 | `blocked`     | can't proceed                             | something blocks you / you stop |
-| `done`        | complete (stamps `completed`)             | it's finished and verified      |
+| `done`        | complete + accepted (stamps `completed`)  | review is redundant (see below) |
 | `deferred`    | parked off the main path                  | you decide not to do it now     |
 
-`review` and `blocked` are special states an item enters on demand — not every
-item passes through them. Use `review` when you specifically want the user to
-look at something, and `blocked` when you couldn't continue.
+**When you finish an item, prefer `review` over `done`.** `done` asserts the
+work is verified *and accepted* — that's the user's call, so park finished work
+in `review` and let them sign off. Go straight to `done` only when review would
+be redundant:
+
+- **The user already saw and approved it** — reviewed the diff, approved the PR,
+  or said "mark it done" this session.
+- **The user explicitly asked for `done`** — honor the instruction over the default.
+- **Trivial / mechanical / self-verifying** — version bump, typo or formatting
+  fix, a doc tweak made verbatim to spec; nothing for a human to judge.
+- **Non-deliverable bookkeeping** — the item *is* housekeeping (archiving,
+  reorganizing the list) with no artifact for anyone to look at.
+
+`blocked` is a special state an item enters on demand — use it when you couldn't
+continue.
 
 ## Child tasks
 
@@ -147,7 +159,9 @@ todo note skill-todo "plan in docs/plans/2026-06-23-foo.md"
 todo start skill-todo                     # I'm building it
 # …work…
 todo note skill-todo "shipped in <commit>; covered by tests"
-todo done skill-todo                      # finished + verified
+todo review skill-todo                     # finished — hand it to the user to sign off
+# …user approves…
+todo done skill-todo                       # accepted (or skip review per the rules above)
 ```
 
 ## Notes & gotchas
@@ -162,7 +176,9 @@ todo done skill-todo                      # finished + verified
   filter — `in-progress`/`blocked`/`review` — applies only to the cross-project
   `-g` view, not to plain local `list`.)
 - `done` stamps `completed` with the current ISO time; moving off `done` clears
-  it. Don't set `done` until the work is actually verified.
+  it. Don't set `done` until the work is verified *and accepted* — by default
+  finished work goes to `review` first and the user moves it to `done` (see the
+  lifecycle section for the cases where going straight to `done` is fine).
 - Notes accept **multi-line Markdown** — pass a note containing newlines (lists,
   `inline code`, fenced blocks, links) and the CLI stores it as a YAML `|` block
   literal, kept readable and byte-stable on round-trip. Single-line notes stay
