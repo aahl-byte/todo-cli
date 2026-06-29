@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.1.3
+version: 0.1.4
 description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred), or add/edit notes. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
 ---
 
@@ -90,6 +90,15 @@ uncluttered and the item's fine-grained progress is visible.
   Tasks auto-sort by phase (phase 1, 2, … then unphased), so you can stage an
   item's work — phase 1 first, then phase 2 — and read it back in order. The
   `[i]` indices follow the sorted order.
+- **Treat unphased tasks as triage — always phase them.** An unphased task is
+  unsorted inbox work: captured but not yet thought through. Whenever you touch
+  an item, sweep its unphased tasks into phases so the list always reads as an
+  ordered plan, not a pile. Phasing is itself the act of organizing — it forces
+  you to decide *what depends on what* and *what comes first*. As part of that
+  sweep, also **clean** the tasks: merge duplicates, split a task that's secretly
+  two, drop ones that are obsolete, and sharpen vague titles. The goal is that
+  `todo tasks <query>` never shows a trailing clump of unphased items — if it
+  does, that clump is your next bit of triage work.
 
 ## Commands
 
