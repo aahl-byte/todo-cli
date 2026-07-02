@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.1.4
+version: 0.2.0
 description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred), or add/edit notes. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
 ---
 
@@ -88,8 +88,14 @@ uncluttered and the item's fine-grained progress is visible.
   over cramming all of that into one undifferentiated sentence.
 - Tasks can carry a **`phase`** number (`--phase N` on add, or `task phase`).
   Tasks auto-sort by phase (phase 1, 2, … then unphased), so you can stage an
-  item's work — phase 1 first, then phase 2 — and read it back in order. The
-  `[i]` indices follow the sorted order.
+  item's work — phase 1 first, then phase 2 — and read it back in order.
+- **Reference tasks and notes by their `[id]`, not their position.** Each task
+  and note carries a **constant per-item id** (a serial that's unique within the
+  item — two different items can both have a task `[2]`). The id shown in
+  `todo tasks` / `todo notes` is what every `task …`/`unnote` command takes, and
+  it **never changes** as siblings are removed or the phase re-sort reorders the
+  list — so `todo task done FOO 2` always hits the same task. `task add` /
+  `note` echo the new id.
 - **Treat unphased tasks as triage — always phase them.** An unphased task is
   unsorted inbox work: captured but not yet thought through. Whenever you touch
   an item, sweep its unphased tasks into phases so the list always reads as an
@@ -120,14 +126,14 @@ todo defer  <query>              # → deferred
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note (write it as legible Markdown)
-todo notes  <query>              # list notes with indices
-todo unnote <query> <index>      # remove note #index
-todo tasks  <query>              # list an item's child tasks with indices
+todo notes  <query>              # list notes with their [id]s
+todo unnote <query> <id>         # remove note by id
+todo tasks  <query>              # list an item's child tasks with their [id]s
 todo task add <query> "<title>" [--phase N]   # add a child task (status: todo)
-todo task start  <query> <i>     # task → in-progress (triage/review/block/defer/done/reopen too)
-todo task status <query> <i> <S> # set a task's status explicitly
-todo task phase  <query> <i> <N> # set/clear a task's phase (N, or "none")
-todo task rm <query> <i>         # remove task #i
+todo task start  <query> <id>    # task → in-progress (triage/review/block/defer/done/reopen too)
+todo task status <query> <id> <S> # set a task's status explicitly
+todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
+todo task rm <query> <id>        # remove task by id
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink

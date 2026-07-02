@@ -58,10 +58,15 @@ seven above — for breaking an item into trackable pieces without spawning extr
 top-level items or overloading notes:
 
 ```bash
-todo task add sub-tasks "split status.py"
-todo task start sub-tasks 0      # move task 0 → in-progress
-todo tasks sub-tasks             # list tasks with [i] indices
+todo task add sub-tasks "split status.py"   # echoes the new task's id, e.g. [1]
+todo task start sub-tasks 1      # move task 1 → in-progress
+todo tasks sub-tasks             # list tasks with their [id]s
 ```
+
+Each task and note carries a **constant per-item id** (a serial that's unique
+within the item — two items can both have a task `[2]`). References are by id,
+not list position, so an id never shifts when a sibling is removed or the phase
+re-sort reorders the list.
 
 The item's own `status` stays manual. A derived **`calc-status`** field is
 auto-maintained from the tasks (all `done` → `done`; any `in-progress` →
@@ -70,10 +75,11 @@ filtering, and done-hiding still key on the manual `status`. How the individual
 task statuses are visualized (e.g. colored dots) is left to the web TODO drawer.
 
 Tasks can also carry an optional **`phase`** number (`--phase N` on add, or
-`todo task phase <item> <i> <N>`). Tasks auto-sort by phase — phase 1, 2, … then
-unphased — so you can stage an item's work and read it back in order; the `[i]`
-indices follow the sorted order. (The item-level `super-phase` field is a
-separate, passive cross-item grouping; phasing the *work* lives in child tasks.)
+`todo task phase <item> <id> <N>`). Tasks auto-sort by phase — phase 1, 2, … then
+unphased — so you can stage an item's work and read it back in order; a task's
+`[id]` stays constant no matter where the sort places it. (The item-level
+`super-phase` field is a separate, passive cross-item grouping; phasing the
+*work* lives in child tasks.)
 
 ## Usage
 
@@ -93,14 +99,14 @@ todo defer  <query>              # → deferred
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note
-todo notes  <query>              # list notes with indices
-todo unnote <query> <index>      # remove note #index
-todo tasks  <query>              # list an item's child tasks with indices
+todo notes  <query>              # list notes with their [id]s
+todo unnote <query> <id>         # remove note by id
+todo tasks  <query>              # list an item's child tasks with their [id]s
 todo task add <query> "<title>" [--phase N]   # add a child task (status: todo)
-todo task start  <query> <i>     # task → in-progress (triage/review/block/defer/done/reopen too)
-todo task status <query> <i> <S> # set a task's status explicitly
-todo task phase  <query> <i> <N> # set/clear a task's phase (N, or "none")
-todo task rm <query> <i>         # remove task #i
+todo task start  <query> <id>    # task → in-progress (triage/review/block/defer/done/reopen too)
+todo task status <query> <id> <S> # set a task's status explicitly
+todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
+todo task rm <query> <id>        # remove task by id
 todo add    "<title>"            # add a new item
 todo archive                     # move done items to ARCHIVE/TODO/
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
@@ -157,15 +163,17 @@ todos:
     super-phase: null         # optional cross-item grouping (passive)
     created: 2026-06-23T17:41:40.683Z
     completed: null           # ISO timestamp once done, else null
-    notes:                    # running notes; multi-line notes become `|` blocks
-      - first finding
-      - |-
-        a longer
-        multi-line note
+    notes:                    # running notes; each has a constant per-item id
+      - id: 1
+        text: first finding
+      - id: 2
+        text: |-             # multi-line text stays a `|` block literal
+          a longer
+          multi-line note
     calc-status: in-progress  # DERIVED from tasks; omitted when there are none
-    tasks:                    # child tasks, each with its own status (+ optional phase)
-      - {title: split status.py, status: done, phase: 1}
-      - {title: rollup render, status: in-progress, phase: 2}
+    tasks:                    # child tasks, each with its own id + status (+ optional phase)
+      - {id: 1, title: split status.py, status: done, phase: 1}
+      - {id: 2, title: rollup render, status: in-progress, phase: 2}
 ```
 
 Other keys (`description`, `acceptance`, `subtasks`, `depends_on`, …) are
