@@ -91,8 +91,8 @@ def cmd_note(file: Path, args) -> None:
     text = " ".join(args.text).strip()
     if not text:
         die("Missing note text.", 2)
-    store.update_todo(file, it["id"], {"notes": [*it["notes"], text]})
-    print(f'{it["id"]}: added note [{len(it["notes"])}]')
+    new_id = store.add_note(file, it["id"], text)
+    print(f'{it["id"]}: added note [{new_id}]')
 
 
 def cmd_notes(file: Path, args) -> None:
@@ -100,24 +100,27 @@ def cmd_notes(file: Path, args) -> None:
     if not it["notes"]:
         print("(no notes)")
         return
-    for i, n in enumerate(it["notes"]):
-        print(f"[{i}] " + str(n).replace("\n", "\n    "))
+    for n in it["notes"]:
+        print(f'[{n["id"]}] ' + str(n["text"]).replace("\n", "\n    "))
 
 
 def cmd_unnote(file: Path, args) -> None:
     it = store.resolve_item(file, args.query)
-    idx = args.index
-    if idx < 0 or idx >= len(it["notes"]):
-        die(f"Bad index {idx} (have {len(it['notes'])} notes).", 2)
-    nxt = list(it["notes"])
-    del nxt[idx]
-    store.update_todo(file, it["id"], {"notes": nxt})
-    print(f'{it["id"]}: removed note [{idx}]')
+    _note_id(it, args.id)
+    store.remove_note(file, it["id"], args.id)
+    print(f'{it["id"]}: removed note [{args.id}]')
 
 
-def _task_index(it, idx: int) -> None:
-    if idx < 0 or idx >= len(it["tasks"]):
-        die(f"Bad task index {idx} (have {len(it['tasks'])} tasks).", 2)
+def _note_id(it, note_id: int) -> None:
+    if not any(n["id"] == note_id for n in it["notes"]):
+        ids = ", ".join(str(n["id"]) for n in it["notes"]) or "none"
+        die(f"No note with id {note_id} (have: {ids}).", 2)
+
+
+def _task_id(it, task_id: int) -> None:
+    if not any(t["id"] == task_id for t in it["tasks"]):
+        ids = ", ".join(str(t["id"]) for t in it["tasks"]) or "none"
+        die(f"No task with id {task_id} (have: {ids}).", 2)
 
 
 def cmd_tasks(file: Path, args) -> None:
@@ -129,9 +132,9 @@ def cmd_task_add(file: Path, args) -> None:
     title = " ".join(args.title).strip()
     if not title:
         die('Missing title. Usage: todo task add <item> "<title>"', 2)
-    store.add_task(file, it["id"], title, args.phase)
+    new_id = store.add_task(file, it["id"], title, args.phase)
     where = f" (phase {args.phase})" if args.phase is not None else ""
-    print(f'{it["id"]}: added task [{len(it["tasks"])}] {title}{where}')
+    print(f'{it["id"]}: added task [{new_id}] {title}{where}')
 
 
 def _parse_phase(value: str):
@@ -147,37 +150,37 @@ def _parse_phase(value: str):
 
 def cmd_task_phase(file: Path, args) -> None:
     it = store.resolve_item(file, args.query)
-    _task_index(it, args.index)
+    _task_id(it, args.id)
     phase = _parse_phase(args.value)
-    store.set_task_phase(file, it["id"], args.index, phase)
+    store.set_task_phase(file, it["id"], args.id, phase)
     label = f"phase {phase}" if phase is not None else "no phase"
-    print(f'{it["id"]}: task [{args.index}] → {label}')
+    print(f'{it["id"]}: task [{args.id}] → {label}')
 
 
-def _set_task_status(file: Path, query: str, index: int, status: str) -> None:
+def _set_task_status(file: Path, query: str, task_id: int, status: str) -> None:
     if status not in STATUSES:
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
     it = store.resolve_item(file, query)
-    _task_index(it, index)
-    store.set_task_status(file, it["id"], index, status)
+    _task_id(it, task_id)
+    store.set_task_status(file, it["id"], task_id, status)
     nxt = store.resolve_item(file, it["id"])
     calc = nxt["calc_status"] or "—"
-    print(f'{it["id"]}: task [{index}] → {status}  (calc-status: {calc})')
+    print(f'{it["id"]}: task [{task_id}] → {status}  (calc-status: {calc})')
 
 
 def cmd_task_status(file: Path, args) -> None:
-    _set_task_status(file, args.query, args.index, args.status)
+    _set_task_status(file, args.query, args.id, args.status)
 
 
 def cmd_task_shortcut(file: Path, args) -> None:
-    _set_task_status(file, args.query, args.index, SHORTCUTS[args.taskcmd])
+    _set_task_status(file, args.query, args.id, SHORTCUTS[args.taskcmd])
 
 
 def cmd_task_rm(file: Path, args) -> None:
     it = store.resolve_item(file, args.query)
-    _task_index(it, args.index)
-    store.remove_task(file, it["id"], args.index)
-    print(f'{it["id"]}: removed task [{args.index}]')
+    _task_id(it, args.id)
+    store.remove_task(file, it["id"], args.id)
+    print(f'{it["id"]}: removed task [{args.id}]')
 
 
 def cmd_add(file: Path, args) -> None:
@@ -306,9 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.set_defaults(func=cmd_notes)
 
-    p = sub.add_parser("unnote", parents=[common], help="remove note #index")
+    p = sub.add_parser("unnote", parents=[common], help="remove note by id")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("index", type=int, help="note index (see `todo notes`)")
+    p.add_argument("id", type=int, help="note id (see `todo notes`)")
     p.set_defaults(func=cmd_unnote)
 
     p = sub.add_parser("tasks", parents=[common], help="list an item's child tasks")
@@ -327,25 +330,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     tph = tsub.add_parser("phase", parents=[common], help="set/clear a task's phase")
     tph.add_argument("query", help="id or part of a title")
-    tph.add_argument("index", type=int, help="task index (see `todo tasks`)")
+    tph.add_argument("id", type=int, help="task id (see `todo tasks`)")
     tph.add_argument("value", help='phase number, or "none" to clear')
     tph.set_defaults(func=cmd_task_phase)
 
     tst = tsub.add_parser("status", parents=[common], help="set a task's status explicitly")
     tst.add_argument("query", help="id or part of a title")
-    tst.add_argument("index", type=int, help="task index (see `todo tasks`)")
+    tst.add_argument("id", type=int, help="task id (see `todo tasks`)")
     tst.add_argument("status", choices=STATUSES, help="new status")
     tst.set_defaults(func=cmd_task_status)
 
     trm = tsub.add_parser("rm", parents=[common], help="remove a task")
     trm.add_argument("query", help="id or part of a title")
-    trm.add_argument("index", type=int, help="task index (see `todo tasks`)")
+    trm.add_argument("id", type=int, help="task id (see `todo tasks`)")
     trm.set_defaults(func=cmd_task_rm)
 
     for name, helptext in SHORTCUT_HELP.items():
         tv = tsub.add_parser(name, parents=[common], help=f"task {helptext}")
         tv.add_argument("query", help="id or part of a title")
-        tv.add_argument("index", type=int, help="task index (see `todo tasks`)")
+        tv.add_argument("id", type=int, help="task id (see `todo tasks`)")
         tv.set_defaults(func=cmd_task_shortcut)
 
     p = sub.add_parser("add", parents=[common], help="add a new item")

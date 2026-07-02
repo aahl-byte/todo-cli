@@ -81,11 +81,12 @@ def test_link_then_mutation_preserves_meta(tmp_path):
     link.link(local, None)
 
     store.update_todo(local, "foo", {"status": "done"}, "2026-06-27T00:00:00.000Z")
-    store.update_todo(local, "foo", {"notes": ["through the link"]})
+    store.add_note(local, "foo", "through the link")
 
     meta = link._meta_of(local.resolve())
     assert meta["linked_from"] == str(repo)          # survived two mutations
-    assert store.resolve_item(local, "foo")["notes"] == ["through the link"]
+    notes = store.resolve_item(local, "foo")["notes"]
+    assert [n["text"] for n in notes] == ["through the link"]
 
 
 def test_link_name_collision_with_different_repo_suffixes(tmp_path):
@@ -127,7 +128,8 @@ def test_unlink_round_trips_content(tmp_path):
     assert not local.is_symlink()
     text = local.read_text()
     assert "meta:" not in text and "Linked store" not in text
-    assert store.resolve_item(local, "foo")["notes"] == ["keep me"]
+    notes = store.resolve_item(local, "foo")["notes"]
+    assert [n["text"] for n in notes] == ["keep me"]
     # the now-empty store dir is cleaned up
     assert not (link.global_root() / "repo").exists()
 

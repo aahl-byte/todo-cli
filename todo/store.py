@@ -27,9 +27,27 @@ def _find_node(seq, item_id: str):
     return None
 
 
+def _assign_ids(items: list) -> list:
+    """Ensure every task/note carries a constant per-item id. Items that already
+    have one keep it; those missing one (legacy entries, or freshly parsed) are
+    filled deterministically by position with the next free serial (max seen so
+    far + 1). Deterministic for a fixed input, so on-the-fly ids for an
+    un-migrated file stay consistent across reads and match what gets persisted
+    on the next mutation."""
+    used = {it["id"] for it in items if it.get("id") is not None}
+    nxt = max(used) + 1 if used else 1
+    for it in items:
+        if it.get("id") is None:
+            while nxt in used:
+                nxt += 1
+            it["id"] = nxt
+            used.add(nxt)
+            nxt += 1
+    return items
+
+
 def _to_item(node) -> dict:
-    notes_raw = node.get("notes")
-    notes = [to_str(n) for n in notes_raw] if isinstance(notes_raw, list) else []
+    notes = _notes_of(node)
     tasks = _tasks_of(node)
     calc = node.get("calc-status")
     super_phase = node.get("super-phase")
@@ -101,8 +119,9 @@ def add_todo(file: Path, title: str, now_iso: str):
 
 
 def update_todo(file: Path, item_id: str, patch: dict, now_iso=None) -> bool:
-    """Patch status/notes/priority/type on an item. `now_iso` stamps `completed`
-    when status flips to done and clears it when status leaves done."""
+    """Patch status/priority/type on an item. `now_iso` stamps `completed` when
+    status flips to done and clears it when status leaves done. (Notes and tasks
+    have their own id-based CRUD — see add_note/remove_note and the task fns.)"""
     y, data = yamlio.load_or_empty(file)
     seq = _seq(data)
     if seq is None:
@@ -117,14 +136,76 @@ def update_todo(file: Path, item_id: str, patch: dict, now_iso=None) -> bool:
             node["completed"] = now_iso
         elif patch["status"] != "done" and was == "done":
             node["completed"] = None
-    if isinstance(patch.get("notes"), list):
-        node["notes"] = yamlio.notes_node(patch["notes"])
     if isinstance(patch.get("priority"), str):
         node["priority"] = patch["priority"]
     if isinstance(patch.get("type"), str):
         node["type"] = patch["type"]
     yamlio.save(y, file, data)
     return True
+
+
+# ── notes CRUD (id-addressed) ─────────────────────────────────────────────────
+def _mutate_notes(file: Path, item_id: str, transform):
+    """Load fresh, hand the item's `{id, text}` note list to `transform` (mutates
+    in place), rewrite it as block maps, save. Returns transform's return value
+    (or False if the item is missing). Notes have no phase/calc — simpler than
+    the task path."""
+    y, data = yamlio.load_or_empty(file)
+    seq = _seq(data)
+    if seq is None:
+        return False
+    node = _find_node(seq, item_id)
+    if node is None:
+        return False
+    notes = _notes_of(node)
+    result = transform(notes)
+    node["notes"] = yamlio.notes_node(notes)
+    yamlio.save(y, file, data)
+    return result
+
+
+def add_note(file: Path, item_id: str, text: str):
+    """Append a note with a fresh per-item id (max existing + 1). Returns the new
+    id, or None if the item is missing."""
+    def _add(notes):
+        ids = [n["id"] for n in notes if n.get("id") is not None]
+        new_id = max(ids) + 1 if ids else 1
+        notes.append({"id": new_id, "text": text})
+        return new_id
+    result = _mutate_notes(file, item_id, _add)
+    return result if result is not False else None
+
+
+def remove_note(file: Path, item_id: str, note_id: int) -> bool:
+    """Remove the note with this id. Returns True if one was removed."""
+    def _rm(notes):
+        for i, n in enumerate(notes):
+            if n["id"] == note_id:
+                del notes[i]
+                return True
+        return False
+    return _mutate_notes(file, item_id, _rm) is True
+
+
+# ── notes ───────────────────────────────────────────────────────────────────
+def _id_of(x) -> int | None:
+    v = x.get("id")
+    return int(v) if v not in (None, "") else None
+
+
+def _notes_of(node) -> list:
+    """Read notes as `{id, text}` dicts. Both the current block-map form and the
+    legacy plain-scalar form are accepted; scalars come back with `id: None` and
+    get a serial assigned by `_assign_ids` (persisted on the next note mutation)."""
+    raw = node.get("notes")
+    if not isinstance(raw, list):
+        return []
+    notes = [
+        {"id": _id_of(n), "text": to_str(n.get("text"))} if isinstance(n, dict)
+        else {"id": None, "text": to_str(n)}
+        for n in raw
+    ]
+    return _assign_ids(notes)
 
 
 # ── child tasks ─────────────────────────────────────────────────────────────
@@ -137,14 +218,16 @@ def _tasks_of(node) -> list:
     raw = node.get("tasks")
     if not isinstance(raw, list):
         return []
-    return [
+    tasks = [
         {
+            "id": _id_of(t),
             "title": to_str(t.get("title")),
             "status": to_str(t.get("status")) or "todo",
             "phase": _task_phase(t),
         }
         for t in raw if isinstance(t, dict)
     ]
+    return _assign_ids(tasks)
 
 
 def _sort_tasks(tasks) -> list:
@@ -167,10 +250,10 @@ def _write_tasks(node, tasks) -> None:
         node["calc-status"] = calc
 
 
-def _mutate_tasks(file: Path, item_id: str, transform) -> bool:
+def _mutate_tasks(file: Path, item_id: str, transform):
     """Load fresh, find the item, hand its task list to `transform` (which
-    mutates it in place), then rewrite + recompute + save. Returns False if the
-    item doesn't exist."""
+    mutates it in place), then rewrite + recompute + save. Returns `transform`'s
+    return value on success, or False if the item doesn't exist."""
     y, data = yamlio.load_or_empty(file)
     seq = _seq(data)
     if seq is None:
@@ -179,41 +262,53 @@ def _mutate_tasks(file: Path, item_id: str, transform) -> bool:
     if node is None:
         return False
     tasks = _tasks_of(node)
-    transform(tasks)
+    result = transform(tasks)
     _write_tasks(node, tasks)
     yamlio.save(y, file, data)
-    return True
+    return result
 
 
-def add_task(file: Path, item_id: str, title: str, phase: int | None = None) -> bool:
+def add_task(file: Path, item_id: str, title: str, phase: int | None = None):
+    """Append a task with a fresh per-item id (max existing + 1). Returns the new
+    id, or None if the title is empty or the item is missing."""
     t = title.strip()
     if not t:
-        return False
-    return _mutate_tasks(
-        file, item_id,
-        lambda tasks: tasks.append({"title": t, "status": "todo", "phase": phase}),
-    )
+        return None
+    def _add(tasks):
+        ids = [x["id"] for x in tasks if x.get("id") is not None]
+        new_id = max(ids) + 1 if ids else 1
+        tasks.append({"id": new_id, "title": t, "status": "todo", "phase": phase})
+        return new_id
+    result = _mutate_tasks(file, item_id, _add)
+    return result if result is not False else None
 
 
-def set_task_status(file: Path, item_id: str, index: int, status: str) -> bool:
+def set_task_status(file: Path, item_id: str, task_id: int, status: str) -> bool:
     def _set(tasks):
-        if 0 <= index < len(tasks):
-            tasks[index]["status"] = status
-    return _mutate_tasks(file, item_id, _set)
+        for t in tasks:
+            if t["id"] == task_id:
+                t["status"] = status
+        return True
+    return _mutate_tasks(file, item_id, _set) is True
 
 
-def set_task_phase(file: Path, item_id: str, index: int, phase: int | None) -> bool:
+def set_task_phase(file: Path, item_id: str, task_id: int, phase: int | None) -> bool:
     def _set(tasks):
-        if 0 <= index < len(tasks):
-            tasks[index]["phase"] = phase
-    return _mutate_tasks(file, item_id, _set)
+        for t in tasks:
+            if t["id"] == task_id:
+                t["phase"] = phase
+        return True
+    return _mutate_tasks(file, item_id, _set) is True
 
 
-def remove_task(file: Path, item_id: str, index: int) -> bool:
+def remove_task(file: Path, item_id: str, task_id: int) -> bool:
     def _rm(tasks):
-        if 0 <= index < len(tasks):
-            del tasks[index]
-    return _mutate_tasks(file, item_id, _rm)
+        for i, t in enumerate(tasks):
+            if t["id"] == task_id:
+                del tasks[i]
+                break
+        return True
+    return _mutate_tasks(file, item_id, _rm) is True
 
 
 def archive_todos(file: Path, stamp: str):

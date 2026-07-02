@@ -11,14 +11,14 @@ def _item(**over):
     return base
 
 
-def test_print_tasks_lists_indices(capsys):
-    it = _item(tasks=[{"title": "one", "status": "done"},
-                      {"title": "two", "status": "todo"}],
+def test_print_tasks_lists_ids(capsys):
+    it = _item(tasks=[{"id": 1, "title": "one", "status": "done"},
+                      {"id": 2, "title": "two", "status": "todo"}],
                calc_status="todo")
     render.print_tasks(it)
     out = capsys.readouterr().out
-    assert "[0]" in out and "one" in out
-    assert "[1]" in out and "two" in out
+    assert "[1]" in out and "one" in out
+    assert "[2]" in out and "two" in out
     assert "calc-status" in out
 
 
@@ -28,7 +28,7 @@ def test_print_tasks_empty(capsys):
 
 
 def test_print_item_includes_tasks_block(capsys):
-    it = _item(tasks=[{"title": "one", "status": "done"}], calc_status="done")
+    it = _item(tasks=[{"id": 1, "title": "one", "status": "done"}], calc_status="done")
     render.print_item(it)
     out = capsys.readouterr().out
     assert "tasks:" in out
@@ -48,8 +48,8 @@ def test_print_list_marks_items_with_tasks(capsys):
 
 
 def test_task_phase_column_appears_only_when_present(capsys):
-    it = _item(tasks=[{"title": "one", "status": "done", "phase": 1},
-                      {"title": "two", "status": "todo", "phase": None}])
+    it = _item(tasks=[{"id": 1, "title": "one", "status": "done", "phase": 1},
+                      {"id": 2, "title": "two", "status": "todo", "phase": None}])
     render.print_tasks(it)
     out = capsys.readouterr().out
     assert "phase 1" in out          # phased task shows its phase
@@ -57,7 +57,7 @@ def test_task_phase_column_appears_only_when_present(capsys):
 
 
 def test_no_phase_column_when_no_task_has_one(capsys):
-    it = _item(tasks=[{"title": "one", "status": "done", "phase": None}])
+    it = _item(tasks=[{"id": 1, "title": "one", "status": "done", "phase": None}])
     render.print_tasks(it)
     assert "phase" not in capsys.readouterr().out
 

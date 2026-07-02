@@ -19,8 +19,9 @@ def test_item_with_tasks_parsed(todo_file):
         "      - {title: two, status: in-progress}\n"
     )
     it = store.resolve_item(todo_file, "gamma")
+    # legacy tasks (no stored id) get serial ids assigned by position
     assert it["tasks"] == [
-        {"title": "one", "status": "done", "phase": None},
-        {"title": "two", "status": "in-progress", "phase": None},
+        {"id": 1, "title": "one", "status": "done", "phase": None},
+        {"id": 2, "title": "two", "status": "in-progress", "phase": None},
     ]
     assert it["calc_status"] == "in-progress"

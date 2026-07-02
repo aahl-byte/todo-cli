@@ -66,8 +66,8 @@ def print_item(it) -> None:
         print(f'completed: {it["completed"]}')
     if it["notes"]:
         print("notes:")
-        for i, n in enumerate(it["notes"]):
-            print(f'  [{i}] ' + str(n).replace("\n", "\n      "))
+        for n in it["notes"]:
+            print(f'  [{n["id"]}] ' + str(n["text"]).replace("\n", "\n      "))
     if it["tasks"]:
         print("tasks:")
         for line in _task_lines(it["tasks"], color):
@@ -75,20 +75,20 @@ def print_item(it) -> None:
 
 
 def _task_lines(tasks, color) -> list:
-    """One `  [i] <status> [phase N] <title>` line per task. The phase column
+    """One `  [id] <status> [phase N] <title>` line per task. The phase column
     appears only when at least one task carries a phase, so phase-less items
     render exactly as before."""
     phased = [t for t in tasks if t.get("phase") is not None]
     pw = max((len(f'phase {t["phase"]}') for t in phased), default=0)
     lines = []
-    for i, t in enumerate(tasks):
+    for t in tasks:
         cell = colorize(t["status"], f'{t["status"]:<12}', color)
         if pw:
             ptxt = f'phase {t["phase"]}' if t.get("phase") is not None else ""
             pcell = f'{ptxt:<{pw}}  '
         else:
             pcell = ""
-        lines.append(f'  [{i}] {cell} {pcell}{t["title"]}')
+        lines.append(f'  [{t["id"]}] {cell} {pcell}{t["title"]}')
     return lines
 
 

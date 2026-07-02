@@ -80,23 +80,31 @@ def save(y: YAML, file: Path, data) -> None:
 
 
 def notes_node(notes) -> CommentedSeq:
-    """Multi-line notes become YAML block literals (`|`) for readability;
-    single-line notes stay plain scalars."""
+    """Build the `notes:` sequence — one block map `{id, text}` per note, so
+    each note carries a constant per-item id that references stay stable against
+    (unlike a list index). Multi-line text keeps its `|` block literal for
+    readability; single-line text stays a plain scalar. Each note is a dict
+    `{"id": int, "text": str}`."""
     seq = CommentedSeq()
     for n in notes:
-        s = str(n)
-        seq.append(LiteralScalarString(s) if "\n" in s else s)
+        m = CommentedMap()
+        m["id"] = int(n["id"])
+        s = str(n["text"])
+        m["text"] = LiteralScalarString(s) if "\n" in s else s
+        seq.append(m)
     return seq
 
 
 def tasks_node(tasks) -> CommentedSeq:
-    """Build the `tasks:` sequence — one compact flow map `{title, status}` per
-    task, with `phase` appended only when set (keeps phase-less tasks and old
-    files byte-identical). Rebuilt wholesale on each mutation (like notes);
-    tasks don't carry inline comments, so nothing is lost."""
+    """Build the `tasks:` sequence — one compact flow map `{id, title, status}`
+    per task, with `phase` appended only when set (keeps phase-less tasks
+    byte-identical). `id` is a constant per-item serial so references survive the
+    phase re-sort. Rebuilt wholesale on each mutation (like notes); tasks don't
+    carry inline comments, so nothing is lost."""
     seq = CommentedSeq()
     for t in tasks:
         m = CommentedMap()
+        m["id"] = int(t["id"])
         m["title"] = str(t["title"])
         m["status"] = str(t["status"])
         if t.get("phase") is not None:
