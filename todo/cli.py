@@ -158,6 +158,25 @@ def cmd_task_phase(file: Path, args) -> None:
     print(f'{it["id"]}: task [{args.id}] → {label}')
 
 
+def cmd_task_move(file: Path, args) -> None:
+    it = store.resolve_item(file, args.query)
+    _task_id(it, args.id)
+    target = args.before if args.before is not None else args.after
+    if target is not None:
+        _task_id(it, target)
+        if target == args.id:
+            die(f"Task [{args.id}] can't move relative to itself.", 2)
+    phase = store.move_task(file, it["id"], args.id,
+                            before=args.before, after=args.after, bottom=args.bottom)
+    if target is not None:
+        where = f'{"before" if args.before is not None else "after"} [{target}]'
+        where += f" (phase {phase})" if phase is not None else " (no phase)"
+    else:
+        where = "bottom" if args.bottom else "top"
+        where += f" of phase {phase}" if phase is not None else " of the unphased tasks"
+    print(f'{it["id"]}: task [{args.id}] → {where}')
+
+
 def _set_task_status(file: Path, query: str, task_id: int, status: str) -> None:
     if status not in STATUSES:
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
@@ -336,6 +355,18 @@ def build_parser() -> argparse.ArgumentParser:
     tph.add_argument("id", type=int, help="task id (see `todo tasks`)")
     tph.add_argument("value", help='phase number, or "none" to clear')
     tph.set_defaults(func=cmd_task_phase)
+
+    tmv = tsub.add_parser("move", parents=[common], help="reorder a task within its phase")
+    tmv.add_argument("query", help="id or part of a title")
+    tmv.add_argument("id", type=int, help="task id (see `todo tasks`)")
+    where = tmv.add_mutually_exclusive_group()
+    where.add_argument("--before", type=int, metavar="ID",
+                       help="place it just before this task (adopting that task's phase)")
+    where.add_argument("--after", type=int, metavar="ID",
+                       help="place it just after this task (adopting that task's phase)")
+    where.add_argument("--top", action="store_true", help="first within its own phase (default)")
+    where.add_argument("--bottom", action="store_true", help="last within its own phase")
+    tmv.set_defaults(func=cmd_task_move)
 
     tst = tsub.add_parser("status", parents=[common], help="set a task's status explicitly")
     tst.add_argument("query", help="id or part of a title")

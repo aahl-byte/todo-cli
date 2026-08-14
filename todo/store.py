@@ -293,12 +293,48 @@ def set_task_status(file: Path, item_id: str, task_id: int, status: str) -> bool
 
 
 def set_task_phase(file: Path, item_id: str, task_id: int, phase: int | None) -> bool:
+    """Re-phase a task and drop it to the bottom of its new phase — its position
+    among the old phase's tasks says nothing about where it belongs among the
+    new ones. (Moving it to the end of the list suffices: the sort is stable, so
+    it lands last within its phase.)"""
     def _set(tasks):
-        for t in tasks:
+        for i, t in enumerate(tasks):
             if t["id"] == task_id:
                 t["phase"] = phase
+                tasks.append(tasks.pop(i))
+                break
         return True
     return _mutate_tasks(file, item_id, _set) is True
+
+
+def move_task(file: Path, item_id: str, task_id: int, *, before=None, after=None,
+              bottom: bool = False):
+    """Reorder a task among its phase-mates. `before`/`after` place it next to
+    another task and make it adopt that task's phase (otherwise the phase sort
+    would just undo the move); with neither, it goes to the top of its own phase,
+    or the bottom when `bottom` is set. Returns the task's phase afterwards
+    (possibly None), or False if the item is missing."""
+    def _move(tasks):
+        i = next((i for i, t in enumerate(tasks) if t["id"] == task_id), None)
+        if i is None:
+            return False
+        task = tasks.pop(i)
+        target_id = before if before is not None else after
+        if target_id is not None:
+            j = next((j for j, t in enumerate(tasks) if t["id"] == target_id), None)
+            if j is None:
+                tasks.insert(i, task)       # unknown target: put it back untouched
+                return False
+            task["phase"] = tasks[j]["phase"]
+            tasks.insert(j if before is not None else j + 1, task)
+        else:
+            peers = [j for j, t in enumerate(tasks) if t["phase"] == task["phase"]]
+            if not peers:
+                tasks.append(task)
+            else:
+                tasks.insert(peers[-1] + 1 if bottom else peers[0], task)
+        return task["phase"]
+    return _mutate_tasks(file, item_id, _move)
 
 
 def remove_task(file: Path, item_id: str, task_id: int) -> bool:
