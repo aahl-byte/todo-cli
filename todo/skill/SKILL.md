@@ -1,7 +1,7 @@
 ---
 name: todo
-version: 0.2.0
-description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred), or add/edit notes. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
+version: 0.3.0
+description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled), or add/edit notes and dev-log entries. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
 ---
 
 # TODO
@@ -36,6 +36,7 @@ Move an item along as your relationship to it changes:
 | `blocked`     | can't proceed                             | something blocks you / you stop |
 | `done`        | complete + accepted (stamps `completed`)  | review is redundant (see below) |
 | `deferred`    | parked off the main path                  | you decide not to do it now     |
+| `cancelled`   | will never be done                        | the work is abandoned      |
 
 **When you finish an item, prefer `review` over `done`.** `done` asserts the
 work is verified *and accepted* — that's the user's call, so park finished work
@@ -53,10 +54,15 @@ be redundant:
 `blocked` is a special state an item enters on demand — use it when you couldn't
 continue.
 
+`done` and `cancelled` are the terminal pair: both hide from `todo list` and both
+archive. Reach for `cancelled` when the work is abandoned — superseded, no longer
+wanted, or answered by something else — and `deferred` when you still intend to
+come back to it.
+
 ## Child tasks
 
 An item can own a list of **child tasks** — discrete units of the item, each with
-its own status from the same seven above. Use tasks (not extra top-level items,
+its own status from the same eight above. Use tasks (not extra top-level items,
 not notes) when you break an item into pieces while working it, so the list stays
 uncluttered and the item's fine-grained progress is visible.
 
@@ -65,11 +71,14 @@ uncluttered and the item's fine-grained progress is visible.
   `done` → `calc-status: done`; any `in-progress` → `in-progress`). It's
   informational; `done`/`archive`/hiding still key on the manual `status`, so you
   still flip the item to `done` yourself once it's verified.
-- **Tasks vs. notes — keep them separate.** A unit of work goes in the **task
-  section**, never in a note. Notes are for **context** — the why, the decision,
-  the gotcha, a pointer to the design doc — not a to-do list or a log of what you
-  did. If you catch yourself writing "did X, did Y" in a note, those are tasks;
-  add them as child tasks (mark them `done`) and keep the note for the reasoning.
+- **Tasks, notes and the log are three different things — keep them separate.** A
+  unit of work goes in the **task section**. Notes are for **context** — the why,
+  the decision, the gotcha, a pointer to the design doc. The **dev log**
+  (`todo log`) takes the dated trail of what you tried, what broke, and what you
+  swapped for what. If you catch yourself writing "did X, did Y" in a note, the
+  work belongs in tasks and the story belongs in the log; leave the note for the
+  reasoning. `todo get` shows every note but only the last few log entries, so
+  the log can run long without burying the context.
 - **Write notes in legible Markdown — never a wall of text.** Notes render as
   Markdown, so a note longer than one line should be *structured*, not a single
   run-on paragraph. Lead with a **bold takeaway**, break reasoning into bullets,
@@ -114,28 +123,33 @@ Run `todo` from the project root (the one with `TODO.yaml`); it defaults to
 query lists the candidates.
 
 ```
-todo list [--status S] [--all]   # list (hides done by default; --all includes done)
+todo list [--status S] [--all]   # list (hides done/cancelled; --all includes them)
 todo list -g                     # active items across all linked projects (grouped)
-todo get <query>                 # show one item in full
+todo get <query> [--log]         # show one item in full (--log: the whole dev log)
 todo triage <query>              # → in-triage  (planning)
 todo start  <query>              # → in-progress (developing)
 todo review <query>              # → review     (awaiting user review)
 todo block  <query>              # → blocked    (can't proceed)
 todo done   <query>              # → done       (stamps completed)
 todo defer  <query>              # → deferred
+todo cancel <query>              # → cancelled  (terminal like done: hidden + archived)
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note (write it as legible Markdown)
 todo notes  <query>              # list notes with their [id]s
 todo unnote <query> <id>         # remove note by id
+todo log    <query> <text...>    # append a dated dev-log entry
+todo logs   <query> [-n N]       # show the dev log, oldest first
+todo unlog  <query> <id>         # remove a log entry by id
 todo tasks  <query>              # list an item's child tasks with their [id]s
 todo task add <query> "<title>" [--phase N]   # add a child task (status: todo)
 todo task start  <query> <id>    # task → in-progress (triage/review/block/defer/done/reopen too)
 todo task status <query> <id> <S> # set a task's status explicitly
 todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
+todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order within a phase
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>"            # add a new item
-todo archive                     # move done items to ARCHIVE/TODO/
+todo archive                     # move done/cancelled items to ARCHIVE/TODO/
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
 todo unlink                      # inline the global store back into ./TODO.yaml
 todo projects                    # list all global-stored projects
@@ -172,6 +186,7 @@ todo get skill-todo                       # read what it asks for
 todo triage skill-todo                    # I'm writing the plan
 todo note skill-todo "plan in docs/plans/2026-06-23-foo.md"
 todo start skill-todo                     # I'm building it
+todo log skill-todo "ruamel re-folds long scalars — rstrip per line"
 # …work…
 todo note skill-todo "shipped in <commit>; covered by tests"
 todo review skill-todo                     # finished — hand it to the user to sign off
@@ -185,21 +200,22 @@ todo done skill-todo                       # accepted (or skip review per the ru
   it's safe to run alongside another writer editing the same file (e.g. a web UI).
   Worst case under a true simultaneous write is one clobbered edit, not
   corruption.
-- `todo list` shows every item **except** `done` (so finished work drops out of
-  the everyday view); `todo list --all` adds the `done` items back in for the
-  full picture. `--status S` narrows to a single status. (The *active-only*
+- `todo list` shows every item **except** `done` and `cancelled` (so finished
+  work drops out of the everyday view); `todo list --all` adds them back in for
+  the full picture. `--status S` narrows to a single status. (The *active-only*
   filter — `in-progress`/`blocked`/`review` — applies only to the cross-project
   `-g` view, not to plain local `list`.)
 - `done` stamps `completed` with the current ISO time; moving off `done` clears
-  it. Don't set `done` until the work is verified *and accepted* — by default
-  finished work goes to `review` first and the user moves it to `done` (see the
-  lifecycle section for the cases where going straight to `done` is fine).
+  it. `cancelled` stamps nothing — nothing was completed. Don't set `done` until
+  the work is verified *and accepted* — by default finished work goes to `review`
+  first and the user moves it to `done` (see the lifecycle section for the cases
+  where going straight to `done` is fine).
 - Notes accept **multi-line Markdown** — pass a note containing newlines (lists,
   `inline code`, fenced blocks, links) and the CLI stores it as a YAML `|` block
   literal, kept readable and byte-stable on round-trip. Single-line notes stay
   plain scalars. Reach for the multi-line form whenever a note carries more than
   one idea — a structured note is worth re-reading; a wall of text isn't.
-- Status values are free-form in the file, but stick to the seven above so any UI
+- Status values are free-form in the file, but stick to the eight above so any UI
   that colors or cycles them stays meaningful.
 - If `todo` isn't found on PATH, install the package from its source checkout:
   `pip install -e <path-to-checkout>` (run `pyenv rehash` afterward if you use
