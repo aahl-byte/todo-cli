@@ -48,6 +48,7 @@ def _assign_ids(items: list) -> list:
 
 def _to_item(node) -> dict:
     notes = _notes_of(node)
+    log = _log_of(node)
     tasks = _tasks_of(node)
     calc = node.get("calc-status")
     super_phase = node.get("super-phase")
@@ -61,6 +62,7 @@ def _to_item(node) -> dict:
         "priority": to_str(node.get("priority")) if node.get("priority") is not None else None,
         "super_phase": int(super_phase) if super_phase not in (None, "") else None,
         "notes": notes,
+        "log": log,
         "tasks": tasks,
         "calc_status": to_str(calc) if calc not in (None, "") else None,
         "created": to_str(created) if created not in (None, "") else None,
@@ -114,7 +116,7 @@ def add_todo(file: Path, title: str, now_iso: str):
     seq.append(item)
     yamlio.save(y, file, data)
     return {"id": item_id, "title": t, "type": "feature", "status": "todo",
-            "priority": "medium", "super_phase": None, "notes": [],
+            "priority": "medium", "super_phase": None, "notes": [], "log": [],
             "created": now_iso, "completed": None}
 
 
@@ -185,6 +187,59 @@ def remove_note(file: Path, item_id: str, note_id: int) -> bool:
                 return True
         return False
     return _mutate_notes(file, item_id, _rm) is True
+
+
+# ── dev log CRUD (id-addressed) ───────────────────────────────────────────────
+def _mutate_log(file: Path, item_id: str, transform):
+    """The log twin of _mutate_notes: fresh load, transform the `{id, ts, text}`
+    list in place, rewrite, save."""
+    y, data = yamlio.load_or_empty(file)
+    seq = _seq(data)
+    if seq is None:
+        return False
+    node = _find_node(seq, item_id)
+    if node is None:
+        return False
+    entries = _log_of(node)
+    result = transform(entries)
+    node["log"] = yamlio.log_node(entries)
+    yamlio.save(y, file, data)
+    return result
+
+
+def add_log(file: Path, item_id: str, text: str, now_iso: str):
+    """Append a dated log entry with a fresh per-item id. Returns the new id, or
+    None if the item is missing."""
+    def _add(entries):
+        ids = [e["id"] for e in entries if e.get("id") is not None]
+        new_id = max(ids) + 1 if ids else 1
+        entries.append({"id": new_id, "ts": now_iso, "text": text})
+        return new_id
+    result = _mutate_log(file, item_id, _add)
+    return result if result is not False else None
+
+
+def remove_log(file: Path, item_id: str, log_id: int) -> bool:
+    """Remove the log entry with this id. Returns True if one was removed."""
+    def _rm(entries):
+        for i, e in enumerate(entries):
+            if e["id"] == log_id:
+                del entries[i]
+                return True
+        return False
+    return _mutate_log(file, item_id, _rm) is True
+
+
+def _log_of(node) -> list:
+    """Read the log as `{id, ts, text}` dicts, oldest first (append order)."""
+    raw = node.get("log")
+    if not isinstance(raw, list):
+        return []
+    entries = [
+        {"id": _id_of(e), "ts": to_str(e.get("ts")), "text": to_str(e.get("text"))}
+        for e in raw if isinstance(e, dict)
+    ]
+    return _assign_ids(entries)
 
 
 # ── notes ───────────────────────────────────────────────────────────────────

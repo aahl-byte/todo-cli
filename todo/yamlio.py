@@ -95,6 +95,21 @@ def notes_node(notes) -> CommentedSeq:
     return seq
 
 
+def log_node(entries) -> CommentedSeq:
+    """Build the `log:` sequence — one block map `{id, ts, text}` per entry. Same
+    shape as a note plus the timestamp that makes the log chronological. Each
+    entry is a dict `{"id": int, "ts": str, "text": str}`."""
+    seq = CommentedSeq()
+    for e in entries:
+        m = CommentedMap()
+        m["id"] = int(e["id"])
+        m["ts"] = str(e["ts"])
+        s = str(e["text"])
+        m["text"] = LiteralScalarString(s) if "\n" in s else s
+        seq.append(m)
+    return seq
+
+
 def tasks_node(tasks) -> CommentedSeq:
     """Build the `tasks:` sequence — one compact flow map `{id, title, status}`
     per task, with `phase` appended only when set (keeps phase-less tasks

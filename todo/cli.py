@@ -70,7 +70,7 @@ def cmd_list(file: Path, args) -> None:
 
 
 def cmd_get(file: Path, args) -> None:
-    render.print_item(store.resolve_item(file, args.query))
+    render.print_item(store.resolve_item(file, args.query), full_log=args.log)
 
 
 def cmd_status(file: Path, args) -> None:
@@ -110,6 +110,32 @@ def cmd_unnote(file: Path, args) -> None:
     _note_id(it, args.id)
     store.remove_note(file, it["id"], args.id)
     print(f'{it["id"]}: removed note [{args.id}]')
+
+
+def cmd_log(file: Path, args) -> None:
+    it = store.resolve_item(file, args.query)
+    text = " ".join(args.text).strip()
+    if not text:
+        die("Missing log text.", 2)
+    new_id = store.add_log(file, it["id"], text, now())
+    print(f'{it["id"]}: added log [{new_id}]')
+
+
+def cmd_logs(file: Path, args) -> None:
+    render.print_log(store.resolve_item(file, args.query), args.n)
+
+
+def cmd_unlog(file: Path, args) -> None:
+    it = store.resolve_item(file, args.query)
+    _log_id(it, args.id)
+    store.remove_log(file, it["id"], args.id)
+    print(f'{it["id"]}: removed log [{args.id}]')
+
+
+def _log_id(it, log_id: int) -> None:
+    if not any(e["id"] == log_id for e in it["log"]):
+        ids = ", ".join(str(e["id"]) for e in it["log"]) or "none"
+        die(f"No log entry with id {log_id} (have: {ids}).", 2)
 
 
 def _note_id(it, note_id: int) -> None:
@@ -280,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
                "  todo triage skill-todo          # I'm writing the plan\n"
                "  todo start skill-todo           # I'm building it\n"
                '  todo note skill-todo "shipped in <commit>; tests pass"\n'
+               '  todo log skill-todo "swapped the regex for a parser"\n'
                "  todo done skill-todo            # finished + verified\n"
                '  todo add "NEW THING TO DO"\n'
                "  todo archive                    # move done/cancelled items to ARCHIVE/TODO/\n"
@@ -310,6 +337,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("get", parents=[common], aliases=["show"], help="show one item in full")
     p.add_argument("query", help="id or part of a title")
+    p.add_argument("--log", action="store_true",
+                   help=f"show the whole dev log (default: last {render.LOG_PREVIEW})")
     p.set_defaults(func=cmd_get)
 
     p = sub.add_parser("status", parents=[common], help="set any status explicitly")
@@ -335,6 +364,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.add_argument("id", type=int, help="note id (see `todo notes`)")
     p.set_defaults(func=cmd_unnote)
+
+    p = sub.add_parser("log", parents=[common], help="append a dev-log entry (dated)")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("text", nargs="+", help="the log text")
+    p.set_defaults(func=cmd_log)
+
+    p = sub.add_parser("logs", parents=[common], help="show an item's dev log, oldest first")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("-n", type=int, default=None, metavar="N", help="only the last N entries")
+    p.set_defaults(func=cmd_logs)
+
+    p = sub.add_parser("unlog", parents=[common], help="remove a log entry by id")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("id", type=int, help="log id (see `todo logs`)")
+    p.set_defaults(func=cmd_unlog)
 
     p = sub.add_parser("tasks", parents=[common], help="list an item's child tasks")
     p.add_argument("query", help="id or part of a title")

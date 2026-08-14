@@ -4,7 +4,7 @@ from todo import render
 def _item(**over):
     base = {
         "id": "x", "title": "X", "type": "feature", "status": "in-progress",
-        "priority": "medium", "super_phase": None, "notes": [], "tasks": [],
+        "priority": "medium", "super_phase": None, "notes": [], "log": [], "tasks": [],
         "calc_status": None, "created": None, "completed": None,
     }
     base.update(over)

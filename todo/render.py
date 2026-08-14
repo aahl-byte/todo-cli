@@ -50,7 +50,21 @@ def print_grouped(groups) -> None:
             print(_item_line(it, w, color, indent="  "))
 
 
-def print_item(it) -> None:
+LOG_PREVIEW = 3   # entries `todo get` shows before eliding the rest
+
+
+def _stamp(ts: str) -> str:
+    """`2026-08-14T15:02:11.483Z` → `2026-08-14 15:02`; anything else passes
+    through as-is."""
+    return ts[:16].replace("T", " ") if len(ts) >= 16 else ts
+
+
+def _log_lines(entries) -> list:
+    return [f'  [{e["id"]}] {_stamp(e["ts"])}  ' + str(e["text"]).replace("\n", "\n      ")
+            for e in entries]
+
+
+def print_item(it, full_log: bool = False) -> None:
     color = _use_color()
     print(f'id:        {it["id"]}')
     print(f'title:     {it["title"]}')
@@ -68,6 +82,14 @@ def print_item(it) -> None:
         print("notes:")
         for n in it["notes"]:
             print(f'  [{n["id"]}] ' + str(n["text"]).replace("\n", "\n      "))
+    if it["log"]:
+        print("log:")
+        entries = it["log"] if full_log else it["log"][-LOG_PREVIEW:]
+        hidden = len(it["log"]) - len(entries)
+        if hidden:
+            print(f'  … {hidden} earlier (todo logs {it["id"]})')
+        for line in _log_lines(entries):
+            print(line)
     if it["tasks"]:
         print("tasks:")
         for line in _task_lines(it["tasks"], color):
@@ -90,6 +112,15 @@ def _task_lines(tasks, color) -> list:
             pcell = ""
         lines.append(f'  [{t["id"]}] {cell} {pcell}{t["title"]}')
     return lines
+
+
+def print_log(it, limit=None) -> None:
+    entries = it["log"]
+    if not entries:
+        print("(no log entries)")
+        return
+    for line in _log_lines(entries[-limit:] if limit else entries):
+        print(line)
 
 
 def print_tasks(it) -> None:
