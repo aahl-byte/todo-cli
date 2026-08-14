@@ -35,3 +35,20 @@ def test_precedence_order():
 def test_some_done_rest_todo_is_todo():
     # nothing active; highest present among the precedence list is todo
     assert derive_calc_status(["done", "todo"]) == "todo"
+
+
+def test_all_cancelled():
+    assert derive_calc_status(["cancelled", "cancelled"]) == "cancelled"
+
+
+def test_cancelled_excluded_from_done_check():
+    assert derive_calc_status(["done", "cancelled"]) == "done"
+
+
+def test_cancelled_and_deferred_mix_is_deferred():
+    # nothing live, but a deferred task may still come back
+    assert derive_calc_status(["cancelled", "deferred"]) == "deferred"
+
+
+def test_cancelled_does_not_mask_live_work():
+    assert derive_calc_status(["cancelled", "in-progress"]) == "in-progress"

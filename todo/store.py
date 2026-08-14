@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from . import yamlio
-from .status import derive_calc_status
+from .status import TERMINAL, derive_calc_status
 from .util import die, to_str
 
 
@@ -312,10 +312,11 @@ def remove_task(file: Path, item_id: str, task_id: int) -> bool:
 
 
 def archive_todos(file: Path, stamp: str):
-    """Move every `done` item out of TODO.yaml into ARCHIVE/TODO/todo_<stamp>.yaml
-    (relative to TODO.yaml's dir). The archive is written FIRST, then the main
-    file is pruned — a crash between the two atomic writes duplicates the done
-    items (recoverable), never loses them. Returns (count, archive_path)."""
+    """Move every finished item — `done` or `cancelled` — out of TODO.yaml into
+    ARCHIVE/TODO/todo_<stamp>.yaml (relative to TODO.yaml's dir). The archive is
+    written FIRST, then the main file is pruned — a crash between the two atomic
+    writes duplicates the archived items (recoverable), never loses them.
+    Returns (count, archive_path)."""
     from ruamel.yaml.comments import CommentedSeq
 
     y, data = yamlio.load_or_empty(file)
@@ -323,7 +324,7 @@ def archive_todos(file: Path, stamp: str):
     if seq is None:
         return 0, None
     done_idx = [i for i, n in enumerate(seq)
-                if isinstance(n, dict) and to_str(n.get("status")) == "done"]
+                if isinstance(n, dict) and to_str(n.get("status")) in TERMINAL]
     if not done_idx:
         return 0, None
     done_nodes = [seq[i] for i in done_idx]
@@ -333,7 +334,8 @@ def archive_todos(file: Path, stamp: str):
     archive_file = archive_dir / f"todo_{safe}.yaml"
     ay = yamlio.yaml()
     adata = ay.load("todos: []\n")
-    adata.yaml_set_start_comment(f" Archived done items — moved out of TODO.yaml at {stamp}.")
+    adata.yaml_set_start_comment(
+        f" Archived done/cancelled items — moved out of TODO.yaml at {stamp}.")
     aseq = CommentedSeq()
     for node in done_nodes:                 # reuse AST nodes → inline comments survive
         aseq.append(node)

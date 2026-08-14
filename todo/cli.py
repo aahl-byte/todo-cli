@@ -24,7 +24,7 @@ from pathlib import Path
 from . import init as init_mod
 from . import link as link_mod
 from . import render, store
-from .status import ACTIVE, SHORTCUT_HELP, SHORTCUTS, STATUSES
+from .status import ACTIVE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
 
@@ -44,14 +44,15 @@ def _set_status(file: Path, query: str, status: str) -> None:
 
 def _filter_list(items, args, *, default_active: bool):
     """Apply --status / --all / default filtering to a list of items. The
-    default (no flags) is non-done locally, but the active set across projects."""
+    default (no flags) hides the terminal statuses locally, but narrows to the
+    active set across projects."""
     if args.status:
         return [it for it in items if it["status"] == args.status]
     if args.all:
         return items
     if default_active:
         return [it for it in items if it["status"] in ACTIVE]
-    return [it for it in items if it["status"] != "done"]
+    return [it for it in items if it["status"] not in TERMINAL]
 
 
 def cmd_list(file: Path, args) -> None:
@@ -197,7 +198,7 @@ def cmd_archive(file: Path, args) -> None:
     _require_file(file)
     count, path = store.archive_todos(file, now())
     if count == 0:
-        print("Nothing to archive (no done items).")
+        print("Nothing to archive (no done/cancelled items).")
     else:
         try:
             shown = path.relative_to(Path.cwd())
@@ -249,11 +250,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="lifecycle:\n"
                "  todo → in-triage (planning) → in-progress (developing) → done\n"
                "  `review` awaits user review, `blocked` can't proceed,\n"
-               "  `deferred` parks an item off the main path.\n\n"
+               "  `deferred` parks an item off the main path,\n"
+               "  `cancelled` means it will never happen.\n\n"
                "<query> matches an id or part of a title, case-insensitively\n"
                "(exact id → exact title → substring); ambiguous queries list candidates.\n\n"
                "examples:\n"
-               "  todo list                       # open items (hides done)\n"
+               "  todo list                       # open items (hides done/cancelled)\n"
                "  todo list -g                    # active items across all linked projects\n"
                "  todo get skill-todo             # show one item in full\n"
                "  todo triage skill-todo          # I'm writing the plan\n"
@@ -261,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
                '  todo note skill-todo "shipped in <commit>; tests pass"\n'
                "  todo done skill-todo            # finished + verified\n"
                '  todo add "NEW THING TO DO"\n'
-               "  todo archive                    # move done items to ARCHIVE/TODO/\n"
+               "  todo archive                    # move done/cancelled items to ARCHIVE/TODO/\n"
                "  todo init                       # install the todo skill on this machine\n\n"
                "Defaults to ./TODO.yaml; pass --file to point elsewhere.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -278,9 +280,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    p = sub.add_parser("list", parents=[common], aliases=["ls"], help="list items (hides done by default)")
+    p = sub.add_parser("list", parents=[common], aliases=["ls"],
+                       help="list items (hides done/cancelled by default)")
     p.add_argument("--status", metavar="S", help="only items with this status")
-    p.add_argument("--all", action="store_true", help="include done items")
+    p.add_argument("--all", action="store_true", help="include done/cancelled items")
     p.add_argument("-g", "--all-projects", action="store_true",
                    help="aggregate active items across every linked project "
                         "(grouped by project; defaults to in-progress/blocked/review)")
@@ -355,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("title", nargs="+", help="the item title")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("archive", parents=[common], help="move done items to ARCHIVE/TODO/")
+    p = sub.add_parser("archive", parents=[common], help="move done/cancelled items to ARCHIVE/TODO/")
     p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("link", parents=[common],

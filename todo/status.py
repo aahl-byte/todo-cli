@@ -9,13 +9,19 @@ drawer colors and the click-to-cycle ring stay meaningful.
 Lifecycle:
     todo → in-triage (planning) → in-progress (developing) → done
 `review` parks an item awaiting user review, `blocked` an item that can't
-proceed, and `deferred` an item pushed off the main path.
+proceed, `deferred` an item pushed off the main path, and `cancelled` one that
+will never be done.
 """
 
 # Order is the click-to-cycle ring order. `review`/`blocked` are special states
 # an item enters on demand rather than flowing through, but they're first-class
 # valid statuses everywhere.
-STATUSES = ["todo", "in-triage", "in-progress", "review", "blocked", "deferred", "done"]
+STATUSES = ["todo", "in-triage", "in-progress", "review", "blocked", "deferred",
+            "cancelled", "done"]
+
+# Finished with, one way or the other: hidden from the everyday `todo list` and
+# swept up by `todo archive`.
+TERMINAL = ["done", "cancelled"]
 
 # The "active" set — items actually in motion right now. Drives the default of
 # the cross-project view (`todo list -g`): what's on my plate across every repo,
@@ -29,6 +35,7 @@ SHORTCUTS = {
     "review": "review",
     "block": "blocked",
     "defer": "deferred",
+    "cancel": "cancelled",
     "done": "done",
     "reopen": "todo",
 }
@@ -40,6 +47,7 @@ SHORTCUT_HELP = {
     "review": "→ review (awaiting user review)",
     "block": "→ blocked (can't proceed)",
     "defer": "→ deferred",
+    "cancel": "→ cancelled (never going to happen)",
     "done": "→ done (stamps completed)",
     "reopen": "→ todo",
 }
@@ -53,6 +61,7 @@ _COLORS = {
     "review": "35",        # purple/magenta
     "blocked": "31",       # red
     "deferred": "90",      # bright black (dim)
+    "cancelled": "2;31",   # dim red
     "done": "32",          # green
 }
 
@@ -67,25 +76,30 @@ def colorize(status: str, text: str, enabled: bool) -> str:
 
 
 # Precedence for the DERIVED parent scalar (calc-status), highest first.
-# `done` (all non-deferred done) and `deferred` (all deferred) are handled
-# separately; this list ranks the in-flight states.
+# `done` (all live tasks done) and the all-parked cases are handled separately;
+# this list ranks the in-flight states.
 CALC_PRECEDENCE = ["in-progress", "blocked", "review", "in-triage", "todo"]
+
+# Parked children — excluded from the completion math, since work nobody intends
+# to do shouldn't hold the parent short of `done`.
+PARKED = ["deferred", "cancelled"]
 
 
 def derive_calc_status(task_statuses):
     """Roll a list of child task statuses up to one scalar, or None when there
-    are no tasks. `deferred` children are excluded from the completion math: an
-    item is `done` only when every non-deferred task is done; if every task is
-    deferred the item is `deferred`; otherwise it's the highest-ranked state
-    present (see CALC_PRECEDENCE)."""
+    are no tasks. `deferred`/`cancelled` children are excluded from the
+    completion math: an item is `done` only when every live task is done. With
+    no live tasks left it's `cancelled` if every task was cancelled, else
+    `deferred` (something is still parked and may come back). Otherwise it's the
+    highest-ranked state present (see CALC_PRECEDENCE)."""
     if not task_statuses:
         return None
-    non_deferred = [s for s in task_statuses if s != "deferred"]
-    if not non_deferred:
-        return "deferred"
-    if all(s == "done" for s in non_deferred):
+    live = [s for s in task_statuses if s not in PARKED]
+    if not live:
+        return "cancelled" if all(s == "cancelled" for s in task_statuses) else "deferred"
+    if all(s == "done" for s in live):
         return "done"
     for s in CALC_PRECEDENCE:
-        if s in non_deferred:
+        if s in live:
             return s
     return "todo"
