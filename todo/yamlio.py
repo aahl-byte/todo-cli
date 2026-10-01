@@ -14,6 +14,7 @@ shape changes.
 
 import io
 import os
+import re
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -83,6 +84,11 @@ def save(y: YAML, file: Path, data) -> None:
     write_atomic(file, dump(y, data))
 
 
+# Titles left unquoted in a flow map. Anything else is quoted: the C loader
+# (YAML 1.1) rejects plain flow scalars that ruamel's emitter (YAML 1.2) allows.
+_PLAIN_TITLE = re.compile(r"^[A-Za-z0-9][\w .\-/()]*$")
+
+
 def tasks_doc(tasks) -> CommentedMap:
     """Build a TASKS.yaml document — `tasks:` with one compact flow map
     `{id, title, status}` per task. The phase lives in the directory name."""
@@ -91,8 +97,7 @@ def tasks_doc(tasks) -> CommentedMap:
         m = CommentedMap()
         m["id"] = int(t["id"])
         title = str(t["title"])
-        # A bare `a:b` is valid YAML 1.2 in a flow map but not to the C loader.
-        m["title"] = SingleQuotedScalarString(title) if ":" in title else title
+        m["title"] = title if _PLAIN_TITLE.match(title) else SingleQuotedScalarString(title)
         m["status"] = str(t["status"])
         m.fa.set_flow_style()
         seq.append(m)

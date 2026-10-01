@@ -137,7 +137,7 @@ def migrate_file(legacy: Path, root: Path, backup: Path) -> int:
         else:
             dest = backup / f.relative_to(legacy.parent)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(f, dest)
+            shutil.move(os.fspath(f), os.fspath(dest))   # may cross devices
     for d in (archive_dir, archive_dir.parent):
         try:
             d.rmdir()

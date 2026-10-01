@@ -1,3 +1,5 @@
+import pytest
+
 from todo import yamlio
 
 
@@ -17,8 +19,15 @@ def test_tasks_doc_empty():
     assert list(yamlio.tasks_doc([])["tasks"]) == []
 
 
-def test_tasks_doc_quotes_colons_so_the_fast_reader_parses_it(tmp_path):
+@pytest.mark.parametrize("title", [
+    "E2E vs real node:20-slim " + "x" * 60,
+    "is it possible to not trigger the phone keyboard when clicking a macro key?",
+    "phase keeps setting itself to -1 or s 1 when clearing...? default to null",
+    "make it black;, then shift it left so it centers over the border of the panel",
+    "#hash, [brackets] {braces} & 'quotes' \"double\" ’curly’ | pipe > gt",
+])
+def test_tasks_doc_titles_parse_with_the_fast_reader(tmp_path, title):
     f = tmp_path / "TASKS.yaml"
     f.write_text(yamlio.dump(yamlio.yaml(), yamlio.tasks_doc(
-        [{"id": 1, "title": "E2E vs real node:20-slim " + "x" * 60, "status": "done"}])))
-    assert yamlio.read(f)["tasks"][0]["title"].startswith("E2E vs real node:20-slim")
+        [{"id": 1, "title": title, "status": "done"}])))
+    assert yamlio.read(f)["tasks"][0]["title"] == title
