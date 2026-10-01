@@ -18,6 +18,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import SingleQuotedScalarString
 
 
 def yaml() -> YAML:
@@ -89,7 +90,9 @@ def tasks_doc(tasks) -> CommentedMap:
     for t in tasks:
         m = CommentedMap()
         m["id"] = int(t["id"])
-        m["title"] = str(t["title"])
+        title = str(t["title"])
+        # A bare `a:b` is valid YAML 1.2 in a flow map but not to the C loader.
+        m["title"] = SingleQuotedScalarString(title) if ":" in title else title
         m["status"] = str(t["status"])
         m.fa.set_flow_style()
         seq.append(m)

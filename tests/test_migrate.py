@@ -62,6 +62,15 @@ def test_log_timestamps_survive_and_notes_take_created(tmp_path):
     assert log == [{"id": 1, "ts": "2026-05-02T09:10:11.123Z", "text": "did"}]
 
 
+def test_flow_style_items_are_written_as_block_maps(tmp_path):
+    body = ("todos: [{id: a, title: a long title that wraps past the eighty column limit of the dumper,\n"
+            "    status: todo, created: 2026-05-01T08:00:00.000Z}]\n")
+    root = migrate.migrate_repo(_project(tmp_path, body))
+    meta = (root / "OPEN" / "a" / "TODO.yaml").read_text()
+    assert meta.startswith("id: a\n")
+    assert store.list_todos(root)[0]["title"].startswith("a long title")
+
+
 def test_crashed_partial_migration_is_rebuilt(tmp_path):
     project = _project(tmp_path, SAMPLE)
     (project / ".TODO.migrating" / "OPEN" / "junk").mkdir(parents=True)

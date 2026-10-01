@@ -87,6 +87,7 @@ def _write_item(tmp: Path, node, folder: str, taken: set) -> None:
     for k in ITEM_LISTS:                    # the remaining node keeps its comments
         node.pop(k, None)
     node["id"] = item_id
+    node.fa.set_block_style()               # a flow-style legacy item would not parse alone
     yamlio.save(yamlio.yaml(), item_dir / store.ITEM_FILE, node)
 
     for sub, entries in ((store.NOTES_DIR, notes), (store.LOG_DIR, log)):
