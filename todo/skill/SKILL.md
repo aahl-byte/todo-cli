@@ -1,17 +1,19 @@
 ---
 name: todo
-version: 0.3.0
-description: Use when reading, updating, or tracking work in a project's structured TODO.yaml — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled), or add/edit notes and dev-log entries. Use whenever you start, plan, or finish a tracked task so the file stays the source of truth.
+version: 0.4.0
+description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled), or add/edit notes and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
 # TODO
 
 ## Overview
 
-Some projects track work in a structured `TODO.yaml` at the repo root, managed by
-the **`todo`** CLI (a real command on PATH). The file is a precious, comment-rich
-planning artifact — **edit it through the CLI, not by hand**, so comments and
-structure are preserved and writes stay atomic.
+Some projects track work in a structured `.TODO/` directory at the repo root,
+managed by the **`todo`** CLI (a real command on PATH). Each item is a directory
+of small files — its fields, task phases, notes and dev log. The store is a
+precious planning artifact — **edit it through the CLI, not by hand**, so ids,
+folders and comments stay consistent and writes stay atomic. A legacy
+single-file `TODO.yaml` is converted to `.TODO/` the first time `todo` runs.
 
 **Core principle:** keep the item's status honest as you work — flip it the
 moment you change what you're doing, and leave a note when you learn something.
@@ -54,8 +56,9 @@ be redundant:
 `blocked` is a special state an item enters on demand — use it when you couldn't
 continue.
 
-`done` and `cancelled` are the terminal pair: both hide from `todo list` and both
-archive. Reach for `cancelled` when the work is abandoned — superseded, no longer
+`done` and `cancelled` are the terminal pair: both hide from `todo list`.
+`cancelled` items move to `.TODO/CANCELLED/` at once; `done` items move to
+`.TODO/ARCHIVED/` when `todo archive` runs. Reach for `cancelled` when the work is abandoned — superseded, no longer
 wanted, or answered by something else — and `deferred` when you still intend to
 come back to it.
 
@@ -83,9 +86,8 @@ uncluttered and the item's fine-grained progress is visible.
   Markdown, so a note longer than one line should be *structured*, not a single
   run-on paragraph. Lead with a **bold takeaway**, break reasoning into bullets,
   put `` `inline code` `` around identifiers/paths/commands, link with
-  `[text](url)`, and separate distinct thoughts with a blank line. Multi-line
-  notes are stored as a YAML `|` block literal, so this structure survives
-  round-trips verbatim. For example, prefer:
+  `[text](url)`, and separate distinct thoughts with a blank line. Each note is
+  stored as its own Markdown file, verbatim. For example, prefer:
 
   ```markdown
   **Auth must stay backward-compatible** — old tokens lack the `scope` claim.
@@ -117,8 +119,8 @@ uncluttered and the item's fine-grained progress is visible.
 
 ## Commands
 
-Run `todo` from the project root (the one with `TODO.yaml`); it defaults to
-`./TODO.yaml`. `<query>` matches an id or part of a title, **case-insensitively**
+Run `todo` from the project root (the one with `.TODO/`); it defaults to
+`./.TODO`. `<query>` matches an id or part of a title, **case-insensitively**
 — `SKILL-TODO`, `skill-todo`, and `skill` all resolve the same item; an ambiguous
 query lists the candidates.
 
@@ -132,7 +134,7 @@ todo review <query>              # → review     (awaiting user review)
 todo block  <query>              # → blocked    (can't proceed)
 todo done   <query>              # → done       (stamps completed)
 todo defer  <query>              # → deferred
-todo cancel <query>              # → cancelled  (terminal like done: hidden + archived)
+todo cancel <query>              # → cancelled  (terminal like done: hidden, filed in CANCELLED/)
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note (write it as legible Markdown)
@@ -149,35 +151,33 @@ todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order within a phase
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>"            # add a new item
-todo archive                     # move done/cancelled items to ARCHIVE/TODO/
+todo archive                     # move done items to .TODO/ARCHIVED/
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
-todo unlink                      # inline the global store back into ./TODO.yaml
+todo unlink                      # move the global store back into ./.TODO
 todo projects                    # list all global-stored projects
 todo init                        # install this skill on a fresh machine
 ```
 
 ### Global store (opt-in)
 
-By default `./TODO.yaml` is a committed, in-repo artifact — that's the norm and
-usually what you want. `todo link` instead moves an item's todos to
-`~/.todo/projects/<key>/TODO.yaml` and replaces `./TODO.yaml` with a **symlink**
-to it (and gitignores it). Reads and writes follow the link transparently, so the
-CLI works unchanged. Use it when a repo can't host a committed
-`TODO.yaml`, or when **git worktrees** should share one list instead of each
-checkout carrying its own — a worktree with no local `TODO.yaml` resolves to the
-primary checkout's linked store automatically. `todo unlink` reverses it (inlines
-the content back into a real file). If `os.symlink` isn't supported (e.g. Windows
-without Developer Mode), `link` prints the OS error and aborts without changing
-anything.
+By default `./.TODO` is a committed, in-repo artifact — that's the norm and
+usually what you want. `todo link` instead moves the store to
+`~/.todo/projects/<key>/.TODO` and replaces `./.TODO` with a **symlink** to it
+(and gitignores it). Reads and writes follow the link transparently, so the CLI
+works unchanged. Use it when a repo can't host a committed store, or when **git
+worktrees** should share one list instead of each checkout carrying its own — a
+worktree with no local `.TODO` resolves to the primary checkout's linked store
+automatically. `todo unlink` reverses it. If `os.symlink` isn't supported (e.g.
+Windows without Developer Mode), `link` prints the OS error and aborts without
+changing anything.
 
 `todo list -g` (`--all-projects`) gives a cross-project view: every linked
 project's **active** items (`in-progress`, `blocked`, `review`), grouped by
-project. It only sees linked projects — an unlinked in-repo `TODO.yaml` won't
+project. It only sees linked projects — an unlinked in-repo `.TODO` won't
 appear. `--status S` narrows to one status across all projects; `--all` widens
 to every item including `done`.
 
-`--file <path>` (on either side of the command) overrides the default
-`./TODO.yaml`.
+`--dir <path>` (on either side of the command) overrides the default `./.TODO`.
 
 ## Typical flow
 
@@ -196,8 +196,8 @@ todo done skill-todo                       # accepted (or skip review per the ru
 
 ## Notes & gotchas
 
-- The CLI re-reads `TODO.yaml` fresh on every mutation and writes atomically, so
-  it's safe to run alongside another writer editing the same file (e.g. a web UI).
+- The CLI re-reads each file fresh on every mutation and writes atomically, so
+  it's safe to run alongside another writer editing the same store (e.g. a web UI).
   Worst case under a true simultaneous write is one clobbered edit, not
   corruption.
 - `todo list` shows every item **except** `done` and `cancelled` (so finished
@@ -211,11 +211,10 @@ todo done skill-todo                       # accepted (or skip review per the ru
   first and the user moves it to `done` (see the lifecycle section for the cases
   where going straight to `done` is fine).
 - Notes accept **multi-line Markdown** — pass a note containing newlines (lists,
-  `inline code`, fenced blocks, links) and the CLI stores it as a YAML `|` block
-  literal, kept readable and byte-stable on round-trip. Single-line notes stay
-  plain scalars. Reach for the multi-line form whenever a note carries more than
+  `inline code`, fenced blocks, links) and the CLI stores it verbatim as a
+  Markdown file under the item's `notes/`. Reach for the multi-line form whenever a note carries more than
   one idea — a structured note is worth re-reading; a wall of text isn't.
-- Status values are free-form in the file, but stick to the eight above so any UI
+- Status values are free-form in the item's `TODO.yaml`, but stick to the eight above so any UI
   that colors or cycles them stays meaningful.
 - If `todo` isn't found on PATH, install the package from its source checkout:
   `pip install -e <path-to-checkout>` (run `pyenv rehash` afterward if you use

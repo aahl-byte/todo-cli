@@ -1,13 +1,17 @@
 # todo
 
-A CLI tool for managing a project's structured **`TODO.yaml`** from the command
-line — pull an item, move it through its lifecycle, or add notes — while keeping
-the file's comments and structure intact.
+A CLI tool for managing a project's structured todo store — a **`.TODO/`**
+directory — from the command line: pull an item, move it through its lifecycle,
+or add notes, while keeping its files' comments and structure intact.
 
-It defaults to `./TODO.yaml` in the current working directory, so it works in any
-project. Every mutation re-reads the file fresh and writes atomically (temp file
-+ rename), so a crash mid-write can never truncate `TODO.yaml`, and comments are
-preserved via `ruamel.yaml`'s round-trip API.
+It defaults to `./.TODO` in the current working directory, so it works in any
+project. Each item lives in its own directory, and each note, dev-log entry and
+task phase in its own file, so a command reads and rewrites only what it
+touches, however large the project grows. Every write is atomic (temp file +
+rename), and comments are preserved via `ruamel.yaml`'s round-trip API.
+
+A project still on the older single-file `TODO.yaml` is converted on the first
+`todo` command — see [Migration](#migration-from-todoyaml).
 
 ## Installation
 
@@ -52,8 +56,14 @@ Move an item along as your relationship to it changes:
 item passes through them. In a TTY the list/get views colorize each status
 (purple for `review`, red for `blocked`).
 
-`done` and `cancelled` are the terminal pair: both drop out of `todo list` and
-both get swept up by `todo archive`. Only `done` stamps `completed`.
+`done` and `cancelled` are the terminal pair: both drop out of `todo list`.
+Only `done` stamps `completed`.
+
+Each status files the item into a folder of `.TODO/`: `DEFERRED/` for
+`deferred`, `CANCELLED/` for `cancelled`, and `OPEN/` for everything else.
+`done` items stay in `OPEN/` until `todo archive` moves them to `ARCHIVED/`.
+`todo list` reads only `OPEN/`, so parked and finished work costs nothing;
+`--all` and `--status` read every folder.
 
 ## Child tasks
 
@@ -147,32 +157,32 @@ todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # reorder within a phase
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>"            # add a new item
-todo archive                     # move done/cancelled items to ARCHIVE/TODO/
+todo archive                     # move done items to .TODO/ARCHIVED/
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
-todo unlink                      # inline the global store back into ./TODO.yaml
+todo unlink                      # move the global store back into ./.TODO
 todo projects                    # list all global-stored projects
 todo init                        # install the todo skill on this machine
 ```
 
-`--file <path>` (on either side of the command) overrides the default
-`./TODO.yaml`.
+`--dir <path>` (on either side of the command) overrides the default `./.TODO`.
+It takes the `.TODO` directory itself or a project directory holding one.
 
 ### Global store (opt-in)
 
-`./TODO.yaml` committed in-repo is the default. `todo link` instead moves the
-todos to `~/.todo/projects/<key>/TODO.yaml` and leaves a **symlink** at
-`./TODO.yaml` (gitignored). Because reads and writes follow the symlink, the CLI
-and web drawer keep working unchanged. It's handy for repos that can't host a
-committed `TODO.yaml`, and it lets **git worktrees share one list** — a worktree
-without a local `TODO.yaml` resolves to the primary checkout's linked store.
-`todo unlink` inlines the store back into a real file. There is no pointer-file
-fallback: if the OS can't create a symlink (e.g. Windows without Developer Mode),
-`link` reports the error and changes nothing.
+`./.TODO` committed in-repo is the default. `todo link` instead moves the store
+to `~/.todo/projects/<key>/.TODO` and leaves a **symlink** at `./.TODO`
+(gitignored). Because reads and writes follow the symlink, the CLI and web
+drawer keep working unchanged. It's handy for repos that can't host a committed
+store, and it lets **git worktrees share one list** — a worktree without a local
+`.TODO` resolves to the primary checkout's linked store. `todo unlink` moves the
+store back into a real directory. There is no pointer-file fallback: if the OS
+can't create a symlink (e.g. Windows without Developer Mode), `link` reports the
+error and changes nothing.
 
 Once you've linked a few repos, **`todo list -g`** (`--all-projects`) gives one
 cross-project view: every linked project's active items (`in-progress`,
 `blocked`, `review`), grouped by project. It only sees linked projects — an
-in-repo `TODO.yaml` that was never `todo link`ed won't appear. `--status S`
+in-repo `.TODO` that was never `todo link`ed won't appear. `--status S`
 narrows to one status across all projects; `--all` widens to every item
 (including `done`).
 
@@ -189,45 +199,70 @@ todo note skill-todo "shipped in <commit>; covered by tests"
 todo done skill-todo                      # finished + verified
 ```
 
-## TODO.yaml shape
+## .TODO layout
 
-Each item is a map under a top-level `todos:` sequence:
-
-```yaml
-todos:
-  - id: skill-todo            # stable short slug (kebab-case)
-    title: a one-line summary
-    type: feature             # bug | feature | refactor | question
-    status: in-progress       # see lifecycle above
-    priority: medium          # high | medium | low
-    super-phase: null         # optional cross-item grouping (passive)
-    created: 2026-06-23T17:41:40.683Z
-    completed: null           # ISO timestamp once done, else null
-    notes:                    # context; each has a constant per-item id
-      - id: 1
-        text: first finding
-      - id: 2
-        text: |-             # multi-line text stays a `|` block literal
-          a longer
-          multi-line note
-    log:                      # dated dev trail, own id space
-      - id: 1
-        ts: 2026-06-23T18:02:11.114Z
-        text: swapped the regex for a real parser
-    calc-status: in-progress  # DERIVED from tasks; omitted when there are none
-    tasks:                    # child tasks, each with its own id + status (+ optional phase)
-      - {id: 1, title: split status.py, status: done, phase: 1}
-      - {id: 2, title: rollup render, status: in-progress, phase: 2}
+```
+.TODO/
+  OPEN/                       # todo, in-triage, in-progress, review, blocked, done
+    skill-todo/               # one directory per item, named by its id
+      TODO.yaml               # the item's own fields
+      phase-1/TASKS.yaml      # child tasks per phase, in order
+      unphased/TASKS.yaml
+      notes/2026-06-23T18-02-11.114Z-1.md      # one note per file: {timestamp}-{id}.md
+      devlogs/2026-06-23T18-05-40.902Z-1.md    # one dev-log entry per file
+  DEFERRED/
+  CANCELLED/
+  ARCHIVED/                   # done items, after `todo archive`
 ```
 
-Other keys (`description`, `acceptance`, `subtasks`, `depends_on`, …) are
-preserved untouched on round-trip — the CLI only manages the fields above.
+An item's `TODO.yaml`:
+
+```yaml
+id: skill-todo            # stable short slug (kebab-case); matches the directory
+title: a one-line summary
+type: feature             # bug | feature | refactor | question
+status: in-progress       # see lifecycle above; decides the folder
+priority: medium          # high | medium | low
+super-phase: null         # optional cross-item grouping (passive)
+created: 2026-06-23T17:41:40.683Z
+completed: null           # ISO timestamp once done, else null
+calc-status: in-progress  # DERIVED from tasks; omitted when there are none
+```
+
+A `TASKS.yaml` holds one flow map per task; the phase comes from the directory:
+
+```yaml
+tasks:
+  - {id: 1, title: split status.py, status: done}
+  - {id: 2, title: rollup render, status: in-progress}
+```
+
+Notes and dev-log entries are plain Markdown files. The filename carries the
+timestamp (`:` written as `-`) and the constant per-item id.
+
+Other keys in an item's `TODO.yaml` (`description`, `acceptance`, `depends_on`,
+…) are preserved untouched on round-trip — the CLI only manages the fields
+above.
+
+### Migration from TODO.yaml
+
+The first `todo` command in a project with a `TODO.yaml` and no `.TODO/`
+converts it:
+
+- Each item goes to the folder its status selects. Items from `ARCHIVE/TODO/`
+  go to `ARCHIVED/` or `CANCELLED/`; a colliding id gets a `-2` suffix.
+- Legacy notes have no timestamp, so their filenames take the item's `created`.
+- The old files are deleted if git tracks them, otherwise kept in
+  `.TODO/.migrated/`.
+- A gitignored `TODO.yaml` gets `.TODO` gitignored too.
+- A linked `./TODO.yaml` symlink becomes a `./.TODO` symlink into the converted
+  global store.
 
 ## Gotchas
 
-- The CLI re-reads `TODO.yaml` fresh on every mutation and writes atomically, so
+- The CLI re-reads each file fresh on every mutation and writes atomically, so
   it's safe to run alongside another writer (e.g. a web UI editing the same
-  file). Worst case under a true simultaneous write is one clobbered edit, not
+  store). Worst case under a true simultaneous write is one clobbered edit, not
   corruption.
 - `done` stamps `completed` with the current ISO time; moving off `done` clears
   it. Don't mark `done` until the work is actually verified. `cancelled` stamps
