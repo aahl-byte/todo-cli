@@ -1,5 +1,5 @@
-"""`cancelled` is terminal like `done`: hidden from the everyday list, swept up
-by archive — but with no `completed` stamp, since nothing was completed."""
+"""`cancelled` is terminal like `done`: hidden from the everyday list and filed
+in CANCELLED/ — but with no `completed` stamp, since nothing was completed."""
 
 from pathlib import Path
 
@@ -13,37 +13,38 @@ def run(file, argv):
     args.func(Path(file), args)
 
 
-def test_cancel_shortcut(todo_file):
-    run(todo_file, ["cancel", "beta"])
-    assert store.resolve_item(todo_file, "beta")["status"] == "cancelled"
-    assert store.resolve_item(todo_file, "beta")["completed"] is None
+def test_cancel_shortcut(root):
+    run(root, ["cancel", "beta"])
+    assert store.resolve_item(root, "beta")["status"] == "cancelled"
+    assert store.resolve_item(root, "beta")["completed"] is None
 
 
-def test_cancelled_hidden_from_list_shown_with_all(todo_file, capsys):
-    run(todo_file, ["cancel", "beta"])
+def test_cancelled_hidden_from_list_shown_with_all(root, capsys):
+    run(root, ["cancel", "beta"])
     capsys.readouterr()
-    run(todo_file, ["list"])
+    run(root, ["list"])
     assert "beta" not in capsys.readouterr().out
-    run(todo_file, ["list", "--all"])
+    run(root, ["list", "--all"])
     assert "beta" in capsys.readouterr().out
-    run(todo_file, ["list", "--status", "cancelled"])
+    run(root, ["list", "--status", "cancelled"])
     assert "beta" in capsys.readouterr().out
 
 
-def test_archive_takes_done_and_cancelled(todo_file, capsys):
-    run(todo_file, ["done", "alpha"])
-    run(todo_file, ["cancel", "beta"])
+def test_cancel_moves_to_cancelled_and_archive_takes_done(root, capsys):
+    run(root, ["done", "alpha"])
+    run(root, ["cancel", "beta"])
+    assert (root / "CANCELLED" / "beta").is_dir()
+    assert (root / "OPEN" / "alpha").is_dir()
     capsys.readouterr()
-    run(todo_file, ["archive"])
-    assert "2 item(s)" in capsys.readouterr().out
-    assert store.list_todos(todo_file) == []
-    archive = next((todo_file.parent / "ARCHIVE" / "TODO").iterdir())
-    assert {it["id"] for it in store.list_todos(archive)} == {"alpha", "beta"}
+    run(root, ["archive"])
+    assert "1 item(s)" in capsys.readouterr().out
+    assert (root / "ARCHIVED" / "alpha").is_dir()
+    assert store.list_todos(root, [store.OPEN]) == []
 
 
-def test_task_cancel_rolls_up(todo_file, capsys):
-    run(todo_file, ["task", "add", "beta", "t1"])
-    run(todo_file, ["task", "add", "beta", "t2"])
-    run(todo_file, ["task", "done", "beta", "1"])
-    run(todo_file, ["task", "cancel", "beta", "2"])
-    assert store.resolve_item(todo_file, "beta")["calc_status"] == "done"
+def test_task_cancel_rolls_up(root, capsys):
+    run(root, ["task", "add", "beta", "t1"])
+    run(root, ["task", "add", "beta", "t2"])
+    run(root, ["task", "done", "beta", "1"])
+    run(root, ["task", "cancel", "beta", "2"])
+    assert store.resolve_item(root, "beta")["calc_status"] == "done"

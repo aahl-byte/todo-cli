@@ -1,19 +1,20 @@
-"""todo — a tiny CLI over a project's structured TODO.yaml.
+"""todo — a tiny CLI over a project's structured `.TODO/` store.
 
-Works in any project: it defaults to ./TODO.yaml in the current working
-directory (override with --file). This module is just the command-line surface —
+Works in any project: it defaults to ./.TODO in the current working directory
+(override with --dir). This module is just the command-line surface —
 argument parsing and the thin handlers that glue it to the rest of the package:
 
     util     process exit, timestamps, stringify
     status   the status lifecycle + terminal colors
     yamlio   the comment-preserving, atomic-write YAML core (durability)
-    store    CRUD over the todos sequence + fuzzy item lookup
+    store    CRUD over the .TODO/ directory tree + fuzzy item lookup
+    migrate  one-way conversion of a legacy TODO.yaml
     render   terminal output for list/get
     init     the `todo init` skill installer
 
 The durability contract mirrors the web TODO drawer's (manager/sources/todos.ts
-in the claude-tmux-manager repo) — keep the two in sync if the contract or the
-YAML shape changes.
+in the watchtower repo) — keep the two in sync if the contract or the store
+shape changes.
 """
 
 import argparse
@@ -23,22 +24,22 @@ from pathlib import Path
 
 from . import init as init_mod
 from . import link as link_mod
-from . import render, store
+from . import migrate, render, store
 from .status import ACTIVE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
-def _require_file(file: Path) -> None:
-    if not file.exists():
-        die(f"No TODO.yaml found at {file}\n(use --file to point elsewhere)", 2)
+def _require_root(root: Path) -> None:
+    if not root.is_dir():
+        die(f"No {store.ROOT_NAME} found at {root}\n(use --dir to point elsewhere)", 2)
 
 
-def _set_status(file: Path, query: str, status: str) -> None:
+def _set_status(root: Path, query: str, status: str) -> None:
     if status not in STATUSES:
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
-    it = store.resolve_item(file, query)
-    store.update_todo(file, it["id"], {"status": status}, now())
+    it = store.resolve_item(root, query)
+    store.update_todo(root, it["id"], {"status": status}, now())
     print(f'{it["id"]}: {it["status"]} → {status}')
 
 
@@ -55,49 +56,56 @@ def _filter_list(items, args, *, default_active: bool):
     return [it for it in items if it["status"] not in TERMINAL]
 
 
-def cmd_list(file: Path, args) -> None:
+def _folders(args, default):
+    """Only --all or --status needs the parked and finished folders."""
+    return store.FOLDERS if args.all or args.status else default
+
+
+def cmd_list(root: Path, args) -> None:
     if getattr(args, "all_projects", False):
         groups = [
             {"key": p["key"],
-             "items": _filter_list(store.list_todos(p["file"]), args, default_active=True)}
+             "items": _filter_list(store.list_todos(p["root"], _folders(args, [store.OPEN])),
+                                   args, default_active=True)}
             for p in link_mod.project_stores()
         ]
         render.print_grouped(groups)
         return
-    _require_file(file)
-    items = _filter_list(store.list_todos(file), args, default_active=False)
+    _require_root(root)
+    items = _filter_list(store.list_todos(root, _folders(args, [store.OPEN])),
+                         args, default_active=False)
     render.print_list(items)
 
 
-def cmd_get(file: Path, args) -> None:
-    render.print_item(store.resolve_item(file, args.query), full_log=args.log)
+def cmd_get(root: Path, args) -> None:
+    render.print_item(store.resolve_item(root, args.query), full_log=args.log)
 
 
-def cmd_status(file: Path, args) -> None:
-    _set_status(file, args.query, args.status)
+def cmd_status(root: Path, args) -> None:
+    _set_status(root, args.query, args.status)
 
 
-def cmd_shortcut(file: Path, args) -> None:
-    _set_status(file, args.query, SHORTCUTS[args.command])
+def cmd_shortcut(root: Path, args) -> None:
+    _set_status(root, args.query, SHORTCUTS[args.command])
 
 
-def cmd_status_alias(file: Path, args) -> None:
+def cmd_status_alias(root: Path, args) -> None:
     # Legacy: the bare status name used as a command (`todo in-progress X`).
     # The subcommand name IS the target status.
-    _set_status(file, args.query, args.command)
+    _set_status(root, args.query, args.command)
 
 
-def cmd_note(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_note(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     text = " ".join(args.text).strip()
     if not text:
         die("Missing note text.", 2)
-    new_id = store.add_note(file, it["id"], text)
+    new_id = store.add_note(root, it["id"], text, now())
     print(f'{it["id"]}: added note [{new_id}]')
 
 
-def cmd_notes(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_notes(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     if not it["notes"]:
         print("(no notes)")
         return
@@ -105,30 +113,30 @@ def cmd_notes(file: Path, args) -> None:
         print(f'[{n["id"]}] ' + str(n["text"]).replace("\n", "\n    "))
 
 
-def cmd_unnote(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_unnote(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     _note_id(it, args.id)
-    store.remove_note(file, it["id"], args.id)
+    store.remove_note(root, it["id"], args.id)
     print(f'{it["id"]}: removed note [{args.id}]')
 
 
-def cmd_log(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_log(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     text = " ".join(args.text).strip()
     if not text:
         die("Missing log text.", 2)
-    new_id = store.add_log(file, it["id"], text, now())
+    new_id = store.add_log(root, it["id"], text, now())
     print(f'{it["id"]}: added log [{new_id}]')
 
 
-def cmd_logs(file: Path, args) -> None:
-    render.print_log(store.resolve_item(file, args.query), args.n)
+def cmd_logs(root: Path, args) -> None:
+    render.print_log(store.resolve_item(root, args.query), args.n)
 
 
-def cmd_unlog(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_unlog(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     _log_id(it, args.id)
-    store.remove_log(file, it["id"], args.id)
+    store.remove_log(root, it["id"], args.id)
     print(f'{it["id"]}: removed log [{args.id}]')
 
 
@@ -150,16 +158,16 @@ def _task_id(it, task_id: int) -> None:
         die(f"No task with id {task_id} (have: {ids}).", 2)
 
 
-def cmd_tasks(file: Path, args) -> None:
-    render.print_tasks(store.resolve_item(file, args.query))
+def cmd_tasks(root: Path, args) -> None:
+    render.print_tasks(store.resolve_item(root, args.query))
 
 
-def cmd_task_add(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_task_add(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     title = " ".join(args.title).strip()
     if not title:
         die('Missing title. Usage: todo task add <item> "<title>"', 2)
-    new_id = store.add_task(file, it["id"], title, args.phase)
+    new_id = store.add_task(root, it["id"], title, args.phase)
     where = f" (phase {args.phase})" if args.phase is not None else ""
     print(f'{it["id"]}: added task [{new_id}] {title}{where}')
 
@@ -175,24 +183,24 @@ def _parse_phase(value: str):
         die(f'Invalid phase "{value}" (an integer, or "none" to clear).', 2)
 
 
-def cmd_task_phase(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_task_phase(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     _task_id(it, args.id)
     phase = _parse_phase(args.value)
-    store.set_task_phase(file, it["id"], args.id, phase)
+    store.set_task_phase(root, it["id"], args.id, phase)
     label = f"phase {phase}" if phase is not None else "no phase"
     print(f'{it["id"]}: task [{args.id}] → {label}')
 
 
-def cmd_task_move(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_task_move(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     _task_id(it, args.id)
     target = args.before if args.before is not None else args.after
     if target is not None:
         _task_id(it, target)
         if target == args.id:
             die(f"Task [{args.id}] can't move relative to itself.", 2)
-    phase = store.move_task(file, it["id"], args.id,
+    phase = store.move_task(root, it["id"], args.id,
                             before=args.before, after=args.after, bottom=args.bottom)
     if target is not None:
         where = f'{"before" if args.before is not None else "after"} [{target}]'
@@ -203,47 +211,47 @@ def cmd_task_move(file: Path, args) -> None:
     print(f'{it["id"]}: task [{args.id}] → {where}')
 
 
-def _set_task_status(file: Path, query: str, task_id: int, status: str) -> None:
+def _set_task_status(root: Path, query: str, task_id: int, status: str) -> None:
     if status not in STATUSES:
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
-    it = store.resolve_item(file, query)
+    it = store.resolve_item(root, query)
     _task_id(it, task_id)
-    store.set_task_status(file, it["id"], task_id, status)
-    nxt = store.resolve_item(file, it["id"])
+    store.set_task_status(root, it["id"], task_id, status)
+    nxt = store.resolve_item(root, it["id"])
     calc = nxt["calc_status"] or "—"
     print(f'{it["id"]}: task [{task_id}] → {status}  (calc-status: {calc})')
 
 
-def cmd_task_status(file: Path, args) -> None:
-    _set_task_status(file, args.query, args.id, args.status)
+def cmd_task_status(root: Path, args) -> None:
+    _set_task_status(root, args.query, args.id, args.status)
 
 
-def cmd_task_shortcut(file: Path, args) -> None:
-    _set_task_status(file, args.query, args.id, SHORTCUTS[args.taskcmd])
+def cmd_task_shortcut(root: Path, args) -> None:
+    _set_task_status(root, args.query, args.id, SHORTCUTS[args.taskcmd])
 
 
-def cmd_task_rm(file: Path, args) -> None:
-    it = store.resolve_item(file, args.query)
+def cmd_task_rm(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
     _task_id(it, args.id)
-    store.remove_task(file, it["id"], args.id)
+    store.remove_task(root, it["id"], args.id)
     print(f'{it["id"]}: removed task [{args.id}]')
 
 
-def cmd_add(file: Path, args) -> None:
+def cmd_add(root: Path, args) -> None:
     title = " ".join(args.title).strip()
     if not title:
         die('Missing title. Usage: todo add "<title>"', 2)
-    it = store.add_todo(file, title, now())
+    it = store.add_todo(root, title, now())
     if not it:
         die("Could not add (empty title?).", 1)
     print(f'added {it["id"]}: {it["title"]}')
 
 
-def cmd_archive(file: Path, args) -> None:
-    _require_file(file)
-    count, path = store.archive_todos(file, now())
+def cmd_archive(root: Path, args) -> None:
+    _require_root(root)
+    count, path = store.archive_todos(root)
     if count == 0:
-        print("Nothing to archive (no done/cancelled items).")
+        print("Nothing to archive (no done items).")
     else:
         try:
             shown = path.relative_to(Path.cwd())
@@ -252,22 +260,22 @@ def cmd_archive(file: Path, args) -> None:
         print(f"Archived {count} item(s) → {shown}")
 
 
-def _local_path(args) -> Path:
-    """The repo-root TODO.yaml path, UNRESOLVED — link/unlink act on the symlink
+def _repo_dir(args) -> Path:
+    """The directory holding ./.TODO, UNRESOLVED — link/unlink act on the symlink
     itself, not the global store it resolves to."""
-    p = Path(getattr(args, "file", "TODO.yaml"))
-    return p / "TODO.yaml" if p.is_dir() else p
+    p = Path(getattr(args, "dir", store.ROOT_NAME))
+    return p.parent if p.name == store.ROOT_NAME else p
 
 
-def cmd_link(file: Path, args) -> None:
-    print(link_mod.link(_local_path(args), args.name))
+def cmd_link(root: Path, args) -> None:
+    print(link_mod.link(_repo_dir(args), args.name))
 
 
-def cmd_unlink(file: Path, args) -> None:
-    print(link_mod.unlink(_local_path(args)))
+def cmd_unlink(root: Path, args) -> None:
+    print(link_mod.unlink(_repo_dir(args)))
 
 
-def cmd_projects(file: Path, args) -> None:
+def cmd_projects(root: Path, args) -> None:
     rows = link_mod.projects()
     if not rows:
         print(f"(no linked projects in {link_mod.global_root()})")
@@ -278,7 +286,7 @@ def cmd_projects(file: Path, args) -> None:
         print(f"{r['key']:<{width}}  {r['count']:>3} item(s){origin}")
 
 
-def cmd_init(file: Path, args) -> None:
+def cmd_init(root: Path, args) -> None:
     try:
         results = init_mod.do_init(force=args.force)
     except FileNotFoundError as e:
@@ -291,7 +299,7 @@ def cmd_init(file: Path, args) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="todo",
-        description="Manage a project's structured TODO.yaml from the command line.",
+        description="Manage a project's structured .TODO/ store from the command line.",
         epilog="lifecycle:\n"
                "  todo → in-triage (planning) → in-progress (developing) → done\n"
                "  `review` awaits user review, `blocked` can't proceed,\n"
@@ -309,20 +317,22 @@ def build_parser() -> argparse.ArgumentParser:
                '  todo log skill-todo "swapped the regex for a parser"\n'
                "  todo done skill-todo            # finished + verified\n"
                '  todo add "NEW THING TO DO"\n'
-               "  todo archive                    # move done/cancelled items to ARCHIVE/TODO/\n"
+               "  todo archive                    # move done items to .TODO/ARCHIVED/\n"
                "  todo init                       # install the todo skill on this machine\n\n"
-               "Defaults to ./TODO.yaml; pass --file to point elsewhere.",
+               "Defaults to ./.TODO; pass --dir to point elsewhere. A legacy\n"
+               "TODO.yaml is converted to .TODO/ on first use.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    # --file is accepted on either side of the subcommand: a top-level option
+    # --dir is accepted on either side of the subcommand: a top-level option
     # holds the default, and the per-command copy (SUPPRESS default) only
     # overrides the shared namespace when actually passed after the subcommand.
-    parser.add_argument("--file", default="TODO.yaml", metavar="PATH",
-                        help="path to the TODO.yaml (default: ./TODO.yaml)")
+    # --file is its legacy spelling.
+    parser.add_argument("--dir", "--file", dest="dir", default=store.ROOT_NAME, metavar="PATH",
+                        help="the .TODO directory, or a project holding one (default: ./.TODO)")
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--file", default=argparse.SUPPRESS, metavar="PATH",
-                        help="path to the TODO.yaml (default: ./TODO.yaml)")
+    common.add_argument("--dir", "--file", dest="dir", default=argparse.SUPPRESS, metavar="PATH",
+                        help="the .TODO directory, or a project holding one (default: ./.TODO)")
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -433,7 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("title", nargs="+", help="the item title")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("archive", parents=[common], help="move done/cancelled items to ARCHIVE/TODO/")
+    p = sub.add_parser("archive", parents=[common], help="move done items to .TODO/ARCHIVED/")
     p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("link", parents=[common],
@@ -443,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_link)
 
     p = sub.add_parser("unlink", parents=[common],
-                       help="inline the global store back into a real ./TODO.yaml")
+                       help="move the global store back into a real ./.TODO")
     p.set_defaults(func=cmd_unlink)
 
     p = sub.add_parser("projects", help="list all global-stored projects (~/.todo/projects/*)")
@@ -482,40 +492,50 @@ def main():
     # `init`/`projects` are machine-level; `link`/`unlink` act on the unresolved
     # repo-root path themselves — none of them want a resolved store path.
     if args.command in ("init", "projects", "link", "unlink"):
-        file = None
+        root = None
     else:
-        file = _resolve_file(args.file)
-    args.func(file, args)
+        root = _resolve_root(args.dir)
+    args.func(root, args)
 
 
-def _resolve_file(raw: str) -> Path:
-    """Resolve --file to a TODO.yaml path. Pointing at a directory (the common
-    `--file /some/project/` slip) resolves to a YAML inside it rather than
-    crashing later with a raw IsADirectoryError: prefer <dir>/TODO.yaml, else a
-    lone *.yaml/*.yml. With no (or several) yaml files it resolves to
-    <dir>/TODO.yaml so the normal "No TODO.yaml found" message fires."""
-    file = Path(raw).resolve()
-    if file.is_dir():
-        default = file / "TODO.yaml"
-        if default.exists():
-            return default
-        yamls = sorted(p for p in file.glob("*.y*ml") if p.is_file())
-        return yamls[0] if len(yamls) == 1 else default
-    # A git worktree with no local TODO.yaml falls back to the primary worktree's
-    # — which may itself be a symlink into the global store, so all worktrees of a
-    # linked repo share one list. Only for the implicit default, never for --file.
-    if raw == "TODO.yaml" and not file.exists():
-        shared = _worktree_todo(Path.cwd())
-        if shared is not None:
-            return shared
-    return file
+def _resolve_root(raw: str) -> Path:
+    """Resolve --dir to a .TODO root, converting a legacy TODO.yaml on the way.
+    The path may be the root itself, a project directory holding one, or (the
+    legacy --file spelling) a TODO.yaml whose directory gets the root."""
+    if raw == store.ROOT_NAME:
+        return _project_root(Path.cwd(), worktree=True)
+    p = Path(raw).absolute()
+    if p.name == migrate.LEGACY_FILE or p.is_file():
+        return _project_root(p.parent)
+    if p.name != store.ROOT_NAME and not any((p / f).is_dir() for f in store.FOLDERS):
+        return _project_root(p)
+    return p.resolve()
 
 
-def _worktree_todo(start: Path) -> Path | None:
-    """Resolve the primary worktree's TODO.yaml from inside a linked worktree.
-    `git rev-parse --git-common-dir` points at the main repo's .git; its parent
-    is the primary worktree root. Returns the resolved (symlink-followed) path
-    if that TODO.yaml exists, else None."""
+def _project_root(project: Path, worktree: bool = False) -> Path:
+    """`project`/.TODO (symlinks followed), migrating a legacy TODO.yaml first. A
+    git worktree with neither falls back to the primary worktree's store — which
+    may itself be a link into the global store, so all worktrees of a linked repo
+    share one list. With nothing found, returns the would-be path so the normal
+    "No .TODO found" message fires."""
+    root = project / store.ROOT_NAME
+    if root.is_dir():
+        return root.resolve()
+    migrated = migrate.migrate_repo(project)
+    if migrated is not None:
+        return migrated.resolve()
+    if worktree:
+        primary = _primary_worktree(project)
+        if primary is not None and primary != project.resolve():
+            shared = _project_root(primary)
+            if shared.is_dir():
+                return shared
+    return root
+
+
+def _primary_worktree(start: Path) -> Path | None:
+    """The primary worktree root of the repo containing `start`: the parent of
+    `git rev-parse --git-common-dir`."""
     try:
         out = subprocess.run(["git", "rev-parse", "--git-common-dir"],
                              cwd=start, capture_output=True, text=True).stdout.strip()
@@ -526,5 +546,4 @@ def _worktree_todo(start: Path) -> Path | None:
     common = Path(out)
     if not common.is_absolute():
         common = (start / common).resolve()
-    candidate = common.parent / "TODO.yaml"
-    return candidate.resolve() if candidate.exists() else None
+    return common.parent.resolve()

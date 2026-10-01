@@ -1,8 +1,13 @@
-"""Shared fixtures: a temp TODO.yaml the store/CLI can mutate in isolation."""
+"""Shared fixtures: a temp `.TODO/` store the store/CLI can mutate in isolation,
+built by migrating a legacy TODO.yaml."""
 
 from pathlib import Path
 
 import pytest
+
+from todo import migrate
+
+TS = "2026-06-25T09:30:00.000Z"
 
 SAMPLE = """\
 # Project TODO — edit through the `todo` CLI.
@@ -29,8 +34,12 @@ todos:
 """
 
 
+def make_store(project: Path, body: str = SAMPLE) -> Path:
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "TODO.yaml").write_text(body)
+    return migrate.migrate_repo(project)
+
+
 @pytest.fixture
-def todo_file(tmp_path) -> Path:
-    f = tmp_path / "TODO.yaml"
-    f.write_text(SAMPLE)
-    return f
+def root(tmp_path) -> Path:
+    return make_store(tmp_path / "proj")

@@ -19,10 +19,10 @@ def titles(file, query="beta"):
 
 
 @pytest.fixture
-def three(todo_file):
+def three(root):
     for title in ("a", "b", "c"):
-        run(todo_file, ["task", "add", "beta", title, "--phase", "1"])
-    return todo_file
+        run(root, ["task", "add", "beta", title, "--phase", "1"])
+    return root
 
 
 def test_move_after(three):
