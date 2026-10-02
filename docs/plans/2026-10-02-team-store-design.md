@@ -147,7 +147,8 @@ That lets the web UI come after the bridge.
 3. **Jira bridge:** inbound webhooks, outbound transitions, status mapping
    config.
 4. **Dashboard (same Next.js app):** PM submission form, QA queue, deploy board, live status,
-   `@mention` notifications. Cut over from Jira when this lands.
+   `@mention` notifications, built from a separate UI design pass. Cut over
+   from Jira when this lands.
 
 ## Open questions
 
