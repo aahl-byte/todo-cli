@@ -16,9 +16,13 @@ the code against the spec. Phases 1–2 change the Python CLI in `todo/`; phases
   - Production uses `pg` with `DATABASE_URL`.
 - `cd server && npm run build` (`next build`) succeeds.
 - `tests/test_e2e_sync.py` passes. It starts the built Next.js server on PGlite,
-  and two CLI stores sync through it. The scenario: dev A goes offline and sets
-  status, QA B comments, A reconnects. Both changes land, and A's stale status
-  write over B's `in-qa` is rejected and logged **(e2e)**.
+  and two CLI stores sync through it **(e2e)**. The scenario:
+  1. A item is `review`. QA B sets `in-qa` and comments.
+  2. Meanwhile dev A, offline, adds a note and sets `in-progress`.
+  3. A reconnects:
+     - A's note lands.
+     - A's status write is rejected and logged.
+     - A ends with `in-qa` and B's comment.
 - `README.md`, `todo/skill/SKILL.md` (version bumped) and `server/README.md`
   describe the new commands and deployment.
 
@@ -141,13 +145,15 @@ the code against the spec. Phases 1–2 change the Python CLI in `todo/`; phases
 ### 1.6 ULIDs
 
 - **Generator:** `todo/ulid.py`, no dependency.
+- **Written back:** a uid, once assigned, is stored in the entity's file — front
+  matter, the flow map, or `TODO.yaml` — and never recomputed.
 - **What carries one:** every new item, task, note, log, check and history
   entry gets a `uid`. `TASKS.yaml` flow maps become `{id, uid, title, status}`,
   and `_read_tasks`/`tasks_doc` carry `uid` through every rewrite.
 - **Entities without a uid** (older files, drawer or hand edits) get a
-  deterministic uid when sync first sees them:
+  deterministic uid when sync first sees them, which is then written back:
   - items: from project key, item id and `created`
-  - children: from item uid, entity and `n`
+  - children: from item uid, entity, `ts` (or title) and a hash of the text
 
   Two clones of one committed store therefore agree on uids.
 
@@ -198,10 +204,11 @@ Acceptance **(py)**:
   `timing`, `status`, `versions`.
 - **`status_history`:** `uid`, `item_uid`, `n`, `from_status`, `to_status`,
   `by`, `via`, `forced`, `ts`.
-- **`changes`:** `(project, seq)` pk, `entity`, `uid`, `item_uid`,
-  `deleted`, `author`, `ts`.
+- **`changes`:** `(project, seq)` pk, `entity` (`item`, `task`, `note`,
+  `log`, `check`, `history`), `uid`, `item_uid`, `deleted`, `author`,
+  `ts`.
 - **`applied_ops`:** `op_id` pk, `result`.
-- **`jira_links`:** `item_uid`, `jira_key`, `last_sent_status`.
+- **`jira_links`:** `item_uid`, `jira_key`.
 - **`jira_outbox`:** `id`, `item_uid`, `action`, `payload`, `attempts`,
   `error`, `done_at`.
 - **`notifications`:** `id`, `handle`, `kind`, `note_uid`, `item_uid`,
@@ -220,7 +227,9 @@ comes from the API, a dashboard action, or the Jira bridge.
 
 - Each op runs in a transaction that starts with
   `SELECT … FROM projects WHERE key=$1 FOR UPDATE`.
-- Every row the op writes takes `seq = projects.seq + 1`.
+- Every entity row the op changes takes the next `projects.seq` and its own
+  `changes` row. The op's own write and a derived item, history or
+  calc-status change therefore each get their own seq.
 - That row lock serializes a project's writers. Sequence numbers therefore
   commit in order, and a pull can never skip one.
 
@@ -233,20 +242,28 @@ group is rejected, the whole group rolls back.
 
 **Creates.**
 
-- A known uid is a no-op that reports `applied`.
+- A known uid with identical data is a no-op that reports `applied`. A known
+  uid with different data is `rejected` with reason `uid-exists`.
 - `n` is kept if free, otherwise reassigned as max + 1 and reported as
   `assigned_n`.
 - A taken item `id` gets `-2`, `-3`, … and is reported as `assigned_id`.
 
 **Field writes.**
 
-- **Accepted when** `base[field]` equals `versions[field]`, or the field has
-  no version yet.
+- **Accepted when** `base[field]` equals `versions[field]`, the field has
+  no version yet, or the value already equals the current one (a no-op).
 - **Rejected otherwise**, with `{field, server_value, by, at}`. `by` and
   `at` come from the `changes` row of that version.
 - **Partial ops** apply their fresh fields and reject the stale ones.
 - **Exempt fields:** `position` and writes made inside the bridge
-  (`unconditional`) skip the version check.
+  (`unconditional`) skip the version check. Reordering a phase is a set of
+  `position` writes. `position` is the integer index within the phase, and
+  ties break by `n`.
+- **Results:** every applied field reports its new version in
+  `versions: {field: seq}`.
+- **Removes** carry `base` for every field and are rejected if any field is
+  newer. A `set` or `remove` on an entity that is already removed is rejected
+  with reason `removed` and `by`/`at`.
 
 **Status side effects.**
 
@@ -271,7 +288,7 @@ group is rejected, the whole group rolls back.
 Nobody is notified about their own action.
 
 **Jira outbox.** For a linked item, `apply.ts` also queues Jira outbox rows
-(phase 3).
+(phase 3). Ops authored by `jira-bridge` never queue any.
 
 ### 2.4 API
 
@@ -297,14 +314,22 @@ Nobody is notified about their own action.
 **Config and setup.**
 
 - `~/.todo/config.yaml` holds `user:` and `tokens: {<url>: <token>}`.
-- `todo login <url> <user> <token>` writes both.
+- `todo login <url> <token>` asks `GET /api/me` for the handle the token
+  belongs to and stores both.
 - `todo whoami` prints the identity.
+- `todo inbox [--all]` lists my notifications from `GET /api/inbox` and marks
+  the shown ones read. CLI-only devs see mentions and rejections there.
 - `todo link --remote <url> [--project KEY]`:
   1. links the store into `~/.todo` first if it isn't already linked
   2. writes `.sync/config.json`
   3. creates the server project if it is missing
-  4. pulls from 0
+  4. pulls from 0, adopting the server's state. Every pulled entity goes into
+     the snapshot with its data and versions. A local file with the same uid is
+     kept as it is, so the next diff pushes its differences on top of the
+     server versions. Server entities with no local file are written.
   5. pushes
+- `.sync/config.json` also caches the project's `deploy_step`. When it is
+  off, `approve` goes to `done`.
 
 **Snapshot.** `.sync/snapshot.json` holds
 `{cursor, entities: {uid: {entity, item_uid, data, versions}}}`.
@@ -319,35 +344,53 @@ Nobody is notified about their own action.
 - **Not pushed:** `calc_status`, `completed`, history and authorship. The
   server derives them, and pull writes them.
 
-**One round,** holding `fcntl.flock` on `.sync/lock`:
+**Locking.** In a synced store every command holds an exclusive
+`fcntl.flock` on `.sync/lock` for its whole run, rounds included. Synced
+commands therefore never interleave. Only the drawer or a hand edit can write
+concurrently, which is the existing "one clobbered edit" worst case.
 
-1. **Diff** the local entities against the snapshot:
+**One round:**
+
+1. **Diff** the local entities against the snapshot, and record the local
+   values it read:
    - a new uid → `create`
    - a changed field → `set` with `base` from the snapshot
-   - a uid missing locally → `remove` (items are never removed)
+   - a uid missing locally → `remove` with `base`. Items are never removed,
+     and an item directory that couldn't be read completely produces no child
+     removes.
 
-   Item creates go first, then child creates, sets and removes. A status `set`
-   takes the `via` of the newest provisional history entry that reached that
-   status.
+   **Order:** item creates, child creates, child sets, item sets, then removes.
+
+   **Status sets** take `via` and `forced` from the newest provisional
+   history entry that reached that status.
+
+   **Groups:** a `qa-rejection` note whose front matter records
+   `with_status` is sent as a group with that status set.
 2. **Push** in batches of 200, then handle the results:
-   - `assigned_n`/`assigned_id` rename the local file, phase entry or
-     directory, and the change is printed.
-   - Each rejected field becomes a local log entry ("offline status → review
-     not applied; QA set in-qa at 14:02"), which syncs next round.
+   - **Applied:** the snapshot takes the pushed values with the returned
+     versions straight away. Push-only rounds do this too.
+   - **Renumbered:** `assigned_n`/`assigned_id` rename the local file, phase
+     entry or directory, and the change is printed.
+   - **Rejected:** the field becomes a local log entry ("offline status →
+     review not applied; QA set in-qa at 14:02"), which syncs next round. The
+     field is marked to take the server value on pull.
 3. **Pull** from the cursor until `more` is false, writing each entity into
    its file. Item `TODO.yaml` goes through the ruamel round trip, so comments
    and unknown keys survive. Phase files are ordered by `position`.
-   - **Skipped fields:** a field whose local value differs from the snapshot
-     was edited after this round's diff. It keeps both its local value and its
-     snapshot entry, so the next push still carries the old base.
-   - **Provisional history:** server history replaces the provisional local
-     entries for that item.
+   - **Skipped fields:** a field whose local value differs from the value the
+     diff read was edited after the diff. With the lock held, that only happens
+     through the drawer or a hand edit. It keeps both its local value and its
+     snapshot entry, so the next push still carries the old base. Rejected
+     fields always take the server value.
+   - **Removed entities:** a removed entity's local file is deleted.
+   - **Provisional history:** server history replaces only the provisional
+     entries whose status change was pushed and applied.
 4. **Save** the snapshot and cursor.
 
 **When rounds run.**
 
-- **Before every command:** a round runs with a 1.5 s HTTP timeout. If the lock
-  is held by another process, the round is skipped.
+- **Before every command:** a round runs with a 1.5 s HTTP timeout. A command
+  waits for the lock rather than skipping it.
 - **After a write command:** a push-only round.
 - **`list -g`:** runs a round for each synced linked project.
 - **Failures:** a network error prints one dim line and leaves local changes
@@ -374,7 +417,9 @@ Acceptance:
   - Renumbering.
   - Pull preserves comments and unknown keys.
   - Pull keeps an in-flight local edit.
-  - Lock contention skips the round.
+  - A second command waits for the lock.
+  - Push-only rounds advance the snapshot, so a later round doesn't
+    self-reject.
 - **(e2e)** The scenario in "Done when".
 
 ## Phase 3 — Jira bridge (`server/lib/jira/`)
@@ -399,8 +444,10 @@ bridge applies ops through `apply.ts` with `unconditional` set and author
   - a `jira_links` row
 - `jira:issue_updated`:
   - an assignee change → `developer`
-  - a status change → the reverse-mapped todo status. It is skipped when it
-    equals `jira_links.last_sent_status`, the echo of our own transition.
+  - a status change → the reverse-mapped todo status. It is skipped when the
+    item's current status already maps to the incoming Jira status, which
+    covers the echo of our own transition. The reverse map takes the first
+    todo status listed for a Jira status.
 - `comment_created` → a `comment` note with `source: jira`.
 - Users map through `users.jira_account_id`. An unmatched user is recorded as
   `jira:<displayName>`.
@@ -408,8 +455,8 @@ bridge applies ops through `apply.ts` with `unconditional` set and author
 **Outbound:** `apply.ts` queues outbox rows for a linked item.
 
 - A status change becomes a transition to the mapped Jira status, found through
-  `GET /transitions`. Unmapped statuses are skipped, and `last_sent_status` is
-  set.
+  `GET /transitions`. Unmapped statuses are skipped, and so is a transition to
+  the status the issue already has.
 - A `comment`/`qa-rejection` note without `source: jira` becomes a Jira
   comment.
 - A `link` note becomes a remote link.
@@ -454,5 +501,6 @@ Acceptance **(js)**:
   Postgres and a Blob store. These need the user's accounts.
 - **Jira:** registering the webhook and creating an API token. These need Jira
   admin access.
-- **Watchtower drawer:** stripping front matter from notes, and learning the
-  new statuses and colors. It lives in the watchtower repo.
+- **Watchtower drawer:** stripping and preserving front matter on notes,
+  preserving `uid` in task flow maps, and learning the new statuses and colors.
+  It lives in the watchtower repo.
