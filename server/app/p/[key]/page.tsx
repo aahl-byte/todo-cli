@@ -28,8 +28,8 @@ export default async function Board({ params, searchParams }: { params: Promise<
   return (
     <>
       <form className="filters" action={`/p/${key}`}>
-        <Link href={href(key, q, { mine: toggle("mine") })}><button type="button" className={f.mine ? "primary" : ""}>Mine</button></Link>
-        <Link href={href(key, q, { review: toggle("review") })}><button type="button" className={f.review ? "primary" : ""}>Needs my review</button></Link>
+        <Link href={href(key, q, { mine: toggle("mine") })} className={`btn${f.mine ? " primary" : ""}`} aria-pressed={!!f.mine}>Mine</Link>
+        <Link href={href(key, q, { review: toggle("review") })} className={`btn${f.review ? " primary" : ""}`} aria-pressed={!!f.review}>Needs my review</Link>
         <label>Dev <select name="dev" defaultValue={q.dev ?? ""}><option value="">anyone</option>{people.map((h) => <option key={h}>{h}</option>)}</select></label>
         <label>QA <select name="qa" defaultValue={q.qa ?? ""}><option value="">anyone</option>{people.map((h) => <option key={h}>{h}</option>)}</select></label>
         <label>Type <select name="type" defaultValue={q.type ?? ""}><option value="">any</option><option>feature</option><option>bug</option></select></label>
@@ -46,7 +46,8 @@ export default async function Board({ params, searchParams }: { params: Promise<
               <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card${c.status === "blocked" ? " blocked" : ""}`} data-uid={c.uid}>
                 <div className="meta">
                   <span className="mono">{c.id}</span>
-                  {c.type === "bug" && <span className="tag bug">bug</span>}
+                  <span className={`tag ${c.type === "bug" ? "bug" : "feature"}`}>{c.type}</span>
+                  {c.last_via === "agent" && <span className="ai" title="last moved by an agent">AI</span>}
                   {c.jira_key && <span className="mono">{c.jira_key}</span>}
                 </div>
                 <div className="title">{c.title}</div>

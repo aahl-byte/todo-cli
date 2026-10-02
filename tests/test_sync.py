@@ -589,3 +589,69 @@ def test_held_status_keeps_its_provisional_history(pair, server):
     run_cli(a, ["--agent", "reject", "login-bug", "broken"])
     rnd(a, server, "alice")
     assert all(not h["provisional"] for h in item(a)["history"])   # stale: server status adopted
+
+
+# ── regressions from the third sync validation ───────────────────────────────
+def test_superseded_replay_keeps_the_newer_forced_deploy(pair, server):
+    a, _ = pair
+    run_cli(a, ["approve", "login-bug"])
+    rnd(a, server, "alice")
+    run_cli(a, ["start", "login-bug"])
+    flaky = Flaky(server, "alice")
+    sync.run_round(a, flaky)
+    run_cli(a, ["status", "login-bug", "deployed", "--force"])
+    sync.run_round(a, flaky)
+    pushed = [op for batch in server.pushes for op in batch if op["op"] == "set" and op["data"].get("status") == "deployed"]
+    assert pushed and pushed[-1].get("force") is True
+
+
+def test_an_unparseable_item_file_does_not_stop_the_round(pair, server):
+    a, b = pair
+    run_cli(b, ["add", "Other"])
+    rnd(b, server, "bob")
+    f = a / "OPEN" / "login-bug" / "TODO.yaml"
+    f.write_text(f.read_text().replace("title: Login bug", "title: [Login bug"))
+    report = rnd(a, server, "alice")
+    assert report.error is None
+    assert (a / "OPEN" / "other").is_dir()
+
+
+def test_a_replayed_refusal_parks_the_refused_data_not_a_later_fix(tmp_path, server, monkeypatch):
+    a = make(tmp_path, "a", server)
+    run_cli(a, ["add", "Login"])
+    real_create = server._create
+
+    def refuse_blank(op, author):
+        if op["entity"] == "item" and not str(op["data"].get("title", "")).strip():
+            return {"op_id": op["op_id"], "status": "rejected", "reason": "invalid-title"}
+        return real_create(op, author)
+
+    monkeypatch.setattr(server, "_create", refuse_blank)
+    f = a / "OPEN" / "login" / "TODO.yaml"
+    f.write_text(f.read_text().replace("title: Login", "title: '   '"))
+    flaky = Flaky(server, "alice")
+    sync.run_round(a, flaky)
+    f.write_text(f.read_text().replace("title: '   '", "title: Login fixed"))
+    sync.run_round(a, flaky)
+    sync.run_round(a, flaky)
+    assert [r["title"] for r in server.rows.values() if r["_entity"] == "item"] == ["Login fixed"]
+
+
+def test_a_held_status_keeps_its_provisional_history_until_it_lands(pair, server):
+    a, b = pair
+    for cmd in (["--human", "ready-qa"], ["qa"]):
+        run_cli(a, cmd + ["login-bug"])
+    rnd(a, server, "alice")
+    real_apply = server.apply
+
+    def roll_back_everything(ops, author):
+        return [{"op_id": op["op_id"], "status": "rejected", "reason": "group-rolled-back"} for op in ops]
+
+    server.apply = roll_back_everything
+    run_cli(a, ["--agent", "start", "login-bug"])
+    rnd(a, server, "alice", push_only=True)
+    assert any(h["provisional"] and h["to"] == "in-progress" for h in item(a)["history"])
+    server.apply = real_apply
+    rnd(a, server, "alice")
+    op = next(op for op in server.pushes[-1] if op["op"] == "set")
+    assert op["via"] == "agent"

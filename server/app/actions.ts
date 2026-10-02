@@ -4,7 +4,8 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { applyOps, type Op, type Result } from "@/lib/apply";
+import { applyOps, ProjectNotFound, type Op, type Result } from "@/lib/apply";
+import { POSTABLE_KINDS, describe, safeNext, type ActionState } from "@/lib/action-helpers";
 import { userForToken } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
@@ -13,34 +14,7 @@ import { COOKIE, requireUser } from "@/lib/session";
 import { later } from "@/lib/http";
 import { flushJira } from "@/lib/jira/flush";
 
-export interface ActionState {
-  ok: boolean;
-  message?: string;
-  at?: number;
-}
-
-const REASONS: Record<string, string> = {
-  "checks-pending": "pre-deploy checks are still pending",
-  "agent-handoff": "an agent can't hand work to QA",
-  "group-rolled-back": "nothing was applied",
-  removed: "it was removed",
-};
-
-export async function describe(results: Result[]): Promise<ActionState> {
-  for (const r of results) {
-    for (const x of r.rejected ?? []) {
-      if (x.reason === "stale") {
-        const at = x.at ? ` at ${x.at.slice(11, 16)}` : "";
-        return { ok: false, message: `${x.by ?? "Someone"} set ${x.field} to ${JSON.stringify(x.server_value)}${at} — reload and try again.`, at: Date.now() };
-      }
-      return { ok: false, message: `Not applied: ${REASONS[x.reason] ?? x.reason}.`, at: Date.now() };
-    }
-    if (r.status === "rejected" && r.reason !== "group-rolled-back") {
-      return { ok: false, message: `Not applied: ${REASONS[r.reason ?? ""] ?? r.reason}.`, at: Date.now() };
-    }
-  }
-  return { ok: true, at: Date.now() };
-}
+export type { ActionState };
 
 async function run(project: string, ops: Op[] | (() => Op[])): Promise<ActionState> {
   const user = await requireUser();
@@ -51,9 +25,15 @@ async function run(project: string, ops: Op[] | (() => Op[])): Promise<ActionSta
     return { ok: false, message: (e as Error).message, at: Date.now() };
   }
   const d = await db();
-  const results = await applyOps(d, project, built, { handle: user.handle });
+  let results: Result[];
+  try {
+    results = await applyOps(d, project, built, { handle: user.handle });
+  } catch (e) {
+    if (e instanceof ProjectNotFound) return { ok: false, message: "No such project.", at: Date.now() };
+    throw e;
+  }
   later(() => flushJira(d));
-  const state = await describe(results);
+  const state = describe(results);
   // A refused write leaves the page as the user saw it, so the form that raised
   // the notice is still mounted; live polling brings in the newer state.
   if (state.ok) revalidatePath(`/p/${project}`, "layout");
@@ -84,8 +64,10 @@ export async function itemAction(_prev: ActionState, fd: FormData): Promise<Acti
       return run(project, () => build.backToWorkOps(item, str(fd, "text")));
     case "pickup":
       return run(project, build.pickUpOps(item, user.handle));
-    case "approve":
-      return run(project, build.approveOps(item, fd.get("deploy_step") !== "0"));
+    case "approve": {
+      const [p] = await (await db()).query("select deploy_step from projects where key = $1", [project]);
+      return run(project, build.approveOps(item, p?.deploy_step !== false));
+    }
     case "people":
       return run(project, [build.setOp("item", item, { developer: str(fd, "developer") || null, qa_assignee: str(fd, "qa") || null })]);
     case "edit": {
@@ -103,8 +85,11 @@ export async function noteAction(_prev: ActionState, fd: FormData): Promise<Acti
   const itemUid = str(fd, "item_uid");
   const user = await requireUser();
   switch (str(fd, "action")) {
-    case "add":
-      return run(project, () => build.noteOps(itemUid, str(fd, "kind") || "context", str(fd, "text")));
+    case "add": {
+      const kind = str(fd, "kind") || "context";
+      if (!POSTABLE_KINDS.includes(kind)) return { ok: false, message: `Notes of kind ${kind} can't be posted here.` };
+      return run(project, () => build.noteOps(itemUid, kind, str(fd, "text")));
+    }
     case "link":
       return run(project, () => build.linkOps(itemUid, str(fd, "url"), str(fd, "label"), str(fd, "type")));
     case "answer":
@@ -158,13 +143,20 @@ export async function deployAllAction(_prev: ActionState, fd: FormData): Promise
   const items: build.Ref[] = JSON.parse(str(fd, "items") || "[]");
   const user = await requireUser();
   const d = await db();
-  const results = await applyOps(d, project, items.flatMap((it) => build.statusOps(it, "deployed")), { handle: user.handle });
+  let results: Result[];
+  try {
+    results = await applyOps(d, project, items.flatMap((it) => build.statusOps(it, "deployed")), { handle: user.handle });
+  } catch (e) {
+    if (e instanceof ProjectNotFound) return { ok: false, message: "No such project.", at: Date.now() };
+    throw e;
+  }
   later(() => flushJira(d));
   revalidatePath(`/p/${project}`, "layout");
-  const held = results.filter((r) => r.rejected?.length || r.status === "rejected").length;
-  return held
-    ? { ok: false, message: `Deployed ${results.length - held}; held back ${held} with pending checks or newer changes.`, at: Date.now() }
-    : { ok: true, message: `Deployed ${results.length}.`, at: Date.now() };
+  const heldUids = items.filter((_, i) => results[i].rejected?.length || results[i].status === "rejected").map((it) => it.uid);
+  if (!heldUids.length) return { ok: true, message: `Deployed ${results.length}.`, at: Date.now() };
+  const ids = (await d.query("select id from items where uid = any($1::text[]) order by id", [heldUids])).map((r) => r.id);
+  return { ok: false, at: Date.now(),
+           message: `Deployed ${results.length - ids.length}; held back ${ids.join(", ")} (pending checks or newer changes).` };
 }
 
 export async function requestAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
@@ -178,8 +170,14 @@ export async function requestAction(_prev: ActionState, fd: FormData): Promise<A
     return { ok: false, message: (e as Error).message };
   }
   const d = await db();
-  const results = await applyOps(d, project, ops, { handle: user.handle });
-  const state = await describe(results);
+  let results: Result[];
+  try {
+    results = await applyOps(d, project, ops, { handle: user.handle });
+  } catch (e) {
+    if (e instanceof ProjectNotFound) return { ok: false, message: "No such project." };
+    throw e;
+  }
+  const state = describe(results);
   if (!state.ok) return state;
   const [row] = await d.query("select id from items where uid = $1", [ops[0].uid]);
   redirect(`/p/${project}/i/${row.id}`);
@@ -188,7 +186,7 @@ export async function requestAction(_prev: ActionState, fd: FormData): Promise<A
 export async function readAction(fd: FormData): Promise<void> {
   const user = await requireUser();
   await markRead(await db(), user.handle, [Number(fd.get("id"))]);
-  redirect(String(fd.get("to") || "/inbox"));
+  redirect(safeNext(String(fd.get("to") || "/inbox")));
 }
 
 export async function loginAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
@@ -199,7 +197,7 @@ export async function loginAction(_prev: ActionState, fd: FormData): Promise<Act
   }
   (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production",
                                          path: "/", maxAge: 60 * 60 * 24 * 90 });
-  redirect(str(fd, "next") || "/");
+  redirect(safeNext(str(fd, "next")));
 }
 
 export async function logoutAction(): Promise<void> {

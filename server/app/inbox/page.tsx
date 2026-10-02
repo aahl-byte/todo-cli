@@ -1,6 +1,6 @@
 import { readAction } from "@/app/actions";
 import { TopBar } from "@/components/TopBar";
-import { when } from "@/components/bits";
+import { Time } from "@/components/bits";
 import { db } from "@/lib/db";
 import { inbox } from "@/lib/inbox";
 import { requireUser } from "@/lib/session";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 const WHAT: Record<string, string> = {
   mention: "mentioned you", "qa-rejection": "QA rejected your work", clarification: "asked a question",
-  answer: "answered your question", "ready-for-qa": "handed you QA", deployed: "your request was deployed",
+  answer: "answered your question", "ready-for-qa": "handed you QA", deployed: "deployed your request",
 };
 
 export default async function Inbox({ searchParams }: { searchParams: Promise<{ all?: string }> }) {
@@ -31,13 +31,13 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
             <form key={n.id} action={readAction} className="list-row">
               <input type="hidden" name="id" value={n.id} />
               <input type="hidden" name="to" value={to} />
-              <span>{n.read_at ? " " : "•"}</span>
+              <span aria-label={n.read_at ? "read" : "unread"} title={n.read_at ? "read" : "unread"}>{n.read_at ? "○" : "●"}</span>
               <div className="grow">
-                <strong>{n.note_author ?? "someone"}</strong> {WHAT[n.kind] ?? n.kind} — {n.item_title}{" "}
+                <strong>{n.actor ?? n.note_author ?? "someone"}</strong> {WHAT[n.kind] ?? n.kind} — {n.item_title}{" "}
                 <span className="mono muted">{n.project}/{n.item_id}</span>
                 {n.note_text && <div className="muted">{String(n.note_text).slice(0, 200)}</div>}
               </div>
-              <span className="muted">{when(new Date(n.created).toISOString())}</span>
+              <span className="muted"><Time ts={new Date(n.created).toISOString()} /></span>
               <button>Open</button>
             </form>
           );

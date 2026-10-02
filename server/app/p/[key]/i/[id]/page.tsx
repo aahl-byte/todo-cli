@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { checkAction, itemAction, noteAction, taskAction } from "@/app/actions";
 import { ActionForm } from "@/components/ActionForm";
 import { AutoSelect } from "@/components/AutoSelect";
-import { AiBadge, Dot, StatusPill, when } from "@/components/bits";
+import { AiBadge, Dot, StatusPill, Time, safeUrl } from "@/components/bits";
 import { Composer } from "@/components/Composer";
 import { Markdown } from "@/components/Markdown";
 import { db } from "@/lib/db";
@@ -31,7 +31,9 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
       <header style={{ marginBottom: 12 }}>
         <div className="row muted">
           <span className="mono">{it.id}</span>
-          {it.jira_key && <span className="mono">{it.jira_key}</span>}
+          {it.jira_key && (process.env.JIRA_BASE_URL
+            ? <a className="mono" href={`${process.env.JIRA_BASE_URL.replace(/\/+$/, "")}/browse/${it.jira_key}`} target="_blank" rel="noreferrer">{it.jira_key}</a>
+            : <span className="mono">{it.jira_key}</span>)}
           <span>{it.type}</span>
           <span>priority {it.priority}</span>
         </div>
@@ -63,18 +65,26 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
 
       <div className="item-grid">
         <div>
-          {view.requests.map((n) => (
-            <details key={n.uid} className="request" open={String(n.text).split("\n").length <= 6}>
-              <summary>Original request — external context ({n.author ?? "unknown"})</summary>
-              <Markdown text={n.text} />
-            </details>
-          ))}
+          {view.requests.map((n) => {
+            const lines = String(n.text).split("\n");
+            return (
+              <div key={n.uid} className="request">
+                <div className="muted">Original request — external context ({n.author ?? "unknown"})</div>
+                <Markdown text={lines.slice(0, 6).join("\n")} />
+                {lines.length > 6 && (
+                  <details><summary className="muted">show the rest ({lines.length - 6} more lines)</summary>
+                    <Markdown text={lines.slice(6).join("\n")} />
+                  </details>
+                )}
+              </div>
+            );
+          })}
 
           <h2>Open questions</h2>
           {view.openQuestions.length === 0 && <p className="muted">None open.</p>}
           {view.openQuestions.map((n) => (
             <div key={n.uid} className="question" id={`n-${n.n}`} data-uid={n.uid}>
-              <div className="who">[{n.n}] {n.author} <AiBadge via={n.via} /> · {when(n.ts)}</div>
+              <div className="who">[{n.n}] {n.author} <AiBadge via={n.via} /> · <Time ts={n.ts} /></div>
               <Markdown text={n.text} />
               <ActionForm action={noteAction} fields={{ ...child(n), action: "answer" }} versions={n.versions}>
                 <Composer users={people} placeholder="Answer…" required uploads={uploads} rows={2} />
@@ -133,7 +143,7 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
           <h2>Context notes</h2>
           {view.context.map((n) => (
             <div key={n.uid} className="note" id={`n-${n.n}`} data-uid={n.uid}>
-              <div className="who">[{n.n}] {n.author} <AiBadge via={n.via} /> · {when(n.ts)}</div>
+              <div className="who">[{n.n}] {n.author} <AiBadge via={n.via} /> · <Time ts={n.ts} /></div>
               <Markdown text={n.text} />
             </div>
           ))}
@@ -150,7 +160,7 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
             <div key={n.uid} className="note" id={`n-${n.n}`} data-uid={n.uid}>
               <div className="who">
                 {n.kind === "qa-rejection" && <span className="rejected-tag">QA rejected · </span>}
-                {n.author} <AiBadge via={n.via} /> · {when(n.ts)}{n.source === "jira" && " · from Jira"}
+                {n.author} <AiBadge via={n.via} /> · <Time ts={n.ts} />{n.source === "jira" && " · from Jira"}
               </div>
               <Markdown text={n.text} />
             </div>
@@ -171,7 +181,9 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
                   <div className="muted">{type}</div>
                   {rows.map((l) => (
                     <div key={l.uid} className="row" data-uid={l.uid}>
-                      <a href={l.meta?.url} target="_blank" rel="noreferrer">{l.meta?.label || l.text}</a>
+                      {safeUrl(l.meta?.url)
+                        ? <a href={safeUrl(l.meta?.url)!} target="_blank" rel="noreferrer">{l.meta?.label || l.text}</a>
+                        : <span>{l.meta?.label || l.text}</span>}
                       <ActionForm action={noteAction} fields={{ ...child(l), action: "remove" }} versions={l.versions}>
                         <button className="link" aria-label="remove link">×</button>
                       </ActionForm>
@@ -182,11 +194,11 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
             })}
             <ActionForm action={noteAction} fields={{ ...ref, action: "link" }}>
               <div className="row">
-                <input name="url" placeholder="https://…" required style={{ flex: 1, minWidth: 140 }} />
-                <select name="type" defaultValue="pr">{LINK_TYPES.map((x) => <option key={x}>{x}</option>)}</select>
+                <input name="url" aria-label="link URL" placeholder="https://…" required style={{ flex: 1, minWidth: 140 }} />
+                <select name="type" aria-label="link type" defaultValue="pr">{LINK_TYPES.map((x) => <option key={x}>{x}</option>)}</select>
               </div>
               <div className="row" style={{ marginTop: 4 }}>
-                <input name="label" placeholder="label (optional)" style={{ flex: 1 }} />
+                <input name="label" aria-label="link label" placeholder="label (optional)" style={{ flex: 1 }} />
                 <button>Add link</button>
               </div>
             </ActionForm>
@@ -215,12 +227,12 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
             ))}
             <ActionForm action={checkAction} fields={{ ...ref, action: "add" }}>
               <div className="row">
-                <select name="kind" defaultValue="db-script">{CHECK_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
-                <select name="timing" defaultValue="pre-deploy"><option>pre-deploy</option><option>post-deploy</option></select>
+                <select name="kind" aria-label="check kind" defaultValue="db-script">{CHECK_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
+                <select name="timing" aria-label="check timing" defaultValue="pre-deploy"><option>pre-deploy</option><option>post-deploy</option></select>
               </div>
-              <input name="title" placeholder="what has to happen" required style={{ width: "100%", marginTop: 4 }} />
+              <input name="title" aria-label="check title" placeholder="what has to happen" required style={{ width: "100%", marginTop: 4 }} />
               <div className="row" style={{ marginTop: 4 }}>
-                <input name="payload" placeholder="script, variable, branch or item id" style={{ flex: 1 }} />
+                <input name="payload" aria-label="check payload" placeholder="script, variable, branch or item id" style={{ flex: 1 }} />
                 <button>Add check</button>
               </div>
             </ActionForm>
@@ -231,8 +243,8 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
             <ol className="history" style={{ paddingLeft: 18 }}>
               {view.history.map((h) => (
                 <li key={h.uid}>
-                  <StatusPill status={h.from_status ?? "todo"} /> → <StatusPill status={h.to_status} />{" "}
-                  <span className="muted">{h.by} <AiBadge via={h.via} /> · {when(h.ts)}{h.forced && " · forced"}</span>
+                  {h.from_status ? <StatusPill status={h.from_status} /> : <span className="muted">—</span>} → <StatusPill status={h.to_status} />{" "}
+                  <span className="muted">{h.by} <AiBadge via={h.via} /> · <Time ts={h.ts} />{h.forced && " · forced"}</span>
                 </li>
               ))}
             </ol>
@@ -247,7 +259,7 @@ function AddTask({ ref_, phase, label }: { ref_: Record<string, string>; phase: 
   return (
     <ActionForm action={taskAction} fields={{ ...ref_, action: "add", phase: phase === null ? "" : String(phase) }}>
       <div className="row">
-        <input name="title" placeholder={label ?? (phase === null ? "add an unphased task" : `add to phase ${phase}`)} required style={{ flex: 1, minWidth: 180 }} />
+        <input name="title" aria-label={label ?? (phase === null ? "add an unphased task" : `add a task to phase ${phase}`)} placeholder={label ?? (phase === null ? "add an unphased task" : `add to phase ${phase}`)} required style={{ flex: 1, minWidth: 180 }} />
         <button>Add</button>
       </div>
     </ActionForm>
@@ -258,7 +270,7 @@ function DevLog({ logs }: { logs: Row[] }) {
   const recent = logs.slice(-5);
   const line = (e: Row) => (
     <div key={e.uid} className="note" data-uid={e.uid}>
-      <div className="who">[{e.n}] {when(e.ts)} · {e.author} <AiBadge via={e.via} /></div>
+      <div className="who">[{e.n}] <Time ts={e.ts} /> · {e.author} <AiBadge via={e.via} /></div>
       <Markdown text={e.text} />
     </div>
   );
@@ -293,7 +305,7 @@ function NextSteps({ it, keyName, deployStep }: { it: Row; keyName: string; depl
     buttons.unshift(
       <details key="back"><summary><span className="muted">Back to work…</span></summary>
         <ActionForm action={itemAction} fields={{ ...ref, action: "back" }} versions={it.versions}>
-          <textarea name="text" placeholder="Optional: what to change (posted as a comment)" rows={2} />
+          <textarea name="text" aria-label="what to change" placeholder="Optional: what to change (posted as a comment)" rows={2} />
           <button>Back to work</button>
         </ActionForm>
       </details>);
@@ -311,7 +323,7 @@ function NextSteps({ it, keyName, deployStep }: { it: Row; keyName: string; depl
       </ActionForm>,
       <details key="reject"><summary><span className="rejected-tag">Reject…</span></summary>
         <ActionForm action={itemAction} fields={{ ...ref, action: "reject" }} versions={it.versions}>
-          <textarea name="text" placeholder="What failed? (required)" required rows={3} />
+          <textarea name="text" aria-label="what failed" placeholder="What failed? (required)" required rows={3} />
           <button className="danger">Reject</button>
         </ActionForm>
       </details>);
@@ -344,7 +356,10 @@ function SetStatus({ it, keyName }: { it: Row; keyName: string }) {
       <summary className="muted">Set status…</summary>
       <ActionForm action={itemAction} fields={{ project: keyName, uid: it.uid, item_uid: it.uid, action: "status" }} versions={it.versions}>
         <div className="row">
-          <select name="to" aria-label="new status">{choices.map((s) => <option key={s}>{s}</option>)}</select>
+          <select name="to" aria-label="new status" required defaultValue="">
+            <option value="" disabled>choose…</option>
+            {choices.map((s) => <option key={s}>{s}</option>)}
+          </select>
           {it.pending_pre > 0 && <label><input type="checkbox" name="force" value="1" /> deploy past pending checks</label>}
           <button>Set</button>
         </div>

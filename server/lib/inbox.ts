@@ -3,7 +3,7 @@ import type { Db } from "./db";
 
 export async function inbox(db: Db, handle: string, opts: { all?: boolean; since?: number } = {}) {
   const rows = await db.query(
-    `select n.id, n.kind, n.project, n.created, n.read_at, n.note_uid,
+    `select n.id, n.kind, n.project, n.created, n.read_at, n.note_uid, n.actor,
             i.id as item_id, i.title as item_title, i.status as item_status,
             nt.n as note_n, nt.text as note_text, nt.author as note_author
        from notifications n

@@ -54,7 +54,7 @@ export function Composer({ name = "text", users, placeholder, required, uploads,
   const matches = query === null ? [] : users.filter((u) => u.toLowerCase().startsWith(query.toLowerCase())).slice(0, 6);
   return (
     <div style={{ position: "relative" }}>
-      <textarea ref={ref} name={name} rows={rows} placeholder={placeholder} required={required} onInput={onInput}
+      <textarea ref={ref} name={name} rows={rows} placeholder={placeholder} aria-label={placeholder ?? name} required={required} onInput={onInput}
         onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); void upload(e.clipboardData.files); } }}
         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); void upload(e.dataTransfer.files); } }} />
       {matches.length > 0 && (

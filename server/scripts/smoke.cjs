@@ -17,14 +17,29 @@ const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text()); });
   const login = async (who) => {
     await ctx.clearCookies();
-    await page.goto(base + "/login");
+    await page.goto(base + "/login?next=/p/web");
     await page.fill('input[name=handle]', who);
     await page.fill('input[name=token]', tokens[who]);
     await page.click("button.primary");
-    await page.waitForURL(/\/p\/web/);
+    await page.waitForURL((u) => u.pathname.startsWith("/p/web"));
   };
-  const step = async (name, fn) => { try { await fn(); console.log("ok  ", name); } catch (e) { console.log("FAIL", name, e.message.split("\n")[0]); errors.push(name); } };
+  const step = async (name, fn) => { try { await fn(); console.log("ok  ", name); } catch (e) { console.log("FAIL", name, e.message.split("\n").slice(0, 8).join(" | ")); errors.push(name); } };
 
+  await step("signed-out pages leak nothing", async () => {
+    for (const path of ["/p/web", "/p/web/deploy", "/p/web/new", "/p/web/qa", "/inbox", "/p/web/i/store-times-in-utc"]) {
+      const res = await fetch(base + path, { redirect: "manual" });
+      const body = await res.text();
+      if (res.status < 300 || res.status >= 400) throw new Error(`${path}: ${res.status}`);
+      if (/convert timestamps|Store times|"dev"|Safari/.test(body)) throw new Error(`${path} leaked data`);
+    }
+  });
+  await step("sign-in refuses an off-site redirect", async () => {
+    await page.goto(base + "/login?next=//example.org/x");
+    await page.fill('input[name=handle]', "dev");
+    await page.fill('input[name=token]', tokens.dev);
+    await page.click("button.primary");
+    await page.waitForURL((u) => u.host === new URL(base).host && !u.pathname.startsWith("/login"));
+  });
   await step("login as dev → board", () => login("dev"));
   await page.screenshot({ path: out + "/board.png", fullPage: true });
   await step("board shows columns", async () => {
@@ -74,6 +89,33 @@ const errors = [];
     await p2.locator('.toasts .banner').waitFor();
     console.log("     banner:", await p2.locator('.toasts .banner').first().textContent());
     await p2.close();
+  });
+  await step("a live refresh updates an untouched select", async () => {
+    await page.goto(base + "/p/web/i/export-invoices-as-csv");
+    const v = await page.evaluate(() => document.querySelector("input[name=versions]").value);
+    const ver = JSON.parse(v);
+    const res = await fetch(base + "/api/projects/web/ops", { method: "POST",
+      headers: { authorization: "Bearer " + tokens.qa, "content-type": "application/json" },
+      body: JSON.stringify({ ops: [{ op_id: "prio-" + Date.now(), op: "set", entity: "item",
+        uid: await page.evaluate(() => document.querySelector("input[name=uid]").value),
+        item_uid: "x", data: { priority: "urgent" }, base: { priority: ver.priority } }] }) });
+    if (!res.ok) throw new Error("push " + res.status);
+    await page.waitForFunction(() => document.querySelector('select[aria-label="priority"]').value === "urgent", null, { timeout: 10000 });
+  });
+  await step("a refused write keeps the draft", async () => {
+    const p3 = await ctx.newPage();
+    await p3.route("**/api/projects/*/changes*", (r) => r.abort());
+    await p3.goto(base + "/p/web/i/export-invoices-as-csv");
+    await p3.fill('input[aria-label="title"]', "My draft title");
+    await fetch(base + "/api/projects/web/ops", { method: "POST",
+      headers: { authorization: "Bearer " + tokens.qa, "content-type": "application/json" },
+      body: JSON.stringify({ ops: [{ op_id: "title-" + Date.now(), op: "set", entity: "item",
+        uid: await p3.evaluate(() => document.querySelector("input[name=uid]").value), item_uid: "x",
+        data: { title: "Renamed by QA" }, base: JSON.parse(await p3.evaluate(() => document.querySelector("input[name=versions]").value)) }] }) });
+    await p3.click('button:has-text("Save")');
+    await p3.locator(".toasts .banner").waitFor();
+    if ((await p3.inputValue('input[aria-label="title"]')) !== "My draft title") throw new Error("draft lost");
+    await p3.close();
   });
   await step("login as qa → QA queue, reject with comment", async () => {
     await login("qa");

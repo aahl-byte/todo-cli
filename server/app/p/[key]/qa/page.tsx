@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { itemAction } from "@/app/actions";
 import { ActionForm } from "@/components/ActionForm";
-import { Initials, StatusPill, when } from "@/components/bits";
+import { Initials, StatusPill, Time, safeUrl } from "@/components/bits";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { project, qaQueue } from "@/lib/views";
@@ -23,9 +23,11 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
         <div className="row muted">
           <Initials handle={c.developer} label="dev" />
           <Initials handle={c.qa_assignee} label="qa" />
-          <span>since {when(c.entered)}</span>
+          <span>since <Time ts={c.entered} /></span>
           {c.bounces > 0 && <span className="rejected-tag">returned ×{c.bounces}</span>}
-          {c.links.map((l: any) => <a key={l.uid} href={l.meta?.url} target="_blank" rel="noreferrer">{l.meta?.type}: {l.meta?.label || l.text}</a>)}
+          {c.links.map((l: any) => safeUrl(l.meta?.url)
+            ? <a key={l.uid} href={safeUrl(l.meta?.url)!} target="_blank" rel="noreferrer">{l.meta?.type}: {l.meta?.label || l.text}</a>
+            : <span key={l.uid}>{l.meta?.type}: {l.meta?.label || l.text}</span>)}
         </div>
       </div>
       {actions}
@@ -50,7 +52,7 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
           </ActionForm>
           <details><summary><span className="rejected-tag">Reject…</span></summary>
             <ActionForm action={itemAction} fields={{ ...fields(c), action: "reject" }} versions={c.versions}>
-              <textarea name="text" required rows={3} placeholder="What failed? (required)" />
+              <textarea name="text" required rows={3} aria-label="what failed" placeholder="What failed? (required)" />
               <button className="danger">Reject</button>
             </ActionForm>
           </details>

@@ -170,12 +170,16 @@ alter table jira_outbox add column if not exists result jsonb;
 alter table jira_outbox add column if not exists claimed_at timestamptz;
 alter table jira_outbox add column if not exists next_attempt_at timestamptz;
 
+alter table notifications add column if not exists actor text;
+
 -- applied_ops was first keyed by op_id alone; key it per project.
 do $$
 begin
-  if (select count(*) from information_schema.key_column_usage
-       where table_name = 'applied_ops' and constraint_name = 'applied_ops_pkey') = 1 then
+  if (select array_length(conkey, 1) from pg_constraint
+       where conrelid = 'applied_ops'::regclass and contype = 'p') = 1 then
     alter table applied_ops drop constraint applied_ops_pkey;
     alter table applied_ops add primary key (project, op_id);
   end if;
 end $$;
+
+alter table jira_links add column if not exists last_event_at bigint;

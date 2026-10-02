@@ -28,7 +28,9 @@ export function AiBadge({ via }: { via?: string | null }) {
   return via === "agent" ? <span className="ai" title="written by an agent">AI</span> : null;
 }
 
-export function when(ts?: string | null): string {
-  if (!ts) return "";
-  return String(ts).slice(0, 16).replace("T", " ");
+export { Time } from "./Time";
+
+/** Only http(s) URLs become links; anything else renders as text. */
+export function safeUrl(url: unknown): string | null {
+  return typeof url === "string" && /^https?:\/\//i.test(url) ? url : null;
 }

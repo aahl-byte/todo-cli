@@ -355,3 +355,29 @@ describe("hardening, second pass", () => {
     expect(log.text).toContain("gave up");
   });
 });
+
+describe("third pass", () => {
+  it("applies the assignee and asks for redelivery of the status while its own account is unknown", async () => {
+    delete process.env.JIRA_ACCOUNT_ID;
+    resetAccountCache();
+    const it = await linkedItem();
+    const down = (async () => new Response("no", { status: 503 })) as unknown as typeof fetch;
+    const { handleWebhook } = await import("@/lib/jira/inbound");
+    const r = await handleWebhook(w.d, { webhookEvent: "jira:issue_updated", issue: issue({ assignee: null, status: { name: "In QA" } }),
+      user: { accountId: "acc-qa" }, changelog: { id: "both", items: [{ field: "assignee" }, { field: "status", toString: "In QA" }] } },
+      { fetchImpl: down });
+    expect(r.retry).toBe(true);
+    const [row] = await w.d.query("select developer, status from items where uid = $1", [it.uid]);
+    expect(row).toEqual({ developer: null, status: "requested" });
+    resetAccountCache();
+  });
+
+  it("ignores a redelivered older status event", async () => {
+    await linkedItem();
+    const ev = (name: string, id: string, timestamp: number) => ({ webhookEvent: "jira:issue_updated", timestamp,
+      issue: issue({ status: { name } }), user: { accountId: "acc-qa" }, changelog: { id, items: [{ field: "status", toString: name }] } });
+    await hook(ev("In QA", "new", 2000));
+    await hook(ev("In Progress", "old", 1000));
+    expect((await w.d.query("select status from items"))[0].status).toBe("in-qa");
+  });
+});

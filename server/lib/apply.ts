@@ -116,7 +116,8 @@ async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Pro
     if (e instanceof Rollback) {
       // Nothing in a rolled-back group applied, so no result may report versions.
       return e.results.map((r) => ({
-        op_id: r.op_id, status: "rejected", reason: "group-rolled-back",
+        op_id: r.op_id, status: "rejected",
+        reason: r.status === "rejected" && r.reason ? r.reason : "group-rolled-back",
         ...(r.rejected?.length ? { rejected: r.rejected } : {}),
       }));
     }
@@ -135,11 +136,12 @@ async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Pro
   }
 }
 
-/** Postgres errors that will recur on every retry: bad data (22), constraint
- * violations (23), bad SQL or names (42). */
+/** Everything except a known-transient failure recurs on retry: connection
+ * loss (08), serialization or deadlock (40), resources (53), shutdown (57), and
+ * the driver's own socket errors. */
 function deterministic(e: unknown): boolean {
   const code = String((e as { code?: unknown })?.code ?? "");
-  return /^(22|23|42)/.test(code);
+  return !/^(08|40|53|57)/.test(code) && !/^E(CONN|PIPE|TIMEDOUT|HOSTUNREACH|NETUNREACH)/.test(code);
 }
 
 function isRejected(r: Result): boolean {
@@ -173,12 +175,14 @@ class Ctx {
     const known = await this.t.query("select 1 from users where handle = $1", [handle]);
     if (!known.length) return;
     await this.t.query(
-      "insert into notifications (handle, kind, project, note_uid, item_uid) values ($1, $2, $3, $4, $5)",
-      [handle, kind, this.project, noteUid ?? null, itemUid]);
+      "insert into notifications (handle, kind, project, note_uid, item_uid, actor) values ($1, $2, $3, $4, $5, $6)",
+      [handle, kind, this.project, noteUid ?? null, itemUid, this.actor.handle]);
   }
 }
 
 async function applyOne(ctx: Ctx, op: Op): Promise<Result> {
+  if (op.data != null && (typeof op.data !== "object" || Array.isArray(op.data))) return reject(op, "invalid-data");
+  if (op.base != null && (typeof op.base !== "object" || Array.isArray(op.base))) return reject(op, "invalid-base");
   if (!TABLE[op.entity] || op.entity === ("history" as Entity)) return reject(op, "bad-entity");
   if (op.op === "create") return create(ctx, op);
   if (op.op === "set") return set(ctx, op);

@@ -4,6 +4,7 @@ import { checkAction, deployAllAction } from "@/app/actions";
 import { ActionForm } from "@/components/ActionForm";
 import { db } from "@/lib/db";
 import { project, deployPlan } from "@/lib/views";
+import { requireUser } from "@/lib/session";
 import { DeployButton } from "../i/[id]/page";
 import type { Row } from "@/lib/db";
 
@@ -24,9 +25,10 @@ function CheckRow({ c, keyName }: { c: Row; keyName: string }) {
 
 export default async function Deploy({ params }: { params: Promise<{ key: string }> }) {
   const { key } = await params;
+  await requireUser();
   const d = await db();
   const p = await project(d, key);
-  if (!p) notFound();
+  if (!p || !p.deploy_step) notFound();
   const plan = await deployPlan(d, key);
   return (
     <>

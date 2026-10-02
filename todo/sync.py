@@ -131,7 +131,12 @@ def ensure_uids(root: Path, project: str) -> None:
     """Give every entity a uid and write it into its file. Never recomputes one
     that exists."""
     for d in store._item_dirs(root):
-        y, meta = store._load_meta(d)
+        try:
+            y, meta = store._load_meta(d)
+        except Exception:  # noqa: BLE001 — unreadable item file: scan skips it too
+            continue
+        if not isinstance(meta, dict):
+            continue
         uid = to_str(meta.get("uid"))
         if not uid:
             uid = _hash_uid(project, d.name, to_str(meta.get("created")))
@@ -472,7 +477,9 @@ def _handle_results(root, ops, results, local, snap, report, rejected_fields, pu
         uid, entity = op["uid"], op["entity"]
         report.pushed += 1
         current = not replay or _still_local(local, op)
-        if entity == "item" and op["op"] == "set" and "status" in (r.get("versions") or {}):
+        # A replay that a newer local edit superseded must leave that edit's
+        # provisional history alone; its own push clears it.
+        if entity == "item" and op["op"] == "set" and current and "status" in (r.get("versions") or {}):
             pushed_status.add(uid)
         if entity == "item" and op["op"] == "set" and current and any(
                 x["field"] == "status" and "server_value" in x for x in r.get("rejected") or []):

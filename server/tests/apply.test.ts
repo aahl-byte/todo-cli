@@ -334,3 +334,17 @@ describe("re-validation fixes", () => {
     expect(cols.map((c) => c.column_name)).toEqual(["project", "op_id"]);
   });
 });
+
+describe("third pass", () => {
+  it("rejects malformed op shapes instead of failing the push", async () => {
+    await w.one("alice", item("I1"));
+    const r = await w.one("alice", { op: "create", entity: "task", uid: "T1", item_uid: "I1", data: "x" as any });
+    expect(r).toMatchObject({ status: "rejected", reason: "invalid-data" });
+  });
+
+  it("stores a non-database error as a rejection", async () => {
+    const broken = { ...w.d, tx: async () => { throw new TypeError("boom"); }, query: w.d.query };
+    const [r] = await applyOps(broken as any, "p", [{ op_id: "TE", ...item("I1") } as any], { handle: "alice" });
+    expect(r).toMatchObject({ status: "rejected", reason: "error" });
+  });
+});

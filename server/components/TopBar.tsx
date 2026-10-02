@@ -15,12 +15,23 @@ export function TopBar({ handle, project, all }: { handle: string; project?: Pro
         </div>
       </details>
       {project && (
-        <nav>
+        <nav aria-label="project" className="wide-nav">
           <Link href={`/p/${project.key}`}>Board</Link>
           <Link href={`/p/${project.key}/qa`}>QA</Link>
           {project.deploy_step && <Link href={`/p/${project.key}/deploy`}>Deploy</Link>}
-          <Link href={`/p/${project.key}/new`}><button className="primary" tabIndex={-1}>New request</button></Link>
+          <Link href={`/p/${project.key}/new`} className="btn primary">New request</Link>
         </nav>
+      )}
+      {project && (
+        <details className="nav-menu">
+          <summary aria-label="menu">Menu</summary>
+          <nav aria-label="project menu" className="panel">
+          <Link href={`/p/${project.key}`}>Board</Link>
+          <Link href={`/p/${project.key}/qa`}>QA</Link>
+          {project.deploy_step && <Link href={`/p/${project.key}/deploy`}>Deploy</Link>}
+          <Link href={`/p/${project.key}/new`} className="btn primary">New request</Link>
+          </nav>
+        </details>
       )}
       <span className="spacer" />
       <Live project={project?.key} cursor={project?.seq} />
