@@ -1,0 +1,437 @@
+// The single write path. The CLI's sync, dashboard actions and the Jira bridge
+// all send ops here; see docs/plans/2026-10-02-team-store-implementation.md §2.3.
+import type { Db, Row } from "./db";
+import {
+  CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, SETTABLE, STATUSES, TABLE,
+  deriveCalcStatus, isSettable, mentions, nowIso, type Entity,
+} from "./model";
+import { ulid } from "./ulid";
+import { queueJira } from "./jira/outbound";
+
+export interface Op {
+  op_id: string;
+  op: "create" | "set" | "remove";
+  entity: Entity;
+  uid: string;
+  item_uid: string;
+  data?: Record<string, any>;
+  base?: Record<string, number>;
+  via?: "human" | "agent";
+  force?: boolean;
+  group?: string;
+}
+
+export interface Actor {
+  handle: string;
+  /** Bridge writes skip the version check. */
+  unconditional?: boolean;
+}
+
+export interface Rejection {
+  field: string;
+  reason: string;
+  server_value?: unknown;
+  by?: string | null;
+  at?: string | null;
+}
+
+export interface Result {
+  op_id: string;
+  status: "applied" | "rejected";
+  versions?: Record<string, number>;
+  assigned_n?: number;
+  assigned_id?: string;
+  rejected?: Rejection[];
+  reason?: string;
+  by?: string | null;
+  at?: string | null;
+  duplicate?: boolean;
+}
+
+export class ProjectNotFound extends Error {}
+
+class Rollback extends Error {
+  constructor(public results: Result[]) {
+    super("group rolled back");
+  }
+}
+
+/** Apply `ops` for `project` as `actor`. Results come back in input order. */
+export async function applyOps(db: Db, project: string, ops: Op[], actor: Actor): Promise<Result[]> {
+  const units: Op[][] = [];
+  const groups = new Map<string, Op[]>();
+  for (const op of ops) {
+    if (!op.group) {
+      units.push([op]);
+      continue;
+    }
+    let g = groups.get(op.group);
+    if (!g) {
+      g = [];
+      groups.set(op.group, g);
+      units.push(g);
+    }
+    g.push(op);
+  }
+  const byId = new Map<string, Result>();
+  for (const unit of units) {
+    for (const r of await applyUnit(db, project, unit, actor)) byId.set(r.op_id, r);
+  }
+  return ops.map((op) => byId.get(op.op_id)!);
+}
+
+async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Promise<Result[]> {
+  try {
+    return await db.tx(async (t) => {
+      const locked = await t.query("select key from projects where key = $1 for update", [project]);
+      if (!locked.length) throw new ProjectNotFound(project);
+      const out: Result[] = [];
+      for (const op of unit) {
+        const prior = await t.query("select result from applied_ops where op_id = $1", [op.op_id]);
+        if (prior.length) {
+          out.push({ ...(prior[0].result as Result), duplicate: true });
+          continue;
+        }
+        out.push(await applyOne(new Ctx(t, project, actor, op), op));
+      }
+      if (unit.length > 1 && out.some(isRejected)) throw new Rollback(out);
+      for (const r of out) {
+        if (r.duplicate) continue;
+        await t.query("insert into applied_ops (op_id, project, result) values ($1, $2, $3::jsonb)",
+          [r.op_id, project, JSON.stringify(r)]);
+      }
+      return out;
+    });
+  } catch (e) {
+    if (!(e instanceof Rollback)) throw e;
+    return e.results.map((r) =>
+      isRejected(r) ? r : { op_id: r.op_id, status: "rejected", reason: "group-rolled-back" });
+  }
+}
+
+function isRejected(r: Result): boolean {
+  return r.status === "rejected" || !!r.rejected?.length;
+}
+
+class Ctx {
+  constructor(public t: Db, public project: string, public actor: Actor, public op: Op) {}
+
+  /** Take the project's next seq and record that `uid` changed. */
+  async bump(entity: Entity | "history", uid: string, itemUid: string, deleted = false): Promise<number> {
+    const [row] = await this.t.query(
+      "update projects set seq = seq + 1 where key = $1 returning seq", [this.project]);
+    const seq = Number(row.seq);
+    await this.t.query(
+      `insert into changes (project, seq, entity, uid, item_uid, deleted, author, ts)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [this.project, seq, entity, uid, itemUid, deleted, this.actor.handle, nowIso()]);
+    return seq;
+  }
+
+  async who(seq: number | undefined): Promise<{ by: string | null; at: string | null }> {
+    if (seq === undefined) return { by: null, at: null };
+    const [row] = await this.t.query(
+      "select author, ts from changes where project = $1 and seq = $2", [this.project, seq]);
+    return { by: row?.author ?? null, at: row?.ts ?? null };
+  }
+
+  async notify(handle: string | null | undefined, kind: string, itemUid: string, noteUid?: string) {
+    if (!handle || handle === this.actor.handle) return;
+    const known = await this.t.query("select 1 from users where handle = $1", [handle]);
+    if (!known.length) return;
+    await this.t.query(
+      "insert into notifications (handle, kind, project, note_uid, item_uid) values ($1, $2, $3, $4, $5)",
+      [handle, kind, this.project, noteUid ?? null, itemUid]);
+  }
+}
+
+async function applyOne(ctx: Ctx, op: Op): Promise<Result> {
+  if (!TABLE[op.entity] || op.entity === ("history" as Entity)) return reject(op, "bad-entity");
+  if (op.op === "create") return create(ctx, op);
+  if (op.op === "set") return set(ctx, op);
+  if (op.op === "remove") return remove(ctx, op);
+  return reject(op, "bad-op");
+}
+
+function reject(op: Op, reason: string, extra: Partial<Result> = {}): Result {
+  return { op_id: op.op_id, status: "rejected", reason, ...extra };
+}
+
+async function load(ctx: Ctx, entity: Entity, uid: string): Promise<Row | null> {
+  const rows = entity === "item"
+    ? await ctx.t.query("select * from items where uid = $1 and project = $2", [uid, ctx.project])
+    : await ctx.t.query(
+        `select e.* from ${TABLE[entity]} e join items i on i.uid = e.item_uid
+         where e.uid = $1 and i.project = $2`, [uid, ctx.project]);
+  return rows[0] ?? null;
+}
+
+async function removedReason(ctx: Ctx, op: Op): Promise<Result> {
+  const [tomb] = await ctx.t.query("select seq from tombstones where uid = $1", [op.uid]);
+  if (!tomb) return reject(op, "unknown");
+  return reject(op, "removed", await ctx.who(Number(tomb.seq)));
+}
+
+function invalid(entity: Entity, field: string, value: unknown): boolean {
+  if (field === "status" && entity === "item") return !STATUSES.includes(value as any);
+  if (field === "status" && entity === "task") return !STATUSES.includes(value as any);
+  if (field === "status" && entity === "check") return !["pending", "done"].includes(value as any);
+  if (field === "kind" && entity === "note") return !NOTE_KINDS.includes(value as any);
+  if (field === "kind" && entity === "check") return !CHECK_KINDS.includes(value as any);
+  if (field === "timing") return !["pre-deploy", "post-deploy"].includes(value as any);
+  if (field === "title" && (entity === "item" || entity === "task" || entity === "check"))
+    return typeof value !== "string" || !value.trim();
+  return false;
+}
+
+function slug(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "item";
+}
+
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+// ── create ───────────────────────────────────────────────────────────────────
+async function create(ctx: Ctx, op: Op): Promise<Result> {
+  const { entity } = op;
+  const data = op.data ?? {};
+  const jsonCol = JSON_FIELD[entity];
+  const existing = await load(ctx, entity, op.uid);
+  if (existing) {
+    const fields = CREATE_FIELDS[entity].filter((f) => f !== "n" && f !== "id" && f in data);
+    const identical = fields.every((f) => same(existing[f], data[f]))
+      && (!jsonCol || !(jsonCol in data) || same(existing[jsonCol], data[jsonCol]));
+    return identical
+      ? { op_id: op.op_id, status: "applied", versions: existing.versions }
+      : reject(op, "uid-exists");
+  }
+  const [tomb] = await ctx.t.query("select 1 from tombstones where uid = $1", [op.uid]);
+  if (tomb) return removedReason(ctx, op);
+
+  const row: Record<string, any> = { ...DEFAULTS[entity] };
+  for (const f of CREATE_FIELDS[entity]) if (f in data) row[f] = data[f];
+  for (const f of Object.keys(row)) {
+    if (row[f] !== undefined && row[f] !== null && invalid(entity, f, row[f])) return reject(op, `invalid-${f}`);
+  }
+  const result: Result = { op_id: op.op_id, status: "applied" };
+
+  let itemUid = op.item_uid;
+  if (entity === "item") {
+    itemUid = op.uid;
+    if (typeof row.title !== "string" || !row.title.trim()) return reject(op, "invalid-title");
+    const base = slug(String(row.id || row.title));
+    let id = base;
+    for (let n = 2; (await ctx.t.query("select 1 from items where project = $1 and id = $2", [ctx.project, id])).length; n++) {
+      id = `${base}-${n}`;
+    }
+    if (row.id && id !== row.id) result.assigned_id = id;
+    row.id = id;
+    row.created = row.created || nowIso();
+    row.creator = row.creator ?? ctx.actor.handle;
+    row.completed = COMPLETE.includes(row.status) ? data.completed || nowIso() : null;
+  } else {
+    const parent = await ctx.t.query("select 1 from items where uid = $1 and project = $2", [itemUid, ctx.project]);
+    if (!parent.length) return reject(op, "no-item");
+    const table = TABLE[entity];
+    const wanted = Number.isInteger(row.n) && row.n > 0 ? row.n : null;
+    const taken = wanted !== null
+      && (await ctx.t.query(`select 1 from ${table} where item_uid = $1 and n = $2`, [itemUid, wanted])).length > 0;
+    if (wanted === null || taken) {
+      const [m] = await ctx.t.query(`select coalesce(max(n), 0) as n from ${table} where item_uid = $1`, [itemUid]);
+      row.n = Number(m.n) + 1;
+      if (wanted !== null) result.assigned_n = row.n;
+    }
+    if (entity === "note" || entity === "log") {
+      row.ts = row.ts || nowIso();
+      if (typeof row.text !== "string") return reject(op, "invalid-text");
+      row.author = ctx.actor.handle;
+      row.via = op.via ?? "human";
+    }
+    if (entity === "note") row.source = data.source ?? null;
+  }
+  if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? data[jsonCol] : {};
+
+  const seq = await ctx.bump(entity, op.uid, itemUid);
+  const versions: Record<string, number> = {};
+  for (const f of SETTABLE[entity]) versions[f] = seq;
+  if (jsonCol) for (const k of Object.keys(row[jsonCol])) versions[`${jsonCol}.${k}`] = seq;
+  row.versions = versions;
+  row.uid = op.uid;
+  if (entity === "item") row.project = ctx.project;
+  else row.item_uid = itemUid;
+
+  const cols = Object.keys(row);
+  const jsonCols = new Set([jsonCol, "versions"].filter(Boolean) as string[]);
+  await ctx.t.query(
+    `insert into ${TABLE[entity]} (${cols.join(", ")}) values (${cols.map((c, i) => `$${i + 1}${jsonCols.has(c) ? "::jsonb" : ""}`).join(", ")})`,
+    cols.map((c) => (jsonCols.has(c) ? JSON.stringify(row[c]) : row[c])));
+  result.versions = versions;
+
+  if (entity === "task") await recalc(ctx, itemUid);
+  if (entity === "note") await noteCreated(ctx, itemUid, row);
+  if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", itemUid, note: row });
+  return result;
+}
+
+// ── set ──────────────────────────────────────────────────────────────────────
+async function set(ctx: Ctx, op: Op): Promise<Result> {
+  const { entity } = op;
+  const row = await load(ctx, entity, op.uid);
+  if (!row) return removedReason(ctx, op);
+  const jsonCol = JSON_FIELD[entity];
+  const versions: Record<string, number> = { ...(row.versions ?? {}) };
+  const rejected: Rejection[] = [];
+  const accepted: [string, unknown][] = [];
+  const out: Record<string, number> = {};
+
+  for (const [field, value] of Object.entries(op.data ?? {})) {
+    if (!isSettable(entity, field)) {
+      rejected.push({ field, reason: "not-settable" });
+      continue;
+    }
+    if (value !== null && invalid(entity, field, value)) {
+      rejected.push({ field, reason: "invalid" });
+      continue;
+    }
+    const current = jsonCol && field.startsWith(jsonCol + ".")
+      ? (row[jsonCol] ?? {})[field.slice(jsonCol.length + 1)]
+      : row[field];
+    const version = versions[field];
+    if (same(value, current)) {
+      out[field] = version ?? 0;
+      continue;
+    }
+    const checked = !ctx.actor.unconditional && field !== "position";
+    if (checked && version !== undefined && op.base?.[field] !== version) {
+      rejected.push({ field, reason: "stale", server_value: current, ...(await ctx.who(version)) });
+      continue;
+    }
+    if (entity === "item" && field === "status") {
+      const why = await statusRule(ctx, op, row, String(value));
+      if (why) {
+        rejected.push({ field, reason: why, server_value: current });
+        continue;
+      }
+    }
+    accepted.push([field, value]);
+  }
+
+  if (accepted.length) {
+    const itemUid = entity === "item" ? row.uid : row.item_uid;
+    const seq = await ctx.bump(entity, op.uid, itemUid);
+    const json = jsonCol ? { ...(row[jsonCol] ?? {}) } : null;
+    const cols: Record<string, unknown> = {};
+    for (const [field, value] of accepted) {
+      if (jsonCol && field.startsWith(jsonCol + ".")) {
+        const key = field.slice(jsonCol.length + 1);
+        if (value === null) delete json![key];
+        else json![key] = value;
+      } else {
+        cols[field] = value;
+      }
+      versions[field] = seq;
+      out[field] = seq;
+    }
+    if (json && accepted.some(([f]) => f.startsWith(jsonCol + "."))) cols[jsonCol!] = json;
+    const statusChange = entity === "item" && "status" in cols ? String(cols.status) : null;
+    if (statusChange) {
+      const wasComplete = COMPLETE.includes(row.status);
+      const isComplete = COMPLETE.includes(statusChange);
+      if (isComplete && !wasComplete) cols.completed = nowIso();
+      if (!isComplete && wasComplete) cols.completed = null;
+    }
+    cols.versions = versions;
+    const names = Object.keys(cols);
+    const jsonCols = new Set([jsonCol, "versions"].filter(Boolean) as string[]);
+    await ctx.t.query(
+      `update ${TABLE[entity]} set ${names.map((c, i) => `${c} = $${i + 2}${jsonCols.has(c) ? "::jsonb" : ""}`).join(", ")} where uid = $1`,
+      [op.uid, ...names.map((c) => (jsonCols.has(c) ? JSON.stringify(cols[c]) : cols[c]))]);
+
+    if (statusChange) await statusChanged(ctx, op, row, statusChange);
+    if (entity === "task") await recalc(ctx, itemUid);
+    if (entity === "note" && json && json.state === "answered" && (row.meta ?? {}).state !== "answered") {
+      await ctx.notify(row.author, "answer", itemUid, row.uid);
+    }
+  }
+  return { op_id: op.op_id, status: rejected.length && !accepted.length && !Object.keys(out).length ? "rejected" : "applied",
+           versions: out, ...(rejected.length ? { rejected } : {}) };
+}
+
+async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<string | null> {
+  if (to === "ready-for-qa" && op.via === "agent") return "agent-handoff";
+  if (to === "deployed" && !op.force) {
+    const [c] = await ctx.t.query(
+      "select count(*)::int as n from checks where item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
+      [item.uid]);
+    if (Number(c.n) > 0) return "checks-pending";
+  }
+  return null;
+}
+
+async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<void> {
+  let forced = false;
+  if (to === "deployed" && op.force) {
+    const [c] = await ctx.t.query(
+      "select count(*)::int as n from checks where item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
+      [item.uid]);
+    forced = Number(c.n) > 0;
+  }
+  const [m] = await ctx.t.query(
+    "select coalesce(max(n), 0) as n from status_history where item_uid = $1", [item.uid]);
+  const uid = ulid();
+  await ctx.t.query(
+    `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [uid, item.uid, Number(m.n) + 1, item.status, to, ctx.actor.handle, op.via ?? "human", forced, nowIso()]);
+  await ctx.bump("history", uid, item.uid);
+  const [fresh] = await ctx.t.query("select developer, qa_assignee, creator from items where uid = $1", [item.uid]);
+  if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
+  if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
+  await queueJira(ctx.t, ctx.actor, { kind: "status", itemUid: item.uid, status: to });
+}
+
+async function noteCreated(ctx: Ctx, itemUid: string, note: Row): Promise<void> {
+  const [item] = await ctx.t.query("select developer, creator from items where uid = $1", [itemUid]);
+  if (note.kind === "comment" || note.kind === "qa-rejection") {
+    for (const h of mentions(note.text)) await ctx.notify(h, "mention", itemUid, note.uid);
+  }
+  if (note.kind === "qa-rejection") await ctx.notify(item.developer, "qa-rejection", itemUid, note.uid);
+  if (note.kind === "clarification") await ctx.notify(item.creator, "clarification", itemUid, note.uid);
+}
+
+async function recalc(ctx: Ctx, itemUid: string): Promise<void> {
+  const tasks = await ctx.t.query("select status from tasks where item_uid = $1", [itemUid]);
+  const calc = deriveCalcStatus(tasks.map((r) => r.status));
+  const [item] = await ctx.t.query("select calc_status from items where uid = $1", [itemUid]);
+  if ((item.calc_status ?? null) === calc) return;
+  await ctx.t.query("update items set calc_status = $2 where uid = $1", [itemUid, calc]);
+  await ctx.bump("item", itemUid, itemUid);
+}
+
+// ── remove ───────────────────────────────────────────────────────────────────
+async function remove(ctx: Ctx, op: Op): Promise<Result> {
+  const { entity } = op;
+  if (entity === "item") return reject(op, "not-removable");
+  const row = await load(ctx, entity, op.uid);
+  if (!row) return removedReason(ctx, op);
+  if (!ctx.actor.unconditional) {
+    const stale: Rejection[] = [];
+    for (const [field, version] of Object.entries(row.versions ?? {})) {
+      if (field === "position") continue;
+      if (op.base?.[field] !== version) {
+        const current = JSON_FIELD[entity] && field.startsWith(JSON_FIELD[entity] + ".")
+          ? (row[JSON_FIELD[entity]!] ?? {})[field.split(".").slice(1).join(".")]
+          : row[field];
+        stale.push({ field, reason: "stale", server_value: current, ...(await ctx.who(version as number)) });
+      }
+    }
+    if (stale.length) return { op_id: op.op_id, status: "rejected", reason: "stale", rejected: stale };
+  }
+  const seq = await ctx.bump(entity, op.uid, row.item_uid, true);
+  await ctx.t.query(`delete from ${TABLE[entity]} where uid = $1`, [op.uid]);
+  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq) values ($1, $2, $3, $4)",
+    [op.uid, entity, row.item_uid, seq]);
+  if (entity === "task") await recalc(ctx, row.item_uid);
+  return { op_id: op.op_id, status: "applied", versions: {} };
+}
