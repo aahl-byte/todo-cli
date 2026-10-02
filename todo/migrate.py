@@ -16,6 +16,7 @@ from pathlib import Path
 from ruamel.yaml.comments import CommentedMap
 
 from . import store, yamlio
+from .status import COMPLETE
 from .util import ensure_gitignore, git_ignored, git_tracked, to_str
 
 LEGACY_FILE = "TODO.yaml"
@@ -107,7 +108,7 @@ def _nodes(file: Path) -> list:
 
 
 def _archive_folder(status: str) -> str:
-    if status == "done":
+    if status in COMPLETE:
         return store.ARCHIVED
     return store.folder_for(status)
 

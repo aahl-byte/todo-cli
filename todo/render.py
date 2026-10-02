@@ -4,7 +4,7 @@ or redirected output stays plain."""
 
 import sys
 
-from .status import colorize
+from .status import COMPLETE, colorize
 
 
 def _use_color() -> bool:
@@ -16,7 +16,7 @@ def _item_line(it, w, color, indent="") -> str:
     cell = colorize(status, f"{status:<12}", color)
     mark = ""
     if it["tasks"]:
-        done = sum(1 for t in it["tasks"] if t["status"] == "done")
+        done = sum(1 for t in it["tasks"] if t["status"] in COMPLETE)
         mark = f'  ({done}/{len(it["tasks"])} tasks)'
     return f'{indent}{it["id"]:<{w}}  {cell} {(it["priority"] or "—"):<8} {it["title"]}{mark}'
 
@@ -74,8 +74,7 @@ def print_item(it, full_log: bool = False) -> None:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
     print(f'priority:  {it["priority"] or "—"}')
     for label, key in (("creator", "creator"), ("developer", "developer"), ("qa", "qa_assignee")):
-        if it.get(key):
-            print(f'{label + ":":<11}{it[key]}')
+        print(f'{label + ":":<11}{it.get(key) or "—"}')
     if it["super_phase"] is not None:
         print(f'super-phase: {it["super_phase"]}')
     print(f'created:   {it["created"] or "—"}')

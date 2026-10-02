@@ -33,6 +33,9 @@ from .util import die, now
 # checks.
 ITEM_ONLY = {"deploy"}
 
+# Where QA can send work back from.
+REJECTABLE = ["ready-for-qa", "in-qa", "ready-to-deploy"]
+
 
 # ── command handlers ──────────────────────────────────────────────────────────
 def _require_root(root: Path) -> None:
@@ -45,7 +48,8 @@ def _set_status(root: Path, query: str, status: str, force: bool = False) -> Non
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
     it = store.resolve_item(root, query)
     _check_transition(it, status, force)
-    forced = status == "deployed" and bool(store.pending_pre_deploy(it))
+    forced = (status == "deployed" and it["status"] != status
+              and bool(store.pending_pre_deploy(it)))
     store.update_todo(root, it["id"], {"status": status}, now(), forced=forced)
     print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else ""))
 
@@ -82,12 +86,19 @@ def _folders(args, default):
     return store.FOLDERS if args.all or args.status else default
 
 
+def _mine(items, args):
+    if not getattr(args, "mine", False):
+        return items
+    me = identity.user()
+    return [it for it in items if me in (it["developer"], it["qa_assignee"])]
+
+
 def cmd_list(root: Path, args) -> None:
     if getattr(args, "all_projects", False):
         groups = [
             {"key": p["key"],
-             "items": _filter_list(store.list_todos(p["root"], _folders(args, [store.OPEN])),
-                                   args, default_active=True)}
+             "items": _mine(_filter_list(store.list_todos(p["root"], _folders(args, [store.OPEN])),
+                                         args, default_active=True), args)}
             for p in link_mod.project_stores()
         ]
         render.print_grouped(groups)
@@ -95,10 +106,7 @@ def cmd_list(root: Path, args) -> None:
     _require_root(root)
     items = _filter_list(store.list_todos(root, _folders(args, [store.OPEN])),
                          args, default_active=False)
-    if args.mine:
-        me = identity.user()
-        items = [it for it in items if me in (it["developer"], it["qa_assignee"])]
-    render.print_list(items)
+    render.print_list(_mine(items, args))
 
 
 def cmd_get(root: Path, args) -> None:
@@ -124,6 +132,8 @@ def cmd_reject(root: Path, args) -> None:
     text = " ".join(args.text).strip()
     if not text:
         die("A rejection needs a comment saying what failed.", 2)
+    if it["status"] not in REJECTABLE:
+        die(f'{it["id"]} is {it["status"]}; QA rejects from {", ".join(REJECTABLE)}.', 2)
     store.update_todo(root, it["id"], {"status": "in-progress"}, now())
     new_id = store.add_note(root, it["id"], text, now(), kind="qa-rejection",
                             extra={"with_status": "in-progress"})
@@ -241,8 +251,7 @@ def cmd_deploy_plan(root: Path, args) -> None:
     everything = store.list_todos(root)
     ready = [store.get_item(root, it["id"]) for it in everything
              if it["status"] == "ready-to-deploy" and it["folder"] == store.OPEN]
-    after = [store.get_item(root, it["id"]) for it in everything
-             if it["status"] == "deployed" and it["folder"] == store.OPEN]
+    after = [store.get_item(root, it["id"]) for it in everything if it["status"] == "deployed"]
     after = [it for it in after
              if any(c["timing"] == "post-deploy" and c["status"] != "done" for c in it["checks"])]
     complete = {it["id"] for it in everything if it["status"] in COMPLETE}
