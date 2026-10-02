@@ -156,7 +156,20 @@ todo task status <query> <id> <S> # set a task's status explicitly
 todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # reorder within a phase
 todo task rm <query> <id>        # remove task by id
-todo add    "<title>"            # add a new item
+todo add    "<title>" [--request TEXT]   # add an item (--request: file it as requested)
+todo comment|ask <query> <text...>        # comment (@mentions) | clarification question
+todo answer <query> <id> <text...>        # answer a clarification
+todo url    <query> <url> [--type T] [--label L]   # attach a PR/preview/QA-handoff link
+todo assign <query> [--dev H] [--qa H]    # people fields ("none" clears)
+todo history <query>                      # status transitions
+todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment check
+todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
+todo deploy-plan                          # every check the next deploy needs
+todo request|ready-qa|qa|approve|deploy <query>   # team statuses
+todo reject <query> <text...>             # QA → in-progress with a required comment
+todo list --mine                          # where I'm developer or QA
+todo login <url> <token> | whoami | sync | inbox   # team server
+todo link --remote <url> [--project KEY]  # sync this store with a team server
 todo archive                     # move done items to .TODO/ARCHIVED/
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
 todo unlink                      # move the global store back into ./.TODO
@@ -186,6 +199,58 @@ in-repo `.TODO` that was never `todo link`ed won't appear. `--status S`
 narrows to one status across all projects; `--all` widens to every item
 (including `done`).
 
+## Team workflow
+
+A store synced with a team server (see [Syncing](#syncing-with-a-team-server))
+follows the full ticket lifecycle:
+
+```
+requested → in-triage → todo → in-progress ⇄ review → ready-for-qa → in-qa
+          → ready-to-deploy → deployed
+```
+
+QA sends work back with `todo reject <q> "<what failed>"`, which needs the
+comment. An agent parks finished work in `review`; only a person moves it to
+`ready-for-qa`. `--agent`/`--human` override the detection (`$CLAUDECODE`,
+`$TODO_VIA`).
+
+```bash
+todo add "Safari login fails" --request "PM's original description"   # → requested
+todo assign safari --dev dana --qa quinn
+todo ask safari "Does this affect Safari 17?"     # open until answered
+todo answer safari 2 "Only 16"
+todo url safari https://github.com/x/y/pull/9 --type pr
+todo check add safari db-script "add sessions index" --payload db/0042.sql
+todo check add safari env-var "SESSION_TTL" --post
+todo ready-qa safari && todo qa safari && todo approve safari
+todo deploy-plan                                  # what the next deploy needs
+todo deploy safari                                # refused while pre-deploy checks are pending
+```
+
+Notes carry a kind: `context` (default), `ticket-request`, `comment` (with
+`@mentions`), `qa-rejection`, `link`, `clarification`. Every note, log entry
+and status change records who made it and whether a person or an agent did.
+
+## Syncing with a team server
+
+The server in [`server/`](server/README.md) is the source of truth, and each
+developer's `.TODO/` is a cache. It works offline.
+
+```bash
+todo login https://todo.example.com <token>       # from `npm run user:add`
+todo link --remote https://todo.example.com --project web
+```
+
+After that, every command syncs before it runs and pushes after. A round
+compares the files with the last-synced snapshot, so edits from the web drawer
+or by hand sync too. A write that lost to a newer change from someone else is
+rejected; the CLI takes the server's value and records it in the dev log
+(`sync: offline status → review not applied; quinn set in-qa at 14:02`).
+
+- `todo sync` runs a round now and lists anything still unpushed.
+- `todo inbox` shows your mentions, rejections, questions and hand-offs.
+- `TODO_OFFLINE=1` skips syncing for a command.
+
 ### Typical flow
 
 ```bash
@@ -203,16 +268,19 @@ todo done skill-todo                      # finished + verified
 
 ```
 .TODO/
-  OPEN/                       # todo, in-triage, in-progress, review, blocked, done
+  OPEN/                       # every status not filed below (done/deployed until archived)
     skill-todo/               # one directory per item, named by its id
       TODO.yaml               # the item's own fields
       phase-1/TASKS.yaml      # child tasks per phase, in order
       unphased/TASKS.yaml
       notes/2026-06-23T18-02-11.114Z-1.md      # one note per file: {timestamp}-{id}.md
       devlogs/2026-06-23T18-05-40.902Z-1.md    # one dev-log entry per file
+      history/2026-06-23T18-06-00.000Z-1.yaml  # one status transition per file
+      checks/CHECKS.yaml                       # deployment checks
+  .sync/                      # only in a synced store: config, snapshot, outbox
   DEFERRED/
   CANCELLED/
-  ARCHIVED/                   # done items, after `todo archive`
+  ARCHIVED/                   # done/deployed items, after `todo archive`
 ```
 
 An item's `TODO.yaml`:
@@ -227,18 +295,24 @@ super-phase: null         # optional cross-item grouping (passive)
 created: 2026-06-23T17:41:40.683Z
 completed: null           # ISO timestamp once done, else null
 calc-status: in-progress  # DERIVED from tasks; omitted when there are none
+uid: 01K...               # stable identity for sync
+creator: pat              # people fields
+developer: dana
+qa_assignee: quinn
 ```
 
 A `TASKS.yaml` holds one flow map per task; the phase comes from the directory:
 
 ```yaml
 tasks:
-  - {id: 1, title: split status.py, status: done}
-  - {id: 2, title: rollup render, status: in-progress}
+  - {id: 1, uid: 01K..., title: split status.py, status: done}
+  - {id: 2, uid: 01K..., title: rollup render, status: in-progress}
 ```
 
-Notes and dev-log entries are plain Markdown files. The filename carries the
-timestamp (`:` written as `-`) and the constant per-item id.
+Notes and dev-log entries are Markdown files with YAML front matter
+(`uid`, `kind`, `author`, `via`, plus kind-specific keys such as `url` or
+`state`). A file without front matter is a plain context note. The filename
+carries the timestamp (`:` written as `-`) and the constant per-item id.
 
 Other keys in an item's `TODO.yaml` (`description`, `acceptance`, `depends_on`,
 …) are preserved untouched on round-trip — the CLI only manages the fields
