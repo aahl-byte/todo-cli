@@ -2,9 +2,9 @@
 and sibling deletions, references resolve by id (not list index), and legacy
 files (no stored id, scalar notes) migrate deterministically."""
 
-from todo import store
+from todo import frontmatter, store
 
-from .conftest import TS, make_store
+from .conftest import TS, bare, make_store
 
 
 # ── task ids ──────────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ def test_add_note_returns_serial_id(root):
     assert store.add_note(root, "beta", "first", TS) == 1
     assert store.add_note(root, "beta", "second", TS) == 2
     notes = store.resolve_item(root, "beta")["notes"]
-    assert notes == [{"id": 1, "text": "first"}, {"id": 2, "text": "second"}]
+    assert bare(notes, ("id", "text")) == [{"id": 1, "text": "first"}, {"id": 2, "text": "second"}]
 
 
 def test_remove_note_by_id_keeps_other_ids(root):
@@ -72,7 +72,7 @@ def test_multiline_note_is_stored_verbatim_as_markdown(root):
     store.add_note(root, "beta", "**bold**\n\n- line two", TS)
     f, = (root / "OPEN" / "beta" / "notes").iterdir()
     assert f.name == "2026-06-25T09-30-00.000Z-1.md"
-    assert f.read_text() == "**bold**\n\n- line two\n"
+    assert frontmatter.split(f.read_text())[1] == "**bold**\n\n- line two\n"
     assert store.resolve_item(root, "beta")["notes"][0]["text"] == "**bold**\n\n- line two"
 
 
@@ -80,7 +80,7 @@ def test_multiline_note_is_stored_verbatim_as_markdown(root):
 def test_legacy_scalar_notes_get_ids(root):
     # alpha's fixture note is a bare scalar ("first note"), no id
     it = store.resolve_item(root, "alpha")
-    assert it["notes"] == [{"id": 1, "text": "first note"}]
+    assert bare(it["notes"], ("id", "text")) == [{"id": 1, "text": "first note"}]
     assert store.add_note(root, "alpha", "second", TS) == 2
 
 

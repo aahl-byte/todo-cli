@@ -22,11 +22,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import identity
 from . import init as init_mod
 from . import link as link_mod
 from . import migrate, render, store
-from .status import ACTIVE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
+from .status import ACTIVE, COMPLETE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
+
+# Shortcuts that make no sense for a child task: `deploy` is gated by the item's
+# checks.
+ITEM_ONLY = {"deploy"}
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
@@ -35,12 +40,28 @@ def _require_root(root: Path) -> None:
         die(f"No {store.ROOT_NAME} found at {root}\n(use --dir to point elsewhere)", 2)
 
 
-def _set_status(root: Path, query: str, status: str) -> None:
+def _set_status(root: Path, query: str, status: str, force: bool = False) -> None:
     if status not in STATUSES:
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
     it = store.resolve_item(root, query)
-    store.update_todo(root, it["id"], {"status": status}, now())
-    print(f'{it["id"]}: {it["status"]} → {status}')
+    _check_transition(it, status, force)
+    forced = status == "deployed" and bool(store.pending_pre_deploy(it))
+    store.update_todo(root, it["id"], {"status": status}, now(), forced=forced)
+    print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else ""))
+
+
+def _check_transition(it, status: str, force: bool) -> None:
+    """The two rules on a status change: an agent can't hand work to QA, and an
+    item can't deploy while a pre-deploy check is pending (unless forced)."""
+    if status == "ready-for-qa" and identity.via() == "agent" and it["status"] != status:
+        die("An agent parks finished work in `review`; a person hands it to QA.\n"
+            "(Run with --human if you are that person.)", 2)
+    if status == "deployed" and it["status"] != status and not force:
+        pending = store.pending_pre_deploy(it)
+        if pending:
+            lines = "\n".join(f'  [{c["id"]}] {c["kind"]}  {c["title"]}' for c in pending)
+            die(f'{it["id"]} has {len(pending)} pending pre-deploy check(s):\n{lines}\n'
+                "Finish them (`todo check done`) or pass --force.", 2)
 
 
 def _filter_list(items, args, *, default_active: bool):
@@ -74,6 +95,9 @@ def cmd_list(root: Path, args) -> None:
     _require_root(root)
     items = _filter_list(store.list_todos(root, _folders(args, [store.OPEN])),
                          args, default_active=False)
+    if args.mine:
+        me = identity.user()
+        items = [it for it in items if me in (it["developer"], it["qa_assignee"])]
     render.print_list(items)
 
 
@@ -82,35 +106,147 @@ def cmd_get(root: Path, args) -> None:
 
 
 def cmd_status(root: Path, args) -> None:
-    _set_status(root, args.query, args.status)
+    _set_status(root, args.query, args.status, args.force)
 
 
 def cmd_shortcut(root: Path, args) -> None:
-    _set_status(root, args.query, SHORTCUTS[args.command])
+    _set_status(root, args.query, SHORTCUTS[args.command], getattr(args, "force", False))
 
 
 def cmd_status_alias(root: Path, args) -> None:
     # Legacy: the bare status name used as a command (`todo in-progress X`).
     # The subcommand name IS the target status.
-    _set_status(root, args.query, args.command)
+    _set_status(root, args.query, args.command, getattr(args, "force", False))
+
+
+def cmd_reject(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    text = " ".join(args.text).strip()
+    if not text:
+        die("A rejection needs a comment saying what failed.", 2)
+    store.update_todo(root, it["id"], {"status": "in-progress"}, now())
+    new_id = store.add_note(root, it["id"], text, now(), kind="qa-rejection",
+                            extra={"with_status": "in-progress"})
+    print(f'{it["id"]}: {it["status"]} → in-progress  (qa-rejection note [{new_id}])')
+
+
+def _text(args, what: str) -> str:
+    text = " ".join(args.text).strip()
+    if not text:
+        die(f"Missing {what} text.", 2)
+    return text
 
 
 def cmd_note(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
-    text = " ".join(args.text).strip()
-    if not text:
-        die("Missing note text.", 2)
-    new_id = store.add_note(root, it["id"], text, now())
-    print(f'{it["id"]}: added note [{new_id}]')
+    new_id = store.add_note(root, it["id"], _text(args, "note"), now(), kind=args.kind)
+    print(f'{it["id"]}: added note [{new_id}]' + (f" ({args.kind})" if args.kind != "context" else ""))
+
+
+def cmd_comment(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    new_id = store.add_note(root, it["id"], _text(args, "comment"), now(), kind="comment")
+    print(f'{it["id"]}: added comment [{new_id}]')
+
+
+def cmd_url(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    label = (args.label or "").strip()
+    new_id = store.add_note(root, it["id"], label or args.url, now(), kind="link",
+                            extra={"url": args.url, "label": label or None, "type": args.type})
+    print(f'{it["id"]}: added {args.type} link [{new_id}]')
+
+
+def cmd_ask(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    new_id = store.add_note(root, it["id"], _text(args, "question"), now(), kind="clarification")
+    print(f'{it["id"]}: asked [{new_id}] (open until answered)')
+
+
+def cmd_answer(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _note_id(it, args.id)
+    note = next(n for n in it["notes"] if n["id"] == args.id)
+    if note["kind"] != "clarification":
+        die(f"Note [{args.id}] is a {note['kind']} note, not a clarification.", 2)
+    store.answer_note(root, it["id"], args.id, _text(args, "answer"), now())
+    print(f'{it["id"]}: answered [{args.id}]')
 
 
 def cmd_notes(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
-    if not it["notes"]:
+    notes = [n for n in it["notes"] if not args.kind or n["kind"] == args.kind]
+    if not notes:
         print("(no notes)")
         return
-    for n in it["notes"]:
-        print(f'[{n["id"]}] ' + str(n["text"]).replace("\n", "\n    "))
+    for line in render.note_lines(notes, indent=""):
+        print(line)
+
+
+def cmd_history(root: Path, args) -> None:
+    render.print_history(store.resolve_item(root, args.query))
+
+
+def cmd_assign(root: Path, args) -> None:
+    if args.dev is None and args.qa is None:
+        die("Nothing to assign. Pass --dev HANDLE and/or --qa HANDLE (or none).", 2)
+    it = store.resolve_item(root, args.query)
+    patch = {}
+    if args.dev is not None:
+        patch["developer"] = None if args.dev.lower() == "none" else args.dev
+    if args.qa is not None:
+        patch["qa_assignee"] = None if args.qa.lower() == "none" else args.qa
+    store.update_todo(root, it["id"], patch)
+    shown = ", ".join(f"{k} → {v or '—'}" for k, v in patch.items())
+    print(f'{it["id"]}: {shown}')
+
+
+def _check_id(it, check_id: int) -> None:
+    if not any(c["id"] == check_id for c in it["checks"]):
+        ids = ", ".join(str(c["id"]) for c in it["checks"]) or "none"
+        die(f"No check with id {check_id} (have: {ids}).", 2)
+
+
+def cmd_checks(root: Path, args) -> None:
+    render.print_checks(store.resolve_item(root, args.query))
+
+
+def cmd_check_add(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    title = " ".join(args.title).strip()
+    if not title:
+        die('Missing title. Usage: todo check add <item> <kind> "<title>"', 2)
+    timing = "post-deploy" if args.post else "pre-deploy"
+    new_id = store.add_check(root, it["id"], args.kind, title, args.payload, timing)
+    print(f'{it["id"]}: added {timing} check [{new_id}] {args.kind}  {title}')
+
+
+def cmd_check_status(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _check_id(it, args.id)
+    status = "done" if args.checkcmd == "done" else "pending"
+    store.set_check_status(root, it["id"], args.id, status)
+    print(f'{it["id"]}: check [{args.id}] → {status}')
+
+
+def cmd_check_rm(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _check_id(it, args.id)
+    store.remove_check(root, it["id"], args.id)
+    print(f'{it["id"]}: removed check [{args.id}]')
+
+
+def cmd_deploy_plan(root: Path, args) -> None:
+    _require_root(root)
+    everything = store.list_todos(root)
+    ready = [store.get_item(root, it["id"]) for it in everything
+             if it["status"] == "ready-to-deploy" and it["folder"] == store.OPEN]
+    after = [store.get_item(root, it["id"]) for it in everything
+             if it["status"] == "deployed" and it["folder"] == store.OPEN]
+    after = [it for it in after
+             if any(c["timing"] == "post-deploy" and c["status"] != "done" for c in it["checks"])]
+    complete = {it["id"] for it in everything if it["status"] in COMPLETE}
+    render.print_deploy_plan(ready, after, complete, {it["id"] for it in everything})
 
 
 def cmd_unnote(root: Path, args) -> None:
@@ -241,10 +377,13 @@ def cmd_add(root: Path, args) -> None:
     title = " ".join(args.title).strip()
     if not title:
         die('Missing title. Usage: todo add "<title>"', 2)
-    it = store.add_todo(root, title, now())
+    request = (args.request or "").strip()
+    it = store.add_todo(root, title, now(), status="requested" if request else "todo")
     if not it:
         die("Could not add (empty title?).", 1)
-    print(f'added {it["id"]}: {it["title"]}')
+    if request:
+        store.add_note(root, it["id"], request, now(), kind="ticket-request")
+    print(f'added {it["id"]}: {it["title"]}' + ("  (requested)" if request else ""))
 
 
 def cmd_archive(root: Path, args) -> None:
@@ -302,6 +441,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage a project's structured .TODO/ store from the command line.",
         epilog="lifecycle:\n"
                "  todo → in-triage (planning) → in-progress (developing) → done\n"
+               "  team: requested → in-triage → todo → in-progress ⇄ review\n"
+               "        → ready-for-qa → in-qa → ready-to-deploy → deployed\n"
                "  `review` awaits user review, `blocked` can't proceed,\n"
                "  `deferred` parks an item off the main path,\n"
                "  `cancelled` means it will never happen.\n\n"
@@ -329,10 +470,18 @@ def build_parser() -> argparse.ArgumentParser:
     # --file is its legacy spelling.
     parser.add_argument("--dir", "--file", dest="dir", default=store.ROOT_NAME, metavar="PATH",
                         help="the .TODO directory, or a project holding one (default: ./.TODO)")
+    parser.add_argument("--agent", dest="via", action="store_const", const="agent", default=None,
+                        help="record this command as an agent's")
+    parser.add_argument("--human", dest="via", action="store_const", const="human",
+                        help="record this command as a person's (overrides $CLAUDECODE)")
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--dir", "--file", dest="dir", default=argparse.SUPPRESS, metavar="PATH",
                         help="the .TODO directory, or a project holding one (default: ./.TODO)")
+    common.add_argument("--agent", dest="via", action="store_const", const="agent",
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    common.add_argument("--human", dest="via", action="store_const", const="human",
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -342,7 +491,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="include done/cancelled items")
     p.add_argument("-g", "--all-projects", action="store_true",
                    help="aggregate active items across every linked project "
-                        "(grouped by project; defaults to in-progress/blocked/review)")
+                        "(grouped by project; defaults to the active statuses)")
+    p.add_argument("--mine", action="store_true",
+                   help="only items where I am the developer or QA assignee")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("get", parents=[common], aliases=["show"], help="show one item in full")
@@ -354,21 +505,96 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", parents=[common], help="set any status explicitly")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("status", choices=STATUSES, help="new status")
+    p.add_argument("--force", action="store_true",
+                   help="deploy even with pending pre-deploy checks")
     p.set_defaults(func=cmd_status)
 
     for name, helptext in SHORTCUT_HELP.items():
         p = sub.add_parser(name, parents=[common], help=helptext)
         p.add_argument("query", help="id or part of a title")
+        if SHORTCUTS[name] == "deployed":
+            p.add_argument("--force", action="store_true",
+                           help="deploy even with pending pre-deploy checks")
         p.set_defaults(func=cmd_shortcut)
+
+    p = sub.add_parser("reject", parents=[common],
+                       help="→ in-progress with a required qa-rejection comment")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("text", nargs="*", help="what failed QA")
+    p.set_defaults(func=cmd_reject)
 
     p = sub.add_parser("note", parents=[common], help="append a note")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("text", nargs="+", help="the note text")
+    p.add_argument("--kind", choices=store.NOTE_KINDS, default="context",
+                   help="note kind (default: context)")
     p.set_defaults(func=cmd_note)
+
+    p = sub.add_parser("comment", parents=[common], help="add a comment (@handle mentions)")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("text", nargs="+", help="the comment")
+    p.set_defaults(func=cmd_comment)
+
+    p = sub.add_parser("url", parents=[common], help="attach a link (PR, preview, QA handoff)")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("url", help="the URL")
+    p.add_argument("--type", choices=store.LINK_TYPES, default="other", help="link type")
+    p.add_argument("--label", default=None, help="display text (default: the URL)")
+    p.set_defaults(func=cmd_url)
+
+    p = sub.add_parser("ask", parents=[common], help="raise a clarification question")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("text", nargs="+", help="the question")
+    p.set_defaults(func=cmd_ask)
+
+    p = sub.add_parser("answer", parents=[common], help="answer a clarification")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("id", type=int, help="the clarification's note id")
+    p.add_argument("text", nargs="+", help="the answer")
+    p.set_defaults(func=cmd_answer)
 
     p = sub.add_parser("notes", parents=[common], help="list an item's notes with indices")
     p.add_argument("query", help="id or part of a title")
+    p.add_argument("--kind", choices=store.NOTE_KINDS, default=None, help="only this kind")
     p.set_defaults(func=cmd_notes)
+
+    p = sub.add_parser("history", parents=[common], help="show an item's status history")
+    p.add_argument("query", help="id or part of a title")
+    p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("assign", parents=[common], help="set the developer and/or QA assignee")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("--dev", default=None, metavar="HANDLE", help='developer ("none" clears)')
+    p.add_argument("--qa", default=None, metavar="HANDLE", help='QA assignee ("none" clears)')
+    p.set_defaults(func=cmd_assign)
+
+    p = sub.add_parser("checks", parents=[common], help="list an item's deployment checks")
+    p.add_argument("query", help="id or part of a title")
+    p.set_defaults(func=cmd_checks)
+
+    cp = sub.add_parser("check", parents=[common], help="manage an item's deployment checks")
+    csub = cp.add_subparsers(dest="checkcmd", metavar="<checkcmd>")
+    ca = csub.add_parser("add", parents=[common], help="add a deployment check")
+    ca.add_argument("query", help="id or part of a title")
+    ca.add_argument("kind", choices=store.CHECK_KINDS, help="check kind")
+    ca.add_argument("title", nargs="+", help="what has to happen")
+    ca.add_argument("--payload", default=None,
+                    help="script path, variable, branch or item id")
+    ca.add_argument("--post", action="store_true", help="due after the deploy (default: before)")
+    ca.set_defaults(func=cmd_check_add)
+    for name, helptext in (("done", "mark a check done"), ("reopen", "mark a check pending")):
+        cs = csub.add_parser(name, parents=[common], help=helptext)
+        cs.add_argument("query", help="id or part of a title")
+        cs.add_argument("id", type=int, help="check id (see `todo checks`)")
+        cs.set_defaults(func=cmd_check_status)
+    cr = csub.add_parser("rm", parents=[common], help="remove a check")
+    cr.add_argument("query", help="id or part of a title")
+    cr.add_argument("id", type=int, help="check id (see `todo checks`)")
+    cr.set_defaults(func=cmd_check_rm)
+
+    p = sub.add_parser("deploy-plan", parents=[common],
+                       help="every check the next deploy needs, across ready-to-deploy items")
+    p.set_defaults(func=cmd_deploy_plan)
 
     p = sub.add_parser("unnote", parents=[common], help="remove note by id")
     p.add_argument("query", help="id or part of a title")
@@ -434,6 +660,8 @@ def build_parser() -> argparse.ArgumentParser:
     trm.set_defaults(func=cmd_task_rm)
 
     for name, helptext in SHORTCUT_HELP.items():
+        if name in ITEM_ONLY:
+            continue
         tv = tsub.add_parser(name, parents=[common], help=f"task {helptext}")
         tv.add_argument("query", help="id or part of a title")
         tv.add_argument("id", type=int, help="task id (see `todo tasks`)")
@@ -441,6 +669,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("add", parents=[common], help="add a new item")
     p.add_argument("title", nargs="+", help="the item title")
+    p.add_argument("--request", default=None, metavar="TEXT",
+                   help="file it as `requested`, with TEXT as the ticket-request note")
     p.set_defaults(func=cmd_add)
 
     p = sub.add_parser("archive", parents=[common], help="move done items to .TODO/ARCHIVED/")
@@ -475,6 +705,8 @@ def build_parser() -> argparse.ArgumentParser:
         # of the listed commands (SUPPRESS would print a literal "==SUPPRESS==").
         p = sub.add_parser(status, parents=[common])
         p.add_argument("query", help="id or part of a title")
+        if status == "deployed":
+            p.add_argument("--force", action="store_true")
         p.set_defaults(func=cmd_status_alias)
 
     return parser
@@ -486,9 +718,11 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    if args.command == "task" and not getattr(args, "func", None):
-        parser.parse_args(["task", "--help"])
+    if args.command in ("task", "check") and not getattr(args, "func", None):
+        parser.parse_args([args.command, "--help"])
         sys.exit(0)
+    if getattr(args, "via", None):
+        identity.set_via(args.via)
     # `init`/`projects` are machine-level; `link`/`unlink` act on the unresolved
     # repo-root path themselves — none of them want a resolved store path.
     if args.command in ("init", "projects", "link", "unlink"):

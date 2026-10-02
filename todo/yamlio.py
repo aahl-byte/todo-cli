@@ -89,18 +89,45 @@ def save(y: YAML, file: Path, data) -> None:
 _PLAIN_TITLE = re.compile(r"^[A-Za-z0-9][\w .\-/()]*$")
 
 
-def tasks_doc(tasks) -> CommentedMap:
-    """Build a TASKS.yaml document — `tasks:` with one compact flow map
-    `{id, title, status}` per task. The phase lives in the directory name."""
+def _text(value: str):
+    return value if _PLAIN_TITLE.match(value) else SingleQuotedScalarString(value)
+
+
+def _flow_doc(key: str, rows, fields) -> CommentedMap:
     seq = CommentedSeq()
-    for t in tasks:
+    for row in rows:
         m = CommentedMap()
-        m["id"] = int(t["id"])
-        title = str(t["title"])
-        m["title"] = title if _PLAIN_TITLE.match(title) else SingleQuotedScalarString(title)
-        m["status"] = str(t["status"])
+        for name, kind in fields:
+            value = row.get(name)
+            if value is None:
+                if kind == "optional":
+                    continue
+                if kind == "nullable":
+                    m[name] = None
+                    continue
+            if name == "id":
+                m[name] = int(value)
+            elif kind in ("text", "nullable"):
+                m[name] = _text(str(value))
+            else:
+                m[name] = str(value)
         m.fa.set_flow_style()
         seq.append(m)
     doc = CommentedMap()
-    doc["tasks"] = seq
+    doc[key] = seq
     return doc
+
+
+def tasks_doc(tasks) -> CommentedMap:
+    """Build a TASKS.yaml document — `tasks:` with one compact flow map
+    `{id, uid, title, status}` per task. The phase lives in the directory name."""
+    return _flow_doc("tasks", tasks, [("id", "plain"), ("uid", "optional"),
+                                      ("title", "text"), ("status", "plain")])
+
+
+def checks_doc(checks) -> CommentedMap:
+    """Build a CHECKS.yaml document — `checks:` with one flow map per
+    deployment check."""
+    return _flow_doc("checks", checks, [
+        ("id", "plain"), ("uid", "optional"), ("kind", "plain"), ("title", "text"),
+        ("payload", "nullable"), ("timing", "plain"), ("status", "plain")])

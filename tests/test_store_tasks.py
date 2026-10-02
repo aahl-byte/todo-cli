@@ -1,11 +1,13 @@
 from todo import store
 
+from .conftest import bare
+
 
 def test_add_task_creates_list_and_calc(root):
     new_id = store.add_task(root, "beta", "write docs")
     assert new_id == 1  # first task in this item
     it = store.resolve_item(root, "beta")
-    assert it["tasks"] == [{"id": 1, "title": "write docs", "status": "todo", "phase": None}]
+    assert bare(it["tasks"]) == [{"id": 1, "title": "write docs", "status": "todo", "phase": None}]
     assert it["calc_status"] == "todo"  # single todo task
 
 
@@ -56,7 +58,7 @@ def test_mutations_on_missing_item_return_false(root):
 def test_add_task_with_phase_stores_and_emits_it(root):
     store.add_task(root, "beta", "scaffold", phase=2)   # id 1
     it = store.resolve_item(root, "beta")
-    assert it["tasks"] == [{"id": 1, "title": "scaffold", "status": "todo", "phase": 2}]
+    assert bare(it["tasks"]) == [{"id": 1, "title": "scaffold", "status": "todo", "phase": 2}]
     assert (root / "OPEN" / "beta" / "phase-2" / "TASKS.yaml").is_file()
 
 

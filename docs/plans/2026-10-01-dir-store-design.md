@@ -12,10 +12,10 @@ web drawer lag.
 
 ```
 .TODO/
-  OPEN/{item-id}/          # todo, in-triage, in-progress, review, blocked, done
+  OPEN/{item-id}/          # every status not listed below, plus done/deployed
   DEFERRED/{item-id}/      # deferred
   CANCELLED/{item-id}/     # cancelled
-  ARCHIVED/{item-id}/      # done, after `todo archive`
+  ARCHIVED/{item-id}/      # done/deployed, after `todo archive`
 ```
 
 Each item directory:
@@ -26,8 +26,10 @@ Each item directory:
   phase-1/TASKS.yaml       # tasks in phase 1, in display order
   phase-2/TASKS.yaml
   unphased/TASKS.yaml      # tasks with no phase
-  notes/{ts}-{id}.md       # one note per file, the raw Markdown text
-  devlogs/{ts}-{id}.md     # one dev-log entry per file
+  notes/{ts}-{id}.md       # one note per file: front matter + Markdown
+  devlogs/{ts}-{id}.md     # one dev-log entry per file: front matter + text
+  history/{ts}-{id}.yaml   # one status transition per file
+  checks/CHECKS.yaml       # deployment checks, in order
 ```
 
 - **Item `TODO.yaml`** is a flat map: `id`, `title`, `type`, `status`,
@@ -49,8 +51,8 @@ Each item directory:
 
 `status:` in the item's `TODO.yaml` is the source of truth; the folder follows
 it. A status change writes `TODO.yaml`, then renames the item directory into
-its folder. `done` lives in `OPEN/` until `todo archive` moves it to
-`ARCHIVED/`; a `done` item already in `ARCHIVED/` stays there. Unknown statuses
+its folder. A complete item (`done` or `deployed`) lives in `OPEN/` until
+`todo archive` moves it to `ARCHIVED/`, and stays there once archived. Unknown statuses
 go to `OPEN/`. A reader that finds an item in the wrong folder moves it.
 
 ## Writes

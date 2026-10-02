@@ -1,6 +1,6 @@
 from todo import store
 
-from .conftest import make_store
+from .conftest import bare, make_store
 
 
 def test_item_without_tasks_has_empty_list_and_no_calc(root):
@@ -21,7 +21,7 @@ def test_item_with_tasks_parsed(tmp_path):
         "      - {title: two, status: in-progress}\n"
     )
     it = store.resolve_item(root, "gamma")
-    assert it["tasks"] == [
+    assert bare(it["tasks"]) == [
         {"id": 1, "title": "one", "status": "done", "phase": 2},
         {"id": 2, "title": "two", "status": "in-progress", "phase": None},
     ]

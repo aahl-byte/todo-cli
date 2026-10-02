@@ -5,6 +5,8 @@ import pytest
 from todo import store
 from todo.cli import build_parser
 
+from .conftest import bare
+
 
 def run(file, argv):
     """Parse argv and dispatch, like main() but against an explicit file."""
@@ -16,7 +18,7 @@ def run(file, argv):
 def test_task_add_and_list(root, capsys):
     run(root, ["task", "add", "beta", "write", "the", "docs"])
     it = store.resolve_item(root, "beta")
-    assert it["tasks"] == [{"id": 1, "title": "write the docs", "status": "todo", "phase": None}]
+    assert bare(it["tasks"]) == [{"id": 1, "title": "write the docs", "status": "todo", "phase": None}]
 
     run(root, ["tasks", "beta"])
     out = capsys.readouterr().out

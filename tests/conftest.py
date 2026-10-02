@@ -43,3 +43,35 @@ def make_store(project: Path, body: str = SAMPLE) -> Path:
 @pytest.fixture
 def root(tmp_path) -> Path:
     return make_store(tmp_path / "proj")
+
+
+def bare(rows, keys=("id", "title", "status", "phase")):
+    """Rows cut down to `keys`, for comparing without generated uids."""
+    return [{k: r[k] for k in keys if k in r} for r in rows]
+
+
+@pytest.fixture(autouse=True)
+def _identity(monkeypatch):
+    """Every test acts as human `tester` unless it says otherwise."""
+    from todo import identity
+
+    monkeypatch.setenv("TODO_USER", "tester")
+    monkeypatch.setenv("TODO_VIA", "human")
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    identity.set_via(None)
+    yield
+    identity.set_via(None)
+
+
+def run_cli(root, argv):
+    """Parse argv and dispatch like main(), against an explicit store."""
+    from todo import identity
+    from todo.cli import build_parser
+
+    args = build_parser().parse_args(argv)
+    if getattr(args, "via", None):
+        identity.set_via(args.via)
+    try:
+        args.func(Path(root), args)
+    finally:
+        identity.set_via(None)

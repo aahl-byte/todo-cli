@@ -7,7 +7,7 @@ import pytest
 
 from todo import cli, migrate, store
 
-from .conftest import SAMPLE
+from .conftest import SAMPLE, bare
 
 
 def test_first_command_migrates_and_backs_up_untracked_file(tmp_path, monkeypatch):
@@ -59,7 +59,7 @@ def test_log_timestamps_survive_and_notes_take_created(tmp_path):
     item = root / "OPEN" / "a"
     assert [p.name for p in (item / "notes").iterdir()] == ["2026-05-01T08-00-00.000Z-2.md"]
     log = store.resolve_item(root, "a")["log"]
-    assert log == [{"id": 1, "ts": "2026-05-02T09:10:11.123Z", "text": "did"}]
+    assert bare(log, ("id", "ts", "text")) == [{"id": 1, "ts": "2026-05-02T09:10:11.123Z", "text": "did"}]
 
 
 def test_flow_style_items_are_written_as_block_maps(tmp_path):

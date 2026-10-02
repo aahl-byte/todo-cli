@@ -3,8 +3,10 @@
     .TODO/{OPEN,DEFERRED,CANCELLED,ARCHIVED}/{item-id}/
         TODO.yaml               the item's own fields
         phase-{n}/TASKS.yaml    tasks per phase, in order (unphased/ for none)
-        notes/{ts}-{id}.md      one note per file
+        notes/{ts}-{id}.md      one note per file (front matter + Markdown)
         devlogs/{ts}-{id}.md    one dev-log entry per file
+        history/{ts}-{id}.yaml  one status transition per file
+        checks/CHECKS.yaml      deployment checks, in order
 
 An item's `status:` decides its folder; changing status moves the directory.
 Every write is atomic and touches only the files it changes. See
@@ -17,8 +19,8 @@ import os
 import re
 from pathlib import Path
 
-from . import yamlio
-from .status import TERMINAL, derive_calc_status
+from . import frontmatter, identity, ulid, yamlio
+from .status import COMPLETE, derive_calc_status
 from .util import die, to_str
 
 ROOT_NAME = ".TODO"
@@ -26,25 +28,38 @@ ITEM_FILE = "TODO.yaml"
 TASKS_FILE = "TASKS.yaml"
 NOTES_DIR = "notes"
 LOG_DIR = "devlogs"
+HISTORY_DIR = "history"
+CHECKS_DIR = "checks"
+CHECKS_FILE = "CHECKS.yaml"
 UNPHASED_DIR = "unphased"
+
+PEOPLE = ("creator", "developer", "qa_assignee")
+NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
+              "clarification"]
+LINK_TYPES = ["pr", "preview", "qa-handoff", "other"]
+CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag",
+               "manual-step", "other"]
+CHECK_TIMINGS = ["pre-deploy", "post-deploy"]
 
 OPEN, DEFERRED, CANCELLED, ARCHIVED = "OPEN", "DEFERRED", "CANCELLED", "ARCHIVED"
 FOLDERS = [OPEN, DEFERRED, CANCELLED, ARCHIVED]
 
 _PHASE_DIR = re.compile(r"^phase-(-?\d+)$")
-_ENTRY_FILE = re.compile(r"^(?P<ts>.+)-(?P<id>\d+)\.md$")
+_ENTRY_FILE = re.compile(r"^(?P<ts>.+)-(?P<id>\d+)\.(?P<ext>md|yaml)$")
+_MENTION = re.compile(r"(?<![\w@])@([A-Za-z0-9][\w.\-]*)")
 _TS_FILE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(.+)$")
 UNDATED = "0000-00-00T00:00:00.000Z"
 
 
 def folder_for(status: str, current: str | None = None) -> str:
-    """The folder an item with `status` belongs in. `done` stays in ARCHIVED once
-    archived, and otherwise sits in OPEN until `todo archive`."""
+    """The folder an item with `status` belongs in. A complete item (`done`,
+    `deployed`) stays in ARCHIVED once archived, and otherwise sits in OPEN until
+    `todo archive`."""
     if status == "deferred":
         return DEFERRED
     if status == "cancelled":
         return CANCELLED
-    if status == "done" and current == ARCHIVED:
+    if status in COMPLETE and current == ARCHIVED:
         return ARCHIVED
     return OPEN
 
@@ -106,7 +121,9 @@ def _dir_phase(name: str):
 
 # ── reading ───────────────────────────────────────────────────────────────────
 def _read_entries(d: Path) -> list:
-    """`{id, ts, text}` for each `{ts}-{id}.md` in `d`, ordered by id."""
+    """`{id, ts, text, meta, file}` for each `{ts}-{id}.md` in `d`, ordered by
+    id. `meta` is the front matter ({} for a legacy file). A history
+    `{ts}-{id}.yaml` puts its whole map in `meta` and leaves `text` empty."""
     if not d.is_dir():
         return []
     out = []
@@ -114,10 +131,38 @@ def _read_entries(d: Path) -> list:
         m = _ENTRY_FILE.match(f.name)
         if not m:
             continue
-        text = f.read_text()
+        raw = f.read_text()
+        if m.group("ext") == "yaml":
+            meta, text = frontmatter.load_map(raw), ""
+        else:
+            meta, text = frontmatter.split(raw)
         out.append({"id": int(m.group("id")), "ts": name_to_ts(m.group("ts")),
-                    "text": text[:-1] if text.endswith("\n") else text})
+                    "text": text[:-1] if text.endswith("\n") else text,
+                    "meta": meta, "file": f})
     return sorted(out, key=lambda e: e["id"])
+
+
+def _note(e) -> dict:
+    meta = e["meta"]
+    return {"id": e["id"], "ts": e["ts"], "text": e["text"],
+            "uid": meta.get("uid"), "kind": meta.get("kind") or "context",
+            "author": meta.get("author"), "via": meta.get("via"),
+            "meta": {k: v for k, v in meta.items()
+                     if k not in ("uid", "kind", "author", "via")}}
+
+
+def _log(e) -> dict:
+    meta = e["meta"]
+    return {"id": e["id"], "ts": e["ts"], "text": e["text"], "uid": meta.get("uid"),
+            "author": meta.get("author"), "via": meta.get("via")}
+
+
+def _history(e) -> dict:
+    meta = e["meta"]
+    return {"id": e["id"], "ts": e["ts"], "uid": meta.get("uid"),
+            "from": meta.get("from"), "to": meta.get("to"), "by": meta.get("by"),
+            "via": meta.get("via"), "forced": bool(meta.get("forced")),
+            "provisional": not meta.get("server")}
 
 
 def _read_tasks(item_dir: Path) -> list:
@@ -131,13 +176,29 @@ def _read_tasks(item_dir: Path) -> list:
         doc = yamlio.read(d / TASKS_FILE)
         raw = doc.get("tasks") if isinstance(doc, dict) else None
         tasks = [
-            {"id": int(t["id"]), "title": to_str(t.get("title")),
+            {"id": int(t["id"]), "uid": t.get("uid"), "title": to_str(t.get("title")),
              "status": to_str(t.get("status")) or "todo", "phase": phase}
             for t in (raw or []) if isinstance(t, dict) and t.get("id") is not None
         ]
         groups.append((phase is None, phase or 0, tasks))
     groups.sort(key=lambda g: (g[0], g[1]))
     return [t for _, _, tasks in groups for t in tasks]
+
+
+def _read_checks(item_dir: Path) -> list:
+    f = item_dir / CHECKS_DIR / CHECKS_FILE
+    if not f.is_file():
+        return []
+    doc = yamlio.read(f)
+    raw = doc.get("checks") if isinstance(doc, dict) else None
+    return [
+        {"id": int(c["id"]), "uid": c.get("uid"), "kind": to_str(c.get("kind")) or "other",
+         "title": to_str(c.get("title")),
+         "payload": to_str(c.get("payload")) if c.get("payload") is not None else None,
+         "timing": to_str(c.get("timing")) or "pre-deploy",
+         "status": to_str(c.get("status")) or "pending"}
+        for c in (raw or []) if isinstance(c, dict) and c.get("id") is not None
+    ]
 
 
 def _load_meta(item_dir: Path):
@@ -156,10 +217,16 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "status": to_str(meta.get("status")) or "todo",
         "priority": to_str(meta.get("priority")) if meta.get("priority") is not None else None,
         "super_phase": int(super_phase) if super_phase not in (None, "") else None,
-        "notes": [{"id": e["id"], "text": e["text"]}
-                  for e in _read_entries(item_dir / NOTES_DIR)] if full else [],
-        "log": _read_entries(item_dir / LOG_DIR) if full else [],
+        "uid": to_str(meta.get("uid")) or None,
+        "creator": to_str(meta.get("creator")) or None,
+        "developer": to_str(meta.get("developer")) or None,
+        "qa_assignee": to_str(meta.get("qa_assignee")) or None,
+        "notes": [_note(e) for e in _read_entries(item_dir / NOTES_DIR)] if full else [],
+        "log": [_log(e) for e in _read_entries(item_dir / LOG_DIR)] if full else [],
+        "history": [_history(e) for e in _read_entries(item_dir / HISTORY_DIR)]
+                   if full else [],
         "tasks": _read_tasks(item_dir),
+        "checks": _read_checks(item_dir),
         "calc_status": to_str(calc) if calc not in (None, "") else None,
         "created": to_str(created) if created not in (None, "") else None,
         "completed": to_str(completed) if completed not in (None, "") else None,
@@ -197,7 +264,7 @@ def _slug_id(title: str, taken: set) -> str:
     return item_id
 
 
-def add_todo(root: Path, title: str, now_iso: str):
+def add_todo(root: Path, title: str, now_iso: str, status: str = "todo"):
     from ruamel.yaml.comments import CommentedMap
 
     t = title.strip()
@@ -215,42 +282,72 @@ def add_todo(root: Path, title: str, now_iso: str):
             taken.add(item_id)
     meta = CommentedMap()
     meta["id"] = item_id
+    meta["uid"] = ulid.new()
     meta["title"] = t
     meta["type"] = "feature"
-    meta["status"] = "todo"
+    meta["status"] = status
     meta["priority"] = "medium"
     meta["super-phase"] = None
     meta["created"] = now_iso
     meta["completed"] = None
+    meta["creator"] = identity.user()
+    meta["developer"] = None
+    meta["qa_assignee"] = None
     yamlio.save(yamlio.yaml(), item_dir / ITEM_FILE, meta)
-    return {"id": item_id, "title": t, "type": "feature", "status": "todo",
-            "priority": "medium", "super_phase": None, "notes": [], "log": [],
-            "tasks": [], "calc_status": None, "created": now_iso, "completed": None,
-            "folder": OPEN}
+    return get_item(root, item_id)
 
 
-def update_todo(root: Path, item_id: str, patch: dict, now_iso=None) -> bool:
-    """Patch status/priority/type on an item. `now_iso` stamps `completed` when
-    status flips to done and clears it when status leaves done. A status change
-    then moves the item into its folder."""
+def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
+                forced: bool = False) -> bool:
+    """Patch status/priority/type/title or a people field on an item. `now_iso`
+    stamps `completed` when status becomes complete and clears it when status
+    leaves complete. A real status change appends a history entry (`forced`
+    marks a deploy past the check gate), then moves the item into its folder.
+    A people field set to None is cleared."""
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return False
     y, meta = _load_meta(item_dir)
+    moved = None
     if isinstance(patch.get("status"), str):
-        was = to_str(meta.get("status"))
-        meta["status"] = patch["status"]
-        if patch["status"] == "done" and was != "done":
+        was = to_str(meta.get("status")) or "todo"
+        new = patch["status"]
+        meta["status"] = new
+        if new in COMPLETE and was not in COMPLETE:
             meta["completed"] = now_iso
-        elif patch["status"] != "done" and was == "done":
+        elif new not in COMPLETE and was in COMPLETE:
             meta["completed"] = None
-    if isinstance(patch.get("priority"), str):
-        meta["priority"] = patch["priority"]
-    if isinstance(patch.get("type"), str):
-        meta["type"] = patch["type"]
+        if new != was:
+            moved = (was, new)
+    for key in ("priority", "type", "title"):
+        if isinstance(patch.get(key), str):
+            meta[key] = patch[key]
+    for key in PEOPLE:
+        if key in patch:
+            meta[key] = patch[key] or None
     yamlio.save(y, item_dir / ITEM_FILE, meta)
+    if moved:
+        _write_history(item_dir, moved[0], moved[1], now_iso, forced)
     _place(item_dir, to_str(meta.get("status")) or "todo")
     return True
+
+
+def _write_history(item_dir: Path, was: str, new: str, ts, forced: bool) -> None:
+    d = item_dir / HISTORY_DIR
+    d.mkdir(exist_ok=True)
+    ids = [e["id"] for e in _read_entries(d)]
+    new_id = max(ids) + 1 if ids else 1
+    ts = ts or _now()
+    entry = {"uid": ulid.new(), "from": was, "to": new, "by": identity.user(),
+             "via": identity.via()}
+    if forced:
+        entry["forced"] = True
+    yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.yaml", frontmatter.dump_map(entry))
+
+
+def _now() -> str:
+    from .util import now
+    return now()
 
 
 def archive_todos(root: Path):
@@ -258,7 +355,7 @@ def archive_todos(root: Path):
     (count, archive_dir)."""
     moved = 0
     for d in _item_dirs(root, [OPEN]):
-        if to_str(yamlio.read(d / ITEM_FILE).get("status")) == "done":
+        if to_str(yamlio.read(d / ITEM_FILE).get("status")) in COMPLETE:
             dest = root / ARCHIVED / d.name
             if dest.exists():
                 die(f"Can't archive {d.name}: {dest} already exists.", 1)
@@ -269,7 +366,7 @@ def archive_todos(root: Path):
 
 
 # ── notes and dev log (one file per entry) ────────────────────────────────────
-def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str):
+def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict):
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return None
@@ -277,7 +374,9 @@ def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str):
     d.mkdir(exist_ok=True)
     ids = [e["id"] for e in _read_entries(d)]
     new_id = max(ids) + 1 if ids else 1
-    yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.md", text + "\n")
+    full = {"uid": ulid.new(), **meta, "author": identity.user(), "via": identity.via()}
+    yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.md",
+                        frontmatter.join(full, text + "\n"))
     return new_id
 
 
@@ -294,10 +393,43 @@ def _remove_entry(root: Path, item_id: str, sub: str, entry_id: int) -> bool:
     return removed
 
 
-def add_note(root: Path, item_id: str, text: str, now_iso: str):
-    """Append a note with a fresh per-item id. Returns the id, or None if the
-    item is missing."""
-    return _add_entry(root, item_id, NOTES_DIR, text, now_iso)
+def mentions(text: str) -> list:
+    seen = []
+    for h in _MENTION.findall(text):
+        h = h.rstrip(".")
+        if h not in seen:
+            seen.append(h)
+    return seen
+
+
+def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "context",
+             extra: dict | None = None):
+    """Append a note of `kind` with a fresh per-item id. `comment` and
+    `qa-rejection` notes record their @mentions; `clarification` notes start
+    open. Returns the id, or None if the item is missing."""
+    meta = {"kind": kind, **(extra or {})}
+    if kind in ("comment", "qa-rejection"):
+        found = mentions(text)
+        if found:
+            meta["mentions"] = found
+    if kind == "clarification":
+        meta.setdefault("state", "open")
+    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta)
+
+
+def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: str) -> bool:
+    """Close a clarification with `answer`, keeping its file and id."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return False
+    for e in _read_entries(item_dir / NOTES_DIR):
+        if e["id"] == note_id:
+            meta = dict(e["meta"]) or {"uid": None, "kind": "context"}
+            meta.update(state="answered", answer=answer, answered_by=identity.user(),
+                        answered_at=now_iso)
+            yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
+            return True
+    return False
 
 
 def remove_note(root: Path, item_id: str, note_id: int) -> bool:
@@ -307,7 +439,7 @@ def remove_note(root: Path, item_id: str, note_id: int) -> bool:
 def add_log(root: Path, item_id: str, text: str, now_iso: str):
     """Append a dated log entry with a fresh per-item id. Returns the id, or None
     if the item is missing."""
-    return _add_entry(root, item_id, LOG_DIR, text, now_iso)
+    return _add_entry(root, item_id, LOG_DIR, text, now_iso, {})
 
 
 def remove_log(root: Path, item_id: str, log_id: int) -> bool:
@@ -386,7 +518,8 @@ def add_task(root: Path, item_id: str, title: str, phase: int | None = None):
     def _add(tasks):
         ids = [x["id"] for x in tasks]
         new_id = max(ids) + 1 if ids else 1
-        tasks.append({"id": new_id, "title": t, "status": "todo", "phase": phase})
+        tasks.append({"id": new_id, "uid": ulid.new(), "title": t, "status": "todo",
+                      "phase": phase})
         return new_id
     result = _mutate_tasks(root, item_id, _add)
     return result if result is not False else None
@@ -453,6 +586,66 @@ def remove_task(root: Path, item_id: str, task_id: int) -> bool:
                 break
         return True
     return _mutate_tasks(root, item_id, _rm) is True
+
+
+# ── deployment checks ─────────────────────────────────────────────────────────
+def _mutate_checks(root: Path, item_id: str, transform):
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return False
+    checks = _read_checks(item_dir)
+    result = transform(checks)
+    f = item_dir / CHECKS_DIR / CHECKS_FILE
+    if checks:
+        f.parent.mkdir(exist_ok=True)
+        yamlio.write_atomic(f, yamlio.dump(yamlio.yaml(), yamlio.checks_doc(checks)))
+    elif f.exists():
+        f.unlink()
+        try:
+            f.parent.rmdir()
+        except OSError:
+            pass
+    return result
+
+
+def add_check(root: Path, item_id: str, kind: str, title: str, payload=None,
+              timing: str = "pre-deploy"):
+    t = title.strip()
+    if not t:
+        return None
+    def _add(checks):
+        ids = [c["id"] for c in checks]
+        new_id = max(ids) + 1 if ids else 1
+        checks.append({"id": new_id, "uid": ulid.new(), "kind": kind, "title": t,
+                       "payload": payload, "timing": timing, "status": "pending"})
+        return new_id
+    result = _mutate_checks(root, item_id, _add)
+    return result if result is not False else None
+
+
+def set_check_status(root: Path, item_id: str, check_id: int, status: str) -> bool:
+    def _set(checks):
+        for c in checks:
+            if c["id"] == check_id:
+                c["status"] = status
+                return True
+        return False
+    return _mutate_checks(root, item_id, _set) is True
+
+
+def remove_check(root: Path, item_id: str, check_id: int) -> bool:
+    def _rm(checks):
+        for i, c in enumerate(checks):
+            if c["id"] == check_id:
+                del checks[i]
+                return True
+        return False
+    return _mutate_checks(root, item_id, _rm) is True
+
+
+def pending_pre_deploy(item: dict) -> list:
+    return [c for c in item["checks"]
+            if c["timing"] == "pre-deploy" and c["status"] != "done"]
 
 
 # ── fuzzy, case-insensitive item lookup ───────────────────────────────────────

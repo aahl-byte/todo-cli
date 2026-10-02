@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from todo import store
+from todo import frontmatter, store
 from todo.cli import build_parser
 
 
@@ -76,5 +76,5 @@ def test_multiline_entry_round_trips(root):
     text = "**tried**\n\n- `a`\n- `b`"
     run(root, ["log", "beta", text])
     f, = (root / "OPEN" / "beta" / "devlogs").iterdir()
-    assert f.read_text() == text + "\n"
+    assert frontmatter.split(f.read_text())[1] == text + "\n"
     assert store.resolve_item(root, "beta")["log"][0]["text"] == text
