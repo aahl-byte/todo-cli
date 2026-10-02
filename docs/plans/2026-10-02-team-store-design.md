@@ -106,12 +106,18 @@ back to queueing. `todo sync` forces a round and reports pending operations.
 
 ## Server
 
-- **Postgres.** Tables for projects, users, items, tasks, notes, logs,
-  checks, status history, an append-only `changes` table holding the sequence
-  numbers, and `jira_links`.
-- **API.** A small Python service, so it can share models and validation with the CLI.
-- **Real-time.** Postgres `LISTEN/NOTIFY` feeds server-sent events to the web
-  UI.
+A single Next.js app on Vercel serves the dashboard, the sync API, and the Jira
+webhooks. The CLI only speaks HTTP to it.
+
+- **Postgres** comes from a managed host Vercel can reach. It has tables for
+  projects, users, items, tasks, notes, logs, checks, status history, an
+  append-only `changes` table holding the sequence numbers, and `jira_links`.
+- **The API** lives in route handlers: `POST /api/ops` for push and
+  `GET /api/changes?since=` for pull.
+- **Live status** comes from the dashboard polling `changes?since=` every few
+  seconds. That is one indexed query. Vercel functions cannot hold a long-lived
+  `LISTEN` connection, so true push would need the database host's realtime
+  feature.
 
 ## Jira bridge
 
@@ -135,11 +141,12 @@ That lets the web UI come after the bridge.
 1. **Local model:** statuses and status history, note kinds and front matter,
    people fields, deployment checks and `deploy-plan`, ULIDs, and the operation
    outbox format. This is useful before any server exists.
-2. **Server and sync:** Postgres schema, API, auth, push/pull, conflict
+2. **Server and sync:** Next.js app on Vercel, Postgres schema, API route
+   handlers, auth, push/pull, conflict
    rejection, `link --remote`, `todo sync`.
 3. **Jira bridge:** inbound webhooks, outbound transitions, status mapping
    config.
-4. **Web UI:** PM submission form, QA queue, deploy board, live status,
+4. **Dashboard (same Next.js app):** PM submission form, QA queue, deploy board, live status,
    `@mention` notifications. Cut over from Jira when this lands.
 
 ## Open questions
