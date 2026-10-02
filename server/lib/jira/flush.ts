@@ -1,36 +1,58 @@
-// Deliver queued Jira calls. Each row is claimed by bumping `attempts`, so two
-// flushes never send the same row; a failure records the error and the row is
-// retried until MAX_ATTEMPTS.
+// Deliver queued Jira calls. A row is leased while in flight (`claimed_at`), so
+// concurrent flushes never send it twice; a failure backs off exponentially, and
+// after MAX_ATTEMPTS the row gives up and says so in the item's dev log.
 import type { Db } from "../db";
+import { applyOps } from "../apply";
+import { ulid } from "../ulid";
+import { nowIso } from "../model";
 import { textToAdf } from "./adf";
 import { JiraClient, type Fetch } from "./client";
-import { COMMENT_MARK, MAX_ATTEMPTS, jiraConfig } from "./config";
+import { COMMENT_MARK, LEASE_MINUTES, MAX_ATTEMPTS, jiraConfig } from "./config";
 
 export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: number; failed: number }> {
   const cfg = jiraConfig();
   if (!cfg) return { sent: 0, failed: 0 };
   const jira = new JiraClient(cfg, fetchImpl);
   const rows = await db.query(
-    "select id, action, payload, attempts from jira_outbox where done_at is null and attempts < $1 order by id limit 50",
-    [MAX_ATTEMPTS]);
+    `select id from jira_outbox
+      where done_at is null and attempts < $1
+        and (next_attempt_at is null or next_attempt_at <= now())
+        and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
+      order by id limit 50`, [MAX_ATTEMPTS, LEASE_MINUTES]);
   let sent = 0;
   let failed = 0;
-  for (const row of rows) {
-    const claimed = await db.query(
-      "update jira_outbox set attempts = attempts + 1 where id = $1 and attempts = $2 and done_at is null returning id",
-      [row.id, row.attempts]);
-    if (!claimed.length) continue;
+  for (const { id } of rows) {
+    const [row] = await db.query(
+      `update jira_outbox set attempts = attempts + 1, claimed_at = now()
+        where id = $1 and done_at is null
+          and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
+        returning id, item_uid, action, payload, attempts`, [id, LEASE_MINUTES]);
+    if (!row) continue;
     try {
       const result = await deliver(jira, row.action, row.payload);
-      await db.query("update jira_outbox set done_at = now(), error = null, result = $2::jsonb where id = $1",
+      await db.query("update jira_outbox set done_at = now(), error = null, claimed_at = null, result = $2::jsonb where id = $1",
         [row.id, JSON.stringify(result ?? {})]);
       sent++;
     } catch (e) {
-      await db.query("update jira_outbox set error = $2 where id = $1", [row.id, String((e as Error).message ?? e)]);
+      const message = String((e as Error).message ?? e);
+      await db.query(
+        `update jira_outbox set error = $2, claimed_at = null,
+           next_attempt_at = now() + make_interval(secs => $3) where id = $1`,
+        [row.id, message, 30 * 2 ** (row.attempts - 1)]);
+      if (row.attempts >= MAX_ATTEMPTS) await gaveUp(db, row, message);
       failed++;
     }
   }
   return { sent, failed };
+}
+
+async function gaveUp(db: Db, row: any, message: string): Promise<void> {
+  const [item] = await db.query("select project from items where uid = $1", [row.item_uid]);
+  if (!item) return;
+  await applyOps(db, item.project, [{
+    op_id: `jira:gave-up:${row.id}`, op: "create", entity: "log", uid: ulid(), item_uid: row.item_uid,
+    data: { text: `Jira ${row.action} for ${row.payload.key} gave up after ${MAX_ATTEMPTS} attempts: ${message}`, ts: nowIso() },
+  }], { handle: "jira-bridge", unconditional: true, bridge: true });
 }
 
 async function deliver(jira: JiraClient, action: string, p: Record<string, any>): Promise<Record<string, unknown>> {
@@ -48,12 +70,14 @@ async function deliver(jira: JiraClient, action: string, p: Record<string, any>)
     return { transition: t.id };
   }
   if (action === "comment") {
-    const head = p.label === "QA rejected" ? `QA rejected — ${p.author ?? "someone"} ${COMMENT_MARK}` : `${p.author ?? "someone"} ${COMMENT_MARK}`;
+    const who = p.author ?? "someone";
+    const head = p.label === "QA rejected" ? `QA rejected — ${who} ${COMMENT_MARK}` : `${who} ${COMMENT_MARK}`;
     const res = await jira.call("POST", `/rest/api/3/issue/${key}/comment`, { body: textToAdf(`${head}:\n${p.text}`) });
     return { comment_id: res?.id ?? null };
   }
   if (action === "remotelink") {
-    await jira.call("POST", `/rest/api/3/issue/${key}/remotelink`, { object: { url: p.url, title: p.title } });
+    await jira.call("POST", `/rest/api/3/issue/${key}/remotelink`,
+      { globalId: `todo:${p.global_id ?? p.url}`, object: { url: p.url, title: p.title } });
     return {};
   }
   throw new Error(`unknown action ${action}`);

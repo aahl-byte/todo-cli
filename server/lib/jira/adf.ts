@@ -36,10 +36,13 @@ export function adfToText(doc: unknown): string {
 }
 
 export function textToAdf(text: string) {
-  const paragraphs = text.split(/\n{2,}/).map((p) => ({
+  const paragraphs = text.replace(/\s+$/, "").split(/\n{2,}/).map((p) => ({
     type: "paragraph",
-    content: p.split("\n").flatMap((line, i) =>
-      i ? [{ type: "hardBreak" }, { type: "text", text: line }] : line ? [{ type: "text", text: line }] : []),
+    // Jira rejects empty text nodes, so blank lines become bare breaks.
+    content: p.split("\n").flatMap((line, i) => [
+      ...(i ? [{ type: "hardBreak" }] : []),
+      ...(line ? [{ type: "text", text: line }] : []),
+    ]),
   }));
   return { type: "doc", version: 1, content: paragraphs };
 }

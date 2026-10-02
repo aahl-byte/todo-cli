@@ -7,7 +7,7 @@ import { item, set, world, type World } from "./helpers";
 
 let w: World;
 const ENV = { JIRA_BASE_URL: "https://acme.atlassian.net", JIRA_EMAIL: "bot@acme.test",
-              JIRA_API_TOKEN: "tok", JIRA_WEBHOOK_SECRET: "s3cret", CRON_SECRET: "cron" };
+              JIRA_API_TOKEN: "tok", JIRA_WEBHOOK_SECRET: "s3cret", JIRA_ACCOUNT_ID: "acc-bot", CRON_SECRET: "cron" };
 
 beforeEach(async () => {
   w = await world();
@@ -132,7 +132,7 @@ describe("outbound", () => {
     ]);
     expect(posts[0].body).toEqual({ transition: { id: "31" } });
     expect(adfToText(posts[1].body.body)).toBe("QA rejected — alice (via todo):\nstill broken");
-    expect(posts[2].body).toEqual({ object: { url: "https://gh/pr/9", title: "PR 9" } });
+    expect(posts[2].body).toEqual({ globalId: "todo:N2", object: { url: "https://gh/pr/9", title: "PR 9" } });
     expect(jira.calls[0].url).toContain("?fields=status");
     const auth = (jira.impl as any).mock.calls[0][1].headers.authorization;
     expect(auth).toBe("Basic " + Buffer.from("bot@acme.test:tok").toString("base64"));
@@ -160,12 +160,20 @@ describe("outbound", () => {
     const it = await linkedItem();
     await w.one("alice", set("item", it.uid, it.uid, { status: "in-qa" }, { status: it.versions.status }));
     const broken = vi.fn(async () => new Response("boom", { status: 500 })) as unknown as typeof fetch;
-    for (let i = 0; i < 7; i++) await flushJira(w.d, broken);
+    await flushJira(w.d, broken);
+    await flushJira(w.d, broken);
+    expect((broken as any).mock.calls.length).toBe(1);          // backing off
+    for (let i = 0; i < 6; i++) {
+      await w.d.query("update jira_outbox set next_attempt_at = null");
+      await flushJira(w.d, broken);
+    }
     const [row] = await w.d.query("select attempts, error, done_at from jira_outbox");
     expect(row.attempts).toBe(5);
     expect(row.done_at).toBeNull();
     expect(row.error).toContain("500");
     expect((broken as any).mock.calls.length).toBe(5);
+    const [log] = await w.d.query("select text from logs where item_uid = $1", [it.uid]);
+    expect(log.text).toMatch(/^Jira transition for WEB-7 gave up after 5 attempts/);
   });
 
   it("guards the cron route with CRON_SECRET", async () => {
@@ -178,5 +186,107 @@ describe("outbound", () => {
     const r = await w.one("alice", item("I9"));
     await w.one("alice", set("item", "I9", "I9", { status: "in-qa" }, { status: r.versions!.status }));
     expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
+  });
+});
+
+describe("hardening", () => {
+  const changelogStatus = (name: string, id: string, user = { accountId: "acc-qa" }) => ({
+    webhookEvent: "jira:issue_updated", issue: issue({ status: { name } }), user,
+    changelog: { id, items: [{ field: "status", toString: name }] } });
+
+  it("is idempotent for a retried update webhook", async () => {
+    const it = await linkedItem();
+    await hook(changelogStatus("In QA", "c1"));
+    const v = (await w.d.query("select versions from items"))[0].versions;
+    await w.one("alice", set("item", it.uid, it.uid, { status: "ready-to-deploy" }, { status: v.status }));
+    await hook(changelogStatus("In QA", "c1"));
+    expect((await w.d.query("select status from items"))[0].status).toBe("ready-to-deploy");
+  });
+
+  it("ignores status changes made by the integration account", async () => {
+    await linkedItem();
+    const r = await (await hook(changelogStatus("In QA", "c2", { accountId: "acc-bot" }))).json();
+    expect(r).toMatchObject({ handled: false, reason: "own change" });
+    expect((await w.d.query("select status from items"))[0].status).toBe("requested");
+  });
+
+  it("ignores comments by the integration account or carrying our mark", async () => {
+    await linkedItem();
+    await hook({ webhookEvent: "comment_created", issue: issue(),
+                 comment: { id: "1", body: adf("x"), author: { accountId: "acc-bot" } } });
+    await hook({ webhookEvent: "comment_created", issue: issue(),
+                 comment: { id: "2", body: adf("alice (via todo):\nhi"), author: { accountId: "acc-bob" } } });
+    expect((await w.d.query("select count(*)::int as n from notes where kind = 'comment'"))[0].n).toBe(0);
+  });
+
+  it("keeps the item and says so on both sides when Jira hits the deploy gate", async () => {
+    const it = await linkedItem();
+    await w.d.query("update items set status = 'ready-to-deploy'");
+    await w.one("alice", { op: "create", entity: "check", uid: "C1", item_uid: it.uid, data: { kind: "db-script", title: "migrate" } });
+    await w.d.query("delete from jira_outbox");
+    await hook(changelogStatus("Done", "c3"));
+    expect((await w.d.query("select status from items"))[0].status).toBe("ready-to-deploy");
+    const [log] = await w.d.query("select text from logs");
+    expect(log.text).toContain("pre-deploy checks are still pending");
+    const [row] = await w.d.query("select action, payload from jira_outbox");
+    expect(row).toMatchObject({ action: "comment" });
+    expect(row.payload.text).toContain("Not moved to deployed");
+  });
+
+  it("supersedes an older pending transition", async () => {
+    const it = await linkedItem();
+    const v1 = await w.one("alice", set("item", it.uid, it.uid, { status: "in-progress" }, { status: it.versions.status }));
+    await w.one("alice", set("item", it.uid, it.uid, { status: "in-qa" }, { status: v1.versions!.status }));
+    const rows = await w.d.query("select payload->>'status' as s, done_at is not null as done from jira_outbox order by id");
+    expect(rows).toEqual([{ s: "In Progress", done: true }, { s: "In QA", done: false }]);
+  });
+
+  it("never sends a row twice when flushes overlap", async () => {
+    const it = await linkedItem();
+    await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: it.uid, data: { kind: "comment", text: "x", ts: "t" } });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let posts = 0;
+    const slow = (async (url: any, init: any) => {
+      if (init.method === "POST") {
+        posts++;
+        await gate;
+      }
+      return new Response(JSON.stringify({ id: "9" }));
+    }) as unknown as typeof fetch;
+    const first = flushJira(w.d, slow);
+    await new Promise((r) => setTimeout(r, 50));
+    await flushJira(w.d, slow);
+    release();
+    await first;
+    expect(posts).toBe(1);
+  });
+
+  it("writes ADF Jira accepts: no empty text nodes", async () => {
+    const { textToAdf } = await import("@/lib/jira/adf");
+    const doc = textToAdf("line one\n\nline two\nthree\n");
+    const texts = JSON.stringify(doc).match(/"text":"[^"]*"/g)!;
+    expect(texts.every((t) => t !== '"text":""')).toBe(true);
+    expect(adfToText(doc)).toBe("line one\n\nline two\nthree");
+  });
+
+  it("accepts wiki-markup string descriptions", async () => {
+    await hook({ webhookEvent: "jira:issue_created", issue: issue({ description: "plain *wiki* text" }) });
+    const [note] = await w.d.query("select text from notes");
+    expect(note.text).toBe("Safari login fails\n\nplain *wiki* text");
+  });
+
+  it("answers 503 when the bridge isn't configured", async () => {
+    delete process.env.JIRA_BASE_URL;
+    expect((await hook({})).status).toBe(503);
+  });
+
+  it("heads plain comments with the author and our mark", async () => {
+    const it = await linkedItem();
+    await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: it.uid, data: { kind: "comment", text: "hi", ts: "t" } });
+    const calls: any[] = [];
+    const impl = (async (_u: any, init: any) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ id: "5" })); }) as unknown as typeof fetch;
+    await flushJira(w.d, impl);
+    expect(adfToText(calls[0].body)).toBe("alice (via todo):\nhi");
   });
 });

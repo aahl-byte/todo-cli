@@ -427,7 +427,8 @@ Acceptance:
 **Config.**
 
 - Environment: `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`,
-  `JIRA_WEBHOOK_SECRET`.
+  `JIRA_WEBHOOK_SECRET`, and optionally `JIRA_ACCOUNT_ID`. Without it, the
+  integration's own account is fetched once from `/rest/api/3/myself`.
 - `projects.jira_project` maps a Jira project key to a todo project.
 - `projects.jira_status_map` maps a todo status to a Jira status name; inbound
   changes use it in reverse.
@@ -449,6 +450,13 @@ bridge applies ops through `apply.ts` with `unconditional` set and author
     covers the echo of our own transition. When several todo statuses map to
     one Jira status, the reverse map takes the earliest in lifecycle order.
 - `comment_created` → a `comment` note with `source: jira`.
+- **Ignored as our own:** changes and comments by the integration account, and
+  comments carrying the `(via todo)` mark.
+- **Idempotency:** op ids and uids derive from Jira's ids (issue key,
+  changelog id or delivery id, comment id), so a retried webhook is a no-op.
+  Non-create events find the item through `jira_links`.
+- **Deploy gate:** a Jira status the gate refuses leaves the item as it is. It
+  writes a dev-log entry and posts a Jira comment saying why.
 - Users map through `users.jira_account_id`. An unmatched user is recorded as
   `jira:<displayName>`.
 
@@ -462,8 +470,16 @@ bridge applies ops through `apply.ts` with `unconditional` set and author
 - A `link` note becomes a remote link.
 
 **Delivery.** Routes flush the outbox in `after()` from `next/server`.
-`GET /api/jira/flush` runs as a Vercel cron (`vercel.json`) and retries.
-Failures record `error` and increment `attempts`, giving up after 5.
+`GET /api/jira/flush` runs as a Vercel cron (`vercel.json`) and retries; it is
+daily by default, which Hobby plans allow, and Pro can run it every 5 minutes.
+
+- **Leases:** a row is leased while in flight (`claimed_at`, reclaimable after
+  5 minutes), so overlapping flushes never send it twice.
+- **Backoff:** failures back off exponentially (`next_attempt_at`). After 5
+  attempts a row gives up and writes a dev-log entry on the item.
+- **Superseding:** a newer transition supersedes any older one still waiting.
+- **Remote links** carry a `globalId`, so a retry updates the link rather than
+  duplicating it.
 
 Acceptance **(js)**:
 

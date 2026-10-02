@@ -18,7 +18,9 @@ export async function POST(req: Request) {
   if (!matches(secret, cfg.webhookSecret)) return json({ error: "unauthorized" }, 401);
   const payload = await req.json().catch(() => null);
   const d = await db();
-  const result = await handleWebhook(d, payload);
+  const result = await handleWebhook(d, payload, {
+    deliveryId: req.headers.get("x-atlassian-webhook-identifier") ?? undefined,
+  });
   later(() => flushJira(d));
   return json(result);
 }

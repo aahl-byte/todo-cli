@@ -1,0 +1,60 @@
+"use client";
+// Live status: poll the project's changes feed (and the inbox) every 3 s while
+// the tab is visible; on change, refresh the server components and flash what
+// changed.
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+
+const EVERY_MS = 3000;
+
+export function Live({ project, cursor }: { project?: string; cursor?: number }) {
+  const router = useRouter();
+  const at = useRef(cursor ?? 0);
+  const [online, setOnline] = useState(true);
+  const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      if (document.hidden) return;
+      try {
+        const box = await fetch("/api/inbox", { cache: "no-store" });
+        if (box.ok) setUnread((await box.json()).unread ?? 0);
+        if (project) {
+          const res = await fetch(`/api/projects/${encodeURIComponent(project)}/changes?since=${at.current}&limit=200`, { cache: "no-store" });
+          if (!res.ok) throw new Error(String(res.status));
+          const body = await res.json();
+          if (body.changes?.length) {
+            at.current = body.cursor;
+            router.refresh();
+            const uids = new Set<string>(body.changes.flatMap((c: any) => [c.uid, c.item_uid]));
+            setTimeout(() => {
+              document.querySelectorAll<HTMLElement>("[data-uid]").forEach((el) => {
+                if (uids.has(el.dataset.uid!)) {
+                  el.classList.remove("flash");
+                  void el.offsetWidth;
+                  el.classList.add("flash");
+                }
+              });
+            }, 300);
+          }
+        }
+        setOnline(true);
+      } catch {
+        setOnline(false);
+      }
+    };
+    const id = setInterval(() => { if (!stop) void tick(); }, EVERY_MS);
+    void tick();
+    return () => { stop = true; clearInterval(id); };
+  }, [project, router]);
+
+  return (
+    <>
+      <a href="/inbox">Inbox {unread > 0 && <span className="badge">{unread}</span>}</a>
+      <span className={online ? "live" : "live off"} title={online ? "live" : "offline — retrying"}>
+        <i /> {online ? "live" : "offline — retrying"}
+      </span>
+    </>
+  );
+}
