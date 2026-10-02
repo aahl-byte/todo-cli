@@ -15,4 +15,5 @@ const token = await addUser(d, handle, opt("--name"));
 const jira = opt("--jira");
 if (jira) await d.query("update users set jira_account_id = $2 where handle = $1", [handle, jira]);
 console.log(`${handle}: ${token}`);
+await (await db()).close?.();
 process.exit(0);

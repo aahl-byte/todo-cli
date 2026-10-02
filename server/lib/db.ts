@@ -9,6 +9,7 @@ export interface Db {
   query<T extends Row = Row>(sql: string, params?: unknown[]): Promise<T[]>;
   tx<T>(fn: (db: Db) => Promise<T>): Promise<T>;
   exec(sql: string): Promise<void>;
+  close?(): Promise<void>;
 }
 
 let current: Promise<Db> | null = null;
@@ -54,6 +55,7 @@ export async function pglite(dataDir?: string): Promise<Db> {
     query: (sql, params) => serial(async () => (await pg.query(sql, params as any[])).rows as any[]),
     exec: (sql) => serial(async () => void (await pg.exec(sql))),
     tx: (fn) => serial(() => pg.transaction((t) => fn(wrap(t as any)))),
+    close: () => serial(() => pg.close()),
   };
 }
 

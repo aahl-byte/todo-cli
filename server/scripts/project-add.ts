@@ -8,4 +8,5 @@ if (!key) {
 }
 await addProject(await db(), key, name);
 console.log(`project ${key} ready`);
+await (await db()).close?.();
 process.exit(0);
