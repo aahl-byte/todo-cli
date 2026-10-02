@@ -68,41 +68,54 @@ Markdown body; a note without front matter is a `context` note.
 
 ## Sync
 
-The server is the source of truth. A local `.TODO/` is a cache plus an outbox,
-so every command still works offline.
+The server is the source of truth. A local `.TODO/` is a cache, so every
+command still works offline.
 
-**Operations.** Each CLI write becomes an operation — set field, add note, add
-task, move task, set check — with a ULID. The CLI applies it to the local files
-at once and appends it to `.TODO/.sync/outbox/`.
+**Snapshot.** After each sync the CLI records what the server last said about
+every entity, in `.TODO/.sync/snapshot.json`. Each field is stored with its
+version.
 
-**Push.** The server applies each operation once (keyed by its ULID) and stamps
-it with a sequence number from a single counter.
+**Push.** A sync round compares the local files with the snapshot and turns
+every difference into an operation: set field, add or remove a note, task,
+check or log, reorder a phase. Each operation gets a ULID. It doesn't matter
+whether the CLI, the watchtower drawer or a hand edit made the change.
 
-**Pull.** The client asks for every change after its saved sequence number and
-writes those changes into the local files.
+**Pull.** The server applies each operation once, keyed by its ULID, and stamps
+it with the project's next sequence number. The client then asks for every
+change after its saved sequence number and writes the results into the local
+files and the snapshot.
 
 **Conflicts.** Adds never conflict: notes, logs, comments and history only grow.
-A field write carries the field version the client last saw.
+A field write carries the version from the snapshot.
 
-- If the server's version still matches, the write applies.
+- If the server's version still matches, the write applies. Several offline
+  edits to one field reach the server as a single write.
 - If someone changed the field since, the server keeps its value and returns a
-  rejection. On the next pull the CLI logs it on the item (“offline status →
-  `review` not applied; QA set `in-qa` at 14:02”).
+  rejection. The CLI then logs it on the item (“offline status → `review` not
+  applied; QA set `in-qa` at 14:02”).
 
 This stops an offline dev from silently undoing a QA approval.
+
+**History.** The server writes status history from the status changes it
+applies, so a rejected change never appears in it. An unsynced store keeps its
+own history files.
 
 **IDs.** A task, note or check is really identified by its ULID. The short `[n]`
 that commands take is still allocated locally as max + 1. The server keeps it
 unless another client already took that number offline. Then the server
-reassigns it, and the CLI prints the change on sync. Item ids collide the same
-way and take a `-2` suffix.
+reassigns it, and the CLI prints the change on sync. Item ids are slugs and
+collide the same way, taking a `-2` suffix. Jira keys show alongside the slug
+when an item is linked.
 
-**When it runs.** Each command pushes and pulls with a short timeout and falls
-back to queueing. `todo sync` forces a round and reports pending operations.
+**When it runs.** Each command runs one round first, with a short timeout. A
+write command pushes again afterwards. Rounds hold a lock on the store, so
+parallel commands don't race. `todo sync` forces a round and reports what is
+still unpushed.
 
 **Setup.** `todo link --remote <url>` turns a linked project at
-`~/.todo/projects/<key>/` into a synced cache. Identity and token live in
-`~/.todo/config.yaml`.
+`~/.todo/projects/<key>/` into a synced cache. It pulls first, so a second
+teammate adopts the server's items instead of duplicating them. Identity and
+token live in `~/.todo/config.yaml`.
 
 ## Server
 
@@ -125,7 +138,9 @@ The bridge runs on the server with one integration credential. Each linked item
 stores its Jira key.
 
 - **Jira → todo:** new tickets become `requested` items with the description as
-  a `ticket-request` note. Comments and assignee changes come over too.
+  a `ticket-request` note. Comments, assignee changes and status changes come
+  over too; status changes go through the same mapping in reverse. That keeps
+  QA approvals made in Jira flowing into `deploy-plan`.
 - **todo → Jira:** status changes go back through a configurable mapping to
   Jira workflow transitions, along with comments and `link` notes.
 - **Kept in todo only:** context notes, dev logs, tasks, clarifications and
@@ -139,8 +154,7 @@ That lets the web UI come after the bridge.
 ## Phases
 
 1. **Local model:** statuses and status history, note kinds and front matter,
-   people fields, deployment checks and `deploy-plan`, ULIDs, and the operation
-   outbox format. This is useful before any server exists.
+   people fields, deployment checks and `deploy-plan`, and ULIDs. This is useful before any server exists.
 2. **Server and sync:** Next.js app on Vercel, Postgres schema, API route
    handlers, auth, push/pull, conflict
    rejection, `link --remote`, `todo sync`.
@@ -150,8 +164,8 @@ That lets the web UI come after the bridge.
    `@mention` notifications, built from a separate UI design pass. Cut over
    from Jira when this lands.
 
-## Open questions
+## Decisions
 
-- Team item ids: keep slugs, or use prefixed keys like `WEB-142`?
-- The watchtower drawer reads `.TODO/` today. Decide whether it becomes the web
-  UI or stays a local viewer.
+- **Item ids** stay slugs. A linked Jira key is shown beside them.
+- **The watchtower drawer** stays a local viewer and editor of `.TODO/`. Its
+  edits sync, because a sync round compares files, not commands.
