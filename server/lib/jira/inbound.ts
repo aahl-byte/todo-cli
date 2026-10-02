@@ -62,7 +62,9 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   const own = cfg ? await ownAccountId(cfg, opts.fetchImpl) : null;
   if (event === "jira:issue_updated") {
     if (own && payload.user?.accountId === own) return { handled: false, reason: "own change" };
-    return updated(db, link, issue, payload, opts.deliveryId);
+    // Without knowing our own account, a late echo of our transition could roll
+    // the item back, so status changes wait until it is known.
+    return updated(db, link, issue, payload, opts.deliveryId, own !== null);
   }
   if (event === "comment_created") return commented(db, link, payload.comment, own);
   return { handled: false, reason: `ignored ${event}` };
@@ -91,11 +93,12 @@ async function created(db: Db, project: string, issue: any): Promise<InboundResu
   return { handled: true, results };
 }
 
-async function updated(db: Db, link: any, issue: any, payload: any, deliveryId?: string): Promise<InboundResult> {
+async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: string | undefined,
+                       statusSafe: boolean): Promise<InboundResult> {
   const items: any[] = payload.changelog?.items ?? [];
   const data: Record<string, unknown> = {};
   if (items.some((x) => x.field === "assignee")) data.developer = await handleFor(db, issue.fields?.assignee);
-  const status = items.find((x) => x.field === "status");
+  const status = statusSafe ? items.find((x) => x.field === "status") : undefined;
   if (status) {
     const jiraStatus = String((Object.hasOwn(status, "toString") ? status.toString : null) ?? issue.fields?.status?.name ?? "");
     const map: Record<string, string> = link.jira_status_map ?? {};
@@ -110,15 +113,15 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId?:
   const actor = await bridgeActor(db, payload.user);
   const results = await applyOps(db, link.project, [op], actor);
   const blocked = results[0].rejected?.find((x) => x.field === "status");
-  if (blocked) await gated(db, link, issue.key, String(data.status), blocked.reason, actor);
+  if (blocked && !results[0].duplicate) await gated(db, link, issue.key, String(data.status), blocked.reason, actor, String(id));
   return { handled: true, results };
 }
 
 /** Jira moved the issue somewhere todo refused (the deploy gate): say so on both sides. */
-async function gated(db: Db, link: any, key: string, to: string, reason: string, actor: Actor) {
+async function gated(db: Db, link: any, key: string, to: string, reason: string, actor: Actor, id: string) {
   const why = reason === "checks-pending" ? "pre-deploy checks are still pending" : reason;
   await applyOps(db, link.project, [{
-    op_id: `jira:gated:${key}:${nowIso()}`, op: "create", entity: "log", uid: jiraUid("gated", key, nowIso()),
+    op_id: `jira:gated:${id}`, op: "create", entity: "log", uid: jiraUid("gated", id),
     item_uid: link.item_uid,
     data: { text: `Jira moved ${key} to ${to}, but todo kept it at ${link.status}: ${why}.`, ts: nowIso() },
   }], actor);

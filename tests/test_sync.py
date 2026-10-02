@@ -93,7 +93,7 @@ def test_offline_stale_status_is_rejected_and_logged(pair, server, monkeypatch):
     assert {n["text"] for n in it["notes"]} >= {"offline thought", "testing now"}
     assert "offline status → in-progress not applied; bob set in-qa" in it["log"][-1]["text"]
     assert any("offline status" in m for m in report.messages)
-    assert [(h["from"], h["to"]) for h in it["history"]] == [("review", "in-qa")]
+    assert [(h["from"], h["to"]) for h in it["history"]] == [("todo", "review"), ("review", "in-qa")]
     assert all(not h["provisional"] for h in it["history"])
 
 
@@ -306,3 +306,189 @@ def test_quiet_round_reports_offline_and_keeps_changes(pair, server, monkeypatch
     sync.quiet_round(a)
     assert "offline" in capsys.readouterr().err
     assert [op["op"] for op in sync.pending(a)] == ["set"]
+
+
+# ── regressions from the phase 2 validation ──────────────────────────────────
+def test_children_arrive_even_when_their_item_changed_later(tmp_path, server, monkeypatch):
+    a, c = make(tmp_path, "a", server), make(tmp_path, "c", server)
+    run_cli(a, ["add", "Login bug"])
+    run_cli(a, ["task", "add", "login-bug", "repro"])
+    run_cli(a, ["check", "add", "login-bug", "db-script", "migrate"])
+    run_cli(a, ["start", "login-bug"])
+    rnd(a, server, "alice")
+    rnd(c, server, "carol", adopt=True)
+    ic = item(c)
+    assert [t["title"] for t in ic["tasks"]] == ["repro"]
+    assert [x["title"] for x in ic["checks"]] == ["migrate"]
+    assert [(h["from"], h["to"]) for h in ic["history"]] == [("todo", "in-progress")]
+
+
+def test_history_from_before_linking_reaches_the_server(tmp_path, server):
+    a = make(tmp_path, "a", server)
+    run_cli(a, ["add", "Login bug"])
+    run_cli(a, ["start", "login-bug"])
+    run_cli(a, ["review", "login-bug"])
+    rnd(a, server, "alice")
+    rows = sorted((r["n"], r["from_status"], r["to_status"]) for r in server.rows.values() if r["_entity"] == "history")
+    assert rows == [(1, "todo", "in-progress"), (2, "in-progress", "review")]
+    hist = item(a)["history"]
+    assert [(h["from"], h["to"], h["provisional"]) for h in hist] == [
+        ("todo", "in-progress", False), ("in-progress", "review", False)]
+
+
+class Flaky:
+    """A client whose next push applies on the server but loses its response."""
+
+    def __init__(self, server, who):
+        self.inner = server.client(who)
+        self.drop_next = True
+
+    def push(self, project, ops):
+        results = self.inner.push(project, ops)
+        if self.drop_next:
+            self.drop_next = False
+            raise remote.RemoteError("timed out")
+        return results
+
+    def changes(self, project, since, limit=500):
+        return self.inner.changes(project, since, limit)
+
+
+def test_lost_push_response_replays_without_self_rejection(pair, server):
+    a, _ = pair
+    run_cli(a, ["status", "login-bug", "in-progress"])
+    flaky = Flaky(server, "alice")
+    assert sync.run_round(a, flaky).error
+    run_cli(a, ["status", "login-bug", "blocked"])
+    report = sync.run_round(a, flaky)
+    assert report.error is None and report.rejected == 0
+    assert server.rows[item(a)["uid"]]["status"] == "blocked"
+    assert item(a)["status"] == "blocked"
+
+
+def test_lost_create_response_keeps_later_edits(tmp_path, server):
+    a = make(tmp_path, "a", server)
+    run_cli(a, ["add", "Login"])
+    flaky = Flaky(server, "alice")
+    sync.run_round(a, flaky)
+    store.update_todo(a, "login", {"title": "Login v2"})
+    report = sync.run_round(a, flaky)
+    assert report.rejected == 0
+    assert server.rows[item(a, "login")["uid"]]["title"] == "Login v2"
+
+
+def test_group_rollback_keeps_the_other_fields_for_next_round(pair, server):
+    a, b = pair
+    for cmd in (["--human", "ready-qa"], ["qa"]):
+        run_cli(a, cmd + ["login-bug"])
+    rnd(a, server, "alice")
+    rnd(b, server, "bob")
+    run_cli(b, ["approve", "login-bug"])
+    rnd(b, server, "bob")
+    run_cli(a, ["reject", "login-bug", "broken"])
+    store.update_todo(a, "login-bug", {"title": "Login bug (Safari)"})
+    rnd(a, server, "alice")
+    rnd(a, server, "alice")
+    assert server.rows[item(a)["uid"]]["title"] == "Login bug (Safari)"
+    assert item(a)["status"] == "ready-to-deploy"
+
+
+def test_unreadable_super_phase_never_removes_children(pair, server):
+    a, _ = pair
+    f = a / "OPEN" / "login-bug" / "TODO.yaml"
+    f.write_text(f.read_text().replace("super-phase: null", "super-phase: two"))
+    assert sync.pending(a) == []
+
+
+def test_pulled_item_whose_id_is_taken_locally_still_arrives(tmp_path, server, monkeypatch):
+    a, b = make(tmp_path, "a", server), make(tmp_path, "b", server)
+    run_cli(a, ["add", "Login bug"])
+    rnd(a, server, "alice")
+    run_cli(b, ["add", "Login bug"])
+    rnd(b, server, "bob", adopt=True)
+    assert (b / "OPEN" / "login-bug").is_dir() and (b / "OPEN" / "login-bug-2").is_dir()
+    uids = {store.resolve_item(b, i)["uid"] for i in ("login-bug", "login-bug-2")}
+    assert uids == {r["uid"] for r in server.rows.values() if r["_entity"] == "item"}
+
+
+def test_invalid_values_are_logged_once_and_reverted(pair, server):
+    a, _ = pair
+    f = next((a / "OPEN" / "login-bug" / "phase-1").glob("TASKS.yaml"))
+    f.write_text(f.read_text().replace("status: todo", "status: wip"))
+    rnd(a, server, "alice")
+    rnd(a, server, "alice")
+    logs = [e["text"] for e in item(a)["log"] if "not applied" in e["text"]]
+    assert len(logs) == 1
+    assert item(a)["tasks"][0]["status"] == "todo"
+
+
+def test_uid_exists_adopts_the_server_copy(pair, server):
+    a, b = pair
+    uid = item(a)["notes"][0]["uid"]
+    server.rows[uid]["text"] = "server text"
+    del server.rows[uid]["versions"]["text"]
+    sync.save_snapshot(b, {**sync.load_snapshot(b), "entities": {
+        k: v for k, v in sync.load_snapshot(b)["entities"].items() if k != uid}})
+    report = rnd(b, server, "bob")
+    assert any("took the server's copy" in m for m in report.messages)
+    assert item(b)["notes"][0]["text"] == "server text"
+
+
+def test_op_order_and_bases(pair, server):
+    a, _ = pair
+    run_cli(a, ["approve", "login-bug"])
+    run_cli(a, ["check", "done", "login-bug", "1"])
+    run_cli(a, ["deploy", "login-bug"])
+    run_cli(a, ["note", "login-bug", "shipped"])
+    run_cli(a, ["task", "rm", "login-bug", "1"])
+    snap = sync.load_snapshot(a)["entities"]
+    rnd(a, server, "alice")
+    ops = server.pushes[-1]
+    assert [(op["op"], op["entity"]) for op in ops] == [
+        ("create", "note"), ("set", "check"), ("set", "item"), ("remove", "task")]
+    check_op, item_op, rm_op = ops[1], ops[2], ops[3]
+    assert check_op["base"] == {"status": snap[check_op["uid"]]["versions"]["status"]}
+    assert item_op["data"] == {"status": "deployed"}
+    assert rm_op["base"] == snap[rm_op["uid"]]["versions"]
+
+
+def test_main_runs_every_command_inside_the_lock(pair, server, monkeypatch, tmp_path):
+    a, _ = pair
+    events = []
+
+    class Recorder:
+        def __init__(self, root):
+            events.append("lock")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            events.append("unlock")
+
+    monkeypatch.setattr(sync, "locked", Recorder)
+    monkeypatch.setattr(sync, "quiet_round", lambda root, push_only=False: events.append("push" if push_only else "round"))
+    from todo import cli
+    monkeypatch.setattr("sys.argv", ["todo", "--dir", str(a), "note", "login-bug", "hi"])
+    cli.main()
+    assert events == ["lock", "round", "push", "unlock"]
+
+
+def test_null_unknown_keys_survive_a_pull(pair, server):
+    a, b = pair
+    f = a / "OPEN" / "login-bug" / "TODO.yaml"
+    f.write_text(f.read_text() + "acceptance: null\n")
+    run_cli(b, ["assign", "login-bug", "--dev", "bob"])
+    rnd(b, server, "bob")
+    rnd(a, server, "alice")
+    assert "acceptance: null" in f.read_text()
+
+
+def test_identical_checks_get_distinct_fallback_uids(pair, server):
+    a, _ = pair
+    f = a / "OPEN" / "login-bug" / "checks" / "CHECKS.yaml"
+    f.write_text("checks:\n  - {id: 1, kind: other, title: smoke, payload: null, timing: pre-deploy, status: pending}\n"
+                 "  - {id: 2, kind: other, title: smoke, payload: null, timing: pre-deploy, status: pending}\n")
+    sync.ensure_uids(a, "p")
+    uids = [c["uid"] for c in item(a)["checks"]]
+    assert len(set(uids)) == 2

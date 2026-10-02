@@ -248,3 +248,72 @@ describe("notifications", () => {
     expect(await kinds("alice")).toEqual([]);
   });
 });
+
+describe("validation fixes", () => {
+  it("rolls back a group of one with a partial rejection, reporting no versions", async () => {
+    const v = (await w.one("alice", item("I1"))).versions!;
+    await w.one("bob", set("item", "I1", "I1", { priority: "high" }, { priority: v.priority }));
+    const [r] = await w.apply("alice",
+      { ...set("item", "I1", "I1", { priority: "low", title: "renamed" }, { priority: v.priority, title: v.title }), group: "G1" });
+    expect(r).toMatchObject({ status: "rejected", reason: "group-rolled-back" });
+    expect(r.versions).toBeUndefined();
+    expect(r.rejected![0].field).toBe("priority");
+    expect((await row("items", "I1")).title).toBe("Item I1");
+  });
+
+  it("turns a malformed op into a stored rejection instead of a 500", async () => {
+    await w.one("alice", item("I1"));
+    const invalid = await w.one("alice", child("task", "T0", "I1", { n: 1, title: "x", position: "abc" }));
+    expect(invalid).toMatchObject({ status: "rejected", reason: "invalid-position" });
+    const bad = { op_id: "BAD", ...child("task", "T1", "I1", { n: 1, title: "x", phase: 2 ** 40 }) } as any;
+    const [r] = await applyOps(w.d, "p", [bad], { handle: "alice" });
+    expect(r).toMatchObject({ status: "rejected", reason: "error" });
+    const [again] = await applyOps(w.d, "p", [bad], { handle: "alice" });
+    expect(again.duplicate).toBe(true);
+    const ok = await w.one("alice", child("task", "T2", "I1", { n: 2, title: "fine" }));
+    expect(ok.status).toBe("applied");
+  });
+
+  it("returns the current row for a uid that exists with other data", async () => {
+    await w.one("alice", item("I1"));
+    const r = await w.one("bob", item("I1", { title: "different" }));
+    expect(r).toMatchObject({ status: "rejected", reason: "uid-exists" });
+    expect(r.data).toMatchObject({ uid: "I1", title: "Item I1" });
+  });
+
+  it("returns the current value and version with every field rejection", async () => {
+    await w.one("alice", item("I1"));
+    const t = await w.one("alice", child("task", "T1", "I1", { n: 1, title: "x" }));
+    const r = await w.one("alice", set("task", "T1", "I1", { status: "wip" }, { status: t.versions!.status }));
+    expect(r.rejected![0]).toMatchObject({ field: "status", reason: "invalid", server_value: "todo", version: t.versions!.status });
+  });
+
+  it("imports pre-sync history carried on an item create", async () => {
+    await w.one("alice", item("I1", { status: "review", history: [
+      { uid: "H1", from: "todo", to: "in-progress", by: "alice", via: "agent", ts: "2026-10-01T10:00:00.000Z" },
+      { uid: "H2", from: "in-progress", to: "review", by: "alice", via: "human", ts: "2026-10-01T11:00:00.000Z" }] }));
+    const hist = await w.d.query("select uid, n, from_status, to_status, via from status_history order by n");
+    expect(hist).toEqual([
+      { uid: "H1", n: 1, from_status: "todo", to_status: "in-progress", via: "agent" },
+      { uid: "H2", n: 2, from_status: "in-progress", to_status: "review", via: "human" }]);
+    const { changes } = await changesSince(w.d, "p", 0);
+    expect(changes.map((c) => c.entity)).toEqual(["item", "history", "history"]);
+  });
+
+  it("keeps an item ahead of its children in a page even when it changed again later", async () => {
+    await w.one("alice", item("I1"));
+    await w.one("alice", child("task", "T1", "I1", { n: 1, title: "x" }));     // bumps the item again (calc)
+    const { changes } = await changesSince(w.d, "p", 0);
+    expect(changes.map((c) => c.uid)).toEqual(["I1", "T1"]);
+    expect(changes[0].data!.calc_status).toBe("todo");
+  });
+
+  it("scopes op ids to their project", async () => {
+    await w.d.query("insert into projects (key) values ('q')");
+    const op = { op_id: "SAME", ...item("I1") } as any;
+    await applyOps(w.d, "p", [op], { handle: "alice" });
+    const [r] = await applyOps(w.d, "q", [{ ...op, uid: "I2", item_uid: "I2" }], { handle: "alice" });
+    expect(r.duplicate).toBeUndefined();
+    expect((await w.d.query("select project from items order by project")).map((x) => x.project)).toEqual(["p", "q"]);
+  });
+});

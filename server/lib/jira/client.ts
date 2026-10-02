@@ -2,6 +2,9 @@ import type { JiraConfig } from "./config";
 
 export type Fetch = typeof fetch;
 
+/** Well under the outbox lease, so a slow call can't outlive its claim. */
+const TIMEOUT_MS = 60_000;
+
 export class JiraClient {
   constructor(private cfg: JiraConfig, private fetchImpl: Fetch = fetch) {}
 
@@ -9,6 +12,7 @@ export class JiraClient {
     const auth = Buffer.from(`${this.cfg.email}:${this.cfg.token}`).toString("base64");
     const res = await this.fetchImpl(this.cfg.baseUrl + path, {
       method,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
       headers: { authorization: `Basic ${auth}`, accept: "application/json",
                  ...(body !== undefined ? { "content-type": "application/json" } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,

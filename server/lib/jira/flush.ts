@@ -21,6 +21,12 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
       order by id limit 50`, [MAX_ATTEMPTS, LEASE_MINUTES]);
   let sent = 0;
   let failed = 0;
+  // A process that died during a row's last attempt left it claimed; give it up.
+  const crashed = await db.query(
+    `update jira_outbox set claimed_at = null
+      where done_at is null and attempts >= $1 and claimed_at < now() - make_interval(mins => $2)
+      returning id, item_uid, action, payload`, [MAX_ATTEMPTS, LEASE_MINUTES]);
+  for (const row of crashed) await gaveUp(db, row, "the process stopped during the last attempt");
   for (const { id } of rows) {
     const [row] = await db.query(
       `update jira_outbox set attempts = attempts + 1, claimed_at = now()
@@ -28,6 +34,15 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
           and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
         returning id, item_uid, action, payload, attempts`, [id, LEASE_MINUTES]);
     if (!row) continue;
+    if (row.action === "transition" && await superseded(db, row)) {
+      await db.query(`update jira_outbox set done_at = now(), claimed_at = null, result = '{"superseded":true}'::jsonb where id = $1`, [row.id]);
+      continue;
+    }
+    if (row.action === "transition" && await olderInFlight(db, row)) {
+      // Let the older transition finish first; this one goes next flush.
+      await db.query("update jira_outbox set claimed_at = null, attempts = attempts - 1 where id = $1", [row.id]);
+      continue;
+    }
     try {
       const result = await deliver(jira, row.action, row.payload);
       await db.query("update jira_outbox set done_at = now(), error = null, claimed_at = null, result = $2::jsonb where id = $1",
@@ -44,6 +59,20 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
     }
   }
   return { sent, failed };
+}
+
+/** A newer transition for the same item makes this one moot. */
+async function superseded(db: Db, row: any): Promise<boolean> {
+  const newer = await db.query(
+    "select 1 from jira_outbox where item_uid = $1 and action = 'transition' and id > $2 limit 1", [row.item_uid, row.id]);
+  return newer.length > 0;
+}
+
+async function olderInFlight(db: Db, row: any): Promise<boolean> {
+  const older = await db.query(
+    `select 1 from jira_outbox where item_uid = $1 and action = 'transition' and id < $2 and done_at is null
+        and claimed_at >= now() - make_interval(mins => $3) limit 1`, [row.item_uid, row.id, LEASE_MINUTES]);
+  return older.length > 0;
 }
 
 async function gaveUp(db: Db, row: any, message: string): Promise<void> {

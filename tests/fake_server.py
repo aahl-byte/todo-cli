@@ -15,6 +15,8 @@ SETTABLE = {
 }
 JSON = {"item": "extra", "note": "meta"}
 COMPLETE = ("done", "deployed")
+VALID_STATUSES = ("requested", "todo", "in-triage", "in-progress", "review", "ready-for-qa", "in-qa",
+                  "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done")
 
 
 class FakeServer:
@@ -80,11 +82,10 @@ class FakeServer:
                     out.append(dict(self.applied[op["op_id"]], duplicate=True))
                     continue
                 out.append(getattr(self, "_" + op["op"])(op, author))
-            if len(unit) > 1 and any(r["status"] == "rejected" or r.get("rejected") for r in out):
+            if unit[0].get("group") and any(r["status"] == "rejected" or r.get("rejected") for r in out):
                 self.rows, self.tombs, self.changes_log, self.seq = saved
-                out = [r if (r["status"] == "rejected" or r.get("rejected"))
-                       else {"op_id": r["op_id"], "status": "rejected", "reason": "group-rolled-back"}
-                       for r in out]
+                out = [{"op_id": r["op_id"], "status": "rejected", "reason": "group-rolled-back",
+                        **({"rejected": r["rejected"]} if r.get("rejected") else {})} for r in out]
             else:
                 for r in out:
                     self.applied[r["op_id"]] = r
@@ -96,7 +97,14 @@ class FakeServer:
         e, uid, data = op["entity"], op["uid"], dict(op.get("data") or {})
         res = {"op_id": op["op_id"], "status": "applied"}
         if uid in self.rows:
-            return dict(res, versions=self.rows[uid]["versions"])
+            existing = self.rows[uid]
+            same = all(existing.get(k) == v for k, v in data.items()
+                       if k not in ("n", "id", "history", "meta", "extra"))
+            if same:
+                return dict(res, versions=existing["versions"])
+            return {"op_id": op["op_id"], "status": "rejected", "reason": "uid-exists",
+                    "data": {k: copy.deepcopy(v) for k, v in existing.items() if k != "_entity"}}
+        history = data.pop("history", None)
         row = {"_entity": e, "uid": uid, **data}
         if e == "item":
             row["item_uid"] = uid
@@ -130,7 +138,27 @@ class FakeServer:
             versions.update({f"{col}.{k}": seq for k in row.get(col) or {}})
         row["versions"] = versions
         self.rows[uid] = row
+        for h in history or []:
+            hn = 1 + sum(1 for r in self.rows.values() if r["_entity"] == "history" and r["item_uid"] == uid)
+            self.rows[h["uid"]] = {"_entity": "history", "uid": h["uid"], "item_uid": uid, "n": hn,
+                                   "from_status": h.get("from"), "to_status": h["to"], "by": h.get("by"),
+                                   "via": h.get("via"), "forced": bool(h.get("forced")), "ts": h["ts"]}
+            self._bump("history", h["uid"], uid, author=author)
+        if e == "task":
+            self._recalc(row["item_uid"], author)
         return dict(res, versions=dict(versions))
+
+    def _recalc(self, item_uid, author):
+        """Like the real server: a task change bumps its item (calc_status)."""
+        from todo.status import derive_calc_status
+        item = self.rows.get(item_uid)
+        if item is None:
+            return
+        calc = derive_calc_status([r["status"] for r in self.rows.values()
+                                   if r["_entity"] == "task" and r["item_uid"] == item_uid])
+        if calc != item.get("calc_status"):
+            item["calc_status"] = calc
+            self._bump("item", item_uid, item_uid, author=author)
 
     def _set(self, op, author):
         row = self.rows.get(op["uid"])
@@ -140,6 +168,9 @@ class FakeServer:
         out, rejected, accepted = {}, [], []
         for f, v in op["data"].items():
             cur, ver = self._get(row, f), row["versions"].get(f)
+            if f == "status" and row["_entity"] == "task" and v not in VALID_STATUSES:
+                rejected.append({"field": f, "reason": "invalid", "server_value": cur, "version": ver})
+                continue
             if cur == v:
                 out[f] = ver or 0
             elif f != "position" and ver is not None and (op.get("base") or {}).get(f) != ver:
@@ -157,6 +188,8 @@ class FakeServer:
                 self._put(row, f, v)
                 row["versions"][f] = seq
                 out[f] = seq
+            if row["_entity"] == "task":
+                self._recalc(row["item_uid"], author)
         status = "rejected" if rejected and not accepted and not out else "applied"
         res = {"op_id": op["op_id"], "status": status, "versions": out}
         if rejected:
@@ -204,8 +237,7 @@ class FakeServer:
                 rows = [c for c in server.changes_log if c[0] > since][:limit]
                 latest = {}
                 for seq, e, uid, item_uid, deleted, *_ in rows:
-                    latest.pop(uid, None)
-                    latest[uid] = (seq, e, uid, item_uid)
+                    latest[uid] = (seq, e, uid, item_uid)       # first position, latest data
                 out = []
                 for seq, e, uid, item_uid in latest.values():
                     row = server.rows.get(uid)

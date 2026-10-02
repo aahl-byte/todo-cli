@@ -127,10 +127,11 @@ create table if not exists tombstones (
 );
 
 create table if not exists applied_ops (
-  op_id   text primary key,
+  op_id   text not null,
   project text not null,
   result  jsonb not null,
-  created timestamptz not null default now()
+  created timestamptz not null default now(),
+  primary key (project, op_id)
 );
 
 create table if not exists jira_links (
@@ -163,3 +164,8 @@ create table if not exists notifications (
   read_at  timestamptz
 );
 create index if not exists notifications_handle on notifications (handle, read_at);
+
+-- Columns added after a table first shipped.
+alter table jira_outbox add column if not exists result jsonb;
+alter table jira_outbox add column if not exists claimed_at timestamptz;
+alter table jira_outbox add column if not exists next_attempt_at timestamptz;

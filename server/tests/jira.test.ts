@@ -3,6 +3,7 @@ import { POST as webhook } from "@/app/api/jira/webhook/route";
 import { GET as flushRoute } from "@/app/api/jira/flush/route";
 import { flushJira } from "@/lib/jira/flush";
 import { adfToText } from "@/lib/jira/adf";
+import { resetAccountCache } from "@/lib/jira/config";
 import { item, set, world, type World } from "./helpers";
 
 let w: World;
@@ -288,5 +289,68 @@ describe("hardening", () => {
     const impl = (async (_u: any, init: any) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ id: "5" })); }) as unknown as typeof fetch;
     await flushJira(w.d, impl);
     expect(adfToText(calls[0].body)).toBe("alice (via todo):\nhi");
+  });
+});
+
+describe("hardening, second pass", () => {
+  const changelogStatus = (name: string, id: string) => ({
+    webhookEvent: "jira:issue_updated", issue: issue({ status: { name } }), user: { accountId: "acc-qa" },
+    changelog: { id, items: [{ field: "status", toString: name }] } });
+
+  it("reports a deploy-gate refusal once, even when Jira retries", async () => {
+    const it = await linkedItem();
+    await w.d.query("update items set status = 'ready-to-deploy'");
+    await w.one("alice", { op: "create", entity: "check", uid: "C1", item_uid: it.uid, data: { kind: "db-script", title: "m" } });
+    await w.d.query("delete from jira_outbox");
+    await hook(changelogStatus("Done", "g1"));
+    await hook(changelogStatus("Done", "g1"));
+    expect((await w.d.query("select count(*)::int as n from logs"))[0].n).toBe(1);
+    expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(1);
+  });
+
+  it("never lands an older transition after a newer one", async () => {
+    const it = await linkedItem();
+    const v = await w.one("alice", set("item", it.uid, it.uid, { status: "in-progress" }, { status: it.versions.status }));
+    const [a] = await w.d.query("select id from jira_outbox");
+    await w.d.query("update jira_outbox set claimed_at = now(), attempts = 1 where id = $1", [a.id]);
+    await w.one("alice", set("item", it.uid, it.uid, { status: "in-qa" }, { status: v.versions!.status }));
+    const sent: string[] = [];
+    const impl = (async (url: any, init: any) => {
+      if (String(url).endsWith("?fields=status")) return new Response(JSON.stringify({ fields: { status: { name: "To Do" } } }));
+      if (init.method === "GET") return new Response(JSON.stringify({ transitions: [
+        { id: "1", to: { name: "In Progress" } }, { id: "2", to: { name: "In QA" } }] }));
+      sent.push(JSON.parse(init.body).transition.id);
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    await flushJira(w.d, impl);
+    expect(sent).toEqual([]);                                   // waits for the in-flight older row
+    await w.d.query("update jira_outbox set claimed_at = null, error = 'boom' where id = $1", [a.id]);
+    await flushJira(w.d, impl);
+    expect(sent).toEqual(["2"]);                                // the older one is superseded, never sent
+    const rows = await w.d.query("select result->>'superseded' as s from jira_outbox order by id");
+    expect(rows[0].s).toBe("true");
+  });
+
+  it("holds status changes while its own account is unknown", async () => {
+    delete process.env.JIRA_ACCOUNT_ID;
+    resetAccountCache();
+    const it = await linkedItem();
+    const calls: string[] = [];
+    const down = (async (url: any) => { calls.push(String(url)); return new Response("no", { status: 503 }); }) as unknown as typeof fetch;
+    const { handleWebhook } = await import("@/lib/jira/inbound");
+    await handleWebhook(w.d, changelogStatus("In QA", "o1"), { fetchImpl: down });
+    await handleWebhook(w.d, changelogStatus("In QA", "o2"), { fetchImpl: down });
+    expect((await w.d.query("select status from items where uid = $1", [it.uid]))[0].status).toBe("requested");
+    expect(calls.filter((u) => u.endsWith("/myself"))).toHaveLength(1);   // failure cached
+    resetAccountCache();
+  });
+
+  it("gives up a row whose last attempt died mid-flight", async () => {
+    const it = await linkedItem();
+    await w.one("alice", set("item", it.uid, it.uid, { status: "in-qa" }, { status: it.versions.status }));
+    await w.d.query("update jira_outbox set attempts = 5, claimed_at = now() - interval '10 minutes'");
+    await flushJira(w.d, (async () => new Response("{}")) as unknown as typeof fetch);
+    const [log] = await w.d.query("select text from logs");
+    expect(log.text).toContain("gave up");
   });
 });

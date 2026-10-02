@@ -50,6 +50,9 @@ export interface Result {
   by?: string | null;
   at?: string | null;
   duplicate?: boolean;
+  /** The current row, when a create meets a uid that already exists. */
+  data?: Record<string, any>;
+  message?: string;
 }
 
 export class ProjectNotFound extends Error {}
@@ -85,20 +88,22 @@ export async function applyOps(db: Db, project: string, ops: Op[], actor: Actor)
 }
 
 async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Promise<Result[]> {
+  const grouped = !!unit[0].group;
   try {
     return await db.tx(async (t) => {
       const locked = await t.query("select key from projects where key = $1 for update", [project]);
       if (!locked.length) throw new ProjectNotFound(project);
       const out: Result[] = [];
       for (const op of unit) {
-        const prior = await t.query("select result from applied_ops where op_id = $1", [op.op_id]);
+        const prior = await t.query("select result from applied_ops where project = $1 and op_id = $2",
+          [project, op.op_id]);
         if (prior.length) {
           out.push({ ...(prior[0].result as Result), duplicate: true });
           continue;
         }
         out.push(await applyOne(new Ctx(t, project, actor, op), op));
       }
-      if (unit.length > 1 && out.some(isRejected)) throw new Rollback(out);
+      if (grouped && out.some(isRejected)) throw new Rollback(out);
       for (const r of out) {
         if (r.duplicate) continue;
         await t.query("insert into applied_ops (op_id, project, result) values ($1, $2, $3::jsonb)",
@@ -107,9 +112,23 @@ async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Pro
       return out;
     });
   } catch (e) {
-    if (!(e instanceof Rollback)) throw e;
-    return e.results.map((r) =>
-      isRejected(r) ? r : { op_id: r.op_id, status: "rejected", reason: "group-rolled-back" });
+    if (e instanceof ProjectNotFound) throw e;
+    if (e instanceof Rollback) {
+      // Nothing in a rolled-back group applied, so no result may report versions.
+      return e.results.map((r) => ({
+        op_id: r.op_id, status: "rejected", reason: "group-rolled-back",
+        ...(r.rejected?.length ? { rejected: r.rejected } : {}),
+      }));
+    }
+    // A malformed op must not wedge the store: reject the unit and remember it.
+    const message = String((e as Error)?.message ?? e).slice(0, 300);
+    const results: Result[] = unit.map((op) => ({ op_id: op.op_id, status: "rejected", reason: "error", message }));
+    for (const r of results) {
+      await db.query(
+        "insert into applied_ops (op_id, project, result) values ($1, $2, $3::jsonb) on conflict do nothing",
+        [r.op_id, project, JSON.stringify(r)]);
+    }
+    return results;
   }
 }
 
@@ -176,7 +195,15 @@ async function removedReason(ctx: Ctx, op: Op): Promise<Result> {
   return reject(op, "removed", await ctx.who(Number(tomb.seq)));
 }
 
+const isInt = (v: unknown) => Number.isInteger(v);
+
 function invalid(entity: Entity, field: string, value: unknown): boolean {
+  if (field === "n") return !(isInt(value) && (value as number) > 0);
+  if (field === "position") return typeof value !== "number" || !Number.isFinite(value);
+  if (field === "phase" || field === "super_phase") return !isInt(value);
+  if (field === "text") return typeof value !== "string";
+  if (["type", "priority", "creator", "developer", "qa_assignee", "payload", "ts", "id", "created"].includes(field))
+    return typeof value !== "string";
   if (field === "status" && entity === "item") return !STATUSES.includes(value as any);
   if (field === "status" && entity === "task") return !STATUSES.includes(value as any);
   if (field === "status" && entity === "check") return !["pending", "done"].includes(value as any);
@@ -208,7 +235,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       && (!jsonCol || !(jsonCol in data) || same(existing[jsonCol], data[jsonCol]));
     return identical
       ? { op_id: op.op_id, status: "applied", versions: existing.versions }
-      : reject(op, "uid-exists");
+      : reject(op, "uid-exists", { data: existing });
   }
   const [tomb] = await ctx.t.query("select 1 from tombstones where uid = $1", [op.uid]);
   if (tomb) return removedReason(ctx, op);
@@ -272,6 +299,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
     cols.map((c) => (jsonCols.has(c) ? JSON.stringify(row[c]) : row[c])));
   result.versions = versions;
 
+  if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
   if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", itemUid, note: row });
@@ -290,18 +318,18 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
   const out: Record<string, number> = {};
 
   for (const [field, value] of Object.entries(op.data ?? {})) {
-    if (!isSettable(entity, field)) {
-      rejected.push({ field, reason: "not-settable" });
-      continue;
-    }
-    if (value !== null && invalid(entity, field, value)) {
-      rejected.push({ field, reason: "invalid" });
-      continue;
-    }
     const current = jsonCol && field.startsWith(jsonCol + ".")
       ? (row[jsonCol] ?? {})[field.slice(jsonCol.length + 1)]
       : row[field];
     const version = versions[field];
+    if (!isSettable(entity, field)) {
+      rejected.push({ field, reason: "not-settable", server_value: current ?? null, version });
+      continue;
+    }
+    if (value !== null && invalid(entity, field, value)) {
+      rejected.push({ field, reason: "invalid", server_value: current ?? null, version });
+      continue;
+    }
     if (same(value, current)) {
       out[field] = version ?? 0;
       continue;
@@ -393,6 +421,22 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
   await queueJira(ctx.t, ctx.actor, { kind: "status", itemUid: item.uid, status: to });
+}
+
+/** Status history an item gathered before it was ever synced. */
+async function importHistory(ctx: Ctx, itemUid: string, entries: any[]): Promise<void> {
+  let n = 0;
+  for (const h of entries) {
+    if (!h || !STATUSES.includes(h.to) || (h.from != null && !STATUSES.includes(h.from))) continue;
+    const uid = typeof h.uid === "string" && h.uid ? h.uid : ulid();
+    n += 1;
+    await ctx.t.query(
+      `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (uid) do nothing`,
+      [uid, itemUid, n, h.from ?? null, h.to, typeof h.by === "string" ? h.by : ctx.actor.handle,
+       h.via === "agent" ? "agent" : "human", !!h.forced, typeof h.ts === "string" ? h.ts : nowIso()]);
+    await ctx.bump("history", uid, itemUid);
+  }
 }
 
 async function noteCreated(ctx: Ctx, itemUid: string, note: Row): Promise<void> {

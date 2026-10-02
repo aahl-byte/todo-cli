@@ -112,7 +112,8 @@ def test_offline_dev_and_qa_converge(server, tmp_path):
     assert "testing on Safari now" in texts
     assert "offline: found the cookie bug" in texts
     assert any("offline status → in-progress not applied; bob set in-qa" in e["text"] for e in it["log"])
-    assert [(h["from"], h["to"]) for h in it["history"]] == [("review", "ready-for-qa"), ("ready-for-qa", "in-qa")]
+    assert [(h["from"], h["to"]) for h in it["history"]] == [
+        ("todo", "review"), ("review", "ready-for-qa"), ("ready-for-qa", "in-qa")]
 
     cli(hb, rb, "sync")
     itb = store.resolve_item(root_b, "login-bug")

@@ -64,3 +64,20 @@ describe("api", () => {
     expect((await (await inboxGET(req("/api/inbox", w.tokens.bob))).json()).unread).toBe(0);
   });
 });
+
+describe("cookie auth", () => {
+  const withCookie = (method: string, origin?: string) => new Request("http://todo.test/api/inbox/read", {
+    method, body: method === "GET" ? undefined : JSON.stringify({ ids: [] }),
+    headers: { cookie: `todo_token=${w.tokens.alice}`, host: "todo.test", ...(origin ? { origin } : {}) },
+  });
+
+  it("accepts the dashboard cookie on reads and same-origin writes", async () => {
+    expect((await inboxGET(new Request("http://todo.test/api/inbox", { headers: { cookie: `todo_token=${w.tokens.alice}` } }))).status).toBe(200);
+    expect((await readPOST(withCookie("POST", "http://todo.test"))).status).toBe(200);
+  });
+
+  it("refuses a cross-site write carrying the cookie", async () => {
+    expect((await readPOST(withCookie("POST", "https://evil.example"))).status).toBe(401);
+    expect((await readPOST(withCookie("POST"))).status).toBe(401);
+  });
+});

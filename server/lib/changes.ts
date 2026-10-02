@@ -11,7 +11,8 @@ export interface Change {
 }
 
 /** Changes after `since`, each carrying its entity's current row. A uid that
- * changed more than once in the page appears once, at its latest seq. */
+ * changed more than once in the page appears once, at its first position, so
+ * an item always precedes the children created after it. */
 export async function changesSince(db: Db, project: string, since: number, limit = 500):
     Promise<{ changes: Change[]; cursor: number; more: boolean }> {
   const rows = await db.query(
@@ -19,8 +20,8 @@ export async function changesSince(db: Db, project: string, since: number, limit
     [project, since, limit]);
   const latest = new Map<string, Row>();
   for (const r of rows) {
-    latest.delete(r.uid);
-    latest.set(r.uid, r);
+    const seen = latest.get(r.uid);
+    latest.set(r.uid, seen ? { ...seen, seq: r.seq, deleted: r.deleted } : r);
   }
   const changes: Change[] = [];
   for (const r of latest.values()) {

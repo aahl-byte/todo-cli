@@ -22,23 +22,29 @@ export function jiraConfig(): JiraConfig | null {
 }
 
 let cachedAccount: string | null = null;
+let failedAt = 0;
+const RETRY_MS = 60_000;
 
-/** The account our API token acts as: JIRA_ACCOUNT_ID, else asked of Jira once. */
+/** The account our API token acts as: JIRA_ACCOUNT_ID, else asked of Jira
+ * once. Null when unknown; a failed lookup is retried after a minute. */
 export async function ownAccountId(cfg: JiraConfig, fetchImpl?: Fetch): Promise<string | null> {
   if (cfg.accountId) return cfg.accountId;
   if (cachedAccount) return cachedAccount;
+  if (Date.now() - failedAt < RETRY_MS) return null;
   try {
     const { JiraClient } = await import("./client");
     const me = await new JiraClient(cfg, fetchImpl).call("GET", "/rest/api/3/myself");
     cachedAccount = me?.accountId ?? null;
   } catch {
-    return null;
+    cachedAccount = null;
   }
+  if (!cachedAccount) failedAt = Date.now();
   return cachedAccount;
 }
 
 export function resetAccountCache(): void {
   cachedAccount = null;
+  failedAt = 0;
 }
 
 export const MAX_ATTEMPTS = 5;
