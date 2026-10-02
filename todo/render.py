@@ -266,3 +266,16 @@ def print_tasks(it) -> None:
         print(line)
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
+
+
+def print_inbox(rows) -> None:
+    for r in rows:
+        mark = " " if r.get("read_at") else "•"
+        when = _stamp(str(r.get("created") or ""))
+        what = {"mention": "mentioned you", "qa-rejection": "QA rejected",
+                "clarification": "asked a question", "answer": "answered your question",
+                "ready-for-qa": "ready for your QA", "deployed": "deployed"}.get(r["kind"], r["kind"])
+        who = f' {r["note_author"]}' if r.get("note_author") else ""
+        print(f'{mark} {when}  {r["project"]}/{r["item_id"]}  {what}{who}  — {r["item_title"]}')
+        if r.get("note_text"):
+            print("      " + str(r["note_text"]).replace("\n", "\n      "))

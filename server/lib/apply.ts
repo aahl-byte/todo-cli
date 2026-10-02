@@ -31,6 +31,8 @@ export interface Rejection {
   field: string;
   reason: string;
   server_value?: unknown;
+  /** The field's current version, so the client can adopt the server value. */
+  version?: number;
   by?: string | null;
   at?: string | null;
 }
@@ -304,13 +306,13 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     }
     const checked = !ctx.actor.unconditional && field !== "position";
     if (checked && version !== undefined && op.base?.[field] !== version) {
-      rejected.push({ field, reason: "stale", server_value: current, ...(await ctx.who(version)) });
+      rejected.push({ field, reason: "stale", server_value: current, version, ...(await ctx.who(version)) });
       continue;
     }
     if (entity === "item" && field === "status") {
       const why = await statusRule(ctx, op, row, String(value));
       if (why) {
-        rejected.push({ field, reason: why, server_value: current });
+        rejected.push({ field, reason: why, server_value: current, version });
         continue;
       }
     }

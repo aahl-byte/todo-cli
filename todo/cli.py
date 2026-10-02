@@ -18,6 +18,7 @@ shape changes.
 """
 
 import argparse
+import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -25,13 +26,16 @@ from pathlib import Path
 from . import identity
 from . import init as init_mod
 from . import link as link_mod
-from . import migrate, render, store
+from . import migrate, remote, render, store, sync
 from .status import ACTIVE, COMPLETE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
 # Shortcuts that make no sense for a child task: `deploy` is gated by the item's
 # checks.
 ITEM_ONLY = {"deploy"}
+
+# Commands that manage sync themselves.
+NO_AUTO_SYNC = {"sync", "whoami", "inbox"}
 
 # Where QA can send work back from.
 REJECTABLE = ["ready-for-qa", "in-qa", "ready-to-deploy"]
@@ -95,6 +99,10 @@ def _mine(items, args):
 
 def cmd_list(root: Path, args) -> None:
     if getattr(args, "all_projects", False):
+        for p in link_mod.project_stores():
+            if sync.enabled(p["root"]):
+                with sync.locked(p["root"]):
+                    sync.quiet_round(p["root"])
         groups = [
             {"key": p["key"],
              "items": _mine(_filter_list(store.list_todos(p["root"], _folders(args, [store.OPEN])),
@@ -118,7 +126,11 @@ def cmd_status(root: Path, args) -> None:
 
 
 def cmd_shortcut(root: Path, args) -> None:
-    _set_status(root, args.query, SHORTCUTS[args.command], getattr(args, "force", False))
+    status = SHORTCUTS[args.command]
+    cfg = remote.sync_config(root) or {}
+    if status == "ready-to-deploy" and cfg.get("deploy_step") is False:
+        status = "done"             # a project with no deploy step finishes at QA approval
+    _set_status(root, args.query, status, getattr(args, "force", False))
 
 
 def cmd_status_alias(root: Path, args) -> None:
@@ -416,7 +428,92 @@ def _repo_dir(args) -> Path:
 
 
 def cmd_link(root: Path, args) -> None:
-    print(link_mod.link(_repo_dir(args), args.name))
+    repo = _repo_dir(args)
+    print(link_mod.link(repo, args.name))
+    if args.remote:
+        _link_remote(repo, args)
+
+
+def _link_remote(repo: Path, args) -> None:
+    """Make the linked store a synced cache of a server project: create the
+    project if needed, adopt what the server has, push what it lacks."""
+    root = (repo.absolute() / store.ROOT_NAME).resolve()
+    url = args.remote.rstrip("/")
+    token = remote.token_for(url)
+    if not token:
+        die(f"No token for {url}. Run `todo login {url} <token>` first.", 2)
+    key = args.project or root.parent.name
+    rem = remote.Remote(url, token, timeout=30)
+    try:
+        project = rem.ensure_project(key)
+    except remote.RemoteError as e:
+        die(f"Could not reach the server: {e}", 1)
+    remote.save_sync_config(root, {"url": url, "project": key,
+                                   "deploy_step": project.get("deploy_step", True)})
+    with sync.locked(root):
+        report = sync.run_round(root, rem, adopt=True)
+    for m in report.messages:
+        print(f"sync: {m}")
+    if report.error:
+        die(f"Linked, but the first sync failed: {report.error}\nRun `todo sync` to retry.", 1)
+    print(f"Syncing with {url} (project {key}): pushed {report.pushed}, pulled {report.pulled}")
+
+
+def cmd_sync(root: Path, args) -> None:
+    _require_root(root)
+    rem = remote.remote_for(root, timeout=30)
+    if rem is None:
+        die("This store isn't synced. Run `todo link --remote <url>` first.", 2)
+    with sync.locked(root):
+        report = sync.run_round(root, rem)
+        left = sync.pending(root)
+    for m in report.messages:
+        print(f"sync: {m}")
+    print(f"pushed {report.pushed} op(s), {report.rejected} rejected; pulled {report.pulled} change(s)")
+    if report.error:
+        print(f"offline: {report.error}")
+    if left:
+        print(f"{len(left)} change(s) not yet on the server:")
+        for op in left:
+            fields = ", ".join(sorted((op.get("data") or {}).keys())) if op["op"] == "set" else ""
+            print(f'  {op["op"]} {op["entity"]} {op["uid"]}' + (f"  ({fields})" if fields else ""))
+
+
+def cmd_login(root: Path, args) -> None:
+    rem = remote.Remote(args.url, args.token, timeout=15)
+    try:
+        me = rem.me()
+    except remote.RemoteError as e:
+        die(f"Login failed: {e}", 1)
+    remote.save_login(args.url, me["handle"], args.token)
+    print(f"Logged in to {args.url.rstrip('/')} as {me['handle']}")
+
+
+def cmd_whoami(root: Path, args) -> None:
+    print(f"user: {identity.user()}  (via {identity.via()})")
+    cfg = remote.sync_config(root) if root is not None and root.is_dir() else None
+    if cfg:
+        has = "token saved" if remote.token_for(cfg["url"]) else "no token — run `todo login`"
+        print(f'synced: {cfg["url"]} project {cfg["project"]} ({has})')
+
+
+def cmd_inbox(root: Path, args) -> None:
+    rem = remote.remote_for(root, timeout=15) if root is not None and root.is_dir() else None
+    if rem is None:
+        die("No synced store here; run this inside a project linked with `--remote`.", 2)
+    try:
+        box = rem.inbox(everything=args.all)
+    except remote.RemoteError as e:
+        die(str(e), 1)
+    rows = box.get("notifications") or []
+    if not rows:
+        print("(inbox empty)")
+        return
+    render.print_inbox(rows)
+    unread = [r["id"] for r in rows if not r.get("read_at")]
+    if unread:
+        with contextlib.suppress(remote.RemoteError):
+            rem.mark_read(unread)
 
 
 def cmd_unlink(root: Path, args) -> None:
@@ -689,7 +786,26 @@ def build_parser() -> argparse.ArgumentParser:
                        help="store this project's todos in the global store (~/.todo), via a symlink")
     p.add_argument("--name", default=None, metavar="KEY",
                    help="store key (default: repo basename)")
+    p.add_argument("--remote", default=None, metavar="URL",
+                   help="also sync the store with a team server")
+    p.add_argument("--project", default=None, metavar="KEY",
+                   help="server project key (default: the store key)")
     p.set_defaults(func=cmd_link)
+
+    p = sub.add_parser("sync", parents=[common], help="sync now and show what's still unpushed")
+    p.set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("login", help="save a server token (and your handle) for syncing")
+    p.add_argument("url", help="server URL, e.g. https://todo.example.com")
+    p.add_argument("token", help="your API token")
+    p.set_defaults(func=cmd_login)
+
+    p = sub.add_parser("whoami", parents=[common], help="show your identity and sync setup")
+    p.set_defaults(func=cmd_whoami)
+
+    p = sub.add_parser("inbox", parents=[common], help="mentions, rejections and hand-offs for you")
+    p.add_argument("--all", action="store_true", help="include read notifications")
+    p.set_defaults(func=cmd_inbox)
 
     p = sub.add_parser("unlink", parents=[common],
                        help="move the global store back into a real ./.TODO")
@@ -734,10 +850,17 @@ def main():
         identity.set_via(args.via)
     # `init`/`projects` are machine-level; `link`/`unlink` act on the unresolved
     # repo-root path themselves — none of them want a resolved store path.
-    if args.command in ("init", "projects", "link", "unlink"):
+    if args.command in ("init", "projects", "link", "unlink", "login"):
         root = None
     else:
         root = _resolve_root(args.dir)
+    if root is not None and args.command not in NO_AUTO_SYNC and sync.enabled(root) \
+            and not getattr(args, "all_projects", False):
+        with sync.locked(root):
+            sync.quiet_round(root)
+            args.func(root, args)
+            sync.quiet_round(root, push_only=True)
+        return
     args.func(root, args)
 
 
