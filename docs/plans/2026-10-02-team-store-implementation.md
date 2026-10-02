@@ -446,8 +446,8 @@ bridge applies ops through `apply.ts` with `unconditional` set and author
   - an assignee change → `developer`
   - a status change → the reverse-mapped todo status. It is skipped when the
     item's current status already maps to the incoming Jira status, which
-    covers the echo of our own transition. The reverse map takes the first
-    todo status listed for a Jira status.
+    covers the echo of our own transition. When several todo statuses map to
+    one Jira status, the reverse map takes the earliest in lifecycle order.
 - `comment_created` → a `comment` note with `source: jira`.
 - Users map through `users.jira_account_id`. An unmatched user is recorded as
   `jira:<displayName>`.

@@ -25,6 +25,8 @@ export interface Actor {
   handle: string;
   /** Bridge writes skip the version check. */
   unconditional?: boolean;
+  /** Set on writes that came from Jira, so they are not echoed back. */
+  bridge?: boolean;
 }
 
 export interface Rejection {

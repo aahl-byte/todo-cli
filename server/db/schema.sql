@@ -145,6 +145,7 @@ create table if not exists jira_outbox (
   payload  jsonb not null,
   attempts integer not null default 0,
   error    text,
+  result   jsonb,
   done_at  timestamptz,
   created  timestamptz not null default now()
 );
