@@ -492,3 +492,100 @@ def test_identical_checks_get_distinct_fallback_uids(pair, server):
     sync.ensure_uids(a, "p")
     uids = [c["uid"] for c in item(a)["checks"]]
     assert len(set(uids)) == 2
+
+
+# ── regressions from the phase 2 re-validation ───────────────────────────────
+def test_children_of_a_refused_item_push_once_it_is_fixed(tmp_path, server, monkeypatch):
+    a = make(tmp_path, "a", server)
+    run_cli(a, ["add", "Login"])
+    run_cli(a, ["note", "login", "context"])
+    run_cli(a, ["task", "add", "login", "t1"])
+    real_create = server._create
+
+    def refuse_blank(op, author):
+        if op["entity"] == "item" and not str(op["data"].get("title", "")).strip():
+            return {"op_id": op["op_id"], "status": "rejected", "reason": "invalid-title"}
+        return real_create(op, author)
+
+    monkeypatch.setattr(server, "_create", refuse_blank)
+    f = a / "OPEN" / "login" / "TODO.yaml"
+    f.write_text(f.read_text().replace("title: Login", "title: '   '"))
+    rnd(a, server, "alice")
+    for _ in range(3):
+        rnd(a, server, "alice")
+    assert len([e for e in item(a, "login")["log"] if "not applied" in e["text"]]) == 1
+    f.write_text(f.read_text().replace("title: '   '", "title: Login"))
+    rnd(a, server, "alice")
+    kinds = sorted(r["_entity"] for r in server.rows.values() if r["_entity"] != "history")
+    assert kinds == ["item", "log", "note", "task"]
+
+
+def test_a_newer_change_supersedes_a_deferred_one(pair, server):
+    a, b = pair
+    snap = sync.load_snapshot(a)
+    uid = item(a)["uid"]
+    stale = {"seq": 1, "entity": "item", "uid": uid, "item_uid": uid, "deleted": False,
+             "data": {**server.rows[uid], "title": "stale title"}}
+    stale["data"].pop("_entity")
+    snap["deferred"] = [stale]
+    sync.save_snapshot(a, snap)
+    run_cli(b, ["assign", "login-bug", "--dev", "bob"])
+    rnd(b, server, "bob")
+    rnd(a, server, "alice")
+    assert item(a)["title"] == "Login bug"
+    assert sync.load_snapshot(a)["deferred"] == []
+
+
+def test_a_bad_super_phase_does_not_stop_other_pulls(pair, server):
+    a, b = pair
+    run_cli(b, ["add", "Other"])
+    rnd(b, server, "bob")
+    f = a / "OPEN" / "login-bug" / "TODO.yaml"
+    f.write_text(f.read_text().replace("super-phase: null", "super-phase: abc"))
+    run_cli(b, ["assign", "login-bug", "--dev", "bob"])
+    run_cli(b, ["assign", "other", "--dev", "bob"])
+    rnd(b, server, "bob")
+    report = rnd(a, server, "alice")
+    assert report.error is None
+    assert item(a, "other")["developer"] == "bob"
+    f.write_text(f.read_text().replace("super-phase: abc", "super-phase: null"))
+    rnd(a, server, "alice")
+    assert item(a)["developer"] == "bob"
+
+
+def test_replayed_rejection_does_not_clobber_a_newer_edit(pair, server, monkeypatch):
+    a, _ = pair
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.delenv("TODO_VIA")
+    f = a / "OPEN" / "login-bug" / "TODO.yaml"
+    f.write_text(f.read_text().replace("status: review", "status: ready-for-qa"))
+    real_set = server._set
+
+    def agent_rule(op, author):
+        if op["entity"] == "item" and op["data"].get("status") == "ready-for-qa" and op.get("via") == "agent":
+            return {"op_id": op["op_id"], "status": "rejected",
+                    "rejected": [{"field": "status", "reason": "agent-handoff", "server_value": "review",
+                                  "version": server.rows[op["uid"]]["versions"]["status"]}], "versions": {}}
+        return real_set(op, author)
+
+    monkeypatch.setattr(server, "_set", agent_rule)
+    flaky = Flaky(server, "alice")
+    sync.run_round(a, flaky)
+    monkeypatch.setenv("TODO_VIA", "human")
+    run_cli(a, ["start", "login-bug"])
+    sync.run_round(a, flaky)
+    assert item(a)["status"] == "in-progress"
+    assert server.rows[item(a)["uid"]]["status"] == "in-progress"
+
+
+def test_held_status_keeps_its_provisional_history(pair, server):
+    a, b = pair
+    for cmd in (["--human", "ready-qa"], ["qa"]):
+        run_cli(a, cmd + ["login-bug"])
+    rnd(a, server, "alice")
+    rnd(b, server, "bob")
+    run_cli(b, ["approve", "login-bug"])
+    rnd(b, server, "bob")
+    run_cli(a, ["--agent", "reject", "login-bug", "broken"])
+    rnd(a, server, "alice")
+    assert all(not h["provisional"] for h in item(a)["history"])   # stale: server status adopted

@@ -329,14 +329,15 @@ def diff(local: Local, snap: dict) -> list:
             if entity == "item" and local.history.get(uid):
                 body["history"] = [_history_entry(h) for h in local.history[uid]]
             key = "item-create" if entity == "item" else "child-create"
-            buckets[key].append(_op("create", entity, uid, e["item_uid"], data=body))
+            buckets[key].append(_op("create", entity, uid, e["item_uid"], data=body, _fp=_fingerprint(data)))
             continue
         changed = _set_fields(entity, data, s["data"])
         if not changed:
             continue
         op = _op("set", entity, uid, e["item_uid"],
                  data={k: data.get(k) for k in changed},
-                 base={k: s["versions"][k] for k in changed if k in s.get("versions", {})})
+                 base={k: s["versions"][k] for k in changed if k in s.get("versions", {})},
+                 _fp=_fingerprint(data))
         if entity == "item" and "status" in changed:
             _status_provenance(op, local.history.get(uid, []), data["status"])
         buckets["item-set" if entity == "item" else "child-set"].append(op)
@@ -413,7 +414,8 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
         replay = load_outbox(root)
         if replay:
             local = scan(root)
-            _push(root, remote, project, replay, local, snap, report, rejected_fields, pushed_status)
+            _push(root, remote, project, replay, local, snap, report, rejected_fields, pushed_status,
+                  replay=True)
             _drop_provisional_history(local, pushed_status)
         local = scan(root)
         ops = diff(local, snap)
@@ -429,21 +431,37 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     return report
 
 
-def _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status) -> None:
+def _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status,
+          replay: bool = False) -> None:
     """Push `ops` in batches. Each batch sits in the outbox until its results
     are recorded, so a lost response is replayed with the same op ids."""
     pending = list(ops)
     while pending:
         batch, rest = pending[:BATCH], pending[BATCH:]
         save_outbox(root, pending)
-        results = remote.push(project, batch)
-        _handle_results(root, batch, results, local, snap, report, rejected_fields, pushed_status)
+        results = remote.push(project, [{k: v for k, v in op.items() if not k.startswith("_")} for op in batch])
+        _handle_results(root, batch, results, local, snap, report, rejected_fields, pushed_status, replay)
         save_snapshot(root, snap)
         pending = rest
     save_outbox(root, [])
 
 
-def _handle_results(root, ops, results, local, snap, report, rejected_fields, pushed_status):
+def _still_local(local: Local, op: dict) -> bool:
+    """For a replayed op: are the fields it carried still the local values? If
+    not, a newer local edit supersedes it and the diff pushes that instead."""
+    try:
+        cur = _fresh(local, op["entity"], op["uid"])
+    except Exception:  # noqa: BLE001
+        return False
+    if cur is None:
+        return False
+    data = op.get("data") or {}
+    flat = _flatten(op["entity"], {k: v for k, v in data.items() if k != "history"})
+    return all(_same(cur.get(k), v) for k, v in flat.items() if k in cur)
+
+
+def _handle_results(root, ops, results, local, snap, report, rejected_fields, pushed_status,
+                    replay: bool = False):
     ents = snap["entities"]
     by_id = {r.get("op_id"): r for r in results if isinstance(r, dict)}
     renames = []
@@ -453,8 +471,12 @@ def _handle_results(root, ops, results, local, snap, report, rejected_fields, pu
             continue
         uid, entity = op["uid"], op["entity"]
         report.pushed += 1
-        if entity == "item" and op["op"] == "set" and "status" in (op.get("data") or {}):
+        current = not replay or _still_local(local, op)
+        if entity == "item" and op["op"] == "set" and "status" in (r.get("versions") or {}):
             pushed_status.add(uid)
+        if entity == "item" and op["op"] == "set" and current and any(
+                x["field"] == "status" and "server_value" in x for x in r.get("rejected") or []):
+            pushed_status.add(uid)          # the server's status was adopted; the local trail never happened
         if entity == "item" and op["op"] == "create" and r.get("status") == "applied" \
                 and (op.get("data") or {}).get("history"):
             pushed_status.add(uid)
@@ -463,7 +485,8 @@ def _handle_results(root, ops, results, local, snap, report, rejected_fields, pu
             if op["op"] == "set" and r.get("reason") == "group-rolled-back":
                 for k in op["data"]:
                     rejected_fields.add(("held", uid, k))
-            _whole_op_rejected(root, op, r, local, snap, report)
+            if current:
+                _whole_op_rejected(root, op, r, local, snap, report)
             continue
         versions = r.get("versions") or {}
         bad = {x["field"] for x in r.get("rejected") or []}
@@ -473,6 +496,8 @@ def _handle_results(root, ops, results, local, snap, report, rejected_fields, pu
                     rejected_fields.add(("held", uid, k))   # not applied: keep it local through the pull
         for x in r.get("rejected") or []:
             report.rejected += 1
+            if not current:
+                continue                    # a newer local edit replaced this one
             rejected_fields.add((uid, x["field"]))
             _log_rejection(root, op, x, local, report)
             if op["op"] == "set" and "server_value" in x:
@@ -509,7 +534,10 @@ def _adopt_server_value(root, op, x, local: Local, ents) -> None:
         s["data"][f] = x["server_value"]
         if x.get("version") is not None:
             s["versions"][f] = x["version"]
-    cur = _fresh(local, entity, uid)
+    try:
+        cur = _fresh(local, entity, uid)
+    except Exception:  # noqa: BLE001 — unreadable item file: the next pull retries
+        return
     if cur is None:
         return
     flat = dict(cur)
@@ -570,7 +598,7 @@ def _log_rejection(root, op, x, local, report) -> None:
 
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
-FINAL = {"error", "no-item", "bad-entity", "bad-op", "not-removable", "unknown"}
+FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown"}
 
 
 def _whole_op_rejected(root, op, r, local, snap, report) -> None:
@@ -581,6 +609,8 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
     what = f'{op["op"]} {entity}' + (f' [{data["n"]}]' if data.get("n") else "")
     if reason == "group-rolled-back" and op["op"] == "set":
         return                      # its fields stay local (held) and push again next round
+    if reason == "no-item":
+        return                      # its item's own refusal is what gets reported; this retries
     if reason == "uid-exists" and r.get("data"):
         row = r["data"]
         snap["entities"][uid] = {"entity": entity, "item_uid": op["item_uid"],
@@ -597,9 +627,8 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
             store.add_log(root, item_id, "sync: " + text, _now())
         return
     if reason in FINAL or reason.startswith("invalid"):
-        cur = local.entities.get(uid, {}).get("data")
-        if cur is not None:
-            snap.setdefault("stuck", {})[uid] = _fingerprint(cur)
+        if op.get("_fp"):
+            snap.setdefault("stuck", {})[uid] = op["_fp"]
         text = f"{what} not applied ({reason}{': ' + r['message'] if r.get('message') else ''})"
         report.messages.append(f"{item_id}: {text}")
         if item_id:
@@ -718,16 +747,23 @@ def _defer(snap: dict, ch: dict) -> None:
     snap["deferred"] = [c for c in snap.get("deferred", []) if c["uid"] != ch["uid"]] + [ch]
 
 
+def _undefer(snap: dict, uid: str) -> None:
+    """A newer change for `uid` landed, so any older deferred one is stale."""
+    if any(c["uid"] == uid for c in snap.get("deferred", [])):
+        snap["deferred"] = [c for c in snap["deferred"] if c["uid"] != uid]
+
+
 def _retry_deferred(root, snap: dict, local: Local, rejected_fields) -> None:
     pending = snap.get("deferred", [])
     if not pending:
         return
     now = scan(root)
+    snap["deferred"] = []
     left = []
     for ch in pending:
         if not _apply_change(root, ch, snap, local, now, rejected_fields, False):
             left.append(ch)
-    snap["deferred"] = left
+    snap["deferred"] = left + [c for c in snap["deferred"] if c["uid"] not in {x["uid"] for x in left}]
 
 
 def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, adopt) -> bool:
@@ -741,15 +777,19 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
     if ch.get("deleted") or not ch.get("data"):
         ents.pop(uid, None)
         _delete_local(now, entity, uid, item_uid)
+        _undefer(snap, uid)
         return True
     row = ch["data"]
     flat = server_flat(entity, row)
     versions = dict(row.get("versions") or {})
+    try:
+        cur = _fresh(now, entity, uid)
+    except Exception:  # noqa: BLE001 — an unreadable item file: retry once it's fixed
+        return False
     if adopt and uid in now.entities:
         ents[uid] = {"entity": entity, "item_uid": item_uid, "data": flat, "versions": versions}
         return True
     read = before.entities.get(uid, {}).get("data")
-    cur = _fresh(now, entity, uid)
     old = ents.get(uid)
     keep = set()
     if read is not None and cur is not None:
@@ -776,6 +816,7 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
     if not _write_entity(root, now, entity, uid, item_uid, write, row):
         return False
     ents[uid] = {"entity": entity, "item_uid": item_uid, "data": snap_data, "versions": snap_versions}
+    _undefer(snap, uid)
     if entity == "item":
         now.entities[uid] = {"entity": "item", "item_uid": uid, "data": dict(write)}
     return True

@@ -338,8 +338,9 @@ describe("hardening, second pass", () => {
     const calls: string[] = [];
     const down = (async (url: any) => { calls.push(String(url)); return new Response("no", { status: 503 }); }) as unknown as typeof fetch;
     const { handleWebhook } = await import("@/lib/jira/inbound");
-    await handleWebhook(w.d, changelogStatus("In QA", "o1"), { fetchImpl: down });
+    const r1 = await handleWebhook(w.d, changelogStatus("In QA", "o1"), { fetchImpl: down });
     await handleWebhook(w.d, changelogStatus("In QA", "o2"), { fetchImpl: down });
+    expect(r1).toMatchObject({ handled: false, retry: true });
     expect((await w.d.query("select status from items where uid = $1", [it.uid]))[0].status).toBe("requested");
     expect(calls.filter((u) => u.endsWith("/myself"))).toHaveLength(1);   // failure cached
     resetAccountCache();

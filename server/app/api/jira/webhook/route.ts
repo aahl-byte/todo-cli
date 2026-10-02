@@ -22,5 +22,5 @@ export async function POST(req: Request) {
     deliveryId: req.headers.get("x-atlassian-webhook-identifier") ?? undefined,
   });
   later(() => flushJira(d));
-  return json(result);
+  return json(result, result.retry ? 503 : 200);
 }

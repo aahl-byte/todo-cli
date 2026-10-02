@@ -15,6 +15,8 @@ type Person = { accountId?: string; displayName?: string } | null | undefined;
 export interface InboundResult {
   handled: boolean;
   reason?: string;
+  /** Answer 503 so Jira redelivers the event later. */
+  retry?: boolean;
   results?: unknown[];
 }
 
@@ -63,8 +65,10 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   if (event === "jira:issue_updated") {
     if (own && payload.user?.accountId === own) return { handled: false, reason: "own change" };
     // Without knowing our own account, a late echo of our transition could roll
-    // the item back, so status changes wait until it is known.
-    return updated(db, link, issue, payload, opts.deliveryId, own !== null);
+    // the item back; ask Jira to redeliver once the account is known.
+    const statusChange = (payload.changelog?.items ?? []).some((x: any) => x.field === "status");
+    if (!own && statusChange) return { handled: false, reason: "own account unknown", retry: true };
+    return updated(db, link, issue, payload, opts.deliveryId);
   }
   if (event === "comment_created") return commented(db, link, payload.comment, own);
   return { handled: false, reason: `ignored ${event}` };
@@ -93,12 +97,12 @@ async function created(db: Db, project: string, issue: any): Promise<InboundResu
   return { handled: true, results };
 }
 
-async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: string | undefined,
-                       statusSafe: boolean): Promise<InboundResult> {
+async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: string | undefined):
+    Promise<InboundResult> {
   const items: any[] = payload.changelog?.items ?? [];
   const data: Record<string, unknown> = {};
   if (items.some((x) => x.field === "assignee")) data.developer = await handleFor(db, issue.fields?.assignee);
-  const status = statusSafe ? items.find((x) => x.field === "status") : undefined;
+  const status = items.find((x) => x.field === "status");
   if (status) {
     const jiraStatus = String((Object.hasOwn(status, "toString") ? status.toString : null) ?? issue.fields?.status?.name ?? "");
     const map: Record<string, string> = link.jira_status_map ?? {};

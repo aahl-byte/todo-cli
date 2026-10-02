@@ -2,6 +2,7 @@ import Link from "next/link";
 import { logoutAction } from "@/app/actions";
 import type { Project } from "@/lib/views";
 import { Live } from "./Live";
+import { Toaster } from "./Toaster";
 
 export function TopBar({ handle, project, all }: { handle: string; project?: Project; all: Project[] }) {
   return (
@@ -25,6 +26,7 @@ export function TopBar({ handle, project, all }: { handle: string; project?: Pro
       <Live project={project?.key} cursor={project?.seq} />
       <span className="mono">{handle}</span>
       <form action={logoutAction}><button className="link">sign out</button></form>
+      <Toaster />
     </header>
   );
 }

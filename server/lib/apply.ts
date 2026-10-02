@@ -121,6 +121,9 @@ async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Pro
       }));
     }
     // A malformed op must not wedge the store: reject the unit and remember it.
+    // Anything else (a dropped connection, a deadlock) fails the request so the
+    // client's outbox retries it.
+    if (!deterministic(e)) throw e;
     const message = String((e as Error)?.message ?? e).slice(0, 300);
     const results: Result[] = unit.map((op) => ({ op_id: op.op_id, status: "rejected", reason: "error", message }));
     for (const r of results) {
@@ -130,6 +133,13 @@ async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Pro
     }
     return results;
   }
+}
+
+/** Postgres errors that will recur on every retry: bad data (22), constraint
+ * violations (23), bad SQL or names (42). */
+function deterministic(e: unknown): boolean {
+  const code = String((e as { code?: unknown })?.code ?? "");
+  return /^(22|23|42)/.test(code);
 }
 
 function isRejected(r: Result): boolean {

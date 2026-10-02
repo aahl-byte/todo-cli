@@ -172,13 +172,13 @@ export async function deployPlan(d: Db, key: string) {
   const all = await d.query("select id, status from items where project = $1", [key]);
   const complete = new Set(all.filter((r) => COMPLETE.includes(r.status)).map((r) => r.id));
   const ids = new Set(all.map((r) => r.id));
-  const checksFor = async (uids: string[]) => uids.length
+  const checksFor = async (uids: string[]): Promise<Row[]> => uids.length
     ? d.query("select c.*, i.id as item_id from checks c join items i on i.uid = c.item_uid where c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids])
     : [];
   const readyChecks = await checksFor(ready.map((r) => r.uid));
   const group = (timing: string) => CHECK_KINDS.map((kind) => ({
     kind,
-    checks: readyChecks.filter((c) => c.timing === timing && c.kind === kind).map((c) => ({
+    checks: readyChecks.filter((c) => c.timing === timing && c.kind === kind).map((c): Row => ({
       ...c,
       warning: kind === "prereq-branch" && c.payload && ids.has(c.payload) && !complete.has(c.payload) ? "not deployed" : null,
     })),

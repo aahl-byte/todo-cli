@@ -317,3 +317,20 @@ describe("validation fixes", () => {
     expect((await w.d.query("select project from items order by project")).map((x) => x.project)).toEqual(["p", "q"]);
   });
 });
+
+describe("re-validation fixes", () => {
+  it("lets transient database errors fail the request instead of storing them", async () => {
+    const flaky = { ...w.d, tx: async () => { throw Object.assign(new Error("deadlock detected"), { code: "40P01" }); } };
+    await expect(applyOps(flaky as any, "p", [{ op_id: "T1", ...item("I1") } as any], { handle: "alice" })).rejects.toThrow(/deadlock/);
+    expect((await w.d.query("select count(*)::int as n from applied_ops"))[0].n).toBe(0);
+  });
+
+  it("migrates an applied_ops table keyed by op_id alone", async () => {
+    const { migrate } = await import("@/lib/db");
+    await w.d.exec("alter table applied_ops drop constraint applied_ops_pkey; alter table applied_ops add primary key (op_id);");
+    await migrate(w.d);
+    const cols = await w.d.query(
+      "select column_name from information_schema.key_column_usage where table_name = 'applied_ops' and constraint_name = 'applied_ops_pkey' order by ordinal_position");
+    expect(cols.map((c) => c.column_name)).toEqual(["project", "op_id"]);
+  });
+});

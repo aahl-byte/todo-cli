@@ -11,7 +11,9 @@
     "user:add": "tsx scripts/user-add.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "project:add": "tsx scripts/project-add.ts"
+    "project:add": "tsx scripts/project-add.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "smoke": "node scripts/smoke.cjs"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",
@@ -26,6 +28,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "playwright": "^1.61.0",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^5.0.3"

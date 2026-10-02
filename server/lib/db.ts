@@ -12,16 +12,19 @@ export interface Db {
   close?(): Promise<void>;
 }
 
-let current: Promise<Db> | null = null;
+// Next bundles route handlers and server components separately, so a module
+// variable would give each its own connection — and PGlite would open the same
+// data directory twice. One shared slot on globalThis keeps a single instance.
+const slot = globalThis as typeof globalThis & { __todoDb?: Promise<Db> | null };
 
 export function db(): Promise<Db> {
-  if (!current) current = open();
-  return current;
+  if (!slot.__todoDb) slot.__todoDb = open();
+  return slot.__todoDb;
 }
 
 /** Swap the shared connection, e.g. a fresh PGlite per test. */
 export function setDb(next: Db | null): void {
-  current = next ? Promise.resolve(next) : null;
+  slot.__todoDb = next ? Promise.resolve(next) : null;
 }
 
 async function open(): Promise<Db> {

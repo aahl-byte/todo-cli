@@ -4,6 +4,7 @@
 // composer; a rejected write shows a banner and keeps the draft.
 import { useActionState, useEffect, useRef, useState, type ReactNode } from "react";
 import type { ActionState } from "@/app/actions";
+import { notify } from "./Toaster";
 
 type Action = (prev: ActionState, fd: FormData) => Promise<ActionState>;
 
@@ -27,6 +28,7 @@ export function ActionForm({ action, fields, versions, children, className, rese
       setFrozen(null);
       if (resetOnOk) ref.current?.reset();
     }
+    if (!state.ok && state.message) notify(state.message);
   }, [state, resetOnOk]);
   return (
     <form ref={ref} action={formAction} className={className} onFocusCapture={freeze} onInputCapture={freeze}

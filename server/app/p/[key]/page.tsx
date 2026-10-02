@@ -46,7 +46,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
               <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card${c.status === "blocked" ? " blocked" : ""}`} data-uid={c.uid}>
                 <div className="meta">
                   <span className="mono">{c.id}</span>
-                  <span title={c.type}>{c.type === "bug" ? "🐞" : "◆"}</span>
+                  {c.type === "bug" && <span className="tag bug">bug</span>}
                   {c.jira_key && <span className="mono">{c.jira_key}</span>}
                 </div>
                 <div className="title">{c.title}</div>
@@ -55,9 +55,9 @@ export default async function Board({ params, searchParams }: { params: Promise<
                   <span>{c.priority}</span>
                   <Initials handle={c.developer} label="dev" />
                   <Initials handle={c.qa_assignee} label="qa" />
-                  {c.open_questions > 0 && <span title="open clarifications">? {c.open_questions}</span>}
-                  {c.pending_pre > 0 && <span title="pending pre-deploy checks">⛔ {c.pending_pre}</span>}
-                  {["deployed", "done"].includes(c.status) && c.pending_post > 0 && <span title="pending post-deploy checks">⛔ {c.pending_post} post</span>}
+                  {c.open_questions > 0 && <span className="tag ask" title="open clarifications">? {c.open_questions}</span>}
+                  {c.pending_pre > 0 && <span className="tag checks" title="pending pre-deploy checks">checks {c.pending_pre}</span>}
+                  {["deployed", "done"].includes(c.status) && c.pending_post > 0 && <span className="tag checks" title="pending post-deploy checks">post-deploy {c.pending_post}</span>}
                 </div>
                 <TaskBar statuses={c.task_statuses} />
               </Link>

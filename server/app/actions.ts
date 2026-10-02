@@ -53,8 +53,11 @@ async function run(project: string, ops: Op[] | (() => Op[])): Promise<ActionSta
   const d = await db();
   const results = await applyOps(d, project, built, { handle: user.handle });
   later(() => flushJira(d));
-  revalidatePath(`/p/${project}`, "layout");
-  return describe(results);
+  const state = await describe(results);
+  // A refused write leaves the page as the user saw it, so the form that raised
+  // the notice is still mounted; live polling brings in the newer state.
+  if (state.ok) revalidatePath(`/p/${project}`, "layout");
+  return state;
 }
 
 function refOf(fd: FormData, prefix = ""): build.Ref {
