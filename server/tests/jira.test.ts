@@ -92,8 +92,8 @@ describe("inbound", () => {
                 comment: { id: "100", body: adf("works for me"), author: { accountId: "acc-bob" } } };
     await hook(c);
     await hook(c);
-    await w.d.query(`insert into jira_outbox (item_uid, action, payload, result, done_at)
-                     values ($1, 'comment', '{}'::jsonb, '{"comment_id":"101"}'::jsonb, now())`, [it.uid]);
+    await w.d.query(`insert into jira_outbox (project, item_uid, action, payload, result, done_at)
+                     values ('p', $1, 'comment', '{}'::jsonb, '{"comment_id":"101"}'::jsonb, now())`, [it.uid]);
     await hook({ ...c, comment: { ...c.comment, id: "101" } });
     const notes = await w.d.query("select kind, text, author, source from notes where kind = 'comment'");
     expect(notes).toEqual([{ kind: "comment", text: "works for me", author: "bob", source: "jira" }]);

@@ -618,6 +618,9 @@ def _handle_results(root, ops, results, local, snap, report, rejected_fields, pu
                     s["versions"][k] = versions[k]
         elif op["op"] == "remove":
             ents.pop(uid, None)
+            removed = snap.setdefault("removed", [])
+            if uid not in removed:
+                removed.append(uid)
     for op, new in renames:
         _rename(root, op, new, local, report)
 
@@ -699,16 +702,20 @@ FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-han
 
 
 def _reissue(local: Local, entity: str, old: str, item_uid: str) -> None:
-    """Give one local entity a fresh uid."""
+    """Give one local entity a fresh uid, so it is created next round."""
     d = local.item_dirs.get(item_uid)
     if d is None:
         return
-    _rewrite_uids(d, {old: ulid.new()}, entities={entity})
+    try:
+        _rewrite_uids(d, {old: ulid.new()}, entities={entity})
+    except Exception:  # noqa: BLE001 — a malformed file: it keeps its uid until fixed
+        pass
 
 
-def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "check", "history")) -> None:
-    """Swap uids in an item's child files: `mapping` old → new, or a callable."""
-    new = mapping if callable(mapping) else (lambda u: mapping.get(u, u))
+def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "check")) -> None:
+    """Swap uids in an item's child files, `mapping` old → new."""
+    def new(u):
+        return mapping.get(u, u)
     if "task" in entities:
         before = store._read_tasks(d)
         after = [dict(t, uid=new(t["uid"]) if t.get("uid") else t.get("uid")) for t in before]
@@ -721,31 +728,11 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
             if e["meta"].get("uid") and new(e["meta"]["uid"]) != e["meta"]["uid"]:
                 meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
                 yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
-    if "history" in entities:
-        for e in store._read_entries(d / store.HISTORY_DIR):
-            if e["meta"].get("uid") and not e["meta"].get("server"):
-                meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
-                yamlio.write_atomic(e["file"], frontmatter.dump_map(meta))
-            elif e["meta"].get("server"):
-                e["file"].unlink()          # the old server's history; the new one rebuilds its own
     if "check" in entities:
         checks = store._read_checks(d)
         changed = [dict(c, uid=new(c["uid"]) if c.get("uid") else c.get("uid")) for c in checks]
         if changed != checks:
             _write_checks(d, changed)
-
-
-def reissue_all(root: Path) -> None:
-    """Fresh uids for every entity, for a store being linked to a different
-    project: uids are global on a server, so a copy can't reuse them."""
-    for d in store._item_dirs(root):
-        try:
-            y, meta = store._load_meta(d)
-        except Exception:  # noqa: BLE001 — unreadable: it gets a uid once fixed
-            continue
-        meta["uid"] = ulid.new()
-        yamlio.save(y, d / store.ITEM_FILE, meta)
-        _rewrite_uids(d, lambda u: ulid.new())
 
 
 def _whole_op_rejected(root, op, r, local, snap, report) -> None:
@@ -768,10 +755,18 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
     if reason == "removed" and op["op"] == "remove":
         snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
         return
-    if reason == "removed" and op["op"] == "create":
-        # Its uid was used and removed before (a re-added entity whose backfilled
-        # uid matched): give it a fresh one so it is created next round.
+    if reason == "removed" and op["op"] == "create" and uid in snap.get("removed", []):
+        # This store removed it earlier and it was re-added with the same
+        # backfilled uid: a new entity, so it gets a new uid.
         _reissue(local, entity, uid, op["item_uid"])
+        return
+    if reason == "removed" and op["op"] == "create":
+        snap["entities"].pop(uid, None)
+        _delete_local(local, entity, uid, op["item_uid"])
+        text = f"{what} not applied; {r.get('by') or 'someone'} removed it"
+        report.messages.append(f"{item_id}: {text}")
+        if item_id:
+            store.add_log(root, item_id, "sync: " + text, _now())
         return
     if reason == "removed" and op["op"] == "set":
         snap["entities"].pop(uid, None)

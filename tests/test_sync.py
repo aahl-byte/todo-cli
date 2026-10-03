@@ -884,21 +884,12 @@ def test_a_parked_remove_is_not_retried(pair, server):
     assert len([e for e in item(a)["log"] if "refused by the server" in e["text"]]) == 1
 
 
-def test_relinking_to_another_project_issues_fresh_uids(pair, server, monkeypatch):
-    a, _ = pair
-    from todo import cli
-    old = {item(a)["uid"], item(a)["tasks"][0]["uid"], item(a)["notes"][0]["uid"]}
-    monkeypatch.setattr(remote, "token_for", lambda url: "t")
-
-    class FakeRemote:
-        def __init__(self, *a, **k):
-            pass
-
-        def ensure_project(self, key):
-            return {"deploy_step": True}
-
-    monkeypatch.setattr(remote, "Remote", FakeRemote)
-    monkeypatch.setattr(sync, "run_round", lambda root, rem, adopt=False: sync.Report())
-    cli._link_remote(a.parent, type("A", (), {"remote": "http://fake", "project": "other", "name": None})())
-    new = {item(a)["uid"], item(a)["tasks"][0]["uid"], item(a)["notes"][0]["uid"]}
-    assert not (old & new)
+def test_a_lost_snapshot_does_not_undo_a_teammates_remove(pair, server):
+    a, b = pair
+    run_cli(b, ["task", "rm", "login-bug", "1"])
+    rnd(b, server, "bob")
+    (a / ".sync" / "snapshot.json").unlink()
+    rnd(a, server, "alice")
+    rnd(a, server, "alice")
+    assert [r for r in server.rows.values() if r["_entity"] == "task"] == []
+    assert item(a)["tasks"] == []

@@ -1,4 +1,6 @@
 -- Idempotent: `npm run migrate` applies the whole file on every deploy.
+-- Every entity row is keyed by (project, uid): a uid is unique within a
+-- project, so one store can be linked to several projects over time.
 
 create table if not exists users (
   handle          text primary key,
@@ -20,8 +22,8 @@ create table if not exists projects (
 );
 
 create table if not exists items (
-  uid         text primary key,
   project     text not null references projects(key),
+  uid         text not null,
   id          text not null,
   title       text not null,
   type        text not null default 'feature',
@@ -36,24 +38,29 @@ create table if not exists items (
   calc_status text,
   extra       jsonb not null default '{}'::jsonb,
   versions    jsonb not null default '{}'::jsonb,
+  primary key (project, uid),
   unique (project, id)
 );
 
 create table if not exists tasks (
-  uid      text primary key,
-  item_uid text not null references items(uid) on delete cascade,
+  project  text not null,
+  uid      text not null,
+  item_uid text not null,
   n        integer not null,
   title    text not null,
   status   text not null default 'todo',
   phase    integer,
   position double precision not null default 0,
   versions jsonb not null default '{}'::jsonb,
-  unique (item_uid, n)
+  primary key (project, uid),
+  unique (project, item_uid, n),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
 create table if not exists notes (
-  uid      text primary key,
-  item_uid text not null references items(uid) on delete cascade,
+  project  text not null,
+  uid      text not null,
+  item_uid text not null,
   n        integer not null,
   kind     text not null default 'context',
   author   text,
@@ -63,24 +70,30 @@ create table if not exists notes (
   meta     jsonb not null default '{}'::jsonb,
   source   text,
   versions jsonb not null default '{}'::jsonb,
-  unique (item_uid, n)
+  primary key (project, uid),
+  unique (project, item_uid, n),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
 create table if not exists logs (
-  uid      text primary key,
-  item_uid text not null references items(uid) on delete cascade,
+  project  text not null,
+  uid      text not null,
+  item_uid text not null,
   n        integer not null,
   author   text,
   via      text,
   ts       text not null,
   text     text not null,
   versions jsonb not null default '{}'::jsonb,
-  unique (item_uid, n)
+  primary key (project, uid),
+  unique (project, item_uid, n),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
 create table if not exists checks (
-  uid      text primary key,
-  item_uid text not null references items(uid) on delete cascade,
+  project  text not null,
+  uid      text not null,
+  item_uid text not null,
   n        integer not null,
   kind     text not null,
   title    text not null,
@@ -88,12 +101,15 @@ create table if not exists checks (
   timing   text not null default 'pre-deploy',
   status   text not null default 'pending',
   versions jsonb not null default '{}'::jsonb,
-  unique (item_uid, n)
+  primary key (project, uid),
+  unique (project, item_uid, n),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
 create table if not exists status_history (
-  uid         text primary key,
-  item_uid    text not null references items(uid) on delete cascade,
+  project     text not null,
+  uid         text not null,
+  item_uid    text not null,
   n           integer not null,
   from_status text,
   to_status   text not null,
@@ -101,7 +117,9 @@ create table if not exists status_history (
   via         text,
   forced      boolean not null default false,
   ts          text not null,
-  unique (item_uid, n)
+  primary key (project, uid),
+  unique (project, item_uid, n),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
 -- One row per changed entity. `seq` comes from projects.seq under the project's
@@ -117,40 +135,48 @@ create table if not exists changes (
   ts       text not null,
   primary key (project, seq)
 );
-create index if not exists changes_uid on changes (uid, seq);
+create index if not exists changes_uid on changes (project, uid, seq);
 
 create table if not exists tombstones (
-  uid      text primary key,
+  project  text not null,
+  uid      text not null,
   entity   text not null,
   item_uid text not null,
-  seq      bigint not null
+  seq      bigint not null,
+  primary key (project, uid)
 );
 
 create table if not exists applied_ops (
-  op_id   text not null,
   project text not null,
+  op_id   text not null,
   result  jsonb not null,
   created timestamptz not null default now(),
   primary key (project, op_id)
 );
 
 create table if not exists jira_links (
-  item_uid text primary key references items(uid) on delete cascade,
-  jira_key text not null unique
+  project          text not null,
+  item_uid         text not null,
+  jira_key         text not null unique,
+  last_event_at    bigint,
+  last_assignee_at bigint,
+  primary key (project, item_uid),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
 create table if not exists jira_outbox (
-  id       bigserial primary key,
-  item_uid text not null,
-  action   text not null,
-  payload  jsonb not null,
-  attempts integer not null default 0,
-  error    text,
-  result   jsonb,
+  id              bigserial primary key,
+  project         text not null,
+  item_uid        text not null,
+  action          text not null,
+  payload         jsonb not null,
+  attempts        integer not null default 0,
+  error           text,
+  result          jsonb,
   claimed_at      timestamptz,
   next_attempt_at timestamptz,
-  done_at  timestamptz,
-  created  timestamptz not null default now()
+  done_at         timestamptz,
+  created         timestamptz not null default now()
 );
 
 create table if not exists notifications (
@@ -158,29 +184,10 @@ create table if not exists notifications (
   handle   text not null,
   kind     text not null,
   project  text not null,
-  note_uid text,
   item_uid text not null,
+  note_uid text,
+  actor    text,
   created  timestamptz not null default now(),
   read_at  timestamptz
 );
 create index if not exists notifications_handle on notifications (handle, read_at);
-
--- Columns added after a table first shipped.
-alter table jira_outbox add column if not exists result jsonb;
-alter table jira_outbox add column if not exists claimed_at timestamptz;
-alter table jira_outbox add column if not exists next_attempt_at timestamptz;
-
-alter table notifications add column if not exists actor text;
-
--- applied_ops was first keyed by op_id alone; key it per project.
-do $$
-begin
-  if (select array_length(conkey, 1) from pg_constraint
-       where conrelid = 'applied_ops'::regclass and contype = 'p') = 1 then
-    alter table applied_ops drop constraint applied_ops_pkey;
-    alter table applied_ops add primary key (project, op_id);
-  end if;
-end $$;
-
-alter table jira_links add column if not exists last_event_at bigint;
-alter table jira_links add column if not exists last_assignee_at bigint;

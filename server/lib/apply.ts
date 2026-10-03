@@ -198,13 +198,12 @@ async function load(ctx: Ctx, entity: Entity, uid: string): Promise<Row | null> 
   const rows = entity === "item"
     ? await ctx.t.query("select * from items where uid = $1 and project = $2", [uid, ctx.project])
     : await ctx.t.query(
-        `select e.* from ${TABLE[entity]} e join items i on i.uid = e.item_uid
-         where e.uid = $1 and i.project = $2`, [uid, ctx.project]);
+        `select * from ${TABLE[entity]} where uid = $1 and project = $2`, [uid, ctx.project]);
   return rows[0] ?? null;
 }
 
 async function removedReason(ctx: Ctx, op: Op): Promise<Result> {
-  const [tomb] = await ctx.t.query("select seq from tombstones where uid = $1", [op.uid]);
+  const [tomb] = await ctx.t.query("select seq from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
   if (!tomb) return reject(op, "unknown");
   return reject(op, "removed", await ctx.who(Number(tomb.seq)));
 }
@@ -251,7 +250,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       ? { op_id: op.op_id, status: "applied", versions: existing.versions }
       : reject(op, "uid-exists", { data: existing });
   }
-  const [tomb] = await ctx.t.query("select 1 from tombstones where uid = $1", [op.uid]);
+  const [tomb] = await ctx.t.query("select 1 from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
   if (tomb) return removedReason(ctx, op);
 
   const row: Record<string, any> = { ...DEFAULTS[entity] };
@@ -282,9 +281,9 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
     const table = TABLE[entity];
     const wanted = Number.isInteger(row.n) && row.n > 0 ? row.n : null;
     const taken = wanted !== null
-      && (await ctx.t.query(`select 1 from ${table} where item_uid = $1 and n = $2`, [itemUid, wanted])).length > 0;
+      && (await ctx.t.query(`select 1 from ${table} where project = $3 and item_uid = $1 and n = $2`, [itemUid, wanted, ctx.project])).length > 0;
     if (wanted === null || taken) {
-      const [m] = await ctx.t.query(`select coalesce(max(n), 0) as n from ${table} where item_uid = $1`, [itemUid]);
+      const [m] = await ctx.t.query(`select coalesce(max(n), 0) as n from ${table} where project = $2 and item_uid = $1`, [itemUid, ctx.project]);
       row.n = Number(m.n) + 1;
       if (wanted !== null) result.assigned_n = row.n;
     }
@@ -304,8 +303,8 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   if (jsonCol) for (const k of Object.keys(row[jsonCol])) versions[`${jsonCol}.${k}`] = seq;
   row.versions = versions;
   row.uid = op.uid;
-  if (entity === "item") row.project = ctx.project;
-  else row.item_uid = itemUid;
+  row.project = ctx.project;
+  if (entity !== "item") row.item_uid = itemUid;
 
   const cols = Object.keys(row);
   const jsonCols = new Set([jsonCol, "versions"].filter(Boolean) as string[]);
@@ -317,7 +316,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
-  if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", itemUid, note: row });
+  if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", project: ctx.project, itemUid, note: row });
   return result;
 }
 
@@ -392,8 +391,8 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     const names = Object.keys(cols);
     const jsonCols = new Set([jsonCol, "versions"].filter(Boolean) as string[]);
     await ctx.t.query(
-      `update ${TABLE[entity]} set ${names.map((c, i) => `${c} = $${i + 2}${jsonCols.has(c) ? "::jsonb" : ""}`).join(", ")} where uid = $1`,
-      [op.uid, ...names.map((c) => (jsonCols.has(c) ? JSON.stringify(cols[c]) : cols[c]))]);
+      `update ${TABLE[entity]} set ${names.map((c, i) => `${c} = $${i + 2}${jsonCols.has(c) ? "::jsonb" : ""}`).join(", ")} where uid = $1 and project = $${names.length + 2}`,
+      [op.uid, ...names.map((c) => (jsonCols.has(c) ? JSON.stringify(cols[c]) : cols[c])), ctx.project]);
 
     if (statusChange) await statusChanged(ctx, op, row, statusChange);
     if (entity === "task") await recalc(ctx, itemUid);
@@ -409,8 +408,8 @@ async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<stri
   if (to === "ready-for-qa" && op.via === "agent") return "agent-handoff";
   if (to === "deployed" && !op.force) {
     const [c] = await ctx.t.query(
-      "select count(*)::int as n from checks where item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
-      [item.uid]);
+      "select count(*)::int as n from checks where project = $2 and item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
+      [item.uid, ctx.project]);
     if (Number(c.n) > 0) return "checks-pending";
   }
   return null;
@@ -420,22 +419,22 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   let forced = false;
   if (to === "deployed" && op.force) {
     const [c] = await ctx.t.query(
-      "select count(*)::int as n from checks where item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
-      [item.uid]);
+      "select count(*)::int as n from checks where project = $2 and item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
+      [item.uid, ctx.project]);
     forced = Number(c.n) > 0;
   }
   const [m] = await ctx.t.query(
-    "select coalesce(max(n), 0) as n from status_history where item_uid = $1", [item.uid]);
+    "select coalesce(max(n), 0) as n from status_history where project = $2 and item_uid = $1", [item.uid, ctx.project]);
   const uid = ulid();
   await ctx.t.query(
-    `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [uid, item.uid, Number(m.n) + 1, item.status, to, ctx.actor.handle, op.via ?? "human", forced, nowIso()]);
+    `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts, project)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [uid, item.uid, Number(m.n) + 1, item.status, to, ctx.actor.handle, op.via ?? "human", forced, nowIso(), ctx.project]);
   await ctx.bump("history", uid, item.uid);
-  const [fresh] = await ctx.t.query("select developer, qa_assignee, creator from items where uid = $1", [item.uid]);
+  const [fresh] = await ctx.t.query("select developer, qa_assignee, creator from items where uid = $1 and project = $2", [item.uid, ctx.project]);
   if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
-  await queueJira(ctx.t, ctx.actor, { kind: "status", itemUid: item.uid, status: to });
+  await queueJira(ctx.t, ctx.actor, { kind: "status", project: ctx.project, itemUid: item.uid, status: to });
 }
 
 /** Status history an item gathered before it was ever synced. */
@@ -446,16 +445,16 @@ async function importHistory(ctx: Ctx, itemUid: string, entries: any[]): Promise
     const uid = typeof h.uid === "string" && h.uid ? h.uid : ulid();
     n += 1;
     await ctx.t.query(
-      `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9) on conflict (uid) do nothing`,
+      `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts, project)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (project, uid) do nothing`,
       [uid, itemUid, n, h.from ?? null, h.to, typeof h.by === "string" ? h.by : ctx.actor.handle,
-       h.via === "agent" ? "agent" : "human", !!h.forced, typeof h.ts === "string" ? h.ts : nowIso()]);
+       h.via === "agent" ? "agent" : "human", !!h.forced, typeof h.ts === "string" ? h.ts : nowIso(), ctx.project]);
     await ctx.bump("history", uid, itemUid);
   }
 }
 
 async function noteCreated(ctx: Ctx, itemUid: string, note: Row): Promise<void> {
-  const [item] = await ctx.t.query("select developer, creator from items where uid = $1", [itemUid]);
+  const [item] = await ctx.t.query("select developer, creator from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if (note.kind === "comment" || note.kind === "qa-rejection") {
     for (const h of mentions(note.text)) await ctx.notify(h, "mention", itemUid, note.uid);
   }
@@ -464,11 +463,11 @@ async function noteCreated(ctx: Ctx, itemUid: string, note: Row): Promise<void> 
 }
 
 async function recalc(ctx: Ctx, itemUid: string): Promise<void> {
-  const tasks = await ctx.t.query("select status from tasks where item_uid = $1", [itemUid]);
+  const tasks = await ctx.t.query("select status from tasks where project = $2 and item_uid = $1", [itemUid, ctx.project]);
   const calc = deriveCalcStatus(tasks.map((r) => r.status));
-  const [item] = await ctx.t.query("select calc_status from items where uid = $1", [itemUid]);
+  const [item] = await ctx.t.query("select calc_status from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if ((item.calc_status ?? null) === calc) return;
-  await ctx.t.query("update items set calc_status = $2 where uid = $1", [itemUid, calc]);
+  await ctx.t.query("update items set calc_status = $2 where uid = $1 and project = $3", [itemUid, calc, ctx.project]);
   await ctx.bump("item", itemUid, itemUid);
 }
 
@@ -492,9 +491,9 @@ async function remove(ctx: Ctx, op: Op): Promise<Result> {
     if (stale.length) return { op_id: op.op_id, status: "rejected", reason: "stale", rejected: stale };
   }
   const seq = await ctx.bump(entity, op.uid, row.item_uid, true);
-  await ctx.t.query(`delete from ${TABLE[entity]} where uid = $1`, [op.uid]);
-  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq) values ($1, $2, $3, $4)",
-    [op.uid, entity, row.item_uid, seq]);
+  await ctx.t.query(`delete from ${TABLE[entity]} where uid = $1 and project = $2`, [op.uid, ctx.project]);
+  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq, project) values ($1, $2, $3, $4, $5)",
+    [op.uid, entity, row.item_uid, seq, ctx.project]);
   if (entity === "task") await recalc(ctx, row.item_uid);
   return { op_id: op.op_id, status: "applied", versions: {} };
 }

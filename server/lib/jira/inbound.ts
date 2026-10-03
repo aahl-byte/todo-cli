@@ -49,7 +49,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   if (!issue?.key) return { handled: false, reason: "no issue" };
   const [link] = await db.query(
     `select l.item_uid, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map from jira_links l
-       join items i on i.uid = l.item_uid join projects p on p.key = i.project
+       join items i on i.uid = l.item_uid and i.project = l.project join projects p on p.key = l.project
       where l.jira_key = $1`, [issue.key]);
 
   if (event === "jira:issue_created") {
@@ -100,7 +100,8 @@ async function created(db: Db, project: string, issue: any): Promise<InboundResu
   ];
   const results = await applyOps(db, project, ops, actor);
   if (results[0].status === "applied") {
-    await db.query("insert into jira_links (item_uid, jira_key) values ($1, $2) on conflict do nothing", [uid, issue.key]);
+    await db.query("insert into jira_links (project, item_uid, jira_key) values ($1, $2, $3) on conflict do nothing",
+      [project, uid, issue.key]);
   }
   return { handled: true, results };
 }
@@ -145,10 +146,10 @@ async function stamp(db: Db, link: any, payload: any): Promise<void> {
   if (at === null) return;
   const items: any[] = payload.changelog?.items ?? [];
   if (items.some((x) => x.field === "status")) {
-    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1", [link.item_uid, at]);
+    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1 and project = $3", [link.item_uid, at, link.project]);
   }
   if (items.some((x) => x.field === "assignee")) {
-    await db.query("update jira_links set last_assignee_at = greatest(coalesce(last_assignee_at, 0), $2) where item_uid = $1", [link.item_uid, at]);
+    await db.query("update jira_links set last_assignee_at = greatest(coalesce(last_assignee_at, 0), $2) where item_uid = $1 and project = $3", [link.item_uid, at, link.project]);
   }
 }
 
@@ -160,7 +161,7 @@ async function gated(db: Db, link: any, key: string, to: string, reason: string,
     item_uid: link.item_uid,
     data: { text: `Jira moved ${key} to ${to}, but todo kept it at ${link.status}: ${why}.`, ts: nowIso() },
   }], actor);
-  await enqueue(db, link.item_uid, "comment",
+  await enqueue(db, link.project, link.item_uid, "comment",
     { key, author: "todo", label: "comment", text: `Not moved to ${to} in todo: ${why}.` });
 }
 

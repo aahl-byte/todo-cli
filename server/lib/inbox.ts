@@ -7,8 +7,8 @@ export async function inbox(db: Db, handle: string, opts: { all?: boolean; since
             i.id as item_id, i.title as item_title, i.status as item_status,
             nt.n as note_n, nt.text as note_text, nt.author as note_author
        from notifications n
-       join items i on i.uid = n.item_uid
-       left join notes nt on nt.uid = n.note_uid
+       join items i on i.uid = n.item_uid and i.project = n.project
+       left join notes nt on nt.uid = n.note_uid and nt.project = n.project
       where n.handle = $1 and n.id > $2 ${opts.all ? "" : "and n.read_at is null"}
       order by (n.read_at is null) desc, n.id desc
       limit 200`,

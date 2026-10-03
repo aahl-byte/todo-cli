@@ -49,13 +49,13 @@ export interface Card extends Row {
 async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
   const rows = await d.query(
     `select i.*, l.jira_key,
-       coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid), '{}') as task_statuses,
-       (select count(*)::int from notes n where n.item_uid = i.uid and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,
-       (select count(*)::int from checks c where c.item_uid = i.uid and c.timing = 'pre-deploy' and c.status <> 'done') as pending_pre,
-       (select count(*)::int from checks c where c.item_uid = i.uid and c.timing = 'post-deploy' and c.status <> 'done') as pending_post,
-       (select h.via from status_history h where h.item_uid = i.uid order by h.n desc limit 1) as last_via,
-       (select h.to_status from status_history h where h.item_uid = i.uid order by h.n desc limit 1) as last_to
-     from items i left join jira_links l on l.item_uid = i.uid
+       coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_statuses,
+       (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,
+       (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'pre-deploy' and c.status <> 'done') as pending_pre,
+       (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'post-deploy' and c.status <> 'done') as pending_post,
+       (select h.via from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_via,
+       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to
+     from items i left join jira_links l on l.item_uid = i.uid and l.project = i.project
      where i.project = $1 ${where}
      order by i.created, i.id`, [key, ...params]);
   return rows as Card[];
@@ -108,11 +108,11 @@ export async function item(d: Db, key: string, id: string) {
   const [it] = await cards(d, key, "and i.id = $2", [id]);
   if (!it) return null;
   const [tasks, notes, logs, checks, history] = await Promise.all([
-    d.query("select * from tasks where item_uid = $1 order by phase nulls last, position, n", [it.uid]),
-    d.query("select * from notes where item_uid = $1 order by n", [it.uid]),
-    d.query("select * from logs where item_uid = $1 order by n", [it.uid]),
-    d.query("select * from checks where item_uid = $1 order by n", [it.uid]),
-    d.query("select * from status_history where item_uid = $1 order by n", [it.uid]),
+    d.query("select * from tasks where project = $2 and item_uid = $1 order by phase nulls last, position, n", [it.uid, key]),
+    d.query("select * from notes where project = $2 and item_uid = $1 order by n", [it.uid, key]),
+    d.query("select * from logs where project = $2 and item_uid = $1 order by n", [it.uid, key]),
+    d.query("select * from checks where project = $2 and item_uid = $1 order by n", [it.uid, key]),
+    d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [it.uid, key]),
   ]);
   const phases = new Map<string, Row[]>();
   for (const t of tasks) {
@@ -149,9 +149,9 @@ export function bounceCount(history: Row[]): number {
 async function withHistory(d: Db, rows: Card[]) {
   const out = [];
   for (const c of rows) {
-    const history = await d.query("select * from status_history where item_uid = $1 order by n", [c.uid]);
+    const history = await d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [c.uid, c.project]);
     const links = await d.query(
-      "select * from notes where item_uid = $1 and kind = 'link' and meta->>'type' in ('preview', 'qa-handoff') order by n", [c.uid]);
+      "select * from notes where project = $2 and item_uid = $1 and kind = 'link' and meta->>'type' in ('preview', 'qa-handoff') order by n", [c.uid, c.project]);
     const entered = [...history].reverse().find((h) => h.to_status === c.status)?.ts ?? c.created;
     out.push({ ...c, bounces: bounceCount(history), links, entered });
   }
@@ -173,7 +173,7 @@ export async function deployPlan(d: Db, key: string) {
   const complete = new Set(all.filter((r) => COMPLETE.includes(r.status)).map((r) => r.id));
   const ids = new Set(all.map((r) => r.id));
   const checksFor = async (uids: string[]): Promise<Row[]> => uids.length
-    ? d.query("select c.*, i.id as item_id from checks c join items i on i.uid = c.item_uid where c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids])
+    ? d.query("select c.*, i.id as item_id from checks c join items i on i.uid = c.item_uid and i.project = c.project where c.project = $2 and c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids, key])
     : [];
   const readyChecks = await checksFor(ready.map((r) => r.uid));
   const group = (timing: string) => CHECK_KINDS.map((kind) => ({

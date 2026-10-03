@@ -154,7 +154,7 @@ export async function deployAllAction(_prev: ActionState, fd: FormData): Promise
   revalidatePath(`/p/${project}`, "layout");
   const heldUids = items.filter((_, i) => results[i].rejected?.length || results[i].status === "rejected").map((it) => it.uid);
   if (!heldUids.length) return { ok: true, message: `Deployed ${results.length}.`, at: Date.now() };
-  const ids = (await d.query("select id from items where uid = any($1::text[]) order by id", [heldUids])).map((r) => r.id);
+  const ids = (await d.query("select id from items where project = $2 and uid = any($1::text[]) order by id", [heldUids, project])).map((r) => r.id);
   return { ok: false, at: Date.now(),
            message: `Deployed ${results.length - ids.length}; held back ${ids.join(", ")} (pending checks or newer changes).` };
 }
@@ -179,7 +179,7 @@ export async function requestAction(_prev: ActionState, fd: FormData): Promise<A
   }
   const state = describe(results);
   if (!state.ok) return state;
-  const [row] = await d.query("select id from items where uid = $1", [ops[0].uid]);
+  const [row] = await d.query("select id from items where uid = $1 and project = $2", [ops[0].uid, project]);
   redirect(`/p/${project}/i/${row.id}`);
 }
 

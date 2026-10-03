@@ -26,7 +26,7 @@ export async function changesSince(db: Db, project: string, since: number, limit
   const changes: Change[] = [];
   for (const r of latest.values()) {
     const table = TABLE[r.entity as keyof typeof TABLE];
-    const [data] = await db.query(`select * from ${table} where uid = $1`, [r.uid]);
+    const [data] = await db.query(`select * from ${table} where uid = $1 and project = $2`, [r.uid, project]);
     changes.push({
       seq: Number(r.seq), entity: r.entity, uid: r.uid, item_uid: r.item_uid,
       deleted: !data, data: data ? clean(data) : null,

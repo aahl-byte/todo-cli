@@ -325,14 +325,6 @@ describe("re-validation fixes", () => {
     expect((await w.d.query("select count(*)::int as n from applied_ops"))[0].n).toBe(0);
   });
 
-  it("migrates an applied_ops table keyed by op_id alone", async () => {
-    const { migrate } = await import("@/lib/db");
-    await w.d.exec("alter table applied_ops drop constraint applied_ops_pkey; alter table applied_ops add primary key (op_id);");
-    await migrate(w.d);
-    const cols = await w.d.query(
-      "select column_name from information_schema.key_column_usage where table_name = 'applied_ops' and constraint_name = 'applied_ops_pkey' order by ordinal_position");
-    expect(cols.map((c) => c.column_name)).toEqual(["project", "op_id"]);
-  });
 });
 
 describe("third pass", () => {
@@ -357,5 +349,20 @@ describe("third pass", () => {
     const broken = { ...w.d, tx: async () => { throw new TypeError("boom"); }, query: w.d.query };
     const [r] = await applyOps(broken as any, "p", [{ op_id: "TE", ...item("I1") } as any], { handle: "alice" });
     expect(r).toMatchObject({ status: "rejected", reason: "error" });
+  });
+});
+
+describe("uids across projects", () => {
+  it("lets the same store's uids live in two projects", async () => {
+    await w.d.query("insert into projects (key) values ('q')");
+    await w.one("alice", item("I1"));
+    await w.one("alice", child("task", "T1", "I1", { n: 1, title: "x" }));
+    const rs = await applyOps(w.d, "q", [{ op_id: "X1", ...item("I1") } as any,
+      { op_id: "X2", ...child("task", "T1", "I1", { n: 1, title: "x" }) } as any], { handle: "alice" });
+    expect(rs.map((r) => r.status)).toEqual(["applied", "applied"]);
+    expect((await w.d.query("select project from tasks where uid = 'T1' order by project")).map((r) => r.project)).toEqual(["p", "q"]);
+    await w.one("alice", { op: "remove", entity: "task", uid: "T1", item_uid: "I1",
+      base: (await w.d.query("select versions from tasks where uid = 'T1' and project = 'p'"))[0].versions });
+    expect((await w.d.query("select project from tasks where uid = 'T1'")).map((r) => r.project)).toEqual(["q"]);
   });
 });

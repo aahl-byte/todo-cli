@@ -214,6 +214,9 @@ Acceptance **(py)**:
 - **`notifications`:** `id`, `handle`, `kind`, `note_uid`, `item_uid`,
   `created`, `read_at`. These are written in phase 2 and read by the phase 4
   inbox.
+- **Keys:** every entity row, tombstone and Jira link is keyed by
+  `(project, uid)`, so one store can be linked to several projects in turn
+  without its uids colliding.
 
 ### 2.3 Operations and `lib/apply.ts`
 

@@ -120,3 +120,24 @@ def test_offline_dev_and_qa_converge(server, tmp_path):
     assert "offline: found the cookie bug" in [n["text"] for n in itb["notes"]]
     box = cli(ha, ra, "inbox").stdout
     assert "(inbox empty)" in box             # alice was neither mentioned nor handed anything
+
+
+def test_relinking_between_projects_never_duplicates(server, tmp_path):
+    url, tokens = server
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    home.mkdir()
+    (repo / ".TODO").mkdir(parents=True)
+    cli(home, repo, "login", url, tokens["alice"])
+    cli(home, repo, "add", "Login bug")
+    for project in ("web", "other", "web"):
+        cli(home, repo, "link", "--remote", url, "--project", project)
+        cli(home, repo, "sync")
+    root = (repo / ".TODO").resolve()
+    assert [it["id"] for it in store.list_todos(root)] == ["login-bug"]
+    import json
+    for project in ("web", "other"):
+        req = urllib.request.Request(f"{url}/api/projects/{project}/changes?since=0",
+                                     headers={"authorization": f"Bearer {tokens['alice']}"})
+        changes = json.loads(urllib.request.urlopen(req).read())["changes"]
+        items = [c["data"]["id"] for c in changes if c["entity"] == "item" and c["data"]]
+        assert items == ["login-bug"], (project, items)
