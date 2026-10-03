@@ -33,6 +33,9 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    `user:add` prints the token that user signs in with, in the dashboard and in
    `todo login`. Running it again for the same handle issues a new token.
 
+   `migrate` refuses a database built from the pre-release schema (entity rows
+   keyed by uid alone); recreate such a database.
+
 Every signed-in user can read and write every project. Access is team-wide by
 design; there are no per-project roles.
 

@@ -2,6 +2,17 @@
 -- Every entity row is keyed by (project, uid): a uid is unique within a
 -- project, so one store can be linked to several projects over time.
 
+-- A database built from a pre-release schema (entity rows keyed by uid alone)
+-- can't be upgraded in place; refuse it rather than half-apply this file.
+do $$
+begin
+  if exists (select 1 from information_schema.tables where table_name = 'tasks' and table_schema = current_schema())
+     and not exists (select 1 from information_schema.columns
+                      where table_name = 'tasks' and column_name = 'project' and table_schema = current_schema()) then
+    raise exception 'This database predates the project-keyed schema. Recreate it (it held only pre-release data).';
+  end if;
+end $$;
+
 create table if not exists users (
   handle          text primary key,
   name            text,

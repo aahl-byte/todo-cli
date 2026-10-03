@@ -755,9 +755,9 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
     if reason == "removed" and op["op"] == "remove":
         snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
         return
-    if reason == "removed" and op["op"] == "create" and uid in snap.get("removed", []):
-        # This store removed it earlier and it was re-added with the same
-        # backfilled uid: a new entity, so it gets a new uid.
+    if reason == "removed" and op["op"] == "create" and (uid in snap.get("removed", []) or uid.startswith("Z")):
+        # A backfilled uid (Z…) is derived from content, so a re-added entity
+        # can match one removed earlier: it is new, and gets a new uid.
         _reissue(local, entity, uid, op["item_uid"])
         return
     if reason == "removed" and op["op"] == "create":

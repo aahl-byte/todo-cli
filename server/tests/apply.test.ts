@@ -366,3 +366,12 @@ describe("uids across projects", () => {
     expect((await w.d.query("select project from tasks where uid = 'T1'")).map((r) => r.project)).toEqual(["q"]);
   });
 });
+
+describe("schema guard", () => {
+  it("refuses to migrate a database from the pre-release schema", async () => {
+    const { pglite, migrate } = await import("@/lib/db");
+    const old = await pglite();
+    await old.exec("create table tasks (uid text primary key, item_uid text not null)");
+    await expect(migrate(old)).rejects.toThrow(/predates the project-keyed schema/);
+  });
+});
