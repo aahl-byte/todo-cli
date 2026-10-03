@@ -11,6 +11,7 @@ describe("action helpers", () => {
     expect(safeNext("/\t/evil.example/x")).toBe("/");
     expect(safeNext("/%09/evil.example")).toBe("/%09/evil.example");
     expect(safeNext("/p/web?x=1#n-2")).toBe("/p/web?x=1#n-2");
+    for (const sneaky of ["/..//evil.com", "/.//evil.com", "/%2e%2e//evil.com"]) expect(safeNext(sneaky)).toBe("/");
   });
 
   it("lets people post only plain note kinds", () => {

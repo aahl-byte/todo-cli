@@ -786,3 +786,119 @@ def test_config_with_tokens_is_private(tmp_path, monkeypatch):
     monkeypatch.setattr(identity.Path, "home", classmethod(lambda cls: tmp_path))
     remote.save_login("http://x", "alice", "secret")
     assert (identity.config_path().stat().st_mode & 0o777) == 0o600
+
+
+# ── regressions from the last re-validation ──────────────────────────────────
+def test_a_404_is_a_round_error_and_parks_nothing(pair, server):
+    a, _ = pair
+    run_cli(a, ["note", "login-bug", "while the server was gone"])
+    client = server.client("alice")
+    real = client.push
+    client.push = lambda project, ops: (_ for _ in ()).throw(remote.RemoteError("404 no such project", 404))
+    assert sync.run_round(a, client).error
+    assert sync.load_snapshot(a)["stuck"] == {}
+    client.push = real
+    sync.run_round(a, client)
+    assert "while the server was gone" in {r.get("text") for r in server.rows.values()}
+
+
+def test_an_item_created_into_qa_by_a_person_syncs_from_an_agent_session(tmp_path, server, monkeypatch):
+    a = make(tmp_path, "a", server)
+    run_cli(a, ["add", "Login"])
+    run_cli(a, ["--human", "start", "login"])
+    run_cli(a, ["--human", "ready-qa", "login"])
+    monkeypatch.setenv("TODO_VIA", "agent")
+    rnd(a, server, "alice")
+    op = next(op for op in server.pushes[-1] if op["entity"] == "item")
+    assert op["via"] == "human"
+
+
+def test_relinking_the_same_project_keeps_unpushed_local_edits(pair, server):
+    a, b = pair
+    run_cli(b, ["start", "login-bug"])
+    rnd(b, server, "bob")
+    store.update_todo(a, "login-bug", {"title": "Edited locally"})
+    rnd(a, server, "alice", adopt=True)
+    assert item(a)["title"] == "Edited locally"
+    assert server.rows[item(a)["uid"]]["title"] == "Edited locally"
+
+
+def test_first_link_reports_what_the_server_overwrote(tmp_path, server):
+    a, b = make(tmp_path, "a", server), make(tmp_path, "b", server)
+    run_cli(a, ["add", "Login"])
+    import shutil
+    shutil.copytree(a / "OPEN", b / "OPEN")
+    rnd(a, server, "alice")
+    run_cli(a, ["start", "login"])
+    rnd(a, server, "alice")
+    report = rnd(b, server, "bob", adopt=True)
+    assert any("took the server's status" in m for m in report.messages)
+
+
+def test_a_re_added_task_with_a_removed_uid_gets_a_fresh_one(pair, server):
+    a, _ = pair
+    f = a / "OPEN" / "login-bug" / "phase-1" / "TASKS.yaml"
+    f.write_text(f.read_text() + "  - {id: 2, title: write docs, status: todo}\n")
+    rnd(a, server, "alice")
+    run_cli(a, ["task", "rm", "login-bug", "2"])
+    rnd(a, server, "alice")
+    f.write_text(f.read_text() + "  - {id: 2, title: write docs, status: todo}\n")
+    rnd(a, server, "alice")
+    rnd(a, server, "alice")
+    assert [t["title"] for t in item(a)["tasks"]] == ["repro", "write docs"]
+    live = [r["title"] for r in server.rows.values() if r["_entity"] == "task"]
+    assert sorted(live) == ["repro", "write docs"]
+
+
+def test_splitting_a_refused_batch_keeps_groups_whole(pair, server, monkeypatch):
+    seen = []
+    ops = [{"op_id": "g1", "uid": "1", "group": "G", "op": "set", "entity": "item", "item_uid": "x", "data": {}},
+           {"op_id": "g2", "uid": "2", "group": "G", "op": "create", "entity": "note", "item_uid": "x", "data": {}},
+           {"op_id": "z", "uid": "3", "op": "set", "entity": "task", "item_uid": "x", "data": {}}]
+
+    class Refuser:
+        def push(self, project, batch):
+            seen.append([op["op_id"] for op in batch])
+            raise remote.RemoteError("400", 400)
+
+    a, _ = pair
+    sync._push(a, Refuser(), "p", ops, sync.scan(a), sync.load_snapshot(a), sync.Report(), set(), set())
+    assert ["g1"] not in seen and ["g2", "z"] not in seen
+    assert ["g1", "g2"] in seen and ["z"] in seen
+
+
+def test_a_parked_remove_is_not_retried(pair, server):
+    a, _ = pair
+    run_cli(a, ["task", "rm", "login-bug", "1"])
+    client = server.client("alice")
+    real = client.push
+
+    def refuse_removes(project, ops):
+        if any(op["op"] == "remove" for op in ops):
+            raise remote.RemoteError("400", 400)
+        return real(project, ops)
+
+    client.push = refuse_removes
+    for _ in range(3):
+        sync.run_round(a, client)
+    assert len([e for e in item(a)["log"] if "refused by the server" in e["text"]]) == 1
+
+
+def test_relinking_to_another_project_issues_fresh_uids(pair, server, monkeypatch):
+    a, _ = pair
+    from todo import cli
+    old = {item(a)["uid"], item(a)["tasks"][0]["uid"], item(a)["notes"][0]["uid"]}
+    monkeypatch.setattr(remote, "token_for", lambda url: "t")
+
+    class FakeRemote:
+        def __init__(self, *a, **k):
+            pass
+
+        def ensure_project(self, key):
+            return {"deploy_step": True}
+
+    monkeypatch.setattr(remote, "Remote", FakeRemote)
+    monkeypatch.setattr(sync, "run_round", lambda root, rem, adopt=False: sync.Report())
+    cli._link_remote(a.parent, type("A", (), {"remote": "http://fake", "project": "other", "name": None})())
+    new = {item(a)["uid"], item(a)["tasks"][0]["uid"], item(a)["notes"][0]["uid"]}
+    assert not (old & new)

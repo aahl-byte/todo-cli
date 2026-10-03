@@ -17,7 +17,8 @@ export function safeNext(next: string): string {
   if (!next.startsWith("/") || /[\u0000-\u0020\\]/.test(next)) return "/";
   try {
     const u = new URL(next, "http://here.invalid");
-    return u.origin === "http://here.invalid" ? u.pathname + u.search + u.hash : "/";
+    const path = u.pathname + u.search + u.hash;
+    return u.origin === "http://here.invalid" && !path.startsWith("//") ? path : "/";
   } catch {
     return "/";
   }

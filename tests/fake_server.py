@@ -96,6 +96,9 @@ class FakeServer:
     def _create(self, op, author):
         e, uid, data = op["entity"], op["uid"], dict(op.get("data") or {})
         res = {"op_id": op["op_id"], "status": "applied"}
+        if uid in self.tombs:
+            seq, by = self.tombs[uid]
+            return {"op_id": op["op_id"], "status": "rejected", "reason": "removed", "by": by}
         if uid in self.rows:
             existing = self.rows[uid]
             same = all(existing.get(k) == v for k, v in data.items()

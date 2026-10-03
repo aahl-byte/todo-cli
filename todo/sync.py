@@ -349,6 +349,8 @@ def diff(local: Local, snap: dict) -> list:
             op = _op("create", entity, uid, e["item_uid"], data=body, _fp=_fingerprint(data))
             if uid in local.via:
                 op["via"] = local.via[uid]       # the author's, not this session's
+            if entity == "item":
+                _status_provenance(op, local.history.get(uid, []), data["status"])
             buckets[key].append(op)
             continue
         changed = _set_fields(entity, data, s["data"])
@@ -366,8 +368,11 @@ def diff(local: Local, snap: dict) -> list:
             continue
         if s["item_uid"] in local.incomplete or s["item_uid"] not in local.item_dirs:
             continue
+        fp = _fingerprint({"remove": s.get("versions", {})})
+        if stuck.get(uid) == fp:
+            continue
         buckets["remove"].append(_op("remove", s["entity"], uid, s["item_uid"],
-                                     base=dict(s.get("versions", {}))))
+                                     base=dict(s.get("versions", {})), _fp=fp))
     ops = [op for k in buckets for op in buckets[k]]
     _group_rejections(ops)
     return ops
@@ -428,7 +433,9 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     rejected_fields: set = set()
     pushed_status: set = set()
     try:
-        if adopt:
+        if adopt and not snap["entities"]:
+            # First link: the server's state wins over the clone, and every
+            # field it replaces is reported.
             _pull(root, remote, project, snap, report, Local(), set(), adopt=True)
             save_snapshot(root, snap)
         replay = load_outbox(root)
@@ -458,9 +465,8 @@ def _wire(op: dict) -> dict:
     return {k: v for k, v in op.items() if not k.startswith("_")}
 
 
-def _batches(ops: list) -> list:
-    """Split ops into pushes of at most BATCH ops and BATCH_BYTES, never
-    separating the members of a group."""
+def _units(ops: list) -> list:
+    """Ops grouped so a group's members are never separated."""
     units, groups = [], {}
     for op in ops:
         g = op.get("group")
@@ -471,8 +477,14 @@ def _batches(ops: list) -> list:
         if g:
             groups[g] = unit
         units.append(unit)
+    return units
+
+
+def _batches(ops: list) -> list:
+    """Split ops into pushes of at most BATCH ops and BATCH_BYTES, never
+    separating the members of a group."""
     out, cur, size = [], [], 0
-    for unit in units:
+    for unit in _units(ops):
         n = sum(len(json.dumps(_wire(op))) for op in unit)
         if cur and (len(cur) + len(unit) > BATCH or size + n > BATCH_BYTES):
             out.append(cur)
@@ -485,7 +497,9 @@ def _batches(ops: list) -> list:
 
 
 # Push refusals that will not change on a retry of the same batch.
-REFUSED = {400, 404, 409, 413, 422}
+# A 404 or 409 says the server or project is wrong, not the op, so it stays a
+# round error and nothing is parked.
+REFUSED = {400, 413, 422}
 
 
 def _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status,
@@ -503,9 +517,10 @@ def _push(root, remote, project, ops, local, snap, report, rejected_fields, push
         except RemoteError as e:
             if e.status not in REFUSED:
                 raise
-            if len(batch) > 1 and not all(op.get("group") and op.get("group") == batch[0].get("group") for op in batch):
-                half = len(batch) // 2
-                pending[:0] = [batch[:half], batch[half:]]
+            units = _units(batch)
+            if len(units) > 1:
+                half = len(units) // 2
+                pending[:0] = [[op for u in units[:half] for op in u], [op for u in units[half:] for op in u]]
                 continue
             for op in batch:
                 _park(root, op, local, snap, report, f"refused by the server ({e.status})")
@@ -680,7 +695,57 @@ def _log_rejection(root, op, x, local, report) -> None:
 
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
-FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown"}
+FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff"}
+
+
+def _reissue(local: Local, entity: str, old: str, item_uid: str) -> None:
+    """Give one local entity a fresh uid."""
+    d = local.item_dirs.get(item_uid)
+    if d is None:
+        return
+    _rewrite_uids(d, {old: ulid.new()}, entities={entity})
+
+
+def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "check", "history")) -> None:
+    """Swap uids in an item's child files: `mapping` old → new, or a callable."""
+    new = mapping if callable(mapping) else (lambda u: mapping.get(u, u))
+    if "task" in entities:
+        before = store._read_tasks(d)
+        after = [dict(t, uid=new(t["uid"]) if t.get("uid") else t.get("uid")) for t in before]
+        if after != before:
+            store._write_tasks(d, before, after)
+    for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
+        if entity not in entities:
+            continue
+        for e in store._read_entries(d / sub):
+            if e["meta"].get("uid") and new(e["meta"]["uid"]) != e["meta"]["uid"]:
+                meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
+                yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
+    if "history" in entities:
+        for e in store._read_entries(d / store.HISTORY_DIR):
+            if e["meta"].get("uid") and not e["meta"].get("server"):
+                meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
+                yamlio.write_atomic(e["file"], frontmatter.dump_map(meta))
+            elif e["meta"].get("server"):
+                e["file"].unlink()          # the old server's history; the new one rebuilds its own
+    if "check" in entities:
+        checks = store._read_checks(d)
+        changed = [dict(c, uid=new(c["uid"]) if c.get("uid") else c.get("uid")) for c in checks]
+        if changed != checks:
+            _write_checks(d, changed)
+
+
+def reissue_all(root: Path) -> None:
+    """Fresh uids for every entity, for a store being linked to a different
+    project: uids are global on a server, so a copy can't reuse them."""
+    for d in store._item_dirs(root):
+        try:
+            y, meta = store._load_meta(d)
+        except Exception:  # noqa: BLE001 — unreadable: it gets a uid once fixed
+            continue
+        meta["uid"] = ulid.new()
+        yamlio.save(y, d / store.ITEM_FILE, meta)
+        _rewrite_uids(d, lambda u: ulid.new())
 
 
 def _whole_op_rejected(root, op, r, local, snap, report) -> None:
@@ -703,7 +768,12 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
     if reason == "removed" and op["op"] == "remove":
         snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
         return
-    if reason == "removed" and op["op"] in ("set", "create"):
+    if reason == "removed" and op["op"] == "create":
+        # Its uid was used and removed before (a re-added entity whose backfilled
+        # uid matched): give it a fresh one so it is created next round.
+        _reissue(local, entity, uid, op["item_uid"])
+        return
+    if reason == "removed" and op["op"] == "set":
         snap["entities"].pop(uid, None)
         _delete_local(local, entity, uid, op["item_uid"])
         text = f"{what} not applied; {r.get('by') or 'someone'} removed it"
@@ -796,7 +866,7 @@ def _pull(root, remote, project, snap, report, before: Local, rejected_fields, a
                 from .remote import save_sync_config
                 save_sync_config(root, cfg)
         for ch in page.get("changes") or []:
-            if not _apply_change(root, ch, snap, before, now, rejected_fields, adopt):
+            if not _apply_change(root, ch, snap, before, now, rejected_fields, adopt, report.messages):
                 _defer(snap, ch)
             report.pulled += 1
         _retry_deferred(root, snap, now, rejected_fields)
@@ -852,7 +922,7 @@ def _retry_deferred(root, snap: dict, local: Local, rejected_fields) -> None:
     snap["deferred"] = left + [c for c in snap["deferred"] if c["uid"] not in {x["uid"] for x in left}]
 
 
-def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, adopt) -> bool:
+def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, adopt, messages=None) -> bool:
     """Write one pulled change locally. False when it can't be written yet."""
     entity, uid, item_uid = ch["entity"], ch["uid"], ch["item_uid"]
     ents = snap["entities"]
@@ -902,6 +972,10 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
         return False
     if not written:
         return False
+    if adopt and cur is not None and messages is not None:
+        replaced = [k for k in SETTABLE.get(entity, []) if k in cur and not _same(cur.get(k), flat.get(k))]
+        if replaced:
+            messages.append(f"{entity} {uid}: took the server's {', '.join(replaced)} over the local copy")
     ents[uid] = {"entity": entity, "item_uid": item_uid, "data": snap_data, "versions": snap_versions}
     _undefer(snap, uid)
     if entity == "item":
