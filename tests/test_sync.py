@@ -939,3 +939,17 @@ def test_a_removal_pulled_while_the_item_is_unreadable_lands_later(pair, server)
     rnd(a, server, "alice")
     assert [r for r in server.rows.values() if r["_entity"] == "task"] == []
     assert item(a)["tasks"] == []
+
+
+def test_a_pulled_delete_waits_for_a_malformed_tasks_file(pair, server):
+    a, b = pair
+    run_cli(b, ["task", "rm", "login-bug", "1"])
+    rnd(b, server, "bob")
+    f = a / "OPEN" / "login-bug" / "phase-1" / "TASKS.yaml"
+    good = f.read_text()
+    f.write_text(good + "  - broken: [\n")
+    assert rnd(a, server, "alice").error is None
+    f.write_text(good)
+    rnd(a, server, "alice")
+    assert item(a)["tasks"] == []
+    assert [r for r in server.rows.values() if r["_entity"] == "task"] == []

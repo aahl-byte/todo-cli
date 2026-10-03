@@ -929,8 +929,11 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
     if ch.get("deleted") or not ch.get("data"):
         if entity != "item" and item_uid not in now.item_dirs and item_uid in ents:
             return False            # its item is known but unreadable right now: delete once it's fixed
+        try:
+            _delete_local(now, entity, uid, item_uid)
+        except Exception:  # noqa: BLE001 — a malformed child file: delete once it's fixed
+            return False
         ents.pop(uid, None)
-        _delete_local(now, entity, uid, item_uid)
         _undefer(snap, uid)
         removed = snap.setdefault("removed", [])
         if uid not in removed:
