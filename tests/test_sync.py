@@ -909,3 +909,18 @@ def test_a_hand_added_task_matching_a_teammates_removed_one_is_kept(pair, server
     rnd(a, server, "alice")
     assert "Hand" in [t["title"] for t in item(a)["tasks"]]
     assert "Hand" in [r["title"] for r in server.rows.values() if r["_entity"] == "task"]
+
+
+def test_a_lost_snapshot_does_not_undo_a_teammates_remove_of_a_hand_added_task(pair, server):
+    a, b = pair
+    f = a / "OPEN" / "login-bug" / "phase-1" / "TASKS.yaml"
+    f.write_text(f.read_text() + "  - {id: 2, title: Hand, status: todo}\n")
+    rnd(a, server, "alice")
+    rnd(b, server, "bob")
+    run_cli(b, ["task", "rm", "login-bug", "2"])
+    rnd(b, server, "bob")
+    (a / ".sync" / "snapshot.json").unlink()
+    rnd(a, server, "alice")
+    rnd(a, server, "alice")
+    assert [r["title"] for r in server.rows.values() if r["_entity"] == "task"] == ["repro"]
+    assert [t["title"] for t in item(a)["tasks"]] == ["repro"]
