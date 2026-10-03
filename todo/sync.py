@@ -927,6 +927,8 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
             return _write_history(root, now, ch["data"])
         return True
     if ch.get("deleted") or not ch.get("data"):
+        if entity != "item" and item_uid not in now.item_dirs and item_uid in ents:
+            return False            # its item is known but unreadable right now: delete once it's fixed
         ents.pop(uid, None)
         _delete_local(now, entity, uid, item_uid)
         _undefer(snap, uid)
