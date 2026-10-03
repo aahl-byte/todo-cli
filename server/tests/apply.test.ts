@@ -342,6 +342,17 @@ describe("third pass", () => {
     expect(r).toMatchObject({ status: "rejected", reason: "invalid-data" });
   });
 
+  it("lets a dropped connection fail the request so it is retried", async () => {
+    const dropped = { ...w.d, tx: async () => { throw new Error("Connection terminated unexpectedly"); } };
+    await expect(applyOps(dropped as any, "p", [{ op_id: "DC", ...item("I1") } as any], { handle: "alice" })).rejects.toThrow(/terminated/);
+    expect((await w.d.query("select count(*)::int as n from applied_ops"))[0].n).toBe(0);
+  });
+
+  it("refuses an agent creating an item straight into QA", async () => {
+    const r = await w.one("alice", { ...item("I1", { status: "ready-for-qa" }), via: "agent" });
+    expect(r).toMatchObject({ status: "rejected", reason: "agent-handoff" });
+  });
+
   it("stores a non-database error as a rejection", async () => {
     const broken = { ...w.d, tx: async () => { throw new TypeError("boom"); }, query: w.d.query };
     const [r] = await applyOps(broken as any, "p", [{ op_id: "TE", ...item("I1") } as any], { handle: "alice" });

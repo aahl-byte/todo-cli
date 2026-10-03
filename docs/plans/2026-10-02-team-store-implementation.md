@@ -323,10 +323,10 @@ Nobody is notified about their own action.
   1. links the store into `~/.todo` first if it isn't already linked
   2. writes `.sync/config.json`
   3. creates the server project if it is missing
-  4. pulls from 0, adopting the server's state. Every pulled entity goes into
-     the snapshot with its data and versions. A local file with the same uid is
-     kept as it is, so the next diff pushes its differences on top of the
-     server versions. Server entities with no local file are written.
+  4. pulls from 0, adopting the server's state. Every pulled entity is written
+     locally, including over a local file with the same uid: a clone being
+     linked is assumed to be behind the server, so it can't push stale values
+     over newer edits. Local entities the server lacks are pushed next.
   5. pushes
 - `.sync/config.json` also caches the project's `deploy_step`. When it is
   off, `approve` goes to `done`.

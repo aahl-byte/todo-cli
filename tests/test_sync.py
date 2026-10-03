@@ -655,3 +655,134 @@ def test_a_held_status_keeps_its_provisional_history_until_it_lands(pair, server
     rnd(a, server, "alice")
     op = next(op for op in server.pushes[-1] if op["op"] == "set")
     assert op["via"] == "agent"
+
+
+# ── regressions from the final validation ────────────────────────────────────
+def test_one_malformed_tasks_file_does_not_stop_sync(pair, server):
+    a, b = pair
+    run_cli(b, ["add", "Other"])
+    rnd(b, server, "bob")
+    (a / "OPEN" / "login-bug" / "phase-1" / "TASKS.yaml").write_text("tasks:\n  - id: [oops\n")
+    report = rnd(a, server, "alice")
+    assert report.error is None
+    assert (a / "OPEN" / "other").is_dir()
+
+
+def test_a_refused_batch_is_split_and_the_bad_op_parked(pair, server, monkeypatch):
+    a, _ = pair
+    run_cli(a, ["note", "login-bug", "fine"])
+    run_cli(a, ["note", "login-bug", "poison"])
+    client = server.client("alice")
+    real = client.push
+
+    def picky(project, ops):
+        if any(op["entity"] == "note" and "poison" in op["data"].get("text", "") for op in ops):
+            raise remote.RemoteError("400 bad op", 400)
+        return real(project, ops)
+
+    client.push = picky
+    report = sync.run_round(a, client)
+    assert report.error is None
+    texts = {r.get("text") for r in server.rows.values() if r["_entity"] == "note"}
+    assert "fine" in texts and "poison" not in texts
+    assert sync.load_outbox(a) == []
+    assert any("refused by the server (400)" in m for m in report.messages)
+    assert sync.run_round(a, client).error is None
+
+
+def test_integer_uids_in_files_are_read_as_strings(pair):
+    a, _ = pair
+    f = a / "OPEN" / "login-bug" / "phase-1" / "TASKS.yaml"
+    import re
+    f.write_text(re.sub(r"uid: [^,}]+", "uid: 42", f.read_text()))
+    assert store.resolve_item(a, "login-bug")["tasks"][0]["uid"] == "42"
+
+
+def test_groups_stay_in_one_batch(monkeypatch):
+    monkeypatch.setattr(sync, "BATCH", 2)
+    ops = [{"op_id": str(i), "uid": str(i), "op": "set", "entity": "item", "item_uid": "x", "data": {}} for i in range(3)]
+    ops[1]["group"] = ops[2]["group"] = "g"
+    batches = sync._batches(ops)
+    assert [[op["op_id"] for op in b] for b in batches] == [["0"], ["1", "2"]]
+
+
+def test_pulled_delete_lands_when_the_item_also_moved_folder(pair, server):
+    a, b = pair
+    run_cli(b, ["defer", "login-bug"])
+    run_cli(b, ["unnote", "login-bug", "1"])
+    rnd(b, server, "bob")
+    report = rnd(a, server, "alice")
+    assert (a / "DEFERRED" / "login-bug").is_dir()
+    assert item(a)["notes"] == []
+    assert not any("removed" in m for m in report.messages)
+
+
+def test_adopt_takes_the_server_value_over_a_stale_clone(tmp_path, server):
+    a, b = make(tmp_path, "a", server), make(tmp_path, "b", server)
+    run_cli(a, ["add", "Login"])
+    import shutil
+    shutil.copytree(a / "OPEN", b / "OPEN")        # b is a clone made before the next edit
+    rnd(a, server, "alice")
+    run_cli(a, ["start", "login"])
+    rnd(a, server, "alice")
+    rnd(b, server, "bob", adopt=True)
+    assert item(b, "login")["status"] == "in-progress"
+    assert server.rows[item(a, "login")["uid"]]["status"] == "in-progress"
+
+
+def test_the_cursor_survives_a_pull_that_fails_midway(pair, server, monkeypatch):
+    a, b = pair
+    for i in range(3):
+        run_cli(b, ["note", "login-bug", f"n{i}"])
+    rnd(b, server, "bob")
+    client = server.client("alice")
+    real = client.changes
+    calls = []
+
+    def one_page_then_fail(project, since, limit=500):
+        calls.append(since)
+        if len(calls) > 1:
+            raise remote.RemoteError("timed out")
+        return real(project, since, 1)
+
+    client.changes = one_page_then_fail
+    before = sync.load_snapshot(a)["cursor"]
+    sync.run_round(a, client)
+    assert sync.load_snapshot(a)["cursor"] > before
+
+
+def test_relinking_to_another_project_starts_fresh(pair, server, monkeypatch):
+    a, _ = pair
+    from todo import cli
+    sync.save_outbox(a, [{"op_id": "x"}])
+    monkeypatch.setattr(remote, "token_for", lambda url: "t")
+
+    class FakeRemote:
+        def __init__(self, *a, **k):
+            pass
+
+        def ensure_project(self, key):
+            return {"deploy_step": True}
+
+    monkeypatch.setattr(remote, "Remote", FakeRemote)
+    monkeypatch.setattr(sync, "run_round", lambda root, rem, adopt=False: sync.Report())
+    args = type("A", (), {"remote": "http://fake", "project": "other", "name": None})()
+    cli._link_remote(a.parent, args)
+    assert not (a / ".sync" / "snapshot.json").exists()
+    assert sync.load_outbox(a) == []
+
+
+def test_notes_keep_their_authors_via(pair, server, monkeypatch):
+    a, _ = pair
+    run_cli(a, ["--human", "note", "login-bug", "by a person"])
+    monkeypatch.setenv("TODO_VIA", "agent")
+    rnd(a, server, "alice")
+    op = next(op for op in server.pushes[-1] if op["entity"] == "note")
+    assert op["via"] == "human"
+
+
+def test_config_with_tokens_is_private(tmp_path, monkeypatch):
+    from todo import identity
+    monkeypatch.setattr(identity.Path, "home", classmethod(lambda cls: tmp_path))
+    remote.save_login("http://x", "alice", "secret")
+    assert (identity.config_path().stat().st_mode & 0o777) == 0o600

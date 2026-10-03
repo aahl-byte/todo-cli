@@ -8,6 +8,9 @@ describe("action helpers", () => {
     expect(safeNext("//evil.example/x")).toBe("/");
     expect(safeNext("/\\evil.example")).toBe("/");
     expect(safeNext("https://evil.example")).toBe("/");
+    expect(safeNext("/\t/evil.example/x")).toBe("/");
+    expect(safeNext("/%09/evil.example")).toBe("/%09/evil.example");
+    expect(safeNext("/p/web?x=1#n-2")).toBe("/p/web?x=1#n-2");
   });
 
   it("lets people post only plain note kinds", () => {

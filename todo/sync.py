@@ -142,37 +142,44 @@ def ensure_uids(root: Path, project: str) -> None:
             uid = _hash_uid(project, d.name, to_str(meta.get("created")))
             meta["uid"] = uid
             yamlio.save(y, d / store.ITEM_FILE, meta)
-        tasks = store._read_tasks(d)
-        if any(not t.get("uid") for t in tasks):
-            seen: dict = {}
-            fixed = []
-            for t in tasks:
-                t = dict(t)
-                if not t.get("uid"):
-                    k = t["title"]
-                    seen[k] = seen.get(k, 0) + 1
-                    t["uid"] = _hash_uid(uid, "task", t["title"], seen[k])
-                fixed.append(t)
-            store._write_tasks(d, tasks, fixed)
-        for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
-            for e in store._read_entries(d / sub):
-                if e["meta"].get("uid"):
-                    continue
-                meta2 = dict(e["meta"])
-                meta2["uid"] = _hash_uid(uid, entity, e["ts"],
-                                         hashlib.sha1(e["text"].encode()).hexdigest())
-                if entity == "note":
-                    meta2.setdefault("kind", "context")
-                yamlio.write_atomic(e["file"], frontmatter.join(meta2, e["text"] + "\n"))
-        checks = store._read_checks(d)
-        if any(not c.get("uid") for c in checks):
-            seen_checks: dict = {}
-            for c in checks:
-                if not c.get("uid"):
-                    k = (c["title"], c["kind"])
-                    seen_checks[k] = seen_checks.get(k, 0) + 1
-                    c["uid"] = _hash_uid(uid, "check", c["title"], c["kind"], seen_checks[k])
-            _write_checks(d, checks)
+        try:
+            _backfill_children(d, uid)
+        except Exception:  # noqa: BLE001 — a malformed child file: scan marks the item incomplete
+            continue
+
+
+def _backfill_children(d: Path, uid: str) -> None:
+    tasks = store._read_tasks(d)
+    if any(not t.get("uid") for t in tasks):
+        seen: dict = {}
+        fixed = []
+        for t in tasks:
+            t = dict(t)
+            if not t.get("uid"):
+                k = t["title"]
+                seen[k] = seen.get(k, 0) + 1
+                t["uid"] = _hash_uid(uid, "task", t["title"], seen[k])
+            fixed.append(t)
+        store._write_tasks(d, tasks, fixed)
+    for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
+        for e in store._read_entries(d / sub):
+            if e["meta"].get("uid"):
+                continue
+            meta2 = dict(e["meta"])
+            meta2["uid"] = _hash_uid(uid, entity, e["ts"],
+                                     hashlib.sha1(e["text"].encode()).hexdigest())
+            if entity == "note":
+                meta2.setdefault("kind", "context")
+            yamlio.write_atomic(e["file"], frontmatter.join(meta2, e["text"] + "\n"))
+    checks = store._read_checks(d)
+    if any(not c.get("uid") for c in checks):
+        seen_checks: dict = {}
+        for c in checks:
+            if not c.get("uid"):
+                k = (c["title"], c["kind"])
+                seen_checks[k] = seen_checks.get(k, 0) + 1
+                c["uid"] = _hash_uid(uid, "check", c["title"], c["kind"], seen_checks[k])
+        _write_checks(d, checks)
 
 
 def _write_checks(item_dir: Path, checks: list) -> None:
@@ -194,6 +201,7 @@ class Local:
     files: dict = field(default_factory=dict)       # note/log/history uid → file
     incomplete: set = field(default_factory=set)    # item uids not fully read
     history: dict = field(default_factory=dict)     # item uid → provisional entries
+    via: dict = field(default_factory=dict)         # note/log uid → who wrote it (human/agent)
 
 
 def _flatten(entity: str, data: dict) -> dict:
@@ -272,11 +280,15 @@ def scan(root: Path) -> Local:
                         flat[f"meta.{k}"] = _plain(v)
                 local.entities[m["uid"]] = {"entity": "note", "item_uid": uid, "data": flat}
                 local.files[m["uid"]] = e["file"]
+                if m.get("via"):
+                    local.via[m["uid"]] = m["via"]
             for e in store._read_entries(d / store.LOG_DIR):
                 if e["meta"].get("uid"):
                     local.entities[e["meta"]["uid"]] = {"entity": "log", "item_uid": uid, "data": {
                         "n": e["id"], "ts": e["ts"], "text": e["text"]}}
                     local.files[e["meta"]["uid"]] = e["file"]
+                    if e["meta"].get("via"):
+                        local.via[e["meta"]["uid"]] = e["meta"]["via"]
             for c in store._read_checks(d):
                 if c.get("uid"):
                     local.entities[c["uid"]] = {"entity": "check", "item_uid": uid, "data": {
@@ -334,7 +346,10 @@ def diff(local: Local, snap: dict) -> list:
             if entity == "item" and local.history.get(uid):
                 body["history"] = [_history_entry(h) for h in local.history[uid]]
             key = "item-create" if entity == "item" else "child-create"
-            buckets[key].append(_op("create", entity, uid, e["item_uid"], data=body, _fp=_fingerprint(data)))
+            op = _op("create", entity, uid, e["item_uid"], data=body, _fp=_fingerprint(data))
+            if uid in local.via:
+                op["via"] = local.via[uid]       # the author's, not this session's
+            buckets[key].append(op)
             continue
         changed = _set_fields(entity, data, s["data"])
         if not changed:
@@ -436,19 +451,79 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     return report
 
 
+BATCH_BYTES = 1_000_000          # well under Vercel's 4.5 MB request limit
+
+
+def _wire(op: dict) -> dict:
+    return {k: v for k, v in op.items() if not k.startswith("_")}
+
+
+def _batches(ops: list) -> list:
+    """Split ops into pushes of at most BATCH ops and BATCH_BYTES, never
+    separating the members of a group."""
+    units, groups = [], {}
+    for op in ops:
+        g = op.get("group")
+        if g and g in groups:
+            groups[g].append(op)
+            continue
+        unit = [op]
+        if g:
+            groups[g] = unit
+        units.append(unit)
+    out, cur, size = [], [], 0
+    for unit in units:
+        n = sum(len(json.dumps(_wire(op))) for op in unit)
+        if cur and (len(cur) + len(unit) > BATCH or size + n > BATCH_BYTES):
+            out.append(cur)
+            cur, size = [], 0
+        cur += unit
+        size += n
+    if cur:
+        out.append(cur)
+    return out
+
+
+# Push refusals that will not change on a retry of the same batch.
+REFUSED = {400, 404, 409, 413, 422}
+
+
 def _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status,
           replay: bool = False) -> None:
     """Push `ops` in batches. Each batch sits in the outbox until its results
-    are recorded, so a lost response is replayed with the same op ids."""
-    pending = list(ops)
+    are recorded, so a lost response is replayed with the same op ids. A batch
+    the server refuses outright is split until the offending op is found; that
+    op is parked so it can't wedge the outbox."""
+    pending = _batches(ops)
     while pending:
-        batch, rest = pending[:BATCH], pending[BATCH:]
-        save_outbox(root, pending)
-        results = remote.push(project, [{k: v for k, v in op.items() if not k.startswith("_")} for op in batch])
+        batch = pending.pop(0)
+        save_outbox(root, [op for b in [batch] + pending for op in b])
+        try:
+            results = remote.push(project, [_wire(op) for op in batch])
+        except RemoteError as e:
+            if e.status not in REFUSED:
+                raise
+            if len(batch) > 1 and not all(op.get("group") and op.get("group") == batch[0].get("group") for op in batch):
+                half = len(batch) // 2
+                pending[:0] = [batch[:half], batch[half:]]
+                continue
+            for op in batch:
+                _park(root, op, local, snap, report, f"refused by the server ({e.status})")
+            save_snapshot(root, snap)
+            continue
         _handle_results(root, batch, results, local, snap, report, rejected_fields, pushed_status, replay)
         save_snapshot(root, snap)
-        pending = rest
     save_outbox(root, [])
+
+
+def _park(root, op, local, snap, report, why: str) -> None:
+    if op.get("_fp"):
+        snap.setdefault("stuck", {})[op["uid"]] = op["_fp"]
+    item_id = _item_id(local, op["item_uid"])
+    text = f'{op["op"]} {op["entity"]} not applied ({why})'
+    report.messages.append(f"{item_id}: {text}")
+    if item_id:
+        store.add_log(root, item_id, "sync: " + text, _now())
 
 
 def _still_local(local: Local, op: dict) -> bool:
@@ -625,7 +700,10 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         _write_entity(root, local, entity, uid, op["item_uid"], server_flat(entity, row), row)
         report.messages.append(f"{item_id}: {what}: the server already had it; took the server's copy")
         return
-    if reason == "removed" and op["op"] == "set":
+    if reason == "removed" and op["op"] == "remove":
+        snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
+        return
+    if reason == "removed" and op["op"] in ("set", "create"):
         snap["entities"].pop(uid, None)
         _delete_local(local, entity, uid, op["item_uid"])
         text = f"{what} not applied; {r.get('by') or 'someone'} removed it"
@@ -723,6 +801,7 @@ def _pull(root, remote, project, snap, report, before: Local, rejected_fields, a
             report.pulled += 1
         _retry_deferred(root, snap, now, rejected_fields)
         snap["cursor"] = page.get("cursor", snap["cursor"])
+        save_snapshot(root, snap)
         if not page.get("more"):
             break
 
@@ -793,9 +872,6 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
         cur = _fresh(now, entity, uid)
     except Exception:  # noqa: BLE001 — an unreadable item file: retry once it's fixed
         return False
-    if adopt and uid in now.entities:
-        ents[uid] = {"entity": entity, "item_uid": item_uid, "data": flat, "versions": versions}
-        return True
     read = before.entities.get(uid, {}).get("data")
     old = ents.get(uid)
     keep = set()
@@ -820,7 +896,11 @@ def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
                 snap_data.pop(k, None)
             if k in old.get("versions", {}):
                 snap_versions[k] = old["versions"][k]
-    if not _write_entity(root, now, entity, uid, item_uid, write, row):
+    try:
+        written = _write_entity(root, now, entity, uid, item_uid, write, row)
+    except Exception:  # noqa: BLE001 — a malformed local file: retry once it's fixed
+        return False
+    if not written:
         return False
     ents[uid] = {"entity": entity, "item_uid": item_uid, "data": snap_data, "versions": snap_versions}
     _undefer(snap, uid)
@@ -936,8 +1016,12 @@ def _write_item(root, now: Local, uid, flat, row) -> bool:
         if not _same(_plain(meta.get(k)), v):
             meta[k] = v
     yamlio.save(y, d / store.ITEM_FILE, meta)
-    d = store._place(d, flat["status"])
-    now.item_dirs[uid] = d
+    moved = store._place(d, flat["status"])
+    if moved != d:
+        for k, f in list(now.files.items()):
+            if d in f.parents:
+                now.files[k] = moved / f.relative_to(d)
+    now.item_dirs[uid] = moved
     return True
 
 

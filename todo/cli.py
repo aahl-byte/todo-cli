@@ -448,6 +448,11 @@ def _link_remote(repo: Path, args) -> None:
         project = rem.ensure_project(key)
     except remote.RemoteError as e:
         die(f"Could not reach the server: {e}", 1)
+    old = remote.sync_config(root)
+    if old and (old["url"].rstrip("/") != url or old["project"] != key):
+        # A different server or project: what we knew about the old one is moot.
+        for name in (sync.SNAPSHOT_FILE, sync.OUTBOX_FILE):
+            (remote.sync_dir(root) / name).unlink(missing_ok=True)
     remote.save_sync_config(root, {"url": url, "project": key,
                                    "deploy_step": project.get("deploy_step", True)})
     with sync.locked(root):

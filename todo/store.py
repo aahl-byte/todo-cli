@@ -176,7 +176,7 @@ def _read_tasks(item_dir: Path) -> list:
         doc = yamlio.read(d / TASKS_FILE)
         raw = doc.get("tasks") if isinstance(doc, dict) else None
         tasks = [
-            {"id": int(t["id"]), "uid": t.get("uid"), "title": to_str(t.get("title")),
+            {"id": int(t["id"]), "uid": to_str(t.get("uid")) or None, "title": to_str(t.get("title")),
              "status": to_str(t.get("status")) or "todo", "phase": phase}
             for t in (raw or []) if isinstance(t, dict) and t.get("id") is not None
         ]
@@ -192,7 +192,7 @@ def _read_checks(item_dir: Path) -> list:
     doc = yamlio.read(f)
     raw = doc.get("checks") if isinstance(doc, dict) else None
     return [
-        {"id": int(c["id"]), "uid": c.get("uid"), "kind": to_str(c.get("kind")) or "other",
+        {"id": int(c["id"]), "uid": to_str(c.get("uid")) or None, "kind": to_str(c.get("kind")) or "other",
          "title": to_str(c.get("title")),
          "payload": to_str(c.get("payload")) if c.get("payload") is not None else None,
          "timing": to_str(c.get("timing")) or "pre-deploy",

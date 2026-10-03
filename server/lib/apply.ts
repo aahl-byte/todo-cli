@@ -136,12 +136,12 @@ async function applyUnit(db: Db, project: string, unit: Op[], actor: Actor): Pro
   }
 }
 
-/** Everything except a known-transient failure recurs on retry: connection
- * loss (08), serialization or deadlock (40), resources (53), shutdown (57), and
- * the driver's own socket errors. */
+/** Failures that recur on every retry: bad data (22), constraint violations
+ * (23), bad SQL or names (42), and type errors from a malformed op. Anything
+ * else — a dropped connection, a deadlock — fails the request so it is retried. */
 function deterministic(e: unknown): boolean {
   const code = String((e as { code?: unknown })?.code ?? "");
-  return !/^(08|40|53|57)/.test(code) && !/^E(CONN|PIPE|TIMEDOUT|HOSTUNREACH|NETUNREACH)/.test(code);
+  return /^(22|23|42)/.test(code) || e instanceof TypeError || e instanceof RangeError;
 }
 
 function isRejected(r: Result): boolean {
@@ -259,6 +259,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   for (const f of Object.keys(row)) {
     if (row[f] !== undefined && row[f] !== null && invalid(entity, f, row[f])) return reject(op, `invalid-${f}`);
   }
+  if (entity === "item" && row.status === "ready-for-qa" && op.via === "agent") return reject(op, "agent-handoff");
   const result: Result = { op_id: op.op_id, status: "applied" };
 
   let itemUid = op.item_uid;

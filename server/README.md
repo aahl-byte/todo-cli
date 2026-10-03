@@ -43,8 +43,9 @@ design; there are no per-project roles.
 - **Register a webhook** in Jira (System → Webhooks) for issue created, issue
   updated and comment created, pointed at
   `https://<host>/api/jira/webhook?secret=<JIRA_WEBHOOK_SECRET>`.
-- **Link people:** `npm run user:add -- <handle> --jira <accountId>`. Unmatched
-  Jira users show up as `jira:<Display Name>`.
+- **Link people:** `npm run user:jira -- <handle> <accountId>` for an existing
+  user (their token is kept), or `user:add -- <handle> --jira <accountId>` when
+  creating one. Unmatched Jira users show up as `jira:<Display Name>`.
 
 The outbox flushes after every request. The cron in `vercel.json` retries
 daily, which Hobby plans allow; on Pro, set it to `*/5 * * * *`.

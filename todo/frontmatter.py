@@ -40,6 +40,8 @@ def split(text: str) -> tuple:
         return {}, text
     if not isinstance(meta, dict) or not any(k in meta for k in _KEYS):
         return {}, text
+    if meta.get("uid") is not None:
+        meta["uid"] = str(meta["uid"])
     return meta, text[end + len(_FENCE) + 2:]
 
 

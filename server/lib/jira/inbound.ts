@@ -48,7 +48,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   const issue = payload?.issue;
   if (!issue?.key) return { handled: false, reason: "no issue" };
   const [link] = await db.query(
-    `select l.item_uid, l.last_event_at, i.status, i.project, p.jira_status_map from jira_links l
+    `select l.item_uid, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map from jira_links l
        join items i on i.uid = l.item_uid join projects p on p.key = i.project
       where l.jira_key = $1`, [issue.key]);
 
@@ -63,7 +63,10 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   const cfg = jiraConfig();
   const own = cfg ? await ownAccountId(cfg, opts.fetchImpl) : null;
   if (event === "jira:issue_updated") {
-    if (own && payload.user?.accountId === own) return { handled: false, reason: "own change" };
+    if (own && payload.user?.accountId === own) {
+      await stamp(db, link, payload);
+      return { handled: false, reason: "own change" };
+    }
     // Without knowing our own account, a late echo of our transition could roll
     // the item back; ask Jira to redeliver once the account is known.
     const statusChange = (payload.changelog?.items ?? []).some((x: any) => x.field === "status");
@@ -106,11 +109,13 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
                        suffix = ""): Promise<InboundResult> {
   const items: any[] = payload.changelog?.items ?? [];
   const data: Record<string, unknown> = {};
-  if (items.some((x) => x.field === "assignee")) data.developer = await handleFor(db, issue.fields?.assignee);
-  // A redelivered older event must not undo a newer status from Jira.
+  // A redelivered older event must not undo a newer change from Jira.
   const at = Number(payload.timestamp) || null;
-  const stale = at !== null && link.last_event_at != null && at < Number(link.last_event_at);
-  const status = stale ? undefined : items.find((x) => x.field === "status");
+  const older = (last: unknown) => at !== null && last != null && at < Number(last);
+  if (items.some((x) => x.field === "assignee") && !older(link.last_assignee_at)) {
+    data.developer = await handleFor(db, issue.fields?.assignee);
+  }
+  const status = older(link.last_event_at) ? undefined : items.find((x) => x.field === "status");
   if (status) {
     const jiraStatus = String((Object.hasOwn(status, "toString") ? status.toString : null) ?? issue.fields?.status?.name ?? "");
     const map: Record<string, string> = link.jira_status_map ?? {};
@@ -119,18 +124,32 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
     const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
     if (todo && !echo) data.status = todo;
   }
-  if (!Object.keys(data).length) return { handled: false, reason: "nothing to apply" };
+  if (!Object.keys(data).length) {
+    await stamp(db, link, payload);
+    return { handled: false, reason: "nothing to apply" };
+  }
   const id = payload.changelog?.id ?? deliveryId ?? `${issue.key}:${payload.timestamp ?? nowIso()}`;
   const op: Op = { op_id: `jira:update:${id}${suffix}`, op: "set", entity: "item", uid: link.item_uid, item_uid: link.item_uid, data };
   const actor = await bridgeActor(db, payload.user);
   const results = await applyOps(db, link.project, [op], actor);
-  if (status && at !== null) {
-    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1",
-      [link.item_uid, at]);
-  }
+  await stamp(db, link, payload);
   const blocked = results[0].rejected?.find((x) => x.field === "status");
   if (blocked && !results[0].duplicate) await gated(db, link, issue.key, String(data.status), blocked.reason, actor, String(id));
   return { handled: true, results };
+}
+
+/** Record how far each field's events have come, applied or ignored, so an
+ * older redelivery can't land after them. */
+async function stamp(db: Db, link: any, payload: any): Promise<void> {
+  const at = Number(payload?.timestamp) || null;
+  if (at === null) return;
+  const items: any[] = payload.changelog?.items ?? [];
+  if (items.some((x) => x.field === "status")) {
+    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1", [link.item_uid, at]);
+  }
+  if (items.some((x) => x.field === "assignee")) {
+    await db.query("update jira_links set last_assignee_at = greatest(coalesce(last_assignee_at, 0), $2) where item_uid = $1", [link.item_uid, at]);
+  }
 }
 
 /** Jira moved the issue somewhere todo refused (the deploy gate): say so on both sides. */

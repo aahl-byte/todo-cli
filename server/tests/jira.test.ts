@@ -381,3 +381,35 @@ describe("third pass", () => {
     expect((await w.d.query("select status from items"))[0].status).toBe("in-qa");
   });
 });
+
+describe("final pass", () => {
+  const assign = (who: string | null, id: string, timestamp: number) => ({ webhookEvent: "jira:issue_updated", timestamp,
+    issue: issue({ assignee: who ? { accountId: who } : null }), user: { accountId: "acc-qa" },
+    changelog: { id, items: [{ field: "assignee" }] } });
+
+  it("ignores an older assignee event", async () => {
+    await w.d.query("update users set jira_account_id = 'acc-carol' where handle = 'carol'");
+    await linkedItem();
+    await hook(assign("acc-carol", "a2", 2000));
+    await hook(assign("acc-bob", "a1", 1000));
+    expect((await w.d.query("select developer from items"))[0].developer).toBe("carol");
+  });
+
+  it("advances the status clock even for ignored own changes", async () => {
+    await linkedItem();
+    const ev = (name: string, id: string, timestamp: number, user: string) => ({ webhookEvent: "jira:issue_updated", timestamp,
+      issue: issue({ status: { name } }), user: { accountId: user }, changelog: { id, items: [{ field: "status", toString: name }] } });
+    await hook(ev("In QA", "own", 2000, "acc-bot"));
+    await hook(ev("In Progress", "late", 1000, "acc-qa"));
+    expect((await w.d.query("select status from items"))[0].status).toBe("requested");
+  });
+
+  it("keeps smart links, emoji, dates and status lozenges from ADF", () => {
+    const doc = { type: "doc", content: [{ type: "paragraph", content: [
+      { type: "text", text: "See " }, { type: "inlineCard", attrs: { url: "https://github.com/acme/pr/1" } },
+      { type: "text", text: " " }, { type: "emoji", attrs: { shortName: ":tada:", text: "🎉" } },
+      { type: "text", text: " by " }, { type: "date", attrs: { timestamp: "1790985600000" } },
+      { type: "text", text: " " }, { type: "status", attrs: { text: "BLOCKED" } }] }] };
+    expect(adfToText(doc)).toBe("See https://github.com/acme/pr/1 🎉 by 2026-10-03 BLOCKED");
+  });
+});

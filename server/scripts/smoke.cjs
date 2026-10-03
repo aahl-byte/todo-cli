@@ -34,7 +34,7 @@ const errors = [];
     }
   });
   await step("sign-in refuses an off-site redirect", async () => {
-    await page.goto(base + "/login?next=//example.org/x");
+    await page.goto(base + "/login?next=/%09/example.org/x");
     await page.fill('input[name=handle]', "dev");
     await page.fill('input[name=token]', tokens.dev);
     await page.click("button.primary");

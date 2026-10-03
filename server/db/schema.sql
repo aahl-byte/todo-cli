@@ -183,3 +183,4 @@ begin
 end $$;
 
 alter table jira_links add column if not exists last_event_at bigint;
+alter table jira_links add column if not exists last_assignee_at bigint;

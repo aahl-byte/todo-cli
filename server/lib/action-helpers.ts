@@ -14,7 +14,13 @@ export const POSTABLE_KINDS = ["context", "comment", "clarification"];
 
 /** A same-site path to go to after sign-in, never another origin. */
 export function safeNext(next: string): string {
-  return /^\/(?![/\\])/.test(next) ? next : "/";
+  if (!next.startsWith("/") || /[\u0000-\u0020\\]/.test(next)) return "/";
+  try {
+    const u = new URL(next, "http://here.invalid");
+    return u.origin === "http://here.invalid" ? u.pathname + u.search + u.hash : "/";
+  } catch {
+    return "/";
+  }
 }
 
 const REASONS: Record<string, string> = {

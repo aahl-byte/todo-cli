@@ -33,6 +33,7 @@ def save_config(data: dict) -> None:
     f.parent.mkdir(parents=True, exist_ok=True)
     y = yamlio.yaml()
     yamlio.save(y, f, data)
+    os.chmod(f, 0o600)              # it holds API tokens
 
 
 def user() -> str:

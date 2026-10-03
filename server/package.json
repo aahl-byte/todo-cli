@@ -13,7 +13,8 @@
     "test": "vitest run",
     "project:add": "tsx scripts/project-add.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "smoke": "node scripts/smoke.cjs"
+    "smoke": "node scripts/smoke.cjs",
+    "user:jira": "tsx scripts/user-jira.ts"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.0",

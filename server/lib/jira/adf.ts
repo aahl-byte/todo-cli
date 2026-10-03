@@ -21,6 +21,24 @@ export function adfToText(doc: unknown): string {
       out.push(n.attrs?.text ?? "@someone");
       return;
     }
+    if (n.type === "inlineCard" || n.type === "blockCard" || n.type === "embedCard") {
+      out.push(n.attrs?.url ?? "");
+      if (n.type !== "inlineCard") out.push("\n\n");
+      return;
+    }
+    if (n.type === "emoji") {
+      out.push(n.attrs?.text ?? n.attrs?.shortName ?? "");
+      return;
+    }
+    if (n.type === "date") {
+      const ms = Number(n.attrs?.timestamp);
+      out.push(Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : "");
+      return;
+    }
+    if (n.type === "status") {
+      out.push(n.attrs?.text ?? "");
+      return;
+    }
     if (n.type === "bulletList" || n.type === "orderedList") {
       (n.content ?? []).forEach((li, i) => {
         out.push(n.type === "bulletList" ? "- " : `${i + 1}. `);
