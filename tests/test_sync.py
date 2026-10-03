@@ -953,3 +953,18 @@ def test_a_pulled_delete_waits_for_a_malformed_tasks_file(pair, server):
     rnd(a, server, "alice")
     assert item(a)["tasks"] == []
     assert [r for r in server.rows.values() if r["_entity"] == "task"] == []
+
+
+def test_a_pulled_note_delete_waits_for_an_unreadable_note_file(pair, server):
+    a, b = pair
+    run_cli(b, ["unnote", "login-bug", "1"])
+    rnd(b, server, "bob")
+    f = next((a / "OPEN" / "login-bug" / "notes").iterdir())
+    good = f.read_bytes()
+    f.write_bytes(b"\xff\xfe\x00bad")
+    rnd(a, server, "alice")
+    f.write_bytes(good)
+    rnd(a, server, "alice")
+    rnd(a, server, "alice")
+    assert item(a)["notes"] == []
+    assert [r for r in server.rows.values() if r["_entity"] == "note"] == []
