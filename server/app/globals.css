@@ -339,9 +339,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 @media (max-width: 1300px) { .column.empty-col { display: none; } }
 
 /* add controls, rail labels, the task glance */
-.plus { font-size: 39px; line-height: .6; font-weight: 300; padding: 0 2px; min-width: 28px; min-height: 28px; display: inline-grid; place-items: center; }
-.rail .label .plus { font-size: 39px; }
-.add .pl { font: 300 27px var(--mono); line-height: .5; vertical-align: -6px; margin-right: 4px; letter-spacing: 0; }
+.plus { font-size: 26px; line-height: .6; font-weight: 300; padding: 0 2px; min-width: 28px; min-height: 28px; display: inline-grid; place-items: center; }
+.rail .label .plus { font-size: 26px; }
+.add .pl { font: 300 18px var(--mono); line-height: .5; vertical-align: -3px; margin-right: 4px; letter-spacing: 0; }
 .kv { grid-template-columns: 64px 1fr; }
 .kv .k { text-align: right; }
 .glance-block { display: grid; gap: 6px; justify-items: center; padding: 10px 0 2px; border: 0; background: none; width: 100%; cursor: pointer; }
