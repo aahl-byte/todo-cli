@@ -46,6 +46,7 @@ export interface Card extends Row {
   jira_key: string | null;
   last_via: string | null;
   last_to: string | null;
+  request_meta: { version: number; triaged: boolean } | null;
 }
 
 async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
@@ -57,6 +58,9 @@ async function cards(d: Db, key: string, where = "", params: unknown[] = []): Pr
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'pre-deploy' and c.status <> 'done') as pending_pre,
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'post-deploy' and c.status <> 'done') as pending_post,
        (select h.via from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_via,
+       (select jsonb_build_object('version', coalesce((n.meta->>'version')::int, 1), 'triaged', coalesce((n.meta->>'triaged')::boolean, false))
+          from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'ticket-request'
+          order by coalesce((n.meta->>'version')::int, 1) desc, n.n desc limit 1) as request_meta,
        (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to
      from items i left join jira_links l on l.item_uid = i.uid and l.project = i.project
      where i.project = $1 ${where}
@@ -126,7 +130,7 @@ export async function item(d: Db, key: string, id: string) {
       calc_status: deriveCalcStatus(tasks.map((t) => t.status)) ?? it.calc_status,
       blocked_from: it.status === "blocked" ? lastBlock?.from_status ?? null : null,
     },
-    request: by("ticket-request")[0] ?? null,
+    ...requestView(by("ticket-request"), it.status),
     questions: by("clarification"),
     comments: notes.filter((n) => n.kind === "comment" || n.kind === "qa-rejection"),
     notes: by("context"),
@@ -140,6 +144,24 @@ export async function item(d: Db, key: string, id: string) {
 }
 
 export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>>;
+
+const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
+const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
+
+/** The current request (highest version), every version newest first, the last
+ * triaged version, and whether the current one went past triage untriaged. */
+export function requestView(notes: Row[], status: string) {
+  const versions = [...notes].sort((a, b) => versionOf(b) - versionOf(a) || b.n - a.n);
+  const current = versions[0] ?? null;
+  const lastTriaged = versions.find((v) => v.meta?.triaged) ?? null;
+  const untriaged = !!current && PAST_TRIAGE.includes(status) && !current.meta?.triaged;
+  return {
+    request: current,
+    requestVersions: versions,
+    triagedVersion: lastTriaged ? versionOf(lastTriaged) : null,
+    untriaged,
+  };
+}
 
 export function bounceCount(history: Row[]): number {
   return history.filter((h) => h.from_status === "in-qa" && h.to_status === "in-progress").length;
@@ -175,13 +197,19 @@ export async function deployPlan(d: Db, key: string) {
     ? d.query("select c.*, i.id as item_id, i.title as item_title from checks c join items i on i.uid = c.item_uid and i.project = c.project where c.project = $2 and c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids, key])
     : [];
   const readyChecks = await checksFor(ready.map((r) => r.uid));
-  const group = (timing: string) => CHECK_KINDS.map((kind) => ({
-    kind,
-    checks: readyChecks.filter((c) => c.timing === timing && c.kind === kind).map((c): Row => ({
-      ...c,
-      warning: kind === "prereq-branch" && c.payload && ids.has(c.payload) && !complete.has(c.payload) ? "not deployed" : null,
-    })),
-  })).filter((g) => g.checks.length);
   const after = (await checksFor(deployed.map((r) => r.uid))).filter((c) => c.timing === "post-deploy" && c.status !== "done");
-  return { ready, pre: group("pre-deploy"), post: group("post-deploy"), afterDeploy: after };
+  const warn = (c: Row): Row => ({
+    ...c, warning: c.kind === "prereq-branch" && c.payload && ids.has(c.payload) && !complete.has(c.payload) ? "not deployed" : null,
+  });
+  const kindOrder = (c: Row) => CHECK_KINDS.indexOf(c.kind as (typeof CHECK_KINDS)[number]);
+  // Each ticket's checks: pre before post, then in the order a deploy runs them.
+  const byTicket = ready.map((it) => ({
+    item: it,
+    checks: readyChecks.filter((c) => c.item_uid === it.uid).map(warn)
+      .sort((a, b) => Number(a.timing !== "pre-deploy") - Number(b.timing !== "pre-deploy") || kindOrder(a) - kindOrder(b) || a.n - b.n),
+  }));
+  const afterByTicket = deployed
+    .map((it) => ({ item: it, checks: after.filter((c) => c.item_uid === it.uid) }))
+    .filter((t) => t.checks.length);
+  return { ready, afterDeploy: after, byTicket, afterByTicket };
 }

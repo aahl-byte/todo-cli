@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
 import type { ActionState } from "@/lib/action-helpers";
-import { COMPLETE, moves, PARKED, type Move } from "@/lib/model";
+import { COMPLETE, moves, PARKED, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import { Markdown } from "../Markdown";
 import { Composer } from "../Composer";
@@ -13,6 +13,7 @@ import { notify } from "../Toaster";
 import { Ago, EditableText, Led, Menu, Popup, Stamp } from "../ui";
 import { Tasks } from "./Tasks";
 import { Rail } from "./Rail";
+import { RequestView } from "./RequestView";
 
 type Row = Record<string, any>;
 export interface Ctx {
@@ -24,8 +25,6 @@ export interface Ctx {
   jiraBase: string | null;
   itemUid: string;
 }
-
-export const REQUEST_EDITABLE = ["requested", "in-triage"];
 
 /** Report a refused write in a toast, with the winning change's time local. */
 export function report(state: ActionState): boolean {
@@ -87,7 +86,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
     <div className="item" data-uid={it.uid}>
       <div className="item-main">
         <Header it={it} ctx={ctx} pendingPre={it.pending_pre} />
-        <Request data={data} ctx={ctx} focusRequest={focus === "request"} />
+        <RequestView data={data} ctx={ctx} focus={focus === "request"} />
         <MobileSummary data={data} ctx={ctx} />
         <div className="tabs" role="tablist">
           {tabs.map((t) => (
@@ -105,7 +104,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
           {tab === "log" && <Entries kind="log" rows={data.logs} ctx={ctx} focus={focus} />}
         </div>
       </div>
-      <aside className="rail wide-only"><Rail data={data} ctx={ctx} /></aside>
+      <aside className="rail wide-only"><Rail data={data} ctx={ctx} onTasks={() => setTab("tasks")} /></aside>
     </div>
   );
 }
@@ -116,9 +115,11 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
   const latest = useRef(it.versions);
   latest.current = it.versions;
   const [popup, setPopup] = useState<{ move: Move; versions: Row } | null>(null);
+  const [override, setOverride] = useState<{ versions: Row } | null>(null);
   const options = useMemo(() => moves(it.status, { deployStep: ctx.deployStep, hasQa: !!it.qa_assignee, previous: it.blocked_from }), [it, ctx.deployStep]);
 
   const pick = (to: string) => {
+    if (to === OTHER) { setOverride({ versions: pinned.current }); return; }
     const move = options.find((m) => m.status === to)!;
     if (move.comment || (to === "deployed" && pendingPre > 0)) {
       setPopup({ move, versions: pinned.current });
@@ -131,13 +132,13 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
     <div className="head">
       <Menu label="status" tip="status" onOpen={() => { pinned.current = it.versions; }}
             trigger={<><Led status={it.status} label /><span className="caret">▾</span></>}
-            options={options.map((m, i) => ({
+            options={[...options.map((m, i) => ({
               value: m.status,
               divider: i > 0 && options[i - 1].group !== m.group,
               label: <Led status={m.status} label />,
               hint: m.status === "deployed" && pendingPre > 0 ? `${pendingPre} checks pending`
                 : it.status === "blocked" && m.group === "next" ? "unblock" : undefined,
-            }))}
+            })), { value: OTHER, divider: true, label: <span className="faint">other…</span> }]}
             onPick={pick} />
       <h1 className="title">
         <EditableText value={it.title} label="title" onStart={() => { pinned.current = it.versions; }}
@@ -148,6 +149,13 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
                         return ok;
                       }} />
       </h1>
+      {override && (
+        <OverridePopup from={it.status} offered={options.map((m) => m.status)} onClose={() => setOverride(null)}
+                       onSubmit={async (to, reason) => {
+                         const r = await act.moveItem({ project: ctx.project, uid: it.uid, versions: override.versions, to, comment: reason, override: true });
+                         if (report(r)) setOverride(null);
+                       }} />
+      )}
       {popup && (
         <MovePopup move={popup.move} from={it.status} pendingPre={pendingPre} onClose={() => setPopup(null)}
                    onSubmit={async (comment, force) => {
@@ -156,6 +164,32 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
                    }} />
       )}
     </div>
+  );
+}
+
+const OTHER = "__other";
+
+/** Move anywhere outside the normal flow, with a reason that's kept. */
+function OverridePopup({ from, offered, onClose, onSubmit }: {
+  from: string; offered: string[]; onClose: () => void; onSubmit: (to: string, reason: string) => Promise<void>;
+}) {
+  const choices = STATUSES.filter((s) => s !== from && !offered.includes(s));
+  const [to, setTo] = useState<string>(choices[0] ?? "");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ok = !busy && !!to && !!reason.trim();
+  return (
+    <Popup title="Move outside the usual flow" onClose={onClose}>
+      <select value={to} aria-label="status" onChange={(e) => setTo(e.target.value)}>
+        {choices.map((s) => <option key={s} value={s}>{s}</option>)}
+      </select>
+      <textarea rows={3} value={reason} aria-label="reason" placeholder="Why (kept in history)" onChange={(e) => setReason(e.target.value)} />
+      <div className="actions">
+        <button type="button" className="btn" onClick={onClose}>Cancel</button>
+        <button type="button" className="btn danger" disabled={!ok}
+                onClick={async () => { setBusy(true); await onSubmit(to, reason); setBusy(false); }}>Move</button>
+      </div>
+    </Popup>
   );
 }
 
@@ -186,59 +220,6 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
         </button>
       </div>
     </Popup>
-  );
-}
-
-// ── request ───────────────────────────────────────────────────────────────────
-function Request({ data, ctx, focusRequest }: { data: Data; ctx: Ctx; focusRequest?: boolean }) {
-  const it = data.item;
-  const req = data.request;
-  const editable = REQUEST_EDITABLE.includes(it.status);
-  const [editing, setEditing] = useState<null | "edit" | "change">(null);
-  const [draft, setDraft] = useState(req?.text ?? "");
-  const [open, setOpen] = useState(false);
-  const pinned = useRef(req?.versions ?? {});
-  const long = (req?.text ?? "").split("\n").length > 6 || (req?.text ?? "").length > 600;
-
-  const start = (mode: "edit" | "change") => { pinned.current = req?.versions ?? {}; setDraft(req?.text ?? ""); setEditing(mode); };
-  const save = async () => {
-    const r = editing === "change"
-      ? await act.changeRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, versions: pinned.current, text: draft })
-      : await act.saveRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, versions: pinned.current, text: draft });
-    if (report(r)) setEditing(null);
-  };
-
-  if (editing === "edit") {
-    return (
-      <div className="request composer">
-        <textarea rows={6} value={draft} aria-label="request" autoFocus onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Escape") setEditing(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(); }} />
-        <div className="actions">
-          <button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button>
-          <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void save()}>Save</button>
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div id="request" className={`request ${long && !open ? "clamp" : ""} ${focusRequest ? "focus" : ""}`}>
-      {req && <Markdown text={req.text} />}
-      <div className="request-acts">
-        {long && <button type="button" className="more" onClick={() => setOpen((o) => !o)}>{open ? "less" : "more"}</button>}
-        {editable && <button type="button" className="add" onClick={() => start("edit")}>{req ? "✎ edit request" : "+ request"}</button>}
-        {!editable && <button type="button" className="add" onClick={() => start("change")}>{req ? "✎ change request" : "+ request"}</button>}
-      </div>
-      {editing === "change" && (
-        <Popup title="Change the request" onClose={() => setEditing(null)}>
-          <div className="faint">The item goes back to triage.</div>
-          <textarea rows={8} value={draft} aria-label="request" onChange={(e) => setDraft(e.target.value)} />
-          <div className="actions">
-            <button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button>
-            <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void save()}>Save and triage</button>
-          </div>
-        </Popup>
-      )}
-    </div>
   );
 }
 
@@ -282,7 +263,7 @@ export function AddBox({ label, placeholder, onAdd, users, uploads, children }: 
     setBusy(false);
     if (ok) { if (el) el.value = ""; setOpen(false); }
   };
-  if (!open) return <button type="button" className="add" onClick={() => setOpen(true)}>+ {label}</button>;
+  if (!open) return <button type="button" className="add" onClick={() => setOpen(true)}><span className="pl" aria-hidden="true">+</span>{label}</button>;
   return (
     <div ref={box} className="composer"
          onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(); } }}>

@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { moves, nowIso } from "./model";
+import { moves, nowIso, STATUSES } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -111,6 +111,21 @@ export function checkOps(itemUid: string, kind: string, title: string, payload: 
                                        timing: timing || "pre-deploy", status: "pending" })];
 }
 
+/** A move outside the normal flow: any status, with a required reason that is
+ * posted as a comment and kept on the history row. Server rules (the deploy
+ * gate, the agent hand-off) still apply. */
+function overrideOps(item: MoveItem, to: string, reason: string, opts: { me: string; force?: boolean }): Op[] {
+  if (!STATUSES.includes(to as any) || to === item.status) throw new Error(`Can't move to ${to}.`);
+  if (!reason) throw new Error("An override needs a reason.");
+  const data: Record<string, unknown> = { status: to };
+  if (to === "in-qa" && !item.qa_assignee) data.qa_assignee = opts.me;
+  const group = ulid();
+  return [
+    setOp("item", item, data, { group, override: true, reason, ...(opts.force ? { force: true } : {}) }),
+    createOp("note", item.uid, { kind: "comment", text: `status override → ${to}: ${reason}`, ts: nowIso() }, { group }),
+  ];
+}
+
 export interface MoveItem extends Ref {
   status: string;
   qa_assignee?: string | null;
@@ -120,12 +135,13 @@ export interface MoveItem extends Ref {
  * with the comment it asks for posted in the same group (a qa-rejection when
  * QA sends work back), and QA claimed by whoever moves it into QA. */
 export function moveOps(item: MoveItem, to: string, opts: {
-  me: string; comment?: string; force?: boolean; deployStep?: boolean; previous?: string | null;
+  me: string; comment?: string; force?: boolean; deployStep?: boolean; previous?: string | null; override?: boolean;
 }): Op[] {
   const ctx = { deployStep: opts.deployStep, hasQa: !!item.qa_assignee, previous: opts.previous };
+  const comment = (opts.comment ?? "").trim();
+  if (opts.override) return overrideOps(item, to, comment, opts);
   const move = moves(item.status, ctx).find((m) => m.status === to);
   if (!move) throw new Error(`Can't move from ${item.status} to ${to}.`);
-  const comment = (opts.comment ?? "").trim();
   if (move.comment === "required" && !comment) throw new Error("This move needs a comment.");
   const data: Record<string, unknown> = { status: to };
   if (to === "in-qa" && !item.qa_assignee) data.qa_assignee = opts.me;

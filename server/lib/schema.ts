@@ -130,6 +130,8 @@ create table if not exists status_history (
   by          text,
   via         text,
   forced      boolean not null default false,
+  override    boolean not null default false,
+  note        text,
   ts          text not null,
   primary key (project, uid),
   unique (project, item_uid, n),
@@ -177,6 +179,9 @@ create table if not exists jira_links (
   primary key (project, item_uid),
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
+
+alter table status_history add column if not exists override boolean not null default false;
+alter table status_history add column if not exists note text;
 
 create table if not exists jira_outbox (
   id              bigserial primary key,

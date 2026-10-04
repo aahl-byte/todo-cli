@@ -72,6 +72,19 @@ describe("inbound", () => {
     expect(fresh).toEqual({ developer: null, status: "in-qa" });
   });
 
+  it("posts a changed description as a new request version that goes back to triage", async () => {
+    const it = await linkedItem();
+    await w.one("alice", set("item", it.uid, it.uid, { status: "in-triage" }, { status: it.versions.status }));
+    const edit = (id: string) => hook({ webhookEvent: "jira:issue_updated", issue: issue({ description: adf("Steps: open Safari 18") }),
+                                        user: { accountId: "acc-pm" }, changelog: { id, items: [{ field: "description" }] } });
+    await edit("c1");
+    const notes = await w.d.query("select text, meta from notes where item_uid = $1 order by n", [it.uid]);
+    expect(notes.map((n) => [n.meta.version, n.text])).toEqual([[1, "Safari login fails\n\nSteps: open Safari"], [2, "Safari login fails\n\nSteps: open Safari 18"]]);
+    expect((await w.d.query("select status from items where uid = $1", [it.uid]))[0].status).toBe("requested");
+    await edit("c2");
+    expect((await w.d.query("select count(*)::int as n from notes where item_uid = $1", [it.uid]))[0].n).toBe(2);
+  });
+
   it("maps a shared Jira status to the earliest todo status and skips our own echo", async () => {
     const it = await linkedItem();
     const v = it.versions;

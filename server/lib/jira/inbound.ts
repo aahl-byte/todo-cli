@@ -125,18 +125,40 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
     const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
     if (todo && !echo) data.status = todo;
   }
-  if (!Object.keys(data).length) {
+  const request = items.some((x) => x.field === "description" || x.field === "summary") ? await changedRequest(db, link, issue) : null;
+  if (!Object.keys(data).length && !request) {
     await stamp(db, link, payload);
     return { handled: false, reason: "nothing to apply" };
   }
   const id = payload.changelog?.id ?? deliveryId ?? `${issue.key}:${payload.timestamp ?? nowIso()}`;
-  const op: Op = { op_id: `jira:update:${id}${suffix}`, op: "set", entity: "item", uid: link.item_uid, item_uid: link.item_uid, data };
+  const ops: Op[] = [];
+  if (Object.keys(data).length) {
+    ops.push({ op_id: `jira:update:${id}${suffix}`, op: "set", entity: "item", uid: link.item_uid, item_uid: link.item_uid, data });
+  }
+  // A new request version after the field changes, so its move back to
+  // `requested` wins over a status from the same event.
+  if (request) {
+    ops.push({ op_id: `jira:request:${id}`, op: "create", entity: "note", uid: jiraUid("request", `${issue.key}:${id}`),
+               item_uid: link.item_uid, data: { kind: "ticket-request", text: request, meta: { jira_key: issue.key }, source: "jira" } });
+  }
   const actor = await bridgeActor(db, payload.user);
-  const results = await applyOps(db, link.project, [op], actor);
+  const results = await applyOps(db, link.project, ops, actor);
   await stamp(db, link, payload);
   const blocked = results[0].rejected?.find((x) => x.field === "status");
   if (blocked && !results[0].duplicate) await gated(db, link, issue.key, String(data.status), blocked.reason, actor, String(id));
   return { handled: true, results };
+}
+
+/** The issue's request text, when it differs from the current version. */
+async function changedRequest(db: Db, link: any, issue: any): Promise<string | null> {
+  const f = issue.fields ?? {};
+  const summary = String(f.summary ?? issue.key);
+  const description = adfToText(f.description);
+  const text = description ? `${summary}\n\n${description}` : summary;
+  const [cur] = await db.query(
+    `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
+      order by coalesce((meta->>'version')::int, 1) desc, n desc limit 1`, [link.project, link.item_uid]);
+  return cur?.text === text ? null : text;
 }
 
 /** Record how far each field's events have come, applied or ignored, so an

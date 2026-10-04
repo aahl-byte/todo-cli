@@ -9,6 +9,9 @@ import { board, project, users, type BoardFilters as F, type Card } from "@/lib/
 
 type Search = Record<string, string | undefined>;
 
+const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
+const untriaged = (c: Card) => !!c.request_meta && !c.request_meta.triaged && PAST_TRIAGE.includes(c.status);
+
 function initials(h?: string | null) {
   return h ? h.replace(/^jira:/, "").split(/[\s._-]+/).map((p) => p[0]).join("").slice(0, 2).toUpperCase() : "";
 }
@@ -57,6 +60,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
                     {c.type === "bug" && <span className="tag bug">bug</span>}
                     {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
                     {c.open_questions > 0 && <span className="tag hot" data-tip="open questions">?{c.open_questions}</span>}
+                    {untriaged(c) && <span className="tag hot" data-tip="the request being worked on never went through triage">v{c.request_meta!.version} untriaged</span>}
                     {c.pending_pre > 0 && <span className="tag" data-tip="pending pre-deploy checks">checks {c.pending_pre}</span>}
                     {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
                     <Glance c={c} />

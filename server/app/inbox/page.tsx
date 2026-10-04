@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic";
 const WHAT: Record<string, string> = {
   mention: "mentioned you", "qa-rejection": "sent it back from QA", clarification: "asked a question",
   answer: "answered your question", "ready-for-qa": "handed you QA", deployed: "deployed your request",
+  "request-changed": "posted a new request version",
 };
 
 export default async function Inbox({ searchParams }: { searchParams: Promise<{ all?: string }> }) {

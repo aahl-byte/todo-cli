@@ -4,7 +4,7 @@
 // done), click-to-edit titles, and a phase chip that shows on hover.
 import { useRef, useState } from "react";
 import * as act from "@/app/item-actions";
-import { COMPLETE, deriveCalcStatus, PARKED } from "@/lib/model";
+import { COMPLETE, PARKED } from "@/lib/model";
 import { EditableText, Led, Menu } from "../ui";
 import { AddBox, report, Remove, type Ctx } from "./ItemView";
 
@@ -23,7 +23,6 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
     if (last && last.phase === t.phase) last.rows.push(t);
     else groups.push({ phase: t.phase, rows: [t] });
   }
-  const calc = deriveCalcStatus(tasks.map((t) => t.status));
   const anyFinished = tasks.some((t) => finished(t.status));
   const focusN = focus?.startsWith("t-") ? Number(focus.slice(2)) : null;
 
@@ -32,7 +31,6 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
       <AddTask ctx={ctx} lastPhase={groups.length ? groups[groups.length - 1].phase : null} />
       {tasks.length > 0 && (
         <div className="list-head">
-          {calc && <span tabIndex={0} data-tip={`from tasks: ${calc}`}><Led status={calc} /></span>}
           {anyFinished && (
             <button type="button" className="more right" onClick={() => { setShowDone((s) => !s); setPinnedPhase({}); }}>
               {showDone ? "hide done" : "show done"}

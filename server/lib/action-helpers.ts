@@ -32,7 +32,8 @@ const REASONS: Record<string, string> = {
   "group-rolled-back": "nothing was applied",
   removed: "it was removed",
   "no-item": "the item no longer exists",
-  "request-locked": "the request can only change while the item is requested",
+  "request-frozen": "this request version is frozen — post a new version",
+  "reason-required": "an override needs a reason",
 };
 
 export function describe(results: Result[]): ActionState {

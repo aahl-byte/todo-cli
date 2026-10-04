@@ -9,6 +9,7 @@ import { safeUrl } from "@/lib/url";
 import { Ago, Led, Menu, Popup } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
+import { Glance } from "./Glance";
 
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
@@ -16,7 +17,7 @@ const TYPES = ["feature", "bug", "refactor", "question"];
 const LINK_TAG: Record<string, string> = { pr: "PR", preview: "preview", "qa-handoff": "QA" };
 
 
-export function Rail({ data, ctx }: { data: Data; ctx: Ctx }) {
+export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: () => void }) {
   const it = data.item;
   const pinned = useRef(it.versions);
   const edit = (field: string, value: unknown) =>
@@ -33,6 +34,7 @@ export function Rail({ data, ctx }: { data: Data; ctx: Ctx }) {
   };
   return (
     <>
+      <Glance tasks={data.tasks} onOpen={() => onTasks?.()} />
       <section>
         <div className="label">People</div>
         <div className="kv">
@@ -183,8 +185,8 @@ function History({ rows, current, created }: { rows: Row[]; current: string; cre
       <div className="label">History</div>
       {shown.map((h, i) => (
         <div key={h.uid} tabIndex={0} className={`rrow ${i === 0 && h.to_status === current ? "dimmed" : ""}`}
-             data-tip={[h.by, h.via === "agent" ? "AI" : null, h.forced ? "forced" : null].filter(Boolean).join(" · ")}>
-          <Led status={h.to_status} label />
+             data-tip={[h.by, h.via === "agent" ? "AI" : null, h.forced ? "forced" : null, h.override ? "override" : null, h.note].filter(Boolean).join(" · ")}>
+          <Led status={h.to_status} label />{h.override && <span className="tag hot">override</span>}
           <Ago ts={h.ts} />
         </div>
       ))}

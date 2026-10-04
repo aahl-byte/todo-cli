@@ -18,7 +18,7 @@ export function TopBar({ handle, project, all }: { handle: string; project?: Pro
       ) : project && <span className="label proj">{project.name || project.key}</span>}
       {project && <Nav projectKey={project.key} deployStep={project.deploy_step} />}
       <span className="spacer" />
-      {project && <Link href={`/p/${project.key}/new`} className="add">+ request</Link>}
+      {project && <Link href={`/p/${project.key}/new`} className="add"><span className="pl" aria-hidden="true">+</span>request</Link>}
       <Live project={project?.key} cursor={project?.seq} />
       <details className="switcher user">
         <summary className="label">{handle}<span className="caret">▾</span></summary>

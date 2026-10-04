@@ -90,4 +90,6 @@ async function pgPool(url: string): Promise<Db> {
 
 export async function migrate(d: Db): Promise<void> {
   await d.exec(SCHEMA);
+  const { backfillRequestVersions } = await import("./apply");
+  await backfillRequestVersions(d);
 }

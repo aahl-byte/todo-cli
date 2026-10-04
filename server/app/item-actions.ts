@@ -9,7 +9,6 @@ import { db } from "@/lib/db";
 import { later } from "@/lib/http";
 import { flushJira } from "@/lib/jira/flush";
 import { markRead } from "@/lib/inbox";
-import { REQUEST_EDITABLE } from "@/lib/apply";
 import { LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
@@ -49,14 +48,14 @@ async function itemRow(d: Db, project: string, uid: string) {
 }
 
 export async function moveItem(a: { project: string; uid: string; versions: Versions; to: string;
-                                    comment?: string; force?: boolean }): Promise<ActionState> {
+                                    comment?: string; force?: boolean; override?: boolean }): Promise<ActionState> {
   const user = await requireUser();
   const d = await db();
   const cur = await itemRow(d, a.project, a.uid);
   if (!cur) return fail("No such item.");
   return apply(a.project, () => build.moveOps(
     { uid: a.uid, item_uid: a.uid, versions: a.versions, status: cur.status, qa_assignee: cur.qa_assignee },
-    a.to, { me: user.handle, comment: a.comment, force: a.force, deployStep: cur.deploy_step,
+    a.to, { me: user.handle, comment: a.comment, force: a.force, deployStep: cur.deploy_step, override: a.override,
             previous: cur.status === "blocked" ? cur.blocked_from : null }), user.handle, d);
 }
 
@@ -69,60 +68,17 @@ export async function editItem(a: { project: string; uid: string; versions: Vers
   return apply(a.project, [build.setOp("item", { uid: a.uid, versions: a.versions }, data)], user.handle);
 }
 
-/** Write the request while it's still being triaged; creates it when missing. */
+/** Edit the current request in place while it isn't frozen; otherwise post a
+ * new version, which sends the item back to requested. */
 export async function saveRequest(a: { project: string; itemUid: string; noteUid?: string | null;
-                                       versions?: Versions; text: string }) {
+                                       versions?: Versions; text: string; newVersion?: boolean }) {
   const user = await requireUser();
   const text = a.text.trim();
   if (!text) return fail("Write the request first.");
-  const ops = a.noteUid
+  const ops = a.noteUid && !a.newVersion
     ? [build.setOp("note", { uid: a.noteUid, item_uid: a.itemUid, versions: a.versions ?? {} }, { text })]
     : [build.createOp("note", a.itemUid, { kind: "ticket-request", text, ts: nowIso() })];
   return apply(a.project, ops, user.handle);
-}
-
-/** Change the request of an item already past triage: back to requested, the
- * edit, then into triage — so the change gets triaged. */
-export async function changeRequest(a: { project: string; itemUid: string; noteUid?: string | null; versions?: Versions; text: string }) {
-  const user = await requireUser();
-  const text = a.text.trim();
-  if (!text) return fail("Write the request first.");
-  const d = await db();
-  const cur = await itemRow(d, a.project, a.itemUid);
-  if (!cur) return fail("No such item.");
-  const fresh = async () => (await itemRow(d, a.project, a.itemUid))!.versions;
-  const item = { uid: a.itemUid, item_uid: a.itemUid };
-  // The note edit uses the versions the popup opened with, so a request someone
-  // else changed meanwhile is refused — checked before anything moves.
-  const noteVersions: Versions = a.versions ?? {};
-  if (a.noteUid) {
-    const [n] = await d.query("select versions from notes where uid = $1 and project = $2", [a.noteUid, a.project]);
-    if (n && n.versions?.text !== noteVersions.text) return fail("Someone changed the request meanwhile — reopen it to see their version.");
-  }
-  const moved = !REQUEST_EDITABLE.includes(cur.status);
-  if (moved) {
-    const r = await apply(a.project, [build.setOp("item", { ...item, versions: cur.versions }, { status: "requested" })], user.handle, d);
-    if (!r.ok) return r;
-  }
-  const edited = await saveRequestAs(a, text, noteVersions, user.handle, d);
-  if (!edited.ok) {
-    // Put the item back where it was rather than leave it waiting in requested.
-    if (moved) await apply(a.project, [build.setOp("item", { ...item, versions: await fresh() }, { status: cur.status })], user.handle, d);
-    return edited;
-  }
-  const status = (await itemRow(d, a.project, a.itemUid))!.status;
-  if (status === "requested") {
-    return apply(a.project, [build.setOp("item", { ...item, versions: await fresh() }, { status: "in-triage" })], user.handle, d);
-  }
-  return edited;
-}
-
-async function saveRequestAs(a: { project: string; itemUid: string; noteUid?: string | null }, text: string,
-                             versions: Versions, handle: string, d: Db) {
-  const ops = a.noteUid
-    ? [build.setOp("note", { uid: a.noteUid, item_uid: a.itemUid, versions }, { text })]
-    : [build.createOp("note", a.itemUid, { kind: "ticket-request", text, ts: nowIso() })];
-  return apply(a.project, ops, handle, d);
 }
 
 export async function addEntry(a: { project: string; itemUid: string; kind: string; text: string }) {

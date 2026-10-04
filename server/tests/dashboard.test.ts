@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as build from "@/lib/ops-builder";
 import { allowedMove, moves, NEXT_STATUSES } from "@/lib/model";
 import { board, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
+import { backfillRequestVersions, type Op } from "@/lib/apply";
 import { child, item, set, world, type World } from "./helpers";
 
 let w: World;
@@ -134,8 +135,8 @@ describe("views", () => {
     expect(p.ready).toEqual([]);
     const plan = await deployPlan(w.d, "p");
     expect(plan.ready.map((r) => r.id)).toEqual(["b1"]);
-    expect(plan.pre.map((g) => g.kind)).toEqual(["prereq-branch", "db-script"]);
-    expect(plan.pre[0].checks[0].warning).toBe("not deployed");
+    expect(plan.byTicket[0].checks.filter((c) => c.timing === "pre-deploy").map((c) => c.kind)).toEqual(["prereq-branch", "db-script"]);
+    expect(plan.byTicket[0].checks[0].warning).toBe("not deployed");
   });
 });
 
@@ -195,16 +196,128 @@ describe("move ops", () => {
   });
 });
 
-describe("request lock", () => {
-  it("allows request edits in requested and in-triage only", async () => {
-    const r = await w.one("pat", item("R1", { status: "requested" }));
-    await w.one("pat", child("note", "RQ", "R1", { n: 1, kind: "ticket-request", text: "v1", ts: "t" }));
-    const v = async () => (await w.d.query("select versions from notes where uid = 'RQ'"))[0].versions;
-    expect((await w.one("pat", set("note", "RQ", "R1", { text: "v2" }, await v()))).status).toBe("applied");
-    await w.one("dev", set("item", "R1", "R1", { status: "in-triage" }, { status: r.versions!.status }));
-    expect((await w.one("pat", set("note", "RQ", "R1", { text: "v3" }, await v()))).status).toBe("applied");
-    const iv = (await w.d.query("select versions from items where uid = 'R1'"))[0].versions;
-    await w.one("dev", set("item", "R1", "R1", { status: "todo" }, { status: iv.status }));
-    expect(await w.one("pat", set("note", "RQ", "R1", { text: "v4" }, await v()))).toMatchObject({ status: "rejected", reason: "request-locked" });
+describe("request versions", () => {
+  const meta = async (uid: string) => (await w.d.query("select meta from notes where uid = $1", [uid]))[0].meta;
+  const nv = async (uid: string) => (await w.d.query("select versions from notes where uid = $1", [uid]))[0].versions;
+  const status = async () => (await w.d.query("select status, versions from items where uid = 'R1'"))[0];
+  const move = async (who: string, to: string, extra: Partial<Op> = {}) =>
+    w.one(who, set("item", "R1", "R1", { status: to }, { status: (await status()).versions.status }, extra));
+  const requested = async () => {
+    await w.one("alice", item("R1", { status: "requested", creator: "alice", developer: "bob", qa_assignee: "carol" }));
+    await w.one("alice", child("note", "V1", "R1", { kind: "ticket-request", text: "one\ntwo" }));
+  };
+  const post = (uid: string, text: string, meta: Record<string, unknown> = {}) =>
+    w.one("alice", child("note", uid, "R1", { kind: "ticket-request", text, meta }));
+
+  it("edits in place while requested, then freezes on any exit", async () => {
+    await requested();
+    expect((await w.one("alice", set("note", "V1", "R1", { text: "one\nthree" }, await nv("V1")))).status).toBe("applied");
+    await move("bob", "in-triage");
+    expect(await meta("V1")).toMatchObject({ version: 1, frozen: true, frozen_by: "bob", frozen_via: "triage" });
+    expect(await w.one("alice", set("note", "V1", "R1", { text: "x" }, await nv("V1")))).toMatchObject({ status: "rejected", reason: "request-frozen" });
+    expect(await w.one("alice", { op: "remove", entity: "note", uid: "V1", item_uid: "R1", base: await nv("V1") }))
+      .toMatchObject({ status: "rejected", reason: "request-frozen" });
+  });
+
+  it("numbers versions itself and refuses server-owned meta", async () => {
+    await requested();
+    await post("V2", "again", { version: 9, frozen: true, triaged: true, area: "x" });
+    expect(await meta("V2")).toEqual({ version: 2, area: "x" });
+    const r = await w.one("alice", set("note", "V2", "R1", { "meta.triaged": true }, await nv("V2")));
+    expect(r.rejected?.[0]).toMatchObject({ field: "meta.triaged" });
+  });
+
+  it("sends a changed request back to requested, with history and notices", async () => {
+    await requested();
+    await move("bob", "in-triage");
+    await move("bob", "todo");
+    await post("V2", "one\ntwo\nfour");
+    expect((await status()).status).toBe("requested");
+    const [h] = await w.d.query("select from_status, to_status, note from status_history where item_uid = 'R1' order by n desc limit 1");
+    expect(h).toEqual({ from_status: "todo", to_status: "requested", note: "request v2" });
+    const who = (await w.d.query("select handle from notifications where kind = 'request-changed' order by handle")).map((r) => r.handle);
+    expect(who).toEqual(["bob", "carol"]);
+    expect((await meta("V2")).frozen).toBeUndefined();
+  });
+
+  it("marks triage only when triage froze it, even through blocked", async () => {
+    await requested();
+    await move("bob", "in-triage");
+    await move("bob", "blocked");
+    await move("bob", "todo");
+    expect(await meta("V1")).toMatchObject({ triaged: true, triaged_by: "bob" });
+  });
+
+  it("leaves a version that skipped triage untriaged, and the view flags it", async () => {
+    await requested();
+    await move("bob", "in-progress");
+    expect(await meta("V1")).toMatchObject({ frozen: true, frozen_via: "skip" });
+    expect((await meta("V1")).triaged).toBeUndefined();
+    const v = (await loadItem(w.d, "p", "r1"))!;
+    expect(v.untriaged).toBe(true);
+    expect(v.triagedVersion).toBeNull();
+  });
+
+  it("flags a new version that went straight to work, naming the last triaged one", async () => {
+    await requested();
+    await move("bob", "in-triage");
+    await move("bob", "todo");
+    await post("V2", "changed");
+    await move("bob", "in-progress");
+    const v = (await loadItem(w.d, "p", "r1"))!;
+    expect(v.request.meta.version).toBe(2);
+    expect(v.requestVersions.map((r: any) => r.meta.version)).toEqual([2, 1]);
+    expect([v.untriaged, v.triagedVersion]).toEqual([true, 1]);
+  });
+
+  it("freezes an item's first request at once when work has begun", async () => {
+    await w.one("alice", item("R1", { status: "in-progress" }));
+    await post("V1", "late");
+    expect((await status()).status).toBe("in-progress");
+    expect(await meta("V1")).toMatchObject({ version: 1, frozen: true, frozen_via: "skip" });
+  });
+
+  it("backfills versions on requests written before them", async () => {
+    await w.one("alice", item("R1", { status: "review" }));
+    await w.one("alice", item("R2", { status: "requested" }));
+    for (const [uid, it] of [["A", "R1"], ["B", "R2"]]) {
+      await w.d.query(`insert into notes (uid, item_uid, n, kind, text, author, ts, meta, versions, project)
+                       values ($1, $2, 1, 'ticket-request', 'x', 'alice', 't', '{}'::jsonb, '{}'::jsonb, 'p')`, [uid, it]);
+    }
+    expect(await backfillRequestVersions(w.d)).toBe(2);
+    expect(await meta("A")).toMatchObject({ version: 1, frozen: true, triaged: true });
+    expect(await meta("B")).toEqual({ version: 1 });
+    expect(await backfillRequestVersions(w.d)).toBe(0);
+  });
+});
+
+describe("status override", () => {
+  it("moves outside the table with a required reason, recorded in history", async () => {
+    const r = await w.one("alice", item("O1", { status: "requested" }));
+    const base = { status: r.versions!.status };
+    expect(await w.one("alice", set("item", "O1", "O1", { status: "in-qa" }, base, { override: true, reason: " " })))
+      .toMatchObject({ status: "rejected" });
+    const ops = build.moveOps({ uid: "O1", item_uid: "O1", status: "requested", versions: r.versions!, qa_assignee: null }, "in-qa",
+      { me: "alice", override: true, comment: "QA wants an early look" });
+    expect(ops[0].data).toEqual({ status: "in-qa", qa_assignee: "alice" });
+    expect((await w.apply("alice", ...ops)).map((x) => x.status)).toEqual(["applied", "applied"]);
+    const [h] = await w.d.query("select to_status, override, note from status_history where item_uid = 'O1'");
+    expect(h).toEqual({ to_status: "in-qa", override: true, note: "QA wants an early look" });
+    expect((await w.d.query("select text from notes where item_uid = 'O1' and kind = 'comment'"))[0].text).toMatch(/override.*early look/);
+  });
+
+  it("still holds the deploy gate and the agent hand-off", async () => {
+    const r = await w.one("alice", item("O2", { status: "in-progress" }));
+    await w.one("alice", child("check", "C1", "O2", { title: "migrate", kind: "db-script", timing: "pre-deploy" }));
+    const base = { status: r.versions!.status };
+    expect((await w.one("alice", set("item", "O2", "O2", { status: "deployed" }, base, { override: true, reason: "hotfix" }))).rejected?.[0].reason)
+      .toBe("checks-pending");
+    expect((await w.one("alice", set("item", "O2", "O2", { status: "ready-for-qa" }, base, { override: true, reason: "x", via: "agent" }))).rejected?.[0].reason)
+      .toBe("agent-handoff");
+  });
+
+  it("refuses an override without a reason before building ops", () => {
+    expect(() => build.moveOps({ uid: "I", item_uid: "I", status: "todo", versions: { status: 1 } }, "deployed", { me: "a", override: true, comment: "" }))
+      .toThrow();
   });
 });

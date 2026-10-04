@@ -19,6 +19,9 @@ export interface Op {
   via?: "human" | "agent";
   force?: boolean;
   group?: string;
+  /** A status move outside the dashboard's normal flow; `reason` is required. */
+  override?: boolean;
+  reason?: string;
 }
 
 export interface Actor {
@@ -294,13 +297,11 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       row.via = op.via ?? "human";
     }
     if (entity === "note") row.source = data.source ?? null;
-    if (entity === "note" && row.kind === "ticket-request" && !ctx.actor.bridge) {
-      const [existing] = await ctx.t.query(
-        "select 1 from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' limit 1", [ctx.project, itemUid]);
-      if (existing && await requestLocked(ctx, { kind: "ticket-request", item_uid: itemUid })) return reject(op, "request-locked");
-    }
+
   }
-  if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? data[jsonCol] : {};
+  if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? { ...data[jsonCol] } : {};
+  let request: { bounce: boolean } | null = null;
+  if (entity === "note" && row.kind === "ticket-request") request = await newRequestVersion(ctx, itemUid, row);
 
   const seq = await ctx.bump(entity, op.uid, itemUid);
   const versions: Record<string, number> = {};
@@ -321,26 +322,117 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
+  if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op);
   if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", project: ctx.project, itemUid, note: row });
   return result;
 }
 
 // ── set ──────────────────────────────────────────────────────────────────────
-/** A request can change only while its item is `requested` or `in-triage`,
- * so every change to it goes through triage. Bridge writes (Jira) are exempt. */
-export const REQUEST_EDITABLE = ["requested", "in-triage"];
+// ── request versions ──────────────────────────────────────────────────────────
+// A request is a series of ticket-request notes, meta.version 1, 2, 3…; the
+// highest is current. A version freezes once its item leaves `requested`, and
+// a frozen version never changes: a new one is posted instead, which sends the
+// item back to `requested` so the change gets triaged. These meta keys are the
+// server's own; no client can set them.
+export const REQUEST_META = ["version", "frozen", "frozen_at", "frozen_by", "frozen_via", "triaged", "triaged_at", "triaged_by"];
+/** Statuses that mean triage is done. */
+const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
 
-async function requestLocked(ctx: Ctx, note: Row): Promise<boolean> {
-  if (ctx.actor.bridge || note.kind !== "ticket-request") return false;
-  const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [note.item_uid, ctx.project]);
-  return !!item && !REQUEST_EDITABLE.includes(item.status);
+async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, any>): Promise<{ bounce: boolean }> {
+  for (const k of REQUEST_META) delete row.meta[k];
+  const [m] = await ctx.t.query(
+    `select coalesce(max(coalesce((meta->>'version')::int, 1)), 0) as v, count(*)::int as n from notes
+      where project = $1 and item_uid = $2 and kind = 'ticket-request'`, [ctx.project, itemUid]);
+  row.meta.version = Number(m.n) === 0 ? 1 : Number(m.v) + 1;
+  const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [itemUid, ctx.project]);
+  if (!item || item.status === "requested") return { bounce: false };
+  // An item's first request, arriving after work began, records what it was
+  // built against: frozen at once and flagged untriaged.
+  if (row.meta.version === 1) {
+    Object.assign(row.meta, { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: "skip" });
+    return { bounce: false };
+  }
+  // A changed request goes back to `requested`, and freezes like any version
+  // when the item next leaves it.
+  return { bounce: true };
+}
+
+/** A new request version on an item past `requested` sends it back there. */
+async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op: Op) {
+  const [item] = await ctx.t.query("select * from items where uid = $1 and project = $2", [itemUid, ctx.project]);
+  if (!item || item.status === "requested") return;
+  const seq = await ctx.bump("item", itemUid, itemUid);
+  const versions = { ...(item.versions ?? {}), status: seq };
+  await ctx.t.query(
+    "update items set status = 'requested', completed = null, versions = $3::jsonb where uid = $1 and project = $2",
+    [itemUid, ctx.project, JSON.stringify(versions)]);
+  await statusChanged(ctx, { ...op, override: false, reason: `request v${version}` }, item, "requested");
+  for (const who of [item.developer, item.qa_assignee, item.creator]) await ctx.notify(who, "request-changed", itemUid);
+}
+
+async function currentRequest(ctx: Ctx, itemUid: string): Promise<Row | null> {
+  const [r] = await ctx.t.query(
+    `select * from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
+      order by coalesce((meta->>'version')::int, 1) desc, n desc limit 1`, [ctx.project, itemUid]);
+  return r ?? null;
+}
+
+async function writeRequestMeta(ctx: Ctx, note: Row, patch: Record<string, unknown>) {
+  const seq = await ctx.bump("note", note.uid, note.item_uid);
+  const versions = { ...(note.versions ?? {}) };
+  for (const k of Object.keys(patch)) versions[`meta.${k}`] = seq;
+  await ctx.t.query("update notes set meta = $3::jsonb, versions = $4::jsonb where uid = $1 and project = $2",
+    [note.uid, ctx.project, JSON.stringify({ ...(note.meta ?? {}), ...patch }), JSON.stringify(versions)]);
+}
+
+/** Freeze the current version when the item leaves `requested`; mark it
+ * triaged on the first move past triage, if triage is how it was frozen. */
+async function requestLifecycle(ctx: Ctx, itemUid: string, from: string, to: string) {
+  const req = await currentRequest(ctx, itemUid);
+  if (!req) return;
+  const meta = req.meta ?? {};
+  if (from === "requested" && to !== "requested" && !meta.frozen) {
+    await writeRequestMeta(ctx, req, { version: meta.version ?? 1, frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle,
+                                       frozen_via: to === "in-triage" ? "triage" : "skip" });
+    return;
+  }
+  if (PAST_TRIAGE.includes(to) && meta.frozen && meta.frozen_via === "triage" && !meta.triaged) {
+    await writeRequestMeta(ctx, req, { triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle });
+  }
+}
+
+/** Version metadata for requests written before versions existed. */
+export async function backfillRequestVersions(d: Db): Promise<number> {
+  const rows = await d.query(
+    `select n.project, n.uid, n.item_uid, i.status from notes n join items i on i.uid = n.item_uid and i.project = n.project
+      where n.kind = 'ticket-request' and n.meta->>'version' is null order by n.project, n.item_uid, n.n`);
+  let count = 0;
+  for (const r of rows) {
+    await d.tx(async (t) => {
+      await t.query("select key from projects where key = $1 for update", [r.project]);
+      const [{ v }] = await t.query(
+        `select count(*)::int as v from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' and meta->>'version' is not null`,
+        [r.project, r.item_uid]);
+      const version = Number(v) + 1;
+      const frozen = r.status !== "requested";
+      const triaged = PAST_TRIAGE.includes(r.status);
+      const patch: Record<string, unknown> = { version, ...(frozen ? { frozen: true, frozen_via: triaged ? "triage" : "skip" } : {}),
+                                               ...(triaged ? { triaged: true } : {}) };
+      const [{ seq }] = await t.query("update projects set seq = seq + 1 where key = $1 returning seq", [r.project]);
+      await t.query(`insert into changes (project, seq, entity, uid, item_uid, deleted, author, ts) values ($1, $2, 'note', $3, $4, false, 'migration', $5)`,
+        [r.project, Number(seq), r.uid, r.item_uid, nowIso()]);
+      await t.query("update notes set meta = meta || $3::jsonb where uid = $1 and project = $2", [r.uid, r.project, JSON.stringify(patch)]);
+    });
+    count++;
+  }
+  return count;
 }
 
 async function set(ctx: Ctx, op: Op): Promise<Result> {
   const { entity } = op;
   const row = await load(ctx, entity, op.uid);
   if (!row) return removedReason(ctx, op);
-  if (entity === "note" && await requestLocked(ctx, row)) return reject(op, "request-locked");
+  if (entity === "note" && row.kind === "ticket-request" && row.meta?.frozen) return reject(op, "request-frozen");
   const jsonCol = JSON_FIELD[entity];
   const versions: Record<string, number> = { ...(row.versions ?? {}) };
   const rejected: Rejection[] = [];
@@ -352,7 +444,7 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       ? (row[jsonCol] ?? {})[field.slice(jsonCol.length + 1)]
       : row[field];
     const version = versions[field];
-    if (!isSettable(entity, field)) {
+    if (!isSettable(entity, field) || (entity === "note" && field.startsWith("meta.") && REQUEST_META.includes(field.slice(5)))) {
       rejected.push({ field, reason: "not-settable", server_value: current ?? null, version });
       continue;
     }
@@ -421,6 +513,7 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
 }
 
 async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<string | null> {
+  if (op.override && !(op.reason ?? "").trim()) return "reason-required";
   if (to === "ready-for-qa" && op.via === "agent") return "agent-handoff";
   if (to === "deployed" && !op.force) {
     const [c] = await ctx.t.query(
@@ -443,10 +536,12 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
     "select coalesce(max(n), 0) as n from status_history where project = $2 and item_uid = $1", [item.uid, ctx.project]);
   const uid = ulid();
   await ctx.t.query(
-    `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts, project)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [uid, item.uid, Number(m.n) + 1, item.status, to, ctx.actor.handle, op.via ?? "human", forced, nowIso(), ctx.project]);
+    `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts, project, override, note)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    [uid, item.uid, Number(m.n) + 1, item.status, to, ctx.actor.handle, op.via ?? "human", forced, nowIso(), ctx.project,
+     !!op.override, op.reason ?? null]);
   await ctx.bump("history", uid, item.uid);
+  await requestLifecycle(ctx, item.uid, item.status, to);
   const [fresh] = await ctx.t.query("select developer, qa_assignee, creator from items where uid = $1 and project = $2", [item.uid, ctx.project]);
   if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
@@ -493,7 +588,7 @@ async function remove(ctx: Ctx, op: Op): Promise<Result> {
   if (entity === "item") return reject(op, "not-removable");
   const row = await load(ctx, entity, op.uid);
   if (!row) return removedReason(ctx, op);
-  if (entity === "note" && await requestLocked(ctx, row)) return reject(op, "request-locked");
+  if (entity === "note" && row.kind === "ticket-request") return reject(op, row.meta?.frozen ? "request-frozen" : "not-removable");
   if (!ctx.actor.unconditional) {
     const stale: Rejection[] = [];
     for (const [field, version] of Object.entries(row.versions ?? {})) {
