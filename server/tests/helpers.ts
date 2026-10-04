@@ -12,7 +12,7 @@ export interface World {
 
 let shared: Db | null = null;
 
-const TABLES = ["notifications", "jira_outbox", "jira_links", "applied_ops", "tombstones", "changes",
+const TABLES = ["item_seen", "notifications", "jira_outbox", "jira_links", "applied_ops", "tombstones", "changes",
   "status_history", "checks", "logs", "notes", "tasks", "items", "projects", "users"];
 
 /** A clean database: one PGlite per test file, emptied before each test. */

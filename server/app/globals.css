@@ -395,3 +395,8 @@ input.big { font-size: 15px; padding: 7px 9px; }
 @media (max-width: 600px) { .qa-card { max-width: none; flex-basis: 100%; } }
 .awaiting > summary { cursor: pointer; list-style: none; display: flex; gap: 6px; margin: 4px 2px 8px; }
 .awaiting > summary::-webkit-details-marker { display: none; }
+
+/* what arrived since your last visit */
+.entry.is-new { box-shadow: inset 2px 0 0 var(--cyan); padding-left: 8px; background: linear-gradient(90deg, rgba(90, 209, 196, .06), transparent 60%); }
+.tag.new { color: var(--cyan); border-color: var(--cyan-dim); margin-right: 6px; }
+.new-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); margin-right: 5px; vertical-align: 1px; }

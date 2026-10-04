@@ -452,3 +452,22 @@ describe("qa-rejected", () => {
     expect(jiraTarget({ "in-progress": "In Progress", "qa-rejected": "Rejected" }, "qa-rejected")).toBe("Rejected");
   });
 });
+
+describe("seen", () => {
+  it("reads only my notices for that item, and returns the previous visit", async () => {
+    const { markSeen } = await import("@/lib/inbox");
+    await w.one("alice", item("N1", { developer: "bob" }));
+    await w.one("alice", item("N2", { developer: "bob" }));
+    await w.one("alice", child("note", "C1", "N1", { kind: "comment", text: "@bob @carol look" }));
+    await w.one("alice", child("note", "C2", "N2", { kind: "comment", text: "@bob here too" }));
+    const first = await markSeen(w.d, "bob", "p", "N1");
+    expect(first.lastSeen).not.toBeNull();             // falls back to just before the oldest unread notice
+    expect(Date.parse(first.lastSeen!)).toBeLessThan(Date.now());
+    expect(first.unread).toBe(1);                      // N2's notice is still unread
+    const unread = await w.d.query("select handle, item_uid from notifications where read_at is null order by handle, item_uid");
+    expect(unread).toEqual([{ handle: "bob", item_uid: "N2" }, { handle: "carol", item_uid: "N1" }]);
+    const again = await markSeen(w.d, "bob", "p", "N1");
+    expect(Date.parse(again.lastSeen!)).toBeGreaterThan(Date.parse(first.lastSeen!));
+    expect((await markSeen(w.d, "carol", "p", "N2")).lastSeen).toBeNull();   // nothing pending, never visited
+  });
+});

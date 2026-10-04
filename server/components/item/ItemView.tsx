@@ -2,7 +2,7 @@
 // The item page: status and title, the request, tabbed details, and the right
 // rail. Values read as text until clicked; inputs open only on demand. Every
 // editor pins the versions it acts on when it opens.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
 import type { ActionState } from "@/lib/action-helpers";
 import { COMPLETE, moves, PARKED, STATUSES, type Move } from "@/lib/model";
@@ -36,6 +36,12 @@ export function report(state: ActionState): boolean {
 }
 
 type Tab = "comments" | "questions" | "tasks" | "notes" | "log";
+
+/** Whether something another person wrote at `ts` arrived since my last visit. */
+type IsNew = (ts: string | null | undefined, by: string | null | undefined) => boolean;
+const Fresh = createContext<IsNew>(() => false);
+export const useIsNew = () => useContext(Fresh);
+const NewTag = () => <span className="tag new">new</span>;
 
 function defaultTab(status: string, openQuestions: number): Tab {
   if (openQuestions) return "questions";
@@ -74,15 +80,31 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   }, []);
 
   const tasksDone = data.tasks.filter((t) => COMPLETE.includes(t.status) || PARKED.includes(t.status)).length;
+  // The previous visit, fixed for this page view so a live refresh can't clear the highlights.
+  const [lastSeen, setLastSeen] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void act.seen({ project: ctx.project, itemUid: it.uid }).then((r) => {
+      if (!live) return;
+      setLastSeen(r.lastSeen);
+      window.dispatchEvent(new CustomEvent("todo:unread", { detail: r.unread }));
+    });
+    return () => { live = false; };
+  }, [ctx.project, it.uid]);
+  const isNew: IsNew = (ts, by) => !!lastSeen && !!ts && by !== ctx.me && Date.parse(ts) > Date.parse(lastSeen);
+  const newComments = data.comments.some((c) => isNew(c.ts, c.author));
+  const newQuestions = data.questions.some((q) => isNew(q.ts, q.author) || isNew(q.meta?.answered_at, q.meta?.answered_by));
+  const dot = <span className="new-dot" aria-label="new" />;
   const tabs: { key: Tab; label: string; n?: ReactNode }[] = [
-    { key: "comments", label: "Comments", n: data.comments.length || null },
-    { key: "questions", label: "Questions", n: openQs.length ? <span className="hot-n">{openQs.length}</span> : null },
+    { key: "comments", label: "Comments", n: data.comments.length ? <>{newComments && dot}{data.comments.length}</> : null },
+    { key: "questions", label: "Questions", n: openQs.length || newQuestions ? <>{newQuestions && dot}{openQs.length ? <span className="hot-n">{openQs.length}</span> : null}</> : null },
     { key: "tasks", label: "Tasks", n: data.tasks.length ? `${tasksDone}/${data.tasks.length}` : null },
     { key: "notes", label: "Notes", n: data.notes.length || null },
     { key: "log", label: "Log", n: data.logs.length || null },
   ];
 
   return (
+    <Fresh.Provider value={isNew}>
     <div className="item" data-uid={it.uid}>
       <div className="item-main">
         <Header it={it} ctx={ctx} pendingPre={it.pending_pre} />
@@ -106,6 +128,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
       </div>
       <aside className="rail wide-only"><Rail data={data} ctx={ctx} onTasks={() => setTab("tasks")} /></aside>
     </div>
+    </Fresh.Provider>
   );
 }
 
@@ -282,15 +305,17 @@ export function AddBox({ label, placeholder, onAdd, users, uploads, children }: 
 
 // ── comments ──────────────────────────────────────────────────────────────────
 function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
+  const isNew = useIsNew();
   return (
     <>
       <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={uploadsFor(ctx)}
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
       <ul className="entries">
         {data.comments.map((c) => (
-          <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""}`} data-uid={c.uid}>
+          <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""} ${isNew(c.ts, c.author) ? "is-new" : ""}`} data-uid={c.uid}>
             <div className="body">
               <div className="who">
+                {isNew(c.ts, c.author) && <NewTag />}
                 {c.kind === "qa-rejection" && <span className="tag rej">QA rejected</span>} {c.author}
                 {c.via === "agent" && <span className="ai">AI</span>}
                 {c.source === "jira" && <span className="faint"> · jira</span>} <Ago ts={c.ts} />
@@ -307,9 +332,12 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
 
 // ── questions ─────────────────────────────────────────────────────────────────
 function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
+  const isNew = useIsNew();
   const open = data.questions.filter((q) => q.meta?.state !== "answered");
   const answered = data.questions.filter((q) => q.meta?.state === "answered");
   const [showAnswered, setShowAnswered] = useState(() => answered.some((q) => focus === `n-${q.n}`));
+  const newAnswer = answered.some((q) => isNew(q.meta?.answered_at, q.meta?.answered_by));
+  useEffect(() => { if (newAnswer) setShowAnswered(true); }, [newAnswer]);
   useEffect(() => {
     if (answered.some((q) => focus === `n-${q.n}`)) setShowAnswered(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -329,11 +357,11 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
           {showAnswered && (
             <ul className="entries">
               {answered.map((q) => (
-                <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""}`} data-uid={q.uid}>
+                <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""} ${isNew(q.meta?.answered_at, q.meta?.answered_by) ? "is-new" : ""}`} data-uid={q.uid}>
                   <div className="body">
                     <div className="dim"><Markdown text={q.text} /></div>
                     <Markdown text={q.meta?.answer ?? ""} />
-                    <div className="who">{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /></div>
+                    <div className="who">{isNew(q.meta?.answered_at, q.meta?.answered_by) && <NewTag />}{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /></div>
                   </div>
                 </li>
               ))}
@@ -346,6 +374,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
 }
 
 function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | null }) {
+  const fresh = useIsNew()(q.ts, q.author);
   const [answering, setAnswering] = useState(false);
   const pinned = useRef(q.versions);
   const [draft, setDraft] = useState("");
@@ -357,9 +386,9 @@ function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | nul
     }
   };
   return (
-    <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""}`} data-uid={q.uid}>
+    <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""} ${fresh ? "is-new" : ""}`} data-uid={q.uid}>
       <div className="body">
-        <div className="who">{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /></div>
+        <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /></div>
         <Markdown text={q.text} />
         {answering ? (
           <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>

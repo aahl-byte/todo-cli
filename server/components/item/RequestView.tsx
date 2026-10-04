@@ -8,7 +8,7 @@ import type { ItemView as Data } from "@/lib/views";
 import { Markdown } from "../Markdown";
 import { Ago, Popup } from "../ui";
 import { images, insertImages } from "@/lib/upload-client";
-import { report, uploadsFor, type Ctx } from "./ItemView";
+import { report, uploadsFor, useIsNew, type Ctx } from "./ItemView";
 
 type Row = Record<string, any>;
 const LONG_LINES = 6;
@@ -59,6 +59,7 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
   const [refused, setRefused] = useState(false);
   const [open, setOpen] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const fresh = useIsNew()(req?.ts, req?.author);
   // A version not yet triaged opens as its changes since the one triage last saw.
   const base = req && !req.meta?.triaged ? (versions.slice(1).find((v) => v.meta?.triaged) ?? versions[1] ?? null) : null;
   const [asText, setAsText] = useState(false);
@@ -132,6 +133,7 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
         {mode !== "inline" && (
           <button type="button" className="add" onClick={start}>{!req ? <><span className="pl" aria-hidden="true">+</span>request</> : editable ? "✎ edit" : "✎ new version"}</button>
         )}
+        {fresh && <span className="tag new">new</span>}
         {req && (
           <button type="button" className="more" aria-expanded={showVersions} onClick={() => setShowVersions((s) => !s)}>
             v{version}{versions.length > 1 && <> · versions <span className={`chev ${showVersions ? "open" : ""}`}>›</span></>}

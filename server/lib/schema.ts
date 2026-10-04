@@ -210,4 +210,12 @@ create table if not exists notifications (
   read_at  timestamptz
 );
 create index if not exists notifications_handle on notifications (handle, read_at);
+
+create table if not exists item_seen (
+  handle   text not null,
+  project  text not null,
+  item_uid text not null,
+  seen_at  timestamptz not null,
+  primary key (handle, project, item_uid)
+);
 `;

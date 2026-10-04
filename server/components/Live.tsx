@@ -45,9 +45,12 @@ export function Live({ project, cursor }: { project?: string; cursor?: number })
         setOnline(false);
       }
     };
+    // A page that reads notices (opening an item) reports the new count.
+    const onUnread = (e: Event) => setUnread(Number((e as CustomEvent).detail) || 0);
+    window.addEventListener("todo:unread", onUnread);
     const id = setInterval(() => { if (!stop) void tick(); }, EVERY_MS);
     void tick();
-    return () => { stop = true; clearInterval(id); };
+    return () => { stop = true; clearInterval(id); window.removeEventListener("todo:unread", onUnread); };
   }, [project, router]);
 
   return (

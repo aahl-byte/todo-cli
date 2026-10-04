@@ -8,7 +8,7 @@ import { describe, POSTABLE_KINDS, type ActionState } from "@/lib/action-helpers
 import { db } from "@/lib/db";
 import { later } from "@/lib/http";
 import { flushJira } from "@/lib/jira/flush";
-import { markRead } from "@/lib/inbox";
+import { markRead, markSeen } from "@/lib/inbox";
 import { LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
@@ -201,6 +201,12 @@ export async function addCheck(a: { project: string; itemUid: string; kind: stri
 export async function setCheck(a: { project: string; itemUid: string; uid: string; versions: Versions; status: string }) {
   const user = await requireUser();
   return apply(a.project, [build.setOp("check", { uid: a.uid, item_uid: a.itemUid, versions: a.versions }, { status: a.status })], user.handle);
+}
+
+/** The item page opened: read its notices and remember the visit. */
+export async function seen(a: { project: string; itemUid: string }) {
+  const user = await requireUser();
+  return markSeen(await db(), user.handle, a.project, a.itemUid);
 }
 
 export async function markAllRead(): Promise<ActionState> {
