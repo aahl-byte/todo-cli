@@ -182,7 +182,7 @@ function History({ rows, current, created }: { rows: Row[]; current: string; cre
     <section className="hist">
       <div className="label">History</div>
       {shown.map((h, i) => (
-        <div key={h.uid} className={`rrow ${i === 0 && h.to_status === current ? "dimmed" : ""}`}
+        <div key={h.uid} tabIndex={0} className={`rrow ${i === 0 && h.to_status === current ? "dimmed" : ""}`}
              data-tip={[h.by, h.via === "agent" ? "AI" : null, h.forced ? "forced" : null].filter(Boolean).join(" · ")}>
           <Led status={h.to_status} label />
           <Ago ts={h.ts} />

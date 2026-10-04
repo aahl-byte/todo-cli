@@ -32,7 +32,7 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
       <AddTask ctx={ctx} lastPhase={groups.length ? groups[groups.length - 1].phase : null} />
       {tasks.length > 0 && (
         <div className="list-head">
-          {calc && <span data-tip={`from tasks: ${calc}`}><Led status={calc} /></span>}
+          {calc && <span tabIndex={0} data-tip={`from tasks: ${calc}`}><Led status={calc} /></span>}
           {anyFinished && (
             <button type="button" className="more right" onClick={() => { setShowDone((s) => !s); setPinnedPhase({}); }}>
               {showDone ? "hide done" : "show done"}
@@ -65,10 +65,15 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
 
 function TaskRow({ t, ctx, focus }: { t: Row; ctx: Ctx; focus: boolean }) {
   const pinned = useRef(t.versions);
+  const latest = useRef(t.versions);
+  latest.current = t.versions;
   const [phaseEdit, setPhaseEdit] = useState(false);
   const [phaseDraft, setPhaseDraft] = useState("");
-  const save = async (data: { status?: string; title?: string; phase?: number | null }) =>
-    report(await act.setTask({ project: ctx.project, itemUid: ctx.itemUid, uid: t.uid, versions: pinned.current, data }));
+  const save = async (data: { status?: string; title?: string; phase?: number | null }) => {
+    const ok = report(await act.setTask({ project: ctx.project, itemUid: ctx.itemUid, uid: t.uid, versions: pinned.current, data }));
+    if (!ok) pinned.current = latest.current;
+    return ok;
+  };
   const set = (data: { status?: string; title?: string; phase?: number | null }) => void save(data);
   const commitPhase = async () => {
     const v = phaseDraft.trim();

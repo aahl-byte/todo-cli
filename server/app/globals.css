@@ -334,3 +334,6 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .title-row .big { flex: 4; }
 .qa-link { color: var(--cyan); font-size: 13px; }
 .composer textarea { overflow: hidden; min-height: 2.6em; }
+
+.request.focus { background: var(--panel-2); border-radius: 5px; }
+@media (max-width: 1300px) { .column.empty-col { display: none; } }

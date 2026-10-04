@@ -236,6 +236,36 @@ const errors = [];
     await p3.close();
   });
 
+  await step("a refused change request leaves the status alone", async () => {
+    const p4 = await ctx.newPage();
+    await p4.route("**/api/projects/*/changes*", (r) => r.abort());
+    await p4.goto(item("maintenance-banner"));
+    const before = await p4.locator(".head .stat-label").first().textContent();
+    await p4.click("button.add:has-text('change request')");
+    // Pat sends it back to requested, edits the request and returns it, so the
+    // popup's pinned version of the request is now stale.
+    const row = async (pred) => {
+      const v = await (await fetch(base + "/api/projects/web/changes?since=0&limit=2000", { headers: { authorization: "Bearer " + tokens.pat } })).json();
+      return v.changes.find(pred);
+    };
+    const it = await row((c) => c.entity === "item" && c.data && c.data.title === "Maintenance banner");
+    const req = await row((c) => c.entity === "note" && c.data && c.data.kind === "ticket-request" && c.item_uid === it.uid);
+    const move = async (to) => {
+      const cur = await row((c) => c.uid === it.uid);
+      await api("pat", [{ op_id: "mv-" + to + Date.now(), op: "set", entity: "item", uid: it.uid, item_uid: it.uid, data: { status: to }, base: { status: cur.data.versions.status } }]);
+    };
+    await move("requested");
+    await api("pat", [{ op_id: "rq-" + Date.now(), op: "set", entity: "note", uid: req.uid, item_uid: it.uid, data: { text: req.data.text + " (pat)" }, base: { text: req.data.versions.text } }]);
+    await move(before);
+    await p4.fill(".popup textarea", "my change");
+    await p4.click(".popup button.primary");
+    await p4.locator(".toasts .toast").waitFor();
+    await p4.close();
+    await page.goto(item("maintenance-banner"));
+    const after = await page.locator(".head .stat-label").first().textContent();
+    if (after !== before) throw new Error(`${before} → ${after}`);
+  });
+
   await step("QA: reject needs a comment", async () => {
     await login("qa", "/p/web/qa");
     await page.screenshot({ path: out + "/qa.png", fullPage: true });

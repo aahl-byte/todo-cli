@@ -1,6 +1,7 @@
 "use client";
 // Board filters: two toggles and a popover; every change applies at once.
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef } from "react";
 
 export function BoardFilters({ users }: { users: string[] }) {
   const router = useRouter();
@@ -12,6 +13,14 @@ export function BoardFilters({ users }: { users: string[] }) {
     router.replace(`${path}${next.toString() ? `?${next}` : ""}`);
   };
   const toggle = (k: string) => set(k, q.get(k) === "1" ? null : "1");
+  const pop = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => { if (pop.current?.open && !pop.current.contains(e.target as Node)) pop.current.open = false; };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && pop.current?.open) { pop.current.open = false; pop.current.querySelector("summary")?.focus(); } };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, []);
   const chips = [
     q.get("dev") && { k: "dev", text: `dev ${q.get("dev")}` },
     q.get("qa") && { k: "qa", text: `qa ${q.get("qa")}` },
@@ -23,7 +32,7 @@ export function BoardFilters({ users }: { users: string[] }) {
     <div className="filters">
       <button type="button" className={`btn ${q.get("mine") === "1" ? "on" : ""}`} aria-pressed={q.get("mine") === "1"} onClick={() => toggle("mine")}>Mine</button>
       <button type="button" className={`btn ${q.get("review") === "1" ? "on" : ""}`} aria-pressed={q.get("review") === "1"} onClick={() => toggle("review")}>Needs my review</button>
-      <details className="switcher filter">
+      <details ref={pop} className="switcher filter">
         <summary className="btn">Filter<span className="caret">▾</span></summary>
         <div className="menu form">
           <label className="k">developer

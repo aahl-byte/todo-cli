@@ -157,24 +157,33 @@ export function Tooltips() {
       return true;
     };
     let touch = false;
+    let tappedAt = 0;
+    let tapped: Element | null = null;
     const over = (e: MouseEvent) => { if (!touch) show(e.target); };
-    const focus = (e: FocusEvent) => { show(e.target); };
-    const hide = () => setTip(null);
-    // On touch screens a tap toggles the tooltip of what was tapped.
+    const focus = (e: FocusEvent) => { if (Date.now() - tappedAt > 400) show(e.target); };
+    const hide = () => { if (Date.now() - tappedAt > 400) setTip(null); };
+    // On touch screens a tap toggles the tooltip of what was tapped; the
+    // focus changes the tap causes don't undo it.
     const down = (e: PointerEvent) => {
       touch = e.pointerType === "touch";
-      if (touch) { if (!show(e.target)) hide(); } else hide();
+      if (!touch) { setTip(null); return; }
+      const el = (e.target as HTMLElement)?.closest?.("[data-tip]") ?? null;
+      tappedAt = Date.now();
+      if (el && el === tapped) { tapped = null; setTip(null); return; }
+      tapped = el;
+      if (!show(e.target)) setTip(null);
     };
     document.addEventListener("mouseover", over);
     document.addEventListener("focusin", focus);
     document.addEventListener("focusout", hide);
-    document.addEventListener("scroll", hide, true);
+    const onScroll = () => setTip(null);
+    document.addEventListener("scroll", onScroll, true);
     document.addEventListener("pointerdown", down);
     return () => {
       document.removeEventListener("mouseover", over);
       document.removeEventListener("focusin", focus);
       document.removeEventListener("focusout", hide);
-      document.removeEventListener("scroll", hide, true);
+      document.removeEventListener("scroll", onScroll, true);
       document.removeEventListener("pointerdown", down);
     };
   }, []);
@@ -244,7 +253,7 @@ export function Ago({ ts }: { ts?: string | null }) {
     text = s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h`
       : s < 7 * 86400 ? `${Math.floor(s / 86400)}d` : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
-  return <time className="ago" dateTime={ts} data-tip={full}>{text}</time>;
+  return <time className="ago" tabIndex={0} dateTime={ts} data-tip={full}>{text}</time>;
 }
 
 /** "Sep 26 14:03" in local time, for dev-log stamps. */
@@ -256,5 +265,5 @@ export function Stamp({ ts, tip }: { ts?: string | null; tip?: string }) {
     if (Number.isNaN(d.getTime())) return;
     setText(`${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toTimeString().slice(0, 5)}`);
   }, [ts]);
-  return <time className="stamp" dateTime={ts ?? undefined} data-tip={tip ?? ts ?? undefined}>{text}</time>;
+  return <time className="stamp" tabIndex={0} dateTime={ts ?? undefined} data-tip={tip ?? ts ?? undefined}>{text}</time>;
 }

@@ -87,7 +87,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
     <div className="item" data-uid={it.uid}>
       <div className="item-main">
         <Header it={it} ctx={ctx} pendingPre={it.pending_pre} />
-        <Request data={data} ctx={ctx} />
+        <Request data={data} ctx={ctx} focusRequest={focus === "request"} />
         <MobileSummary data={data} ctx={ctx} />
         <div className="tabs" role="tablist">
           {tabs.map((t) => (
@@ -113,6 +113,8 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
 // ── header ────────────────────────────────────────────────────────────────────
 function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number }) {
   const pinned = useRef(it.versions);
+  const latest = useRef(it.versions);
+  latest.current = it.versions;
   const [popup, setPopup] = useState<{ move: Move; versions: Row } | null>(null);
   const options = useMemo(() => moves(it.status, { deployStep: ctx.deployStep, hasQa: !!it.qa_assignee, previous: it.blocked_from }), [it, ctx.deployStep]);
 
@@ -139,7 +141,12 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
             onPick={pick} />
       <h1 className="title">
         <EditableText value={it.title} label="title" onStart={() => { pinned.current = it.versions; }}
-                      onSave={async (title) => report(await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current, data: { title } }))} />
+                      onSave={async (title) => {
+                        const ok = report(await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current, data: { title } }));
+                        // After the notice, a retry is a deliberate overwrite of what the user now knows changed.
+                        if (!ok) pinned.current = latest.current;
+                        return ok;
+                      }} />
       </h1>
       {popup && (
         <MovePopup move={popup.move} from={it.status} pendingPre={pendingPre} onClose={() => setPopup(null)}
@@ -183,7 +190,7 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
 }
 
 // ── request ───────────────────────────────────────────────────────────────────
-function Request({ data, ctx }: { data: Data; ctx: Ctx }) {
+function Request({ data, ctx, focusRequest }: { data: Data; ctx: Ctx; focusRequest?: boolean }) {
   const it = data.item;
   const req = data.request;
   const editable = REQUEST_EDITABLE.includes(it.status);
@@ -214,7 +221,7 @@ function Request({ data, ctx }: { data: Data; ctx: Ctx }) {
     );
   }
   return (
-    <div id="request" className={`request ${long && !open ? "clamp" : ""}`}>
+    <div id="request" className={`request ${long && !open ? "clamp" : ""} ${focusRequest ? "focus" : ""}`}>
       {req && <Markdown text={req.text} />}
       <div className="request-acts">
         {long && <button type="button" className="more" onClick={() => setOpen((o) => !o)}>{open ? "less" : "more"}</button>}
@@ -319,6 +326,10 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
   const open = data.questions.filter((q) => q.meta?.state !== "answered");
   const answered = data.questions.filter((q) => q.meta?.state === "answered");
   const [showAnswered, setShowAnswered] = useState(() => answered.some((q) => focus === `n-${q.n}`));
+  useEffect(() => {
+    if (answered.some((q) => focus === `n-${q.n}`)) setShowAnswered(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
   return (
     <>
       <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
@@ -391,6 +402,7 @@ function firstLine(text: string): string {
 function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Row[]; ctx: Ctx; focus: string | null }) {
   const prefix = kind === "log" ? "l" : "n";
   const [open, setOpen] = useState<Record<string, boolean>>(() => (focus ? { [focus]: true } : {}));
+  useEffect(() => { if (focus) setOpen((o) => ({ ...o, [focus]: true })); }, [focus]);
   const allOpen = rows.length > 0 && rows.every((r) => open[`${prefix}-${r.n}`]);
   return (
     <>

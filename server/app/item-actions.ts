@@ -92,19 +92,24 @@ export async function changeRequest(a: { project: string; itemUid: string; noteU
   if (!cur) return fail("No such item.");
   const fresh = async () => (await itemRow(d, a.project, a.itemUid))!.versions;
   const item = { uid: a.itemUid, item_uid: a.itemUid };
-  if (!REQUEST_EDITABLE.includes(cur.status)) {
-    const r = await apply(a.project, [build.setOp("item", { ...item, versions: cur.versions }, { status: "requested" })], user.handle, d);
-    if (!r.ok) return r;
-  }
   // The note edit uses the versions the popup opened with, so a request someone
-  // else changed meanwhile is refused rather than overwritten.
+  // else changed meanwhile is refused — checked before anything moves.
   const noteVersions: Versions = a.versions ?? {};
   if (a.noteUid) {
     const [n] = await d.query("select versions from notes where uid = $1 and project = $2", [a.noteUid, a.project]);
     if (n && n.versions?.text !== noteVersions.text) return fail("Someone changed the request meanwhile — reopen it to see their version.");
   }
+  const moved = !REQUEST_EDITABLE.includes(cur.status);
+  if (moved) {
+    const r = await apply(a.project, [build.setOp("item", { ...item, versions: cur.versions }, { status: "requested" })], user.handle, d);
+    if (!r.ok) return r;
+  }
   const edited = await saveRequestAs(a, text, noteVersions, user.handle, d);
-  if (!edited.ok) return edited;
+  if (!edited.ok) {
+    // Put the item back where it was rather than leave it waiting in requested.
+    if (moved) await apply(a.project, [build.setOp("item", { ...item, versions: await fresh() }, { status: cur.status })], user.handle, d);
+    return edited;
+  }
   const status = (await itemRow(d, a.project, a.itemUid))!.status;
   if (status === "requested") {
     return apply(a.project, [build.setOp("item", { ...item, versions: await fresh() }, { status: "in-triage" })], user.handle, d);
