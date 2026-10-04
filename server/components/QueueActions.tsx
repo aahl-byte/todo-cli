@@ -1,7 +1,7 @@
 "use client";
 // Compact actions for the QA queue and deploy board, through the same moves
 // and popups as the item page.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as act from "@/app/item-actions";
 import { moves, type Move } from "@/lib/model";
 import { Popup } from "./ui";
@@ -56,6 +56,7 @@ export function MoveButtons({ item, project, to, deployStep = true }: {
 export function CheckBox({ check, project }: { check: Row; project: string }) {
   const done = check.status === "done";
   const [shown, setShown] = useState<boolean | null>(null);
+  useEffect(() => { setShown(null); }, [done]);
   const value = shown ?? done;
   return (
     <input type="checkbox" checked={value} aria-label={`${check.title} done`}

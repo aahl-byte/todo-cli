@@ -44,13 +44,13 @@ export default async function Board({ params, searchParams }: { params: Promise<
       <BoardFilters users={(await users(d)).map((u) => u.handle)} />
       <div className="board">
         {columns.map((col) => (
-          <section key={col.key} className="column" aria-label={col.label}>
+          <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>
             <div className="label">{col.label}{col.items.length > 0 && <span>{col.items.length}</span>}</div>
             {col.items.map((c) => {
               const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (col.key === "requested" ? c.creator : null);
               return (
                 <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card s-${c.status}`} data-uid={c.uid}>
-                  {col.statuses.length > 1 && <Led status={c.status} label />}
+                  {c.status !== col.statuses[0] && <Led status={c.status} label />}
                   <div className="title">{c.title}</div>
                   <div className="meta">
                     {who && <span className="av" data-tip={[c.developer && `dev ${c.developer}`, c.qa_assignee && `qa ${c.qa_assignee}`].filter(Boolean).join(" · ")}>{initials(who)}</span>}

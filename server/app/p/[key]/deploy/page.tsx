@@ -39,7 +39,7 @@ export default async function Deploy({ params }: { params: Promise<{ key: string
       </section>
     );
   };
-  if (!plan.ready.length && !plan.afterDeploy.length) return <p className="empty">Nothing to deploy.</p>;
+  if (!plan.ready.length && !plan.afterDeploy.length) return <p className="empty">Empty.</p>;
   return (
     <div className="rows">
       {section("Before deploy", plan.pre)}
@@ -50,7 +50,7 @@ export default async function Deploy({ params }: { params: Promise<{ key: string
           {plan.ready.map((it: Row) => (
             <div key={it.uid} className="lrow" data-uid={it.uid}>
               <div className="grow"><Link href={`/p/${key}/i/${it.id}`}>{it.title}</Link></div>
-              <MoveButtons item={it} project={key} to={[{ status: "deployed", label: "Deployed", primary: true }]} />
+              <MoveButtons item={it} project={key} to={[{ status: "deployed", label: "Mark deployed", primary: true }]} />
             </div>
           ))}
           {plan.ready.length > 1 && (

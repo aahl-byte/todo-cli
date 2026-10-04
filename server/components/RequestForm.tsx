@@ -8,8 +8,8 @@ export function RequestForm({ project, users, uploads }: { project: string; user
   return (
     <form action={action} className="form">
       <input type="hidden" name="project" value={project} />
-      <input name="title" required aria-label="title" placeholder="What should change?" className="big" autoFocus />
-      <div className="row">
+      <div className="row title-row">
+        <input name="title" required aria-label="title" placeholder="What should change?" className="big" autoFocus />
         <select name="type" defaultValue="feature" aria-label="type"><option>feature</option><option>bug</option></select>
         <select name="priority" defaultValue="medium" aria-label="priority">{["low", "medium", "high", "urgent"].map((p) => <option key={p}>{p}</option>)}</select>
       </div>

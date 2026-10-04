@@ -67,7 +67,7 @@ export function Rail({ data, ctx }: { data: Data; ctx: Ctx }) {
       </section>
       <Links rows={data.links} ctx={ctx} />
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
-      <History rows={data.history} current={it.status} />
+      <History rows={data.history} current={it.status} created={it.created} />
     </>
   );
 }
@@ -174,11 +174,10 @@ function Checks({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
 
 const HISTORY_SHOWN = 5;
 
-function History({ rows, current }: { rows: Row[]; current: string }) {
+function History({ rows, current, created }: { rows: Row[]; current: string; created: string }) {
   const [all, setAll] = useState(false);
   const newest = [...rows].reverse();
   const shown = all ? newest : newest.slice(0, HISTORY_SHOWN);
-  if (!rows.length) return null;
   return (
     <section className="hist">
       <div className="label">History</div>
@@ -193,6 +192,9 @@ function History({ rows, current }: { rows: Row[]; current: string }) {
         <button type="button" className="tgroup" onClick={() => setAll((a) => !a)}>
           <span className={`chev ${all ? "open" : ""}`}>›</span> {all ? "fewer" : `${newest.length - HISTORY_SHOWN} earlier`}
         </button>
+      )}
+      {(all || newest.length <= HISTORY_SHOWN) && (
+        <div className="rrow created"><span className="stat"><span className="led" />created</span><Ago ts={created} /></div>
       )}
     </section>
   );

@@ -1,7 +1,7 @@
 "use client";
 // Shared controls in the watchtower drawer's idiom: status light, popover menu,
 // popup, instant tooltip, click-to-edit text.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 export function Led({ status, label = false }: { status: string; label?: boolean }) {
   return (
@@ -35,18 +35,24 @@ export function Menu({ trigger, options, current, onPick, onOpen, label, disable
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  // The options are frozen while the menu is open, so a live refresh can't
+  // change what's under the cursor.
+  const [frozen, setFrozen] = useState<MenuOption[]>(options);
+  const shown = open ? frozen : options;
   const [pos, setPos] = useState<{ x: number; y: number; up: boolean } | null>(null);
   const btn = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLUListElement>(null);
+  const id = useId();
 
   useLayoutEffect(() => {
     if (!open || !btn.current) return;
     const r = btn.current.getBoundingClientRect();
-    const estH = options.length * 26 + 10;
+    const estH = frozen.length * 26 + 10;
     const up = r.bottom + estH > window.innerHeight - 8;
     setPos({ x: Math.max(8, Math.min(r.left, window.innerWidth - 220)), y: up ? r.top - 4 : r.bottom + 4, up });
-    setActive(Math.max(0, options.findIndex((o) => o.value === current)));
-  }, [open, options, current]);
+    setActive(Math.max(0, frozen.findIndex((o) => o.value === current)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (!open || !pos) return;
@@ -69,27 +75,29 @@ export function Menu({ trigger, options, current, onPick, onOpen, label, disable
   const pick = (i: number, shiftKey = false) => {
     setOpen(false);
     btn.current?.focus();
-    if (options[i]) onPick(options[i].value, { shiftKey });
+    if (shown[i]) onPick(shown[i].value, { shiftKey });
   };
 
   return (
     <>
       <button ref={btn} type="button" className={`menu-btn ${className ?? ""}`} aria-haspopup="listbox" aria-expanded={open}
               aria-label={label} disabled={disabled} data-tip={tip}
-              onClick={() => setOpen((o) => { if (!o) onOpen?.(); return !o; })}>
+              onClick={() => setOpen((o) => { if (!o) { onOpen?.(); setFrozen(options); } return !o; })}>
         {trigger}
       </button>
       {open && pos && (
         <ul ref={list} role="listbox" tabIndex={-1} aria-label={label} className="menu"
+            aria-activedescendant={shown[active] ? `${id}-${active}` : undefined}
             style={{ left: pos.x, ...(pos.up ? { bottom: window.innerHeight - pos.y } : { top: pos.y }) }}
             onKeyDown={(e) => {
               if (e.key === "Escape") { e.preventDefault(); setOpen(false); btn.current?.focus(); }
-              else if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(options.length - 1, a + 1)); }
+              else if (e.key === "Tab") { setOpen(false); }
+              else if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(shown.length - 1, a + 1)); }
               else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
               else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(active); }
             }}>
-          {options.map((o, i) => (
-            <li key={o.value} role="option" aria-selected={o.value === current}
+          {shown.map((o, i) => (
+            <li key={o.value} id={`${id}-${i}`} role="option" aria-selected={o.value === current}
                 className={`${i === active ? "active" : ""} ${o.value === current ? "current" : ""} ${o.divider ? "divider" : ""}`}
                 onMouseEnter={() => setActive(i)} onMouseDown={(e) => e.preventDefault()}
                 onClick={(e) => pick(i, e.shiftKey)}>
@@ -107,12 +115,25 @@ export function Menu({ trigger, options, current, onPick, onOpen, label, disable
 /** A small modal for multi-field adds and confirmations. */
 export function Popup({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  // Focus the first field once, keep Tab inside the dialog, and hand focus
+  // back to whatever opened it.
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     box.current?.querySelector<HTMLElement>("input, textarea, select, button")?.focus();
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [onClose]);
+    const keys = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { close.current(); return; }
+      if (e.key !== "Tab" || !box.current) return;
+      const els = [...box.current.querySelectorAll<HTMLElement>("input, textarea, select, button:not(:disabled), a[href]")];
+      if (!els.length) return;
+      const first = els[0], last = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", keys);
+    return () => { document.removeEventListener("keydown", keys); opener?.focus?.(); };
+  }, []);
   return (
     <div className="popup-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div ref={box} className="popup" role="dialog" aria-modal="true" aria-label={title}>
@@ -127,21 +148,34 @@ export function Popup({ title, onClose, children }: { title: string; onClose: ()
 export function Tooltips() {
   const [tip, setTip] = useState<{ text: string; x: number; y: number; up: boolean } | null>(null);
   useEffect(() => {
-    const over = (e: MouseEvent) => {
-      const el = (e.target as HTMLElement)?.closest?.("[data-tip]") as HTMLElement | null;
-      if (!el || !el.dataset.tip) { setTip(null); return; }
+    const show = (target: EventTarget | null) => {
+      const el = (target as HTMLElement)?.closest?.("[data-tip]") as HTMLElement | null;
+      if (!el || !el.dataset.tip) { setTip(null); return false; }
       const r = el.getBoundingClientRect();
       const up = r.bottom + 40 > window.innerHeight;
-      setTip({ text: el.dataset.tip, x: Math.min(r.left, window.innerWidth - 260), y: up ? r.top - 6 : r.bottom + 6, up });
+      setTip({ text: el.dataset.tip, x: Math.max(8, Math.min(r.left, window.innerWidth - 268)), y: up ? r.top - 6 : r.bottom + 6, up });
+      return true;
     };
+    let touch = false;
+    const over = (e: MouseEvent) => { if (!touch) show(e.target); };
+    const focus = (e: FocusEvent) => { show(e.target); };
     const hide = () => setTip(null);
+    // On touch screens a tap toggles the tooltip of what was tapped.
+    const down = (e: PointerEvent) => {
+      touch = e.pointerType === "touch";
+      if (touch) { if (!show(e.target)) hide(); } else hide();
+    };
     document.addEventListener("mouseover", over);
+    document.addEventListener("focusin", focus);
+    document.addEventListener("focusout", hide);
     document.addEventListener("scroll", hide, true);
-    document.addEventListener("mousedown", hide);
+    document.addEventListener("pointerdown", down);
     return () => {
       document.removeEventListener("mouseover", over);
+      document.removeEventListener("focusin", focus);
+      document.removeEventListener("focusout", hide);
       document.removeEventListener("scroll", hide, true);
-      document.removeEventListener("mousedown", hide);
+      document.removeEventListener("pointerdown", down);
     };
   }, []);
   if (!tip) return null;
@@ -155,7 +189,8 @@ export function Tooltips() {
 /** Text that turns into an input on click: Enter or blur saves, Esc cancels. */
 export function EditableText({ value, onSave, onStart, label, className, multiline }: {
   value: string;
-  onSave: (v: string) => void;
+  /** Resolves false when the save was refused; the editor then stays open. */
+  onSave: (v: string) => Promise<boolean> | void;
   /** Called as editing starts — the moment to pin the versions it acts on. */
   onStart?: () => void;
   label: string;
@@ -166,12 +201,14 @@ export function EditableText({ value, onSave, onStart, label, className, multili
   const [draft, setDraft] = useState(value);
   const done = useRef(false);
   useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
-  const commit = () => {
+  const commit = async () => {
     if (done.current) return;
     done.current = true;
-    setEditing(false);
     const v = draft.trim();
-    if (v && v !== value) onSave(v);
+    if (!v || v === value) { setEditing(false); return; }
+    const saved = await onSave(v);
+    if (saved === false) { done.current = false; return; }
+    setEditing(false);
   };
   if (!editing) {
     return (
@@ -184,10 +221,10 @@ export function EditableText({ value, onSave, onStart, label, className, multili
   const common = {
     autoFocus: true, value: draft, "aria-label": label, className: `edit-input ${className ?? ""}`,
     onChange: (e: { target: { value: string } }) => setDraft(e.target.value),
-    onBlur: commit,
+    onBlur: () => void commit(),
     onKeyDown: (e: React.KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); done.current = true; setEditing(false); }
-      else if (e.key === "Enter" && (!multiline || e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+      else if (e.key === "Enter" && (!multiline || e.metaKey || e.ctrlKey)) { e.preventDefault(); void commit(); }
     },
   };
   return multiline ? <textarea rows={4} {...common} /> : <input {...common} />;
@@ -211,7 +248,7 @@ export function Ago({ ts }: { ts?: string | null }) {
 }
 
 /** "Sep 26 14:03" in local time, for dev-log stamps. */
-export function Stamp({ ts }: { ts?: string | null }) {
+export function Stamp({ ts, tip }: { ts?: string | null; tip?: string }) {
   const [text, setText] = useState("");
   useEffect(() => {
     if (!ts) return;
@@ -219,5 +256,5 @@ export function Stamp({ ts }: { ts?: string | null }) {
     if (Number.isNaN(d.getTime())) return;
     setText(`${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${d.toTimeString().slice(0, 5)}`);
   }, [ts]);
-  return <time className="stamp" dateTime={ts ?? undefined} data-tip={ts ?? undefined}>{text}</time>;
+  return <time className="stamp" dateTime={ts ?? undefined} data-tip={tip ?? ts ?? undefined}>{text}</time>;
 }

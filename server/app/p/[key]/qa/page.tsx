@@ -21,17 +21,19 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
       <div key={c.uid} className="lrow" data-uid={c.uid}>
         <Led status={c.status} />
         <div className="grow">
-          <Link href={`/p/${key}/i/${c.id}`}>{c.title}</Link>
+          {link
+            ? <a className="qa-link" href={link.url} target="_blank" rel="noreferrer">{link.label} ↗</a>
+            : null}
+          <div><Link href={`/p/${key}/i/${c.id}`} className={link ? "dim" : ""}>{c.title}</Link></div>
           <div className="faint">
             {c.developer} · <Ago ts={c.entered} />{c.bounces > 0 && <span className="hot"> · returned ×{c.bounces}</span>}
           </div>
         </div>
-        {link && <a className="btn" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
         <MoveButtons item={JSON.parse(JSON.stringify(c))} project={key} deployStep={p.deploy_step} to={to} />
       </div>
     );
   };
-  if (!ready.length && !inQa.length) return <p className="empty">Nothing in QA.</p>;
+  if (!ready.length && !inQa.length) return <p className="empty">Empty.</p>;
   return (
     <div className="rows">
       {ready.length > 0 && <div className="label">Ready for QA</div>}

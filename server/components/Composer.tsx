@@ -17,6 +17,8 @@ export function Composer({ name = "text", users, placeholder, required, uploads,
 
   const onInput = () => {
     const el = ref.current!;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
     const before = el.value.slice(0, el.selectionStart);
     const m = /(?:^|\s)@([\w.-]*)$/.exec(before);
     setQuery(m ? m[1] : null);

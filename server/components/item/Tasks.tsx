@@ -4,13 +4,15 @@
 // done), click-to-edit titles, and a phase chip that shows on hover.
 import { useRef, useState } from "react";
 import * as act from "@/app/item-actions";
-import { COMPLETE, deriveCalcStatus, PARKED, STATUSES } from "@/lib/model";
+import { COMPLETE, deriveCalcStatus, PARKED } from "@/lib/model";
 import { EditableText, Led, Menu } from "../ui";
 import { AddBox, report, Remove, type Ctx } from "./ItemView";
 
 type Row = Record<string, any>;
 const finished = (s: string) => COMPLETE.includes(s) || PARKED.includes(s);
 const keyOf = (phase: number | null) => (phase === null ? "none" : String(phase));
+// The statuses a task moves through; the QA and deploy ones belong to items.
+const TASK_STATUSES = ["todo", "in-triage", "in-progress", "review", "blocked", "done", "deferred", "cancelled"];
 
 export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: string | null }) {
   const [showDone, setShowDone] = useState(false);
@@ -27,9 +29,10 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
 
   return (
     <>
+      <AddTask ctx={ctx} lastPhase={groups.length ? groups[groups.length - 1].phase : null} />
       {tasks.length > 0 && (
         <div className="list-head">
-          {calc && <Led status={calc} label />}
+          {calc && <span data-tip={`from tasks: ${calc}`}><Led status={calc} /></span>}
           {anyFinished && (
             <button type="button" className="more right" onClick={() => { setShowDone((s) => !s); setPinnedPhase({}); }}>
               {showDone ? "hide done" : "show done"}
@@ -56,7 +59,6 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
           </div>
         );
       })}
-      <AddTask ctx={ctx} lastPhase={groups.length ? groups[groups.length - 1].phase : null} />
     </>
   );
 }
@@ -65,14 +67,14 @@ function TaskRow({ t, ctx, focus }: { t: Row; ctx: Ctx; focus: boolean }) {
   const pinned = useRef(t.versions);
   const [phaseEdit, setPhaseEdit] = useState(false);
   const [phaseDraft, setPhaseDraft] = useState("");
-  const set = (data: { status?: string; title?: string; phase?: number | null }) =>
-    void act.setTask({ project: ctx.project, itemUid: ctx.itemUid, uid: t.uid, versions: pinned.current, data }).then(report);
-  const commitPhase = () => {
-    setPhaseEdit(false);
+  const save = async (data: { status?: string; title?: string; phase?: number | null }) =>
+    report(await act.setTask({ project: ctx.project, itemUid: ctx.itemUid, uid: t.uid, versions: pinned.current, data }));
+  const set = (data: { status?: string; title?: string; phase?: number | null }) => void save(data);
+  const commitPhase = async () => {
     const v = phaseDraft.trim();
     const phase = v === "" ? null : Number(v);
-    if (phase !== null && !Number.isInteger(phase)) return;
-    if (phase !== t.phase) set({ phase });
+    if ((phase !== null && !Number.isInteger(phase)) || phase === t.phase) { setPhaseEdit(false); return; }
+    if (await save({ phase })) setPhaseEdit(false);
   };
   return (
     <div id={`t-${t.n}`} className={`trow s-${t.status} ${finished(t.status) ? "fin" : ""} ${focus ? "focus" : ""}`} data-uid={t.uid}>
@@ -87,18 +89,18 @@ function TaskRow({ t, ctx, focus }: { t: Row; ctx: Ctx; focus: boolean }) {
         <Menu label={`task ${t.n} status`} tip={`${t.status} · shift: todo · ctrl: done`} className="dotbtn"
               onOpen={() => { pinned.current = t.versions; }}
               trigger={<Led status={t.status} />} current={t.status}
-              options={STATUSES.map((s) => ({ value: s, label: <Led status={s} label /> }))}
+              options={(TASK_STATUSES.includes(t.status) ? TASK_STATUSES : [t.status, ...TASK_STATUSES]).map((s) => ({ value: s, label: <Led status={s} label /> }))}
               onPick={(status) => { if (status !== t.status) set({ status }); }} />
       </span>
       <span className="tid">{t.n}</span>
       <span className="ttitle">
         <EditableText value={t.title} label={`task ${t.n} title`} onStart={() => { pinned.current = t.versions; }}
-                      onSave={(title) => set({ title })} />
+                      onSave={(title) => save({ title })} />
       </span>
       {phaseEdit ? (
         <input className="tphase-in" autoFocus inputMode="numeric" aria-label="phase" value={phaseDraft}
-               onChange={(e) => setPhaseDraft(e.target.value)} onBlur={commitPhase}
-               onKeyDown={(e) => { if (e.key === "Enter") commitPhase(); if (e.key === "Escape") setPhaseEdit(false); }} />
+               onChange={(e) => setPhaseDraft(e.target.value)} onBlur={() => void commitPhase()}
+               onKeyDown={(e) => { if (e.key === "Enter") void commitPhase(); if (e.key === "Escape") setPhaseEdit(false); }} />
       ) : (
         <button type="button" className="tphase x" aria-label="set phase" data-tip="phase"
                 onClick={() => { pinned.current = t.versions; setPhaseDraft(t.phase === null ? "" : String(t.phase)); setPhaseEdit(true); }}>

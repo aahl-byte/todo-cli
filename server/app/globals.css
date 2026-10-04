@@ -320,3 +320,17 @@ input.big { font-size: 15px; padding: 7px 9px; }
   .topbar .user summary .caret { font-size: 10px; }
   .topbar .user summary::before { content: "☰"; font-size: 13px; color: var(--dim); }
 }
+
+.entry:hover .x, .rrow:hover .x, .trow:hover .x { opacity: 1; }
+.rrow.created .stat { color: var(--faint); }
+.rrow.created .led { background: var(--faint); }
+.summary > summary .chev { transition: transform .12s; }
+.summary[open] > summary .chev { transform: rotate(90deg); }
+@media (max-width: 700px) { .column.empty-col { display: none; } }
+
+.filter .menu { min-width: 220px; gap: 8px; padding: 10px; }
+.filter .k { display: grid; gap: 3px; font: 600 8px var(--disp); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+.filter .check { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.title-row .big { flex: 4; }
+.qa-link { color: var(--cyan); font-size: 13px; }
+.composer textarea { overflow: hidden; min-height: 2.6em; }

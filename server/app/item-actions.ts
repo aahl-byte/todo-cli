@@ -83,7 +83,7 @@ export async function saveRequest(a: { project: string; itemUid: string; noteUid
 
 /** Change the request of an item already past triage: back to requested, the
  * edit, then into triage — so the change gets triaged. */
-export async function changeRequest(a: { project: string; itemUid: string; noteUid?: string | null; text: string }) {
+export async function changeRequest(a: { project: string; itemUid: string; noteUid?: string | null; versions?: Versions; text: string }) {
   const user = await requireUser();
   const text = a.text.trim();
   if (!text) return fail("Write the request first.");
@@ -96,10 +96,12 @@ export async function changeRequest(a: { project: string; itemUid: string; noteU
     const r = await apply(a.project, [build.setOp("item", { ...item, versions: cur.versions }, { status: "requested" })], user.handle, d);
     if (!r.ok) return r;
   }
-  let noteVersions: Versions = {};
+  // The note edit uses the versions the popup opened with, so a request someone
+  // else changed meanwhile is refused rather than overwritten.
+  const noteVersions: Versions = a.versions ?? {};
   if (a.noteUid) {
     const [n] = await d.query("select versions from notes where uid = $1 and project = $2", [a.noteUid, a.project]);
-    noteVersions = n?.versions ?? {};
+    if (n && n.versions?.text !== noteVersions.text) return fail("Someone changed the request meanwhile — reopen it to see their version.");
   }
   const edited = await saveRequestAs(a, text, noteVersions, user.handle, d);
   if (!edited.ok) return edited;

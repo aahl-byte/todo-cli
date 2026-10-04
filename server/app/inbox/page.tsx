@@ -27,7 +27,7 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
           <Link href={all ? "/inbox" : "/inbox?all=1"} className={`btn ${all ? "on" : ""}`}>Include read</Link>
           {box.unread > 0 && <MarkAllRead />}
         </div>
-        {box.notifications.length === 0 && <p className="empty">Nothing new.</p>}
+        {box.notifications.length === 0 && <p className="empty">Empty.</p>}
         <div className="rows">
           {box.notifications.map((n: any) => (
             <a key={n.id} href={`/inbox/open/${n.id}`} className={`lrow ${n.read_at ? "read" : "unread"}`}>

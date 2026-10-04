@@ -53,17 +53,24 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
 
   // `#n-3`, `#t-2`, `#l-5`: open the owning tab, expand and scroll to the entry.
   useEffect(() => {
-    const m = /^#([ntl])-(\d+)$/.exec(window.location.hash);
-    if (!m) return;
-    const n = Number(m[2]);
-    if (m[1] === "t") setTab("tasks");
-    else if (m[1] === "l") setTab("log");
-    else {
-      const note = [...data.comments, ...data.questions, ...data.notes].find((x) => x.n === n);
-      setTab(!note ? "comments" : note.kind === "clarification" ? "questions" : note.kind === "context" ? "notes" : "comments");
-    }
-    setFocus(window.location.hash.slice(1));
-    setTimeout(() => document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ block: "center" }), 200);
+    const go = () => {
+      const m = /^#([ntl])-(\d+)$/.exec(window.location.hash);
+      if (!m) return;
+      const n = Number(m[2]);
+      let target = window.location.hash.slice(1);
+      if (m[1] === "t") setTab("tasks");
+      else if (m[1] === "l") setTab("log");
+      else if (data.request?.n === n) target = "request";
+      else {
+        const note = [...data.comments, ...data.questions, ...data.notes].find((x) => x.n === n);
+        if (note) setTab(note.kind === "clarification" ? "questions" : note.kind === "context" ? "notes" : "comments");
+      }
+      setFocus(target);
+      setTimeout(() => document.getElementById(target)?.scrollIntoView({ block: "center" }), 200);
+    };
+    go();
+    window.addEventListener("hashchange", go);
+    return () => window.removeEventListener("hashchange", go);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -132,7 +139,7 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
             onPick={pick} />
       <h1 className="title">
         <EditableText value={it.title} label="title" onStart={() => { pinned.current = it.versions; }}
-                      onSave={(title) => void act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current, data: { title } }).then(report)} />
+                      onSave={async (title) => report(await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current, data: { title } }))} />
       </h1>
       {popup && (
         <MovePopup move={popup.move} from={it.status} pendingPre={pendingPre} onClose={() => setPopup(null)}
@@ -152,7 +159,7 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
   const [busy, setBusy] = useState(false);
   const forcing = move.status === "deployed" && pendingPre > 0;
   const title = move.rejection ? "Send back from QA"
-    : move.status === "blocked" ? "Blocked on…"
+    : move.status === "blocked" ? "Block"
     : forcing ? `Deploy with ${pendingPre} pre-deploy check${pendingPre > 1 ? "s" : ""} pending?`
     : `${from} → ${move.status}`;
   const placeholder = move.rejection ? "What failed?" : move.status === "blocked" ? "Blocked on…" : "Why?";
@@ -168,7 +175,7 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
       <div className="actions">
         <button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className={`btn ${forcing || move.rejection ? "danger" : "primary"}`} disabled={!ok} onClick={() => void submit()}>
-          {forcing ? "Deploy anyway" : move.rejection ? "Send back" : <Led status={move.status} label />}
+          {forcing ? "Deploy anyway" : move.rejection ? "Send back" : move.status === "blocked" ? "Block" : "Move"}
         </button>
       </div>
     </Popup>
@@ -189,7 +196,7 @@ function Request({ data, ctx }: { data: Data; ctx: Ctx }) {
   const start = (mode: "edit" | "change") => { pinned.current = req?.versions ?? {}; setDraft(req?.text ?? ""); setEditing(mode); };
   const save = async () => {
     const r = editing === "change"
-      ? await act.changeRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, text: draft })
+      ? await act.changeRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, versions: pinned.current, text: draft })
       : await act.saveRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, versions: pinned.current, text: draft });
     if (report(r)) setEditing(null);
   };
@@ -207,12 +214,12 @@ function Request({ data, ctx }: { data: Data; ctx: Ctx }) {
     );
   }
   return (
-    <div className={`request ${long && !open ? "clamp" : ""}`}>
-      {req ? <Markdown text={req.text} /> : editable ? null : <span className="faint">No request.</span>}
+    <div id="request" className={`request ${long && !open ? "clamp" : ""}`}>
+      {req && <Markdown text={req.text} />}
       <div className="request-acts">
         {long && <button type="button" className="more" onClick={() => setOpen((o) => !o)}>{open ? "less" : "more"}</button>}
         {editable && <button type="button" className="add" onClick={() => start("edit")}>{req ? "✎ edit request" : "+ request"}</button>}
-        {!editable && <button type="button" className="add" onClick={() => start("change")}>✎ change request</button>}
+        {!editable && <button type="button" className="add" onClick={() => start("change")}>{req ? "✎ change request" : "+ request"}</button>}
       </div>
       {editing === "change" && (
         <Popup title="Change the request" onClose={() => setEditing(null)}>
@@ -235,6 +242,7 @@ function MobileSummary({ data, ctx }: { data: Data; ctx: Ctx }) {
   return (
     <details className="summary narrow-only">
       <summary>
+        <span className="chev">›</span>
         <span className="av">{initials(it.developer)}</span>
         <span className="av">{initials(it.qa_assignee)}</span>
         <span className="dim">{it.type}</span>
@@ -285,6 +293,8 @@ export function AddBox({ label, placeholder, onAdd, users, uploads, children }: 
 function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
   return (
     <>
+      <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={ctx.uploads}
+              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
       <ul className="entries">
         {data.comments.map((c) => (
           <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""}`} data-uid={c.uid}>
@@ -300,8 +310,6 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
           </li>
         ))}
       </ul>
-      <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={ctx.uploads}
-              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
     </>
   );
 }
@@ -310,14 +318,14 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
 function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
   const open = data.questions.filter((q) => q.meta?.state !== "answered");
   const answered = data.questions.filter((q) => q.meta?.state === "answered");
-  const [showAnswered, setShowAnswered] = useState(false);
+  const [showAnswered, setShowAnswered] = useState(() => answered.some((q) => focus === `n-${q.n}`));
   return (
     <>
+      <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
+              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "clarification", text }))} />
       <ul className="entries">
         {open.map((q) => <OpenQuestion key={q.uid} q={q} ctx={ctx} focus={focus} />)}
       </ul>
-      <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
-              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "clarification", text }))} />
       {answered.length > 0 && (
         <>
           <button type="button" className="tgroup" onClick={() => setShowAnswered((s) => !s)}>
@@ -326,7 +334,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
           {showAnswered && (
             <ul className="entries">
               {answered.map((q) => (
-                <li key={q.uid} id={`n-${q.n}`} className="entry" data-uid={q.uid}>
+                <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""}`} data-uid={q.uid}>
                   <div className="body">
                     <div className="dim"><Markdown text={q.text} /></div>
                     <Markdown text={q.meta?.answer ?? ""} />
@@ -386,6 +394,9 @@ function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Ro
   const allOpen = rows.length > 0 && rows.every((r) => open[`${prefix}-${r.n}`]);
   return (
     <>
+      <AddBox label={kind === "log" ? "log" : "note"} placeholder={kind === "log" ? "What you did, what broke, what you swapped" : "Context — the why, a decision, a gotcha"}
+              users={ctx.users} uploads={ctx.uploads}
+              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: kind === "log" ? "log" : "context", text }))} />
       {rows.length > 1 && (
         <div className="list-head">
           <button type="button" className="more right" onClick={() => setOpen(Object.fromEntries(rows.map((r) => [`${prefix}-${r.n}`, !allOpen])))}>
@@ -398,9 +409,6 @@ function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Ro
                                 open={!!open[`${prefix}-${r.n}`]} focus={focus === `${prefix}-${r.n}`}
                                 toggle={() => setOpen((o) => ({ ...o, [`${prefix}-${r.n}`]: !o[`${prefix}-${r.n}`] }))} />)}
       </ul>
-      <AddBox label={kind === "log" ? "log" : "note"} placeholder={kind === "log" ? "What you did, what broke, what you swapped" : "Context — the why, a decision, a gotcha"}
-              users={ctx.users} uploads={ctx.uploads}
-              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: kind === "log" ? "log" : "context", text }))} />
     </>
   );
 }
@@ -418,7 +426,7 @@ function Entry({ row, kind, ctx, id, open, focus, toggle }: {
   return (
     <li id={id} className={`entry ${focus ? "focus" : ""}`} data-uid={row.uid}>
       <button type="button" className={`chev ${open ? "open" : ""}`} aria-expanded={open} aria-label={open ? "collapse" : "expand"} onClick={toggle}>›</button>
-      {kind === "log" && <span data-tip={tip}><Stamp ts={row.ts} /></span>}
+      {kind === "log" && <Stamp ts={row.ts} tip={tip} />}
       <div className="body" data-tip={kind === "context" ? tip : undefined}>
         {editing ? (
           <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setEditing(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(); }}>

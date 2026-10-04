@@ -163,6 +163,25 @@ const errors = [];
     await page.locator(".wide-only a", { hasText: "PR #7" }).waitFor({ state: "detached" });
   });
 
+  await step("popups keep the cursor where you type", async () => {
+    await page.click(".wide-only button[aria-label='add link']");
+    await page.fill(".popup input[aria-label=URL]", "https://example.com/x");
+    await page.click(".popup input[aria-label=label]");
+    await page.keyboard.type("Hello");
+    const url = await page.inputValue(".popup input[aria-label=URL]");
+    const label = await page.inputValue(".popup input[aria-label=label]");
+    await page.keyboard.press("Escape");
+    if (url !== "https://example.com/x" || label !== "Hello") throw new Error(`${url} / ${label}`);
+  });
+
+  await step("note actions show on hover", async () => {
+    await page.click("role=tab[name=/Notes/]");
+    const row = page.locator(".entry").first();
+    await row.hover();
+    const op = await row.locator(".x").first().evaluate((el) => getComputedStyle(el).opacity);
+    if (op !== "1") throw new Error("opacity " + op);
+  });
+
   await step("item: history shows a light and a time per entry", async () => {
     const rows = page.locator(".wide-only .hist .rrow");
     if ((await rows.count()) < 2) throw new Error("no history");
@@ -201,6 +220,22 @@ const errors = [];
     await p2.close();
   });
 
+  await step("a refused title save keeps the draft", async () => {
+    const p3 = await ctx.newPage();
+    await p3.route("**/api/projects/*/changes*", (r) => r.abort());
+    await p3.goto(item("safari-login-fails-after-password-reset"));
+    await p3.click(".head .title .edit-text");
+    const uid = await p3.locator("[data-uid]").first().getAttribute("data-uid");
+    const v = await (await fetch(base + "/api/projects/web/changes?since=0&limit=2000", { headers: { authorization: "Bearer " + tokens.pat } })).json();
+    const row = v.changes.find((c) => c.uid === uid);
+    await api("pat", [{ op_id: "t-" + Date.now(), op: "set", entity: "item", uid, item_uid: uid, data: { title: "Renamed by Pat" }, base: { title: row.data.versions.title } }]);
+    await p3.fill(".head .title input", "My draft");
+    await p3.keyboard.press("Enter");
+    await p3.locator(".toasts .toast").waitFor();
+    if ((await p3.inputValue(".head .title input")) !== "My draft") throw new Error("draft lost");
+    await p3.close();
+  });
+
   await step("QA: reject needs a comment", async () => {
     await login("qa", "/p/web/qa");
     await page.screenshot({ path: out + "/qa.png", fullPage: true });
@@ -215,7 +250,7 @@ const errors = [];
   await step("deploy: pending checks need a confirmed force", async () => {
     await page.goto(base + "/p/web/deploy");
     await page.screenshot({ path: out + "/deploy.png", fullPage: true });
-    await page.locator(".lrow", { hasText: "Store times in UTC" }).locator("button:has-text('Deployed')").click();
+    await page.locator(".lrow", { hasText: "Store times in UTC" }).locator("button:has-text('Mark deployed')").click();
     await page.locator(".popup button.danger", { hasText: "Deploy anyway" }).click();
     await page.locator(".lrow", { hasText: "Store times in UTC" }).waitFor({ state: "detached" });
   });
