@@ -184,3 +184,30 @@ def migrate_repo(repo_dir: Path) -> Path | None:
     if ignored:
         ensure_gitignore(repo_dir, store.ROOT_NAME)
     return root
+
+
+FORMAT_FILE = ".format"
+NOTE_FORMAT = "notes: metadata-last"
+
+
+def convert_note_meta(root: Path) -> int:
+    """Rewrite notes and log entries that open with front matter so the text
+    comes first and the metadata block last. Runs once per store; a `.format`
+    marker records it. Returns how many files changed."""
+    marker = root / FORMAT_FILE
+    if not root.is_dir() or (marker.is_file() and marker.read_text().strip() == NOTE_FORMAT):
+        return 0
+    from . import frontmatter
+    changed = 0
+    for folder in store.FOLDERS:
+        for item_dir in (root / folder).glob("*"):
+            for sub in (store.NOTES_DIR, store.LOG_DIR):
+                for f in (item_dir / sub).glob("*.md"):
+                    text = f.read_text()
+                    if not frontmatter.has_front_matter(text):
+                        continue
+                    meta, body = frontmatter.split(text)
+                    yamlio.write_atomic(f, frontmatter.join(meta, body))
+                    changed += 1
+    yamlio.write_atomic(marker, NOTE_FORMAT + "\n")
+    return changed

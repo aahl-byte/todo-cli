@@ -25,11 +25,34 @@ def test_log_entries_carry_authorship(root):
     assert (e["author"], e["via"], e["text"]) == ("tester", "human", "tried x")
 
 
-def test_front_matter_round_trips_and_body_keeps_rules():
-    text = frontmatter.join({"uid": "U", "kind": "comment", "mentions": ["a"]},
-                            "top\n---\nbottom\n")
-    assert frontmatter.split(text) == ({"uid": "U", "kind": "comment", "mentions": ["a"]},
-                                       "top\n---\nbottom\n")
+def test_metadata_goes_last_and_round_trips():
+    meta = {"uid": "U", "kind": "comment", "mentions": ["a"], "answer": "multi\n-->\nline"}
+    text = frontmatter.join(meta, "top\n---\nbottom\n")
+    assert text.startswith("top\n")
+    assert text.rstrip().endswith("-->")
+    assert frontmatter.split(text) == (meta, "top\n---\nbottom\n")
+
+
+def test_older_front_matter_still_reads_and_converts(root):
+    from todo import migrate
+    d = root / "OPEN" / "beta" / "notes"
+    d.mkdir()
+    f = d / "2026-06-25T09-30-00.000Z-1.md"
+    f.write_text("---\nuid: U1\nkind: context\nauthor: x\n---\nthe point\n")
+    assert notes(root)[0]["text"] == "the point"
+    (root / migrate.FORMAT_FILE).unlink(missing_ok=True)
+    assert migrate.convert_note_meta(root) == 1
+    assert f.read_text().startswith("the point\n")
+    n = notes(root)[0]
+    assert (n["uid"], n["text"]) == ("U1", "the point")
+    assert migrate.convert_note_meta(root) == 0
+
+
+def test_a_note_that_merely_contains_a_comment_stays_a_body(root):
+    d = root / "OPEN" / "beta" / "notes"
+    d.mkdir()
+    (d / "2026-06-25T09-30-00.000Z-1.md").write_text("text\n<!--todo\nnot: meta\n-->\n")
+    assert notes(root)[0]["text"] == "text\n<!--todo\nnot: meta\n-->"
 
 
 def test_legacy_body_opening_with_a_rule_stays_a_body(root):

@@ -859,6 +859,8 @@ def main():
         root = None
     else:
         root = _resolve_root(args.dir)
+    if root is not None and root.is_dir():
+        migrate.convert_note_meta(root)
     if root is not None and args.command not in NO_AUTO_SYNC and sync.enabled(root) \
             and not getattr(args, "all_projects", False):
         with sync.locked(root):

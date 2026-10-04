@@ -1,31 +1,63 @@
-"""YAML front matter on note, log and history files.
+"""The metadata block on note and log files, and plain YAML maps for history.
 
-    ---
+A note keeps its Markdown first and its metadata last, in an HTML comment that
+Markdown renderers hide:
+
+    the Markdown body
+
+    <!--todo
     uid: 01J9…
     kind: comment
     author: alice
-    ---
-    the Markdown body
+    -->
 
-A leading `---` block counts as front matter only when it parses to a map with
-a `uid` or `kind`, so a legacy note that opens with a Markdown rule stays a body.
+Older files carry the same map as leading YAML front matter (`---` … `---`);
+they still read, and `migrate.convert_note_meta` rewrites them. A block counts
+only when it parses to a map with a `uid` or `kind`, so a note that merely
+contains a rule or a comment stays a body.
 """
 
 from __future__ import annotations
 
 import io
+import re
 
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import LiteralScalarString
 
 _FENCE = "---"
 _KEYS = ("uid", "kind")
+_OPEN = "<!--todo"
+_CLOSE = "-->"
+# The last `<!--todo … -->` block, ending the file. YAML indents every line of a
+# multi-line value, so no line inside the block is exactly `-->`.
+_TRAILER = re.compile(r"(?:\A|\n)<!--todo\n(?P<yaml>(?:.*\n)*?)-->\s*\Z")
 _reader = YAML(typ="safe")
 _reader.constructor.add_constructor("tag:yaml.org,2002:timestamp", lambda c, n: n.value)
 
 
+def _meta(text: str):
+    try:
+        meta = _reader.load(text)
+    except Exception:  # noqa: BLE001 — not YAML: part of the body
+        return None
+    return meta if isinstance(meta, dict) and any(k in meta for k in _KEYS) else None
+
+
 def split(text: str) -> tuple:
-    """(meta, body). `meta` is {} when the file has no front matter."""
+    """(meta, body). `meta` is {} when the file has no metadata block. The body
+    keeps one trailing newline, as written."""
+    m = _TRAILER.search(text)
+    if m:
+        meta = _meta(m.group("yaml"))
+        if meta is not None:
+            body = text[:m.start()].rstrip("\n")
+            return meta, body + "\n" if body else ""
+    return _split_front(text)
+
+
+def _split_front(text: str) -> tuple:
+    """Leading `---` front matter, the older layout."""
     if not text.startswith(_FENCE + "\n"):
         return {}, text
     end = text.find("\n" + _FENCE + "\n", len(_FENCE))
@@ -34,15 +66,14 @@ def split(text: str) -> tuple:
             end = len(text) - len(_FENCE) - 1
         else:
             return {}, text
-    try:
-        meta = _reader.load(text[len(_FENCE) + 1:end + 1])
-    except Exception:  # noqa: BLE001 — not YAML: a legacy body
+    meta = _meta(text[len(_FENCE) + 1:end + 1])
+    if meta is None:
         return {}, text
-    if not isinstance(meta, dict) or not any(k in meta for k in _KEYS):
-        return {}, text
-    if meta.get("uid") is not None:
-        meta["uid"] = str(meta["uid"])
     return meta, text[end + len(_FENCE) + 2:]
+
+
+def has_front_matter(text: str) -> bool:
+    return bool(_split_front(text)[0])
 
 
 def _dumper() -> YAML:
@@ -55,7 +86,7 @@ def _dumper() -> YAML:
 
 
 def join(meta: dict, body: str) -> str:
-    """Front matter + body. Empty `meta` writes the bare body."""
+    """Body first, then the metadata block. Empty `meta` writes the bare body."""
     if not meta:
         return body
     clean = {}
@@ -65,7 +96,8 @@ def join(meta: dict, body: str) -> str:
         clean[k] = LiteralScalarString(v) if isinstance(v, str) and "\n" in v else v
     buf = io.StringIO()
     _dumper().dump(clean, buf)
-    return f"{_FENCE}\n{buf.getvalue()}{_FENCE}\n{body}"
+    text = body.rstrip("\n")
+    return f"{text}\n\n{_OPEN}\n{buf.getvalue()}{_CLOSE}\n" if text else f"{_OPEN}\n{buf.getvalue()}{_CLOSE}\n"
 
 
 def dump_map(data: dict) -> str:

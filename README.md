@@ -309,10 +309,13 @@ tasks:
   - {id: 2, uid: 01K..., title: rollup render, status: in-progress}
 ```
 
-Notes and dev-log entries are Markdown files with YAML front matter
-(`uid`, `kind`, `author`, `via`, plus kind-specific keys such as `url` or
-`state`). A file without front matter is a plain context note. The filename
-carries the timestamp (`:` written as `-`) and the constant per-item id.
+Notes and dev-log entries are Markdown files: the text first, then a metadata
+block (`uid`, `kind`, `author`, `via`, plus kind-specific keys such as `url` or
+`state`) in a trailing `<!--todo … -->` comment that Markdown renderers hide, so
+a collapsed note shows its first line of content. A file without the block is a
+plain context note; older files with leading `---` front matter still read and
+are rewritten once per store. The filename carries the timestamp (`:` written as
+`-`) and the constant per-item id.
 
 Other keys in an item's `TODO.yaml` (`description`, `acceptance`, `depends_on`,
 …) are preserved untouched on round-trip — the CLI only manages the fields

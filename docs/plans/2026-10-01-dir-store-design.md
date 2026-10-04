@@ -26,8 +26,8 @@ Each item directory:
   phase-1/TASKS.yaml       # tasks in phase 1, in display order
   phase-2/TASKS.yaml
   unphased/TASKS.yaml      # tasks with no phase
-  notes/{ts}-{id}.md       # one note per file: front matter + Markdown
-  devlogs/{ts}-{id}.md     # one dev-log entry per file: front matter + text
+  notes/{ts}-{id}.md       # one note per file: Markdown, then a <!--todo …--> metadata block
+  devlogs/{ts}-{id}.md     # one dev-log entry per file: text, then the metadata block
   history/{ts}-{id}.yaml   # one status transition per file
   checks/CHECKS.yaml       # deployment checks, in order
 ```
