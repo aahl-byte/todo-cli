@@ -37,6 +37,18 @@ export function report(state: ActionState): boolean {
 
 type Tab = "comments" | "questions" | "tasks" | "notes" | "log";
 
+// One visit per mount burst: an immediate remount (React's dev double effect)
+// shares the first call's answer instead of recording a second visit.
+const visits = new Map<string, { at: number; result: ReturnType<typeof act.seen> }>();
+function seenOnce(project: string, itemUid: string) {
+  const key = `${project}/${itemUid}`;
+  const hit = visits.get(key);
+  if (hit && Date.now() - hit.at < 1500) return hit.result;
+  const result = act.seen({ project, itemUid });
+  visits.set(key, { at: Date.now(), result });
+  return result;
+}
+
 /** Whether something another person wrote at `ts` arrived since my last visit. */
 type IsNew = (ts: string | null | undefined, by: string | null | undefined) => boolean;
 const Fresh = createContext<IsNew>(() => false);
@@ -84,7 +96,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   const [lastSeen, setLastSeen] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    void act.seen({ project: ctx.project, itemUid: it.uid }).then((r) => {
+    void seenOnce(ctx.project, it.uid).then((r) => {
       if (!live) return;
       setLastSeen(r.lastSeen);
       window.dispatchEvent(new CustomEvent("todo:unread", { detail: r.unread }));

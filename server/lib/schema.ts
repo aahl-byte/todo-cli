@@ -216,8 +216,6 @@ create table if not exists item_seen (
   project  text not null,
   item_uid text not null,
   seen_at  timestamptz not null,
-  baseline timestamptz,
   primary key (handle, project, item_uid)
 );
-alter table item_seen add column if not exists baseline timestamptz;
 `;
