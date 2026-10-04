@@ -7,6 +7,7 @@ Needs `cd server && npm install && npm run build`; skipped otherwise."""
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -44,8 +45,10 @@ def server(tmp_path):
         tokens[handle] = out.stdout.strip().split(": ", 1)[1]
     port = _port()
     log = open(tmp_path / "server.log", "w")
-    proc = subprocess.Popen(["npx", "next", "start", "-p", str(port), "-H", "127.0.0.1"],
-                            cwd=SERVER, env=env, stdout=log, stderr=subprocess.STDOUT)
+    # Its own process group, so teardown stops next-server itself and not just
+    # a wrapper that would leave it running.
+    proc = subprocess.Popen([str(SERVER / "node_modules" / ".bin" / "next"), "start", "-p", str(port), "-H", "127.0.0.1"],
+                            cwd=SERVER, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     url = f"http://127.0.0.1:{port}"
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -56,15 +59,23 @@ def server(tmp_path):
         except OSError:
             time.sleep(0.5)
     else:
-        proc.kill()
+        _stop(proc)
         pytest.fail("server did not start: " + (tmp_path / "server.log").read_text())
-    yield url, tokens
-    proc.terminate()
     try:
+        yield url, tokens
+    finally:
+        _stop(proc)
+        log.close()
+
+
+def _stop(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
         proc.wait(10)
     except subprocess.TimeoutExpired:
-        proc.kill()
-    log.close()
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def cli(home: Path, cwd: Path, *argv, offline=False):
