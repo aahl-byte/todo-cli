@@ -2,6 +2,7 @@
 // Live status: poll the project's changes feed (and the inbox) every 3 s while
 // the tab is visible; on change, refresh the server components and flash what
 // changed.
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -51,10 +52,8 @@ export function Live({ project, cursor }: { project?: string; cursor?: number })
 
   return (
     <>
-      <a href="/inbox">Inbox {unread > 0 && <span className="badge">{unread}</span>}</a>
-      <span className={online ? "live" : "live off"} title={online ? "live" : "offline — retrying"}>
-        <i /> {online ? "live" : "offline — retrying"}
-      </span>
+      <Link href="/inbox" className="label">Inbox{unread > 0 && <span className="count">{unread}</span>}</Link>
+      <span className={online ? "live" : "live off"} data-tip={online ? "live" : "offline — retrying"} aria-label={online ? "live" : "offline"} />
     </>
   );
 }

@@ -1,4 +1,7 @@
--- Idempotent: `npm run migrate` applies the whole file on every deploy.
+// The database schema, applied idempotently by migrate() on every deploy and
+// on PGlite startup. It lives in code, not in a file read at runtime, so it
+// works from any working directory and in bundled deploys.
+export const SCHEMA = `
 -- Every entity row is keyed by (project, uid): a uid is unique within a
 -- project, so one store can be linked to several projects over time.
 
@@ -133,7 +136,7 @@ create table if not exists status_history (
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
--- One row per changed entity. `seq` comes from projects.seq under the project's
+-- One row per changed entity. seq comes from projects.seq under the project's
 -- row lock, so sequence numbers commit in order and a pull never skips one.
 create table if not exists changes (
   project  text not null,
@@ -202,3 +205,4 @@ create table if not exists notifications (
   read_at  timestamptz
 );
 create index if not exists notifications_handle on notifications (handle, read_at);
+`;

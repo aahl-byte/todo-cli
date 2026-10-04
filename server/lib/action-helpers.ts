@@ -6,6 +6,8 @@ export interface ActionState {
   ok: boolean;
   message?: string;
   at?: number;
+  /** When the winning change was made, for the viewer to show in local time. */
+  when?: string | null;
 }
 
 /** Kinds a person may post from the dashboard; the rest come from flows
@@ -30,14 +32,15 @@ const REASONS: Record<string, string> = {
   "group-rolled-back": "nothing was applied",
   removed: "it was removed",
   "no-item": "the item no longer exists",
+  "request-locked": "the request can only change while the item is requested",
 };
 
 export function describe(results: Result[]): ActionState {
   for (const r of results) {
     for (const x of r.rejected ?? []) {
       if (x.reason === "stale") {
-        const at = x.at ? ` at ${x.at.slice(11, 16)} UTC` : "";
-        return { ok: false, message: `${x.by ?? "Someone"} set ${x.field} to ${JSON.stringify(x.server_value)}${at} — reload and try again.`, at: Date.now() };
+        const value = typeof x.server_value === "string" ? x.server_value : JSON.stringify(x.server_value);
+        return { ok: false, message: `${x.by ?? "Someone"} set ${x.field.replace(/^meta\./, "")} → ${value}`, when: x.at ?? null, at: Date.now() };
       }
       return { ok: false, message: `Not applied: ${REASONS[x.reason] ?? x.reason}.`, at: Date.now() };
     }

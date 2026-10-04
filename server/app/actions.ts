@@ -1,11 +1,11 @@
 "use server";
-// Dashboard writes: each action builds ops (lib/ops-builder.ts) and sends them
-// through the same apply path the CLI's sync uses.
+// Form-driven writes: new requests, deploy-all, inbox reads, sign-in. The item
+// page's writes live in item-actions.ts.
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { applyOps, ProjectNotFound, type Op, type Result } from "@/lib/apply";
-import { POSTABLE_KINDS, describe, safeNext, type ActionState } from "@/lib/action-helpers";
+import { describe, safeNext, type ActionState } from "@/lib/action-helpers";
 import { userForToken } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
@@ -16,147 +16,38 @@ import { flushJira } from "@/lib/jira/flush";
 
 export type { ActionState };
 
-async function run(project: string, ops: Op[] | (() => Op[])): Promise<ActionState> {
-  const user = await requireUser();
-  let built: Op[];
-  try {
-    built = typeof ops === "function" ? ops() : ops;
-  } catch (e) {
-    return { ok: false, message: (e as Error).message, at: Date.now() };
-  }
-  const d = await db();
-  let results: Result[];
-  try {
-    results = await applyOps(d, project, built, { handle: user.handle });
-  } catch (e) {
-    if (e instanceof ProjectNotFound) return { ok: false, message: "No such project.", at: Date.now() };
-    throw e;
-  }
-  later(() => flushJira(d));
-  const state = describe(results);
-  // A refused write leaves the page as the user saw it, so the form that raised
-  // the notice is still mounted; live polling brings in the newer state.
-  if (state.ok) revalidatePath(`/p/${project}`, "layout");
-  return state;
-}
-
-function refOf(fd: FormData, prefix = ""): build.Ref {
-  return {
-    uid: String(fd.get(prefix + "uid")),
-    item_uid: String(fd.get("item_uid") ?? fd.get(prefix + "uid")),
-    versions: JSON.parse(String(fd.get(prefix + "versions") ?? "{}")),
-  };
-}
-
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "");
 
-export async function itemAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const project = str(fd, "project");
-  const kind = str(fd, "action");
-  const item = { ...refOf(fd), qa_assignee: str(fd, "qa_assignee") || null };
-  const user = await requireUser();
-  switch (kind) {
-    case "status":
-      return run(project, build.statusOps(item, str(fd, "to"), { force: fd.get("force") === "1" }));
-    case "reject":
-      return run(project, () => build.rejectOps(item, str(fd, "text")));
-    case "back":
-      return run(project, () => build.backToWorkOps(item, str(fd, "text")));
-    case "pickup":
-      return run(project, build.pickUpOps(item, user.handle));
-    case "approve": {
-      const [p] = await (await db()).query("select deploy_step from projects where key = $1", [project]);
-      return run(project, build.approveOps(item, p?.deploy_step !== false));
-    }
-    case "people":
-      return run(project, [build.setOp("item", item, { developer: str(fd, "developer") || null, qa_assignee: str(fd, "qa") || null })]);
-    case "edit": {
-      const data: Record<string, unknown> = {};
-      for (const f of ["title", "type", "priority"]) if (fd.has(f)) data[f] = str(fd, f).trim();
-      return run(project, [build.setOp("item", item, data)]);
-    }
-    default:
-      return { ok: false, message: `unknown action ${kind}` };
-  }
-}
-
-export async function noteAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const project = str(fd, "project");
-  const itemUid = str(fd, "item_uid");
-  const user = await requireUser();
-  switch (str(fd, "action")) {
-    case "add": {
-      const kind = str(fd, "kind") || "context";
-      if (!POSTABLE_KINDS.includes(kind)) return { ok: false, message: `Notes of kind ${kind} can't be posted here.` };
-      return run(project, () => build.noteOps(itemUid, kind, str(fd, "text")));
-    }
-    case "link":
-      return run(project, () => build.linkOps(itemUid, str(fd, "url"), str(fd, "label"), str(fd, "type")));
-    case "answer":
-      return run(project, () => build.answerOps(refOf(fd), str(fd, "text"), user.handle));
-    case "remove":
-      return run(project, [build.removeOp("note", refOf(fd))]);
-    default:
-      return { ok: false, message: "unknown note action" };
-  }
-}
-
-export async function taskAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const project = str(fd, "project");
-  const itemUid = str(fd, "item_uid");
-  switch (str(fd, "action")) {
-    case "add": {
-      const phase = str(fd, "phase");
-      return run(project, () => build.taskOps(itemUid, str(fd, "title"), phase === "" ? null : Number(phase)));
-    }
-    case "status":
-      return run(project, [build.setOp("task", refOf(fd), { status: str(fd, "status") })]);
-    case "phase": {
-      const phase = str(fd, "phase");
-      return run(project, [build.setOp("task", refOf(fd), { phase: phase === "" ? null : Number(phase), position: 1e6 })]);
-    }
-    case "remove":
-      return run(project, [build.removeOp("task", refOf(fd))]);
-    default:
-      return { ok: false, message: "unknown task action" };
-  }
-}
-
-export async function checkAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const project = str(fd, "project");
-  const itemUid = str(fd, "item_uid");
-  switch (str(fd, "action")) {
-    case "add":
-      return run(project, () => build.checkOps(itemUid, str(fd, "kind"), str(fd, "title"), str(fd, "payload"), str(fd, "timing")));
-    case "toggle":
-      return run(project, [build.setOp("check", refOf(fd), { status: str(fd, "status") })]);
-    case "remove":
-      return run(project, [build.removeOp("check", refOf(fd))]);
-    default:
-      return { ok: false, message: "unknown check action" };
-  }
-}
-
-/** Mark every ready item deployed; items with pending pre-deploy checks are held back. */
+/** Mark every ready item deployed; items with pending pre-deploy checks or a
+ * newer change are held back and named. */
 export async function deployAllAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const project = str(fd, "project");
-  const items: build.Ref[] = JSON.parse(str(fd, "items") || "[]");
+  const items: { uid: string; versions: Record<string, number> }[] = JSON.parse(str(fd, "items") || "[]");
   const user = await requireUser();
   const d = await db();
+  const ops: Op[] = [];
+  const held: string[] = [];
+  for (const it of items) {
+    try {
+      ops.push(...build.moveOps({ uid: it.uid, item_uid: it.uid, versions: it.versions, status: "ready-to-deploy" },
+        "deployed", { me: user.handle }));
+    } catch {
+      held.push(it.uid);
+    }
+  }
   let results: Result[];
   try {
-    results = await applyOps(d, project, items.flatMap((it) => build.statusOps(it, "deployed")), { handle: user.handle });
+    results = await applyOps(d, project, ops, { handle: user.handle });
   } catch (e) {
     if (e instanceof ProjectNotFound) return { ok: false, message: "No such project.", at: Date.now() };
     throw e;
   }
   later(() => flushJira(d));
   revalidatePath(`/p/${project}`, "layout");
-  const heldUids = items.filter((_, i) => results[i].rejected?.length || results[i].status === "rejected").map((it) => it.uid);
-  if (!heldUids.length) return { ok: true, message: `Deployed ${results.length}.`, at: Date.now() };
-  const ids = (await d.query("select id from items where project = $2 and uid = any($1::text[]) order by id", [heldUids, project])).map((r) => r.id);
-  return { ok: false, at: Date.now(),
-           message: `Deployed ${results.length - ids.length}; held back ${ids.join(", ")} (pending checks or newer changes).` };
+  held.push(...ops.filter((_, i) => results[i].rejected?.length || results[i].status === "rejected").map((op) => op.uid));
+  if (!held.length) return { ok: true, message: `Deployed ${results.length}.`, at: Date.now() };
+  const ids = (await d.query("select id from items where project = $2 and uid = any($1::text[]) order by id", [held, project])).map((r) => r.id);
+  return { ok: false, at: Date.now(), message: `Held back ${ids.join(", ")}: pending checks or a newer change.` };
 }
 
 export async function requestAction(_prev: ActionState, fd: FormData): Promise<ActionState> {

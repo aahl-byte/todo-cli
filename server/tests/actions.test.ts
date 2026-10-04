@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { POSTABLE_KINDS, describe as describeResults, safeNext } from "@/lib/action-helpers";
-import { safeUrl } from "@/components/bits";
+import { safeUrl } from "@/lib/url";
 
 describe("action helpers", () => {
   it("keeps sign-in redirects on this site", () => {
@@ -21,7 +21,7 @@ describe("action helpers", () => {
   it("describes stale writes with who and when, and any refusal as not applied", () => {
     expect(describeResults([{ op_id: "a", status: "applied", rejected: [
       { field: "status", reason: "stale", server_value: "in-qa", by: "qa", at: "2026-10-02T14:02:00.000Z" }] }]))
-      .toMatchObject({ ok: false, message: 'qa set status to "in-qa" at 14:02 UTC — reload and try again.' });
+      .toMatchObject({ ok: false, message: "qa set status → in-qa", when: "2026-10-02T14:02:00.000Z" });
     expect(describeResults([{ op_id: "a", status: "rejected", reason: "no-item" }]).ok).toBe(false);
     expect(describeResults([{ op_id: "a", status: "rejected", reason: "group-rolled-back" }]).ok).toBe(false);
     expect(describeResults([{ op_id: "a", status: "applied" }]).ok).toBe(true);

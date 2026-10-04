@@ -1,0 +1,458 @@
+"use client";
+// The item page: status and title, the request, tabbed details, and the right
+// rail. Values read as text until clicked; inputs open only on demand. Every
+// editor pins the versions it acts on when it opens.
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import * as act from "@/app/item-actions";
+import type { ActionState } from "@/lib/action-helpers";
+import { COMPLETE, moves, PARKED, type Move } from "@/lib/model";
+import type { ItemView as Data } from "@/lib/views";
+import { Markdown } from "../Markdown";
+import { Composer } from "../Composer";
+import { notify } from "../Toaster";
+import { Ago, EditableText, Led, Menu, Popup, Stamp } from "../ui";
+import { Tasks } from "./Tasks";
+import { Rail } from "./Rail";
+
+type Row = Record<string, any>;
+export interface Ctx {
+  project: string;
+  deployStep: boolean;
+  me: string;
+  users: string[];
+  uploads: boolean;
+  jiraBase: string | null;
+  itemUid: string;
+}
+
+export const REQUEST_EDITABLE = ["requested", "in-triage"];
+
+/** Report a refused write in a toast, with the winning change's time local. */
+export function report(state: ActionState): boolean {
+  if (state.ok) return true;
+  const when = state.when ? new Date(state.when) : null;
+  const time = when && !Number.isNaN(when.getTime()) ? ` · ${when.toTimeString().slice(0, 5)}` : "";
+  notify(`${state.message ?? "Not applied."}${time}`);
+  return false;
+}
+
+type Tab = "comments" | "questions" | "tasks" | "notes" | "log";
+
+function defaultTab(status: string, openQuestions: number): Tab {
+  if (openQuestions) return "questions";
+  if (status === "requested" || status === "in-triage") return "questions";
+  if (["todo", "in-progress", "review", "blocked"].includes(status)) return "tasks";
+  return "comments";
+}
+
+export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const openQs = data.questions.filter((q) => q.meta?.state !== "answered");
+  const [tab, setTab] = useState<Tab>(() => defaultTab(it.status, openQs.length));
+  const [focus, setFocus] = useState<string | null>(null);
+
+  // `#n-3`, `#t-2`, `#l-5`: open the owning tab, expand and scroll to the entry.
+  useEffect(() => {
+    const m = /^#([ntl])-(\d+)$/.exec(window.location.hash);
+    if (!m) return;
+    const n = Number(m[2]);
+    if (m[1] === "t") setTab("tasks");
+    else if (m[1] === "l") setTab("log");
+    else {
+      const note = [...data.comments, ...data.questions, ...data.notes].find((x) => x.n === n);
+      setTab(!note ? "comments" : note.kind === "clarification" ? "questions" : note.kind === "context" ? "notes" : "comments");
+    }
+    setFocus(window.location.hash.slice(1));
+    setTimeout(() => document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ block: "center" }), 200);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const tasksDone = data.tasks.filter((t) => COMPLETE.includes(t.status) || PARKED.includes(t.status)).length;
+  const tabs: { key: Tab; label: string; n?: ReactNode }[] = [
+    { key: "comments", label: "Comments", n: data.comments.length || null },
+    { key: "questions", label: "Questions", n: openQs.length ? <span className="hot-n">{openQs.length}</span> : null },
+    { key: "tasks", label: "Tasks", n: data.tasks.length ? `${tasksDone}/${data.tasks.length}` : null },
+    { key: "notes", label: "Notes", n: data.notes.length || null },
+    { key: "log", label: "Log", n: data.logs.length || null },
+  ];
+
+  return (
+    <div className="item" data-uid={it.uid}>
+      <div className="item-main">
+        <Header it={it} ctx={ctx} pendingPre={it.pending_pre} />
+        <Request data={data} ctx={ctx} />
+        <MobileSummary data={data} ctx={ctx} />
+        <div className="tabs" role="tablist">
+          {tabs.map((t) => (
+            <button key={t.key} role="tab" aria-selected={tab === t.key} className={`tab ${tab === t.key ? "on" : ""}`}
+                    onClick={() => setTab(t.key)}>
+              {t.label}{t.n != null && <span className="n">{t.n}</span>}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel">
+          {tab === "comments" && <Comments data={data} ctx={ctx} focus={focus} />}
+          {tab === "questions" && <Questions data={data} ctx={ctx} focus={focus} />}
+          {tab === "tasks" && <Tasks tasks={data.tasks} ctx={ctx} focus={focus} />}
+          {tab === "notes" && <Entries kind="context" rows={data.notes} ctx={ctx} focus={focus} />}
+          {tab === "log" && <Entries kind="log" rows={data.logs} ctx={ctx} focus={focus} />}
+        </div>
+      </div>
+      <aside className="rail wide-only"><Rail data={data} ctx={ctx} /></aside>
+    </div>
+  );
+}
+
+// ── header ────────────────────────────────────────────────────────────────────
+function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number }) {
+  const pinned = useRef(it.versions);
+  const [popup, setPopup] = useState<{ move: Move; versions: Row } | null>(null);
+  const options = useMemo(() => moves(it.status, { deployStep: ctx.deployStep, hasQa: !!it.qa_assignee, previous: it.blocked_from }), [it, ctx.deployStep]);
+
+  const pick = (to: string) => {
+    const move = options.find((m) => m.status === to)!;
+    if (move.comment || (to === "deployed" && pendingPre > 0)) {
+      setPopup({ move, versions: pinned.current });
+      return;
+    }
+    void act.moveItem({ project: ctx.project, uid: it.uid, versions: pinned.current, to }).then(report);
+  };
+
+  return (
+    <div className="head">
+      <Menu label="status" tip="status" onOpen={() => { pinned.current = it.versions; }}
+            trigger={<><Led status={it.status} label /><span className="caret">▾</span></>}
+            options={options.map((m, i) => ({
+              value: m.status,
+              divider: i > 0 && options[i - 1].group !== m.group,
+              label: <Led status={m.status} label />,
+              hint: m.status === "deployed" && pendingPre > 0 ? `${pendingPre} checks pending`
+                : it.status === "blocked" && m.group === "next" ? "unblock" : undefined,
+            }))}
+            onPick={pick} />
+      <h1 className="title">
+        <EditableText value={it.title} label="title" onStart={() => { pinned.current = it.versions; }}
+                      onSave={(title) => void act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current, data: { title } }).then(report)} />
+      </h1>
+      {popup && (
+        <MovePopup move={popup.move} from={it.status} pendingPre={pendingPre} onClose={() => setPopup(null)}
+                   onSubmit={async (comment, force) => {
+                     const r = await act.moveItem({ project: ctx.project, uid: it.uid, versions: popup.versions, to: popup.move.status, comment, force });
+                     if (report(r)) setPopup(null);
+                   }} />
+      )}
+    </div>
+  );
+}
+
+function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
+  move: Move; from: string; pendingPre: number; onClose: () => void; onSubmit: (comment: string, force: boolean) => Promise<void>;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const forcing = move.status === "deployed" && pendingPre > 0;
+  const title = move.rejection ? "Send back from QA"
+    : move.status === "blocked" ? "Blocked on…"
+    : forcing ? `Deploy with ${pendingPre} pre-deploy check${pendingPre > 1 ? "s" : ""} pending?`
+    : `${from} → ${move.status}`;
+  const placeholder = move.rejection ? "What failed?" : move.status === "blocked" ? "Blocked on…" : "Why?";
+  const ok = !busy && (move.comment !== "required" || !!text.trim());
+  const submit = async () => { if (!ok) return; setBusy(true); await onSubmit(text, forcing); setBusy(false); };
+  return (
+    <Popup title={title} onClose={onClose}>
+      {move.comment && (
+        <textarea rows={3} value={text} aria-label={placeholder} placeholder={move.comment === "optional" ? `${placeholder} (optional)` : placeholder}
+                  onChange={(e) => setText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(); }} />
+      )}
+      <div className="actions">
+        <button type="button" className="btn" onClick={onClose}>Cancel</button>
+        <button type="button" className={`btn ${forcing || move.rejection ? "danger" : "primary"}`} disabled={!ok} onClick={() => void submit()}>
+          {forcing ? "Deploy anyway" : move.rejection ? "Send back" : <Led status={move.status} label />}
+        </button>
+      </div>
+    </Popup>
+  );
+}
+
+// ── request ───────────────────────────────────────────────────────────────────
+function Request({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const req = data.request;
+  const editable = REQUEST_EDITABLE.includes(it.status);
+  const [editing, setEditing] = useState<null | "edit" | "change">(null);
+  const [draft, setDraft] = useState(req?.text ?? "");
+  const [open, setOpen] = useState(false);
+  const pinned = useRef(req?.versions ?? {});
+  const long = (req?.text ?? "").split("\n").length > 6 || (req?.text ?? "").length > 600;
+
+  const start = (mode: "edit" | "change") => { pinned.current = req?.versions ?? {}; setDraft(req?.text ?? ""); setEditing(mode); };
+  const save = async () => {
+    const r = editing === "change"
+      ? await act.changeRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, text: draft })
+      : await act.saveRequest({ project: ctx.project, itemUid: it.uid, noteUid: req?.uid ?? null, versions: pinned.current, text: draft });
+    if (report(r)) setEditing(null);
+  };
+
+  if (editing === "edit") {
+    return (
+      <div className="request composer">
+        <textarea rows={6} value={draft} aria-label="request" autoFocus onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Escape") setEditing(null); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(); }} />
+        <div className="actions">
+          <button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button>
+          <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void save()}>Save</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={`request ${long && !open ? "clamp" : ""}`}>
+      {req ? <Markdown text={req.text} /> : editable ? null : <span className="faint">No request.</span>}
+      <div className="request-acts">
+        {long && <button type="button" className="more" onClick={() => setOpen((o) => !o)}>{open ? "less" : "more"}</button>}
+        {editable && <button type="button" className="add" onClick={() => start("edit")}>{req ? "✎ edit request" : "+ request"}</button>}
+        {!editable && <button type="button" className="add" onClick={() => start("change")}>✎ change request</button>}
+      </div>
+      {editing === "change" && (
+        <Popup title="Change the request" onClose={() => setEditing(null)}>
+          <div className="faint">The item goes back to triage.</div>
+          <textarea rows={8} value={draft} aria-label="request" onChange={(e) => setDraft(e.target.value)} />
+          <div className="actions">
+            <button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button>
+            <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void save()}>Save and triage</button>
+          </div>
+        </Popup>
+      )}
+    </div>
+  );
+}
+
+// ── mobile summary ────────────────────────────────────────────────────────────
+function MobileSummary({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const pending = data.checks.filter((c) => c.timing === "pre-deploy" && c.status !== "done").length;
+  return (
+    <details className="summary narrow-only">
+      <summary>
+        <span className="av">{initials(it.developer)}</span>
+        <span className="av">{initials(it.qa_assignee)}</span>
+        <span className="dim">{it.type}</span>
+        {data.links.length > 0 && <span className="dim">{data.links.length} links</span>}
+        {pending > 0 && <span className="tag hot">checks {pending}</span>}
+      </summary>
+      <div className="rail"><Rail data={data} ctx={ctx} /></div>
+    </details>
+  );
+}
+
+export function initials(handle?: string | null): string {
+  if (!handle) return "–";
+  return handle.replace(/^jira:/, "").split(/[\s._-]+/).map((p) => p[0]).join("").slice(0, 2).toUpperCase();
+}
+
+// ── composer shared by every tab ──────────────────────────────────────────────
+export function AddBox({ label, placeholder, onAdd, users, uploads, children }: {
+  label: string; placeholder: string; onAdd: (text: string) => Promise<boolean>; users?: string[]; uploads?: boolean; children?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const submit = async () => {
+    const el = box.current?.querySelector("textarea");
+    const text = el?.value ?? "";
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    const ok = await onAdd(text);
+    setBusy(false);
+    if (ok) { if (el) el.value = ""; setOpen(false); }
+  };
+  if (!open) return <button type="button" className="add" onClick={() => setOpen(true)}>+ {label}</button>;
+  return (
+    <div ref={box} className="composer"
+         onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(); } }}>
+      {children}
+      <Composer users={users ?? []} placeholder={placeholder} uploads={uploads} rows={2} autoFocus />
+      <div className="actions">
+        <button type="button" className="btn" onClick={() => setOpen(false)}>Esc</button>
+        <button type="button" className="btn primary" disabled={busy} onClick={() => void submit()}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+// ── comments ──────────────────────────────────────────────────────────────────
+function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
+  return (
+    <>
+      <ul className="entries">
+        {data.comments.map((c) => (
+          <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""}`} data-uid={c.uid}>
+            <div className="body">
+              <div className="who">
+                {c.kind === "qa-rejection" && <span className="tag rej">QA rejected</span>} {c.author}
+                {c.via === "agent" && <span className="ai">AI</span>}
+                {c.source === "jira" && <span className="faint"> · jira</span>} <Ago ts={c.ts} />
+              </div>
+              <Markdown text={c.text} />
+            </div>
+            {c.author === ctx.me && <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: "note", uid: c.uid, versions: c.versions })} />}
+          </li>
+        ))}
+      </ul>
+      <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={ctx.uploads}
+              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
+    </>
+  );
+}
+
+// ── questions ─────────────────────────────────────────────────────────────────
+function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
+  const open = data.questions.filter((q) => q.meta?.state !== "answered");
+  const answered = data.questions.filter((q) => q.meta?.state === "answered");
+  const [showAnswered, setShowAnswered] = useState(false);
+  return (
+    <>
+      <ul className="entries">
+        {open.map((q) => <OpenQuestion key={q.uid} q={q} ctx={ctx} focus={focus} />)}
+      </ul>
+      <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
+              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "clarification", text }))} />
+      {answered.length > 0 && (
+        <>
+          <button type="button" className="tgroup" onClick={() => setShowAnswered((s) => !s)}>
+            <span className={`chev ${showAnswered ? "open" : ""}`}>›</span> answered {answered.length}
+          </button>
+          {showAnswered && (
+            <ul className="entries">
+              {answered.map((q) => (
+                <li key={q.uid} id={`n-${q.n}`} className="entry" data-uid={q.uid}>
+                  <div className="body">
+                    <div className="dim"><Markdown text={q.text} /></div>
+                    <Markdown text={q.meta?.answer ?? ""} />
+                    <div className="who">{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /></div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | null }) {
+  const [answering, setAnswering] = useState(false);
+  const pinned = useRef(q.versions);
+  const [draft, setDraft] = useState("");
+  const send = async () => {
+    if (!draft.trim()) return;
+    if (report(await act.answerQuestion({ project: ctx.project, itemUid: ctx.itemUid, uid: q.uid, versions: pinned.current, text: draft }))) {
+      setAnswering(false);
+      setDraft("");
+    }
+  };
+  return (
+    <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""}`} data-uid={q.uid}>
+      <div className="body">
+        <div className="who">{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /></div>
+        <Markdown text={q.text} />
+        {answering ? (
+          <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
+            <textarea rows={2} autoFocus value={draft} aria-label="answer" placeholder="Answer" onChange={(e) => setDraft(e.target.value)} />
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setAnswering(false)}>Esc</button>
+              <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void send()}>Answer</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="add" onClick={() => { pinned.current = q.versions; setAnswering(true); }}>answer</button>
+        )}
+      </div>
+    </li>
+  );
+}
+
+// ── notes and dev log (watchtower: collapsed to the first line) ───────────────
+function firstLine(text: string): string {
+  const i = text.indexOf("\n");
+  return i < 0 ? text : text.slice(0, i);
+}
+
+function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Row[]; ctx: Ctx; focus: string | null }) {
+  const prefix = kind === "log" ? "l" : "n";
+  const [open, setOpen] = useState<Record<string, boolean>>(() => (focus ? { [focus]: true } : {}));
+  const allOpen = rows.length > 0 && rows.every((r) => open[`${prefix}-${r.n}`]);
+  return (
+    <>
+      {rows.length > 1 && (
+        <div className="list-head">
+          <button type="button" className="more right" onClick={() => setOpen(Object.fromEntries(rows.map((r) => [`${prefix}-${r.n}`, !allOpen])))}>
+            {allOpen ? "collapse all" : "expand all"}
+          </button>
+        </div>
+      )}
+      <ul className="entries">
+        {rows.map((r) => <Entry key={r.uid} row={r} kind={kind} ctx={ctx} id={`${prefix}-${r.n}`}
+                                open={!!open[`${prefix}-${r.n}`]} focus={focus === `${prefix}-${r.n}`}
+                                toggle={() => setOpen((o) => ({ ...o, [`${prefix}-${r.n}`]: !o[`${prefix}-${r.n}`] }))} />)}
+      </ul>
+      <AddBox label={kind === "log" ? "log" : "note"} placeholder={kind === "log" ? "What you did, what broke, what you swapped" : "Context — the why, a decision, a gotcha"}
+              users={ctx.users} uploads={ctx.uploads}
+              onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: kind === "log" ? "log" : "context", text }))} />
+    </>
+  );
+}
+
+function Entry({ row, kind, ctx, id, open, focus, toggle }: {
+  row: Row; kind: "context" | "log"; ctx: Ctx; id: string; open: boolean; focus: boolean; toggle: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(row.text);
+  const pinned = useRef(row.versions);
+  const tip = [row.author, row.via === "agent" ? "AI" : null, row.ts ? new Date(row.ts).toLocaleString() : null].filter(Boolean).join(" · ");
+  const save = async () => {
+    if (report(await act.editNote({ project: ctx.project, itemUid: ctx.itemUid, uid: row.uid, versions: pinned.current, text: draft }))) setEditing(false);
+  };
+  return (
+    <li id={id} className={`entry ${focus ? "focus" : ""}`} data-uid={row.uid}>
+      <button type="button" className={`chev ${open ? "open" : ""}`} aria-expanded={open} aria-label={open ? "collapse" : "expand"} onClick={toggle}>›</button>
+      {kind === "log" && <span data-tip={tip}><Stamp ts={row.ts} /></span>}
+      <div className="body" data-tip={kind === "context" ? tip : undefined}>
+        {editing ? (
+          <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setEditing(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(); }}>
+            <textarea rows={4} autoFocus value={draft} aria-label="note" onChange={(e) => setDraft(e.target.value)} />
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setEditing(false)}>Esc</button>
+              <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void save()}>Save</button>
+            </div>
+          </div>
+        ) : open ? <Markdown text={row.text} /> : (
+          <button type="button" className="first" onClick={toggle}>
+            <Markdown text={firstLine(row.text)} oneLine />
+          </button>
+        )}
+      </div>
+      {!editing && (
+        <span className="acts">
+          {kind === "context" && <button type="button" className="x" aria-label="edit" onClick={() => { pinned.current = row.versions; setDraft(row.text); setEditing(true); }}>✎</button>}
+          <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: kind === "log" ? "log" : "note", uid: row.uid, versions: row.versions })} />
+        </span>
+      )}
+    </li>
+  );
+}
+
+/** ✕, then a second click on "delete?" within a few seconds. */
+export function Remove({ onConfirm }: { onConfirm: () => Promise<ActionState> }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 3000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return armed
+    ? <button type="button" className="x armed" onClick={() => { setArmed(false); void onConfirm().then(report); }}>delete?</button>
+    : <button type="button" className="x" aria-label="remove" onClick={() => setArmed(true)}>✕</button>;
+}

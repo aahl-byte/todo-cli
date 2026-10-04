@@ -180,7 +180,7 @@ Acceptance **(py)**:
 - **DB adapter:** `lib/db.ts` exports `query`, `exec` and `tx`. It uses
   `pg.Pool(DATABASE_URL)` in production, and PGlite when
   `TODO_PGLITE=memory|<dir>` is set.
-- **Migrations:** `npm run migrate` applies `db/schema.sql`, which is
+- **Migrations:** `npm run migrate` applies the schema in `lib/schema.ts`, which is
   idempotent.
 
 ### 2.2 Schema

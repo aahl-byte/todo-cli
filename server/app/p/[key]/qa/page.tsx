@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { itemAction } from "@/app/actions";
-import { ActionForm } from "@/components/ActionForm";
-import { Initials, StatusPill, Time, safeUrl } from "@/components/bits";
+import { MoveButtons } from "@/components/QueueActions";
+import { safeUrl } from "@/lib/url";
+import { Ago, Led } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { project, qaQueue } from "@/lib/views";
+
 
 export default async function QaQueue({ params }: { params: Promise<{ key: string }> }) {
   const { key } = await params;
@@ -14,49 +15,32 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
   const p = await project(d, key);
   if (!p) notFound();
   const { ready, inQa } = await qaQueue(d, key, user.handle);
-  const row = (c: (typeof ready)[number], actions: React.ReactNode) => (
-    <div key={c.uid} className="list-row" data-uid={c.uid}>
-      <StatusPill status={c.status} />
-      <div className="grow">
-        <Link href={`/p/${key}/i/${c.id}`}><strong>{c.title}</strong></Link>{" "}
-        <span className="mono muted">{c.id}</span>
-        <div className="row muted">
-          <Initials handle={c.developer} label="dev" />
-          <Initials handle={c.qa_assignee} label="qa" />
-          <span>since <Time ts={c.entered} /></span>
-          {c.bounces > 0 && <span className="rejected-tag">returned ×{c.bounces}</span>}
-          {c.links.map((l: any) => safeUrl(l.meta?.url)
-            ? <a key={l.uid} href={safeUrl(l.meta?.url)!} target="_blank" rel="noreferrer">{l.meta?.type}: {l.meta?.label || l.text}</a>
-            : <span key={l.uid}>{l.meta?.type}: {l.meta?.label || l.text}</span>)}
+  const row = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
+    const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);
+    return (
+      <div key={c.uid} className="lrow" data-uid={c.uid}>
+        <Led status={c.status} />
+        <div className="grow">
+          <Link href={`/p/${key}/i/${c.id}`}>{c.title}</Link>
+          <div className="faint">
+            {c.developer} · <Ago ts={c.entered} />{c.bounces > 0 && <span className="hot"> · returned ×{c.bounces}</span>}
+          </div>
         </div>
+        {link && <a className="btn" href={link.url} target="_blank" rel="noreferrer">{link.label}</a>}
+        <MoveButtons item={JSON.parse(JSON.stringify(c))} project={key} deployStep={p.deploy_step} to={to} />
       </div>
-      {actions}
-    </div>
-  );
-  const fields = (c: (typeof ready)[number]) => ({ project: key, uid: c.uid, item_uid: c.uid, qa_assignee: c.qa_assignee ?? "" });
+    );
+  };
+  if (!ready.length && !inQa.length) return <p className="empty">Nothing in QA.</p>;
   return (
-    <>
-      <h1>QA</h1>
-      <h2>Ready for QA <span className="muted">{ready.length}</span></h2>
-      {ready.length === 0 && <p className="muted">Nothing waiting.</p>}
-      {ready.map((c) => row(c,
-        <ActionForm action={itemAction} fields={{ ...fields(c), action: "pickup" }} versions={c.versions}>
-          <button className="primary">Pick up</button>
-        </ActionForm>))}
-      <h2>In QA <span className="muted">{inQa.length}</span></h2>
-      {inQa.length === 0 && <p className="muted">Nothing in QA.</p>}
-      {inQa.map((c) => row(c,
-        <div className="row">
-          <ActionForm action={itemAction} fields={{ ...fields(c), action: "approve", deploy_step: p.deploy_step ? "1" : "0" }} versions={c.versions}>
-            <button className="primary">Approve</button>
-          </ActionForm>
-          <details><summary><span className="rejected-tag">Reject…</span></summary>
-            <ActionForm action={itemAction} fields={{ ...fields(c), action: "reject" }} versions={c.versions}>
-              <textarea name="text" required rows={3} aria-label="what failed" placeholder="What failed? (required)" />
-              <button className="danger">Reject</button>
-            </ActionForm>
-          </details>
-        </div>))}
-    </>
+    <div className="rows">
+      {ready.length > 0 && <div className="label">Ready for QA</div>}
+      {ready.map((c) => row(c, [{ status: "in-qa", label: "Pick up", primary: true }]))}
+      {inQa.length > 0 && <div className="label" style={{ marginTop: 16 }}>In QA</div>}
+      {inQa.map((c) => row(c, [
+        { status: p.deploy_step ? "ready-to-deploy" : "done", label: "Approve", primary: true },
+        { status: "in-progress", label: "Reject" },
+      ]))}
+    </div>
   );
 }

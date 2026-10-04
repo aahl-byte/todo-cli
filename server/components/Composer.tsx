@@ -2,13 +2,14 @@
 // A Markdown textarea with @mention autocomplete and image paste/drop upload.
 import { useRef, useState } from "react";
 
-export function Composer({ name = "text", users, placeholder, required, uploads, rows = 3 }: {
+export function Composer({ name = "text", users, placeholder, required, uploads, rows = 3, autoFocus }: {
   name?: string;
   users: string[];
   placeholder?: string;
   required?: boolean;
   uploads?: boolean;
   rows?: number;
+  autoFocus?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<string | null>(null);
@@ -54,7 +55,7 @@ export function Composer({ name = "text", users, placeholder, required, uploads,
   const matches = query === null ? [] : users.filter((u) => u.toLowerCase().startsWith(query.toLowerCase())).slice(0, 6);
   return (
     <div style={{ position: "relative" }}>
-      <textarea ref={ref} name={name} rows={rows} placeholder={placeholder} aria-label={placeholder ?? name} required={required} onInput={onInput}
+      <textarea ref={ref} name={name} rows={rows} placeholder={placeholder} aria-label={placeholder ?? name} required={required} onInput={onInput} autoFocus={autoFocus}
         onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); void upload(e.clipboardData.files); } }}
         onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); void upload(e.dataTransfer.files); } }} />
       {matches.length > 0 && (

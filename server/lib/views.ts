@@ -36,8 +36,10 @@ export interface Card extends Row {
   qa_assignee: string | null;
   created: string;
   completed: string | null;
+  super_phase: number | null;
   versions: Record<string, number>;
   task_statuses: string[];
+  task_phases: number[];
   open_questions: number;
   pending_pre: number;
   pending_post: number;
@@ -50,6 +52,7 @@ async function cards(d: Db, key: string, where = "", params: unknown[] = []): Pr
   const rows = await d.query(
     `select i.*, l.jira_key,
        coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_statuses,
+       coalesce((select array_agg(coalesce(t.phase, -1) order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_phases,
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'pre-deploy' and c.status <> 'done') as pending_pre,
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'post-deploy' and c.status <> 'done') as pending_post,
@@ -104,6 +107,7 @@ export async function board(d: Db, p: Project, f: BoardFilters, me: string, now 
     }));
 }
 
+/** Everything the item page shows, as plain rows with their versions. */
 export async function item(d: Db, key: string, id: string) {
   const [it] = await cards(d, key, "and i.id = $2", [id]);
   if (!it) return null;
@@ -114,33 +118,28 @@ export async function item(d: Db, key: string, id: string) {
     d.query("select * from checks where project = $2 and item_uid = $1 order by n", [it.uid, key]),
     d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [it.uid, key]),
   ]);
-  const phases = new Map<string, Row[]>();
-  for (const t of tasks) {
-    const k = t.phase === null ? "unphased" : String(t.phase);
-    if (!phases.has(k)) phases.set(k, []);
-    phases.get(k)!.push(t);
-  }
   const by = (k: string) => notes.filter((n) => n.kind === k);
-  const clarifications = by("clarification");
+  const lastBlock = [...history].reverse().find((h) => h.to_status === "blocked");
   return {
-    item: { ...it, calc_status: deriveCalcStatus(tasks.map((t) => t.status)) ?? it.calc_status },
-    phases: [...phases.entries()].map(([phase, rows]) => ({
-      phase: phase === "unphased" ? null : Number(phase),
-      tasks: rows,
-      done: rows.filter((t) => COMPLETE.includes(t.status)).length,
-    })),
-    requests: by("ticket-request"),
-    openQuestions: clarifications.filter((n) => n.meta?.state !== "answered"),
-    answered: clarifications.filter((n) => n.meta?.state === "answered"),
-    context: by("context"),
+    item: {
+      ...it,
+      calc_status: deriveCalcStatus(tasks.map((t) => t.status)) ?? it.calc_status,
+      blocked_from: it.status === "blocked" ? lastBlock?.from_status ?? null : null,
+    },
+    request: by("ticket-request")[0] ?? null,
+    questions: by("clarification"),
     comments: notes.filter((n) => n.kind === "comment" || n.kind === "qa-rejection"),
+    notes: by("context"),
     links: by("link"),
     logs,
+    tasks,
     checks,
     history,
     bounces: bounceCount(history),
   };
 }
+
+export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>>;
 
 export function bounceCount(history: Row[]): number {
   return history.filter((h) => h.from_status === "in-qa" && h.to_status === "in-progress").length;
@@ -173,7 +172,7 @@ export async function deployPlan(d: Db, key: string) {
   const complete = new Set(all.filter((r) => COMPLETE.includes(r.status)).map((r) => r.id));
   const ids = new Set(all.map((r) => r.id));
   const checksFor = async (uids: string[]): Promise<Row[]> => uids.length
-    ? d.query("select c.*, i.id as item_id from checks c join items i on i.uid = c.item_uid and i.project = c.project where c.project = $2 and c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids, key])
+    ? d.query("select c.*, i.id as item_id, i.title as item_title from checks c join items i on i.uid = c.item_uid and i.project = c.project where c.project = $2 and c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids, key])
     : [];
   const readyChecks = await checksFor(ready.map((r) => r.uid));
   const group = (timing: string) => CHECK_KINDS.map((kind) => ({

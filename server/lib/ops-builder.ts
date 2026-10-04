@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { nowIso } from "./model";
+import { moves, nowIso } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -109,4 +109,34 @@ export function checkOps(itemUid: string, kind: string, title: string, payload: 
   if (!title.trim()) throw new Error("A check needs a title.");
   return [createOp("check", itemUid, { kind, title: title.trim(), payload: payload.trim() || null,
                                        timing: timing || "pre-deploy", status: "pending" })];
+}
+
+export interface MoveItem extends Ref {
+  status: string;
+  qa_assignee?: string | null;
+}
+
+/** The ops for one dashboard status move: checked against the allowed moves,
+ * with the comment it asks for posted in the same group (a qa-rejection when
+ * QA sends work back), and QA claimed by whoever moves it into QA. */
+export function moveOps(item: MoveItem, to: string, opts: {
+  me: string; comment?: string; force?: boolean; deployStep?: boolean; previous?: string | null;
+}): Op[] {
+  const ctx = { deployStep: opts.deployStep, hasQa: !!item.qa_assignee, previous: opts.previous };
+  const move = moves(item.status, ctx).find((m) => m.status === to);
+  if (!move) throw new Error(`Can't move from ${item.status} to ${to}.`);
+  const comment = (opts.comment ?? "").trim();
+  if (move.comment === "required" && !comment) throw new Error("This move needs a comment.");
+  const data: Record<string, unknown> = { status: to };
+  if (to === "in-qa" && !item.qa_assignee) data.qa_assignee = opts.me;
+  const extra: Partial<Op> = opts.force ? { force: true } : {};
+  if (!comment) return [setOp("item", item, data, extra)];
+  const group = ulid();
+  return [
+    setOp("item", item, data, { ...extra, group }),
+    createOp("note", item.uid, {
+      kind: move.rejection ? "qa-rejection" : "comment", text: comment, ts: nowIso(),
+      meta: move.rejection ? { with_status: to } : {},
+    }, { group }),
+  ];
 }

@@ -1,17 +1,33 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Initials, StatusPill, TaskBar } from "@/components/bits";
+import { BoardFilters } from "@/components/BoardFilters";
+import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
+import { deriveCalcStatus } from "@/lib/model";
 import { requireUser } from "@/lib/session";
-import { board, project, users, type BoardFilters } from "@/lib/views";
+import { board, project, users, type BoardFilters as F, type Card } from "@/lib/views";
 
 type Search = Record<string, string | undefined>;
 
-function href(key: string, q: Search, patch: Search): string {
-  const next = new URLSearchParams();
-  for (const [k, v] of Object.entries({ ...q, ...patch })) if (v) next.set(k, v);
-  const s = next.toString();
-  return `/p/${key}${s ? `?${s}` : ""}`;
+function initials(h?: string | null) {
+  return h ? h.replace(/^jira:/, "").split(/[\s._-]+/).map((p) => p[0]).join("").slice(0, 2).toUpperCase() : "";
+}
+
+/** Watchtower's progress glance: one capsule per phase over one dot per task. */
+function Glance({ c }: { c: Card }) {
+  if (!c.task_statuses?.length) return null;
+  const phases: { key: number; statuses: string[] }[] = [];
+  c.task_statuses.forEach((s, i) => {
+    const k = c.task_phases[i];
+    const last = phases[phases.length - 1];
+    if (last && last.key === k) last.statuses.push(s); else phases.push({ key: k, statuses: [s] });
+  });
+  return (
+    <span className="glance" data-tip={`${c.task_statuses.filter((s) => s === "done" || s === "deployed").length}/${c.task_statuses.length} tasks`}>
+      <span className="layer">{phases.map((p, i) => <span key={i} className={`cap s-${deriveCalcStatus(p.statuses) ?? "todo"}`} />)}</span>
+      <span className="layer">{c.task_statuses.map((s, i) => <span key={i} className={`dot s-${s}`} />)}</span>
+    </span>
+  );
 }
 
 export default async function Board({ params, searchParams }: { params: Promise<{ key: string }>; searchParams: Promise<Search> }) {
@@ -21,48 +37,33 @@ export default async function Board({ params, searchParams }: { params: Promise<
   const d = await db();
   const p = await project(d, key);
   if (!p) notFound();
-  const f: BoardFilters = { mine: q.mine === "1", review: q.review === "1", developer: q.dev, qa: q.qa, type: q.type, parked: q.parked === "1" };
+  const f: F = { mine: q.mine === "1", review: q.review === "1", developer: q.dev, qa: q.qa, type: q.type, parked: q.parked === "1" };
   const columns = await board(d, p, f, user.handle);
-  const people = (await users(d)).map((u) => u.handle);
-  const toggle = (k: string) => (q[k] === "1" ? undefined : "1");
   return (
     <>
-      <form className="filters" action={`/p/${key}`}>
-        <Link href={href(key, q, { mine: toggle("mine") })} className={`btn${f.mine ? " primary" : ""}`} aria-pressed={!!f.mine}>Mine</Link>
-        <Link href={href(key, q, { review: toggle("review") })} className={`btn${f.review ? " primary" : ""}`} aria-pressed={!!f.review}>Needs my review</Link>
-        <label>Dev <select name="dev" defaultValue={q.dev ?? ""}><option value="">anyone</option>{people.map((h) => <option key={h}>{h}</option>)}</select></label>
-        <label>QA <select name="qa" defaultValue={q.qa ?? ""}><option value="">anyone</option>{people.map((h) => <option key={h}>{h}</option>)}</select></label>
-        <label>Type <select name="type" defaultValue={q.type ?? ""}><option value="">any</option><option>feature</option><option>bug</option></select></label>
-        <label><input type="checkbox" name="parked" value="1" defaultChecked={f.parked} /> show parked</label>
-        {f.mine && <input type="hidden" name="mine" value="1" />}
-        {f.review && <input type="hidden" name="review" value="1" />}
-        <button>Apply</button>
-      </form>
+      <BoardFilters users={(await users(d)).map((u) => u.handle)} />
       <div className="board">
         {columns.map((col) => (
           <section key={col.key} className="column" aria-label={col.label}>
-            <h3>{col.label} <span className="muted">{col.items.length}</span></h3>
-            {col.items.map((c) => (
-              <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card${c.status === "blocked" ? " blocked" : ""}`} data-uid={c.uid}>
-                <div className="meta">
-                  <span className="mono">{c.id}</span>
-                  <span className={`tag ${c.type === "bug" ? "bug" : "feature"}`}>{c.type}</span>
-                  {c.last_via === "agent" && <span className="ai" title="last moved by an agent">AI</span>}
-                  {c.jira_key && <span className="mono">{c.jira_key}</span>}
-                </div>
-                <div className="title">{c.title}</div>
-                <div className="meta">
-                  <StatusPill status={c.status} />
-                  <span>{c.priority}</span>
-                  <Initials handle={c.developer} label="dev" />
-                  <Initials handle={c.qa_assignee} label="qa" />
-                  {c.open_questions > 0 && <span className="tag ask" title="open clarifications">? {c.open_questions}</span>}
-                  {c.pending_pre > 0 && <span className="tag checks" title="pending pre-deploy checks">checks {c.pending_pre}</span>}
-                  {["deployed", "done"].includes(c.status) && c.pending_post > 0 && <span className="tag checks" title="pending post-deploy checks">post-deploy {c.pending_post}</span>}
-                </div>
-                <TaskBar statuses={c.task_statuses} />
-              </Link>
-            ))}
+            <div className="label">{col.label}{col.items.length > 0 && <span>{col.items.length}</span>}</div>
+            {col.items.map((c) => {
+              const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (col.key === "requested" ? c.creator : null);
+              return (
+                <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card s-${c.status}`} data-uid={c.uid}>
+                  {col.statuses.length > 1 && <Led status={c.status} label />}
+                  <div className="title">{c.title}</div>
+                  <div className="meta">
+                    {who && <span className="av" data-tip={[c.developer && `dev ${c.developer}`, c.qa_assignee && `qa ${c.qa_assignee}`].filter(Boolean).join(" · ")}>{initials(who)}</span>}
+                    {c.type === "bug" && <span className="tag bug">bug</span>}
+                    {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
+                    {c.open_questions > 0 && <span className="tag hot" data-tip="open questions">?{c.open_questions}</span>}
+                    {c.pending_pre > 0 && <span className="tag" data-tip="pending pre-deploy checks">checks {c.pending_pre}</span>}
+                    {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
+                    <Glance c={c} />
+                  </div>
+                </Link>
+              );
+            })}
           </section>
         ))}
       </div>

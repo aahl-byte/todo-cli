@@ -1,27 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { checkAction, deployAllAction } from "@/app/actions";
+import { deployAllAction } from "@/app/actions";
 import { ActionForm } from "@/components/ActionForm";
+import { CheckBox, MoveButtons } from "@/components/QueueActions";
 import { db } from "@/lib/db";
-import { project, deployPlan } from "@/lib/views";
 import { requireUser } from "@/lib/session";
-import { DeployButton } from "../i/[id]/page";
+import { deployPlan, project } from "@/lib/views";
 import type { Row } from "@/lib/db";
-
-function CheckRow({ c, keyName }: { c: Row; keyName: string }) {
-  return (
-    <div className="check" data-uid={c.uid}>
-      <ActionForm action={checkAction} fields={{ project: keyName, uid: c.uid, item_uid: c.item_uid, action: "toggle", status: c.status === "done" ? "pending" : "done" }} versions={c.versions}>
-        <button className="link" aria-label={c.status === "done" ? "mark pending" : "mark done"}>{c.status === "done" ? "☑" : "☐"}</button>
-      </ActionForm>
-      <div>
-        <Link href={`/p/${keyName}/i/${c.item_id}`} className="mono">{c.item_id}</Link> <span className="mono">[{c.n}]</span> {c.title}
-        {c.payload && <> <code>{c.payload}</code></>}
-        {c.warning && <span className="rejected-tag"> ⚠ {c.warning}</span>}
-      </div>
-    </div>
-  );
-}
 
 export default async function Deploy({ params }: { params: Promise<{ key: string }> }) {
   const { key } = await params;
@@ -29,43 +14,58 @@ export default async function Deploy({ params }: { params: Promise<{ key: string
   const d = await db();
   const p = await project(d, key);
   if (!p || !p.deploy_step) notFound();
-  const plan = await deployPlan(d, key);
+  const plan = JSON.parse(JSON.stringify(await deployPlan(d, key)));
+  const check = (c: Row) => (
+    <div key={c.uid} className="rrow" data-uid={c.uid}>
+      <CheckBox check={c} project={key} />
+      <span className="grow" data-tip={c.payload ?? undefined}>
+        {c.title} <Link href={`/p/${key}/i/${c.item_id}`} className="faint">{c.item_title ?? c.item_id}</Link>
+        {c.warning && <span className="hot"> · {c.warning}</span>}
+      </span>
+    </div>
+  );
+  const section = (label: string, groups: { kind: string; checks: Row[] }[]) => {
+    const open = groups.map((g) => ({ ...g, checks: g.checks.filter((c) => c.status !== "done") })).filter((g) => g.checks.length);
+    if (!open.length) return null;
+    return (
+      <section className="deploy-sec">
+        <div className="label">{label}</div>
+        {open.map((g) => (
+          <div key={g.kind}>
+            <div className="faint kind">{g.kind}</div>
+            {g.checks.map(check)}
+          </div>
+        ))}
+      </section>
+    );
+  };
+  if (!plan.ready.length && !plan.afterDeploy.length) return <p className="empty">Nothing to deploy.</p>;
   return (
-    <>
-      <h1>Deploy</h1>
-      {plan.ready.length === 0 && plan.afterDeploy.length === 0 && <p className="muted">Nothing is ready to deploy.</p>}
-      {(["pre", "post"] as const).map((t) => plan[t].length > 0 && (
-        <section key={t} className="panel" style={{ marginBottom: 12 }}>
-          <h2 style={{ marginTop: 0 }}>{t === "pre" ? "Pre-deploy" : "Post-deploy"}</h2>
-          {plan[t].map((g) => (
-            <div key={g.kind}>
-              <div className="muted">{g.kind}</div>
-              {g.checks.map((c) => <CheckRow key={c.uid} c={c} keyName={key} />)}
-            </div>
-          ))}
-        </section>
-      ))}
+    <div className="rows">
+      {section("Before deploy", plan.pre)}
+      {section("After deploy", plan.post)}
       {plan.ready.length > 0 && (
-        <section>
-          <h2>Ready to deploy</h2>
-          {plan.ready.map((it) => (
-            <div key={it.uid} className="list-row" data-uid={it.uid}>
-              <div className="grow"><Link href={`/p/${key}/i/${it.id}`}>{it.title}</Link> <span className="mono muted">{it.id}</span>
-                {it.pending_pre > 0 && <span className="muted"> · {it.pending_pre} pending</span>}</div>
-              <DeployButton it={it} keyName={key} />
+        <section className="deploy-sec">
+          <div className="label">Ready</div>
+          {plan.ready.map((it: Row) => (
+            <div key={it.uid} className="lrow" data-uid={it.uid}>
+              <div className="grow"><Link href={`/p/${key}/i/${it.id}`}>{it.title}</Link></div>
+              <MoveButtons item={it} project={key} to={[{ status: "deployed", label: "Deployed", primary: true }]} />
             </div>
           ))}
-          <ActionForm action={deployAllAction} fields={{ project: key, items: JSON.stringify(plan.ready.map((it) => ({ uid: it.uid, item_uid: it.uid, versions: it.versions }))) }}>
-            <button className="primary" style={{ marginTop: 8 }}>Mark all deployed</button>
-          </ActionForm>
+          {plan.ready.length > 1 && (
+            <ActionForm action={deployAllAction} fields={{ project: key, items: JSON.stringify(plan.ready.map((it: Row) => ({ uid: it.uid, versions: it.versions }))) }}>
+              <button className="btn">Deploy all</button>
+            </ActionForm>
+          )}
         </section>
       )}
       {plan.afterDeploy.length > 0 && (
-        <section className="panel" style={{ marginTop: 12 }}>
-          <h2 style={{ marginTop: 0 }}>Deployed — post-deploy pending</h2>
-          {plan.afterDeploy.map((c) => <CheckRow key={c.uid} c={c} keyName={key} />)}
+        <section className="deploy-sec">
+          <div className="label">Deployed · still to do</div>
+          {plan.afterDeploy.map(check)}
         </section>
       )}
-    </>
+    </div>
   );
 }

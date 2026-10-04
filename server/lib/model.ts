@@ -82,3 +82,87 @@ export function mentions(text: string): string[] {
   }
   return out;
 }
+
+/** The dashboard's allowed status moves, in menu order. The CLI keeps free
+ * transitions: offline sync collapses several moves into one write. */
+export const NEXT_STATUSES: Record<string, string[]> = {
+  requested: ["in-triage", "deferred", "cancelled"],
+  "in-triage": ["todo", "requested", "blocked", "deferred", "cancelled"],
+  todo: ["in-progress", "in-triage", "requested", "blocked", "deferred", "cancelled"],
+  "in-progress": ["review", "todo", "blocked", "deferred", "cancelled"],
+  review: ["ready-for-qa", "done", "in-progress", "blocked", "deferred", "cancelled"],
+  "ready-for-qa": ["in-qa", "in-progress", "blocked", "cancelled"],
+  "in-qa": ["ready-to-deploy", "ready-for-qa", "in-progress", "blocked", "cancelled"],
+  "ready-to-deploy": ["deployed", "in-qa", "in-progress", "blocked", "cancelled"],
+  deployed: ["in-progress"],
+  done: ["in-progress", "todo"],
+  blocked: ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deferred", "cancelled"],
+  deferred: ["requested", "in-triage", "todo", "cancelled"],
+  cancelled: ["requested", "in-triage"],
+};
+
+const LIFECYCLE = ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa",
+  "ready-to-deploy", "deployed", "done"];
+const PARKING = ["blocked", "deferred", "cancelled"];
+
+export interface Move {
+  status: string;
+  group: "next" | "forward" | "back" | "park";
+  /** A comment the move asks for: required, optional, or none. */
+  comment: "required" | "optional" | null;
+  /** The comment is posted as a qa-rejection note. */
+  rejection?: boolean;
+}
+
+export interface MoveContext {
+  deployStep?: boolean;
+  hasQa?: boolean;
+  /** For `blocked`: the status it was blocked from. */
+  previous?: string | null;
+}
+
+function rank(s: string): number {
+  const i = LIFECYCLE.indexOf(s);
+  return i < 0 ? -1 : s === "done" ? LIFECYCLE.indexOf("deployed") : i;
+}
+
+/** The moves the dashboard offers from `from`, ordered: the natural next step,
+ * other forward moves, backward moves, then blocked/deferred/cancelled. */
+export function moves(from: string, ctx: MoveContext = {}): Move[] {
+  const deployStep = ctx.deployStep !== false;
+  let next = [...(NEXT_STATUSES[from] ?? STATUSES.filter((s) => s !== from))];
+  if (!deployStep) {
+    next = next.map((s) => (s === "ready-to-deploy" ? "done" : s)).filter((s) => s !== "deployed");
+    if (from === "in-qa") next = next.filter((s, i) => next.indexOf(s) === i);
+  }
+  if (from === "review" && ctx.hasQa) next = next.filter((s) => s !== "done");
+  if (from === "blocked" && ctx.previous && ctx.previous !== "blocked") {
+    const prev = !deployStep && ctx.previous === "ready-to-deploy" ? "done" : ctx.previous;
+    next = [prev, ...next.filter((s) => s !== prev)];
+  }
+  next = [...new Set(next)];
+  const out: Move[] = [];
+  next.forEach((status, i) => {
+    let group: Move["group"];
+    if (PARKING.includes(status)) group = "park";
+    else if (from === "blocked") group = i === 0 && ctx.previous ? "next" : "forward";
+    else if (rank(status) > rank(from)) group = out.some((m) => m.group === "next") ? "forward" : "next";
+    else group = "back";
+    out.push({ status, group, ...commentRule(from, status) });
+  });
+  const order = { next: 0, forward: 1, back: 2, park: 3 };
+  return out.sort((a, b) => order[a.group] - order[b.group]);
+}
+
+export function commentRule(from: string, to: string): Pick<Move, "comment" | "rejection"> {
+  if (to === "in-progress" && (from === "in-qa" || from === "ready-to-deploy")) return { comment: "required", rejection: true };
+  if (to === "in-progress" && (from === "deployed" || from === "done")) return { comment: "required" };
+  if (to === "in-progress" && from === "review") return { comment: "optional" };
+  if (to === "blocked") return { comment: "optional" };
+  return { comment: null };
+}
+
+/** Whether the dashboard allows `from` → `to`. */
+export function allowedMove(from: string, to: string, ctx: MoveContext = {}): boolean {
+  return moves(from, ctx).some((m) => m.status === to);
+}

@@ -23,8 +23,9 @@ export function Toaster() {
   return (
     <div className="toasts" role="alert">
       {messages.map((m) => (
-        <div key={m.id} className="banner">
-          {m.text} <button className="link" onClick={() => setMessages((all) => all.filter((x) => x.id !== m.id))}>dismiss</button>
+        <div key={m.id} className="toast banner">
+          <span>{m.text}</span>
+          <button aria-label="dismiss" onClick={() => setMessages((all) => all.filter((x) => x.id !== m.id))}>✕</button>
         </div>
       ))}
     </div>

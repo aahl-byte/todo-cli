@@ -5,7 +5,7 @@ export default async function Login({ searchParams }: { searchParams: Promise<{ 
   const { next } = await searchParams;
   return (
     <main>
-      <h1>Sign in to todo</h1>
+      <h1 className="brand" style={{ margin: "40px 0 16px" }}>todo</h1>
       <LoginForm next={safeNext(next ?? "/")} />
     </main>
   );

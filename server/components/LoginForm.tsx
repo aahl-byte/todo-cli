@@ -5,13 +5,12 @@ import { loginAction } from "@/app/actions";
 export function LoginForm({ next }: { next: string }) {
   const [state, action, pending] = useActionState(loginAction, { ok: true });
   return (
-    <form action={action} className="form-grid panel" style={{ maxWidth: 380 }}>
+    <form action={action} className="form panel" style={{ maxWidth: 340 }}>
       <input type="hidden" name="next" value={next} />
-      <label>Handle<input name="handle" autoComplete="username" required /></label>
-      <label>Token<input name="token" type="password" autoComplete="current-password" required /></label>
-      <button className="primary" disabled={pending}>Sign in</button>
-      {!state.ok && <div className="banner" role="alert">{state.message}</div>}
-      <p className="muted">Use the same token as the CLI (<code>todo login</code>). An admin creates one with <code>npm run user:add</code>.</p>
+      <input name="handle" autoComplete="username" required aria-label="handle" placeholder="handle" />
+      <input name="token" type="password" autoComplete="current-password" required aria-label="token" placeholder="token" />
+      <button className="btn primary" disabled={pending}>Sign in</button>
+      {!state.ok && <div className="toast" role="alert">{state.message}</div>}
     </form>
   );
 }

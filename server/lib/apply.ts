@@ -294,6 +294,11 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       row.via = op.via ?? "human";
     }
     if (entity === "note") row.source = data.source ?? null;
+    if (entity === "note" && row.kind === "ticket-request" && !ctx.actor.bridge) {
+      const [existing] = await ctx.t.query(
+        "select 1 from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' limit 1", [ctx.project, itemUid]);
+      if (existing && await requestLocked(ctx, { kind: "ticket-request", item_uid: itemUid })) return reject(op, "request-locked");
+    }
   }
   if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? data[jsonCol] : {};
 
@@ -321,10 +326,21 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 }
 
 // ── set ──────────────────────────────────────────────────────────────────────
+/** A request can change only while its item is `requested` or `in-triage`,
+ * so every change to it goes through triage. Bridge writes (Jira) are exempt. */
+export const REQUEST_EDITABLE = ["requested", "in-triage"];
+
+async function requestLocked(ctx: Ctx, note: Row): Promise<boolean> {
+  if (ctx.actor.bridge || note.kind !== "ticket-request") return false;
+  const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [note.item_uid, ctx.project]);
+  return !!item && !REQUEST_EDITABLE.includes(item.status);
+}
+
 async function set(ctx: Ctx, op: Op): Promise<Result> {
   const { entity } = op;
   const row = await load(ctx, entity, op.uid);
   if (!row) return removedReason(ctx, op);
+  if (entity === "note" && await requestLocked(ctx, row)) return reject(op, "request-locked");
   const jsonCol = JSON_FIELD[entity];
   const versions: Record<string, number> = { ...(row.versions ?? {}) };
   const rejected: Rejection[] = [];
@@ -477,6 +493,7 @@ async function remove(ctx: Ctx, op: Op): Promise<Result> {
   if (entity === "item") return reject(op, "not-removable");
   const row = await load(ctx, entity, op.uid);
   if (!row) return removedReason(ctx, op);
+  if (entity === "note" && await requestLocked(ctx, row)) return reject(op, "request-locked");
   if (!ctx.actor.unconditional) {
     const stale: Rejection[] = [];
     for (const [field, version] of Object.entries(row.versions ?? {})) {

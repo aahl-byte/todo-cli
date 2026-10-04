@@ -2,6 +2,10 @@
 // lists, code, emphasis, links and images with http(s) URLs.
 import type { ReactNode } from "react";
 
+function inline_(text: string): ReactNode[] {
+  return inline(text.replace(/^#+\s*/, "").replace(/^\s*([-*]|\d+\.)\s+/, ""), "i");
+}
+
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
   const re = /(!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\))|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(https?:\/\/[^\s<]+)/g;
@@ -23,7 +27,8 @@ function inline(text: string, key: string): ReactNode[] {
   return out;
 }
 
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, oneLine }: { text: string; oneLine?: boolean }) {
+  if (oneLine) return <span className="md">{inline_(String(text ?? ""))}</span>;
   const blocks = String(text ?? "").split(/\n{2,}/);
   return (
     <div className="md">

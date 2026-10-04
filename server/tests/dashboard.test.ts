@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as build from "@/lib/ops-builder";
+import { allowedMove, moves, NEXT_STATUSES } from "@/lib/model";
 import { board, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -120,8 +121,8 @@ describe("views", () => {
     const v = (await w.d.query("select versions from items where uid = 'A1'"))[0].versions;
     await w.one("carol", set("item", "A1", "A1", { status: "in-progress" }, { status: v.status }));
     const view = (await loadItem(w.d, "p", "a1"))!;
-    expect(view.phases).toEqual([expect.objectContaining({ phase: 1, done: 1 })]);
-    expect(view.openQuestions.map((n) => n.uid)).toEqual(["Q1"]);
+    expect(view.tasks.map((t) => [t.phase, t.status])).toEqual([[1, "done"], [1, "todo"]]);
+    expect(view.questions.filter((n) => n.meta?.state !== "answered").map((n) => n.uid)).toEqual(["Q1"]);
     expect(view.bounces).toBe(1);
     expect(view.item.calc_status).toBe("todo");
     expect(view.item.versions.status).toBeGreaterThan(0);
@@ -135,5 +136,75 @@ describe("views", () => {
     expect(plan.ready.map((r) => r.id)).toEqual(["b1"]);
     expect(plan.pre.map((g) => g.kind)).toEqual(["prereq-branch", "db-script"]);
     expect(plan.pre[0].checks[0].warning).toBe("not deployed");
+  });
+});
+
+describe("transitions", () => {
+
+  it("orders the menu: next step, forward, back, parking", () => {
+    expect(moves("review", {}).map((m: any) => [m.status, m.group])).toEqual([
+      ["ready-for-qa", "next"], ["done", "forward"], ["in-progress", "back"],
+      ["blocked", "park"], ["deferred", "park"], ["cancelled", "park"]]);
+  });
+  it("hides review → done once QA is assigned", () => {
+    expect(allowedMove("review", "done", { hasQa: true })).toBe(false);
+    expect(allowedMove("review", "done", { hasQa: false })).toBe(true);
+  });
+  it("swaps deploy statuses for done without a deploy step", () => {
+    expect(moves("in-qa", { deployStep: false }).map((m: any) => m.status)).toEqual(
+      ["done", "ready-for-qa", "in-progress", "blocked", "cancelled"]);
+    expect(moves("blocked", { deployStep: false }).map((m: any) => m.status)).not.toContain("deployed");
+  });
+  it("offers unblock to the previous status first", () => {
+    expect(moves("blocked", { previous: "in-qa" })[0]).toMatchObject({ status: "in-qa", group: "next" });
+  });
+  it("asks for the right comments", () => {
+    const m = (from: string, to: string) => moves(from, {}).find((x: any) => x.status === to);
+    expect(m("in-qa", "in-progress")).toMatchObject({ comment: "required", rejection: true });
+    expect(m("deployed", "in-progress")).toMatchObject({ comment: "required" });
+    expect(m("review", "in-progress")).toMatchObject({ comment: "optional" });
+    expect(m("todo", "blocked")).toMatchObject({ comment: "optional" });
+    expect(m("todo", "in-progress")).toMatchObject({ comment: null });
+  });
+  it("lets every active status be cancelled and requested items only reach triage", () => {
+    for (const s of ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "blocked", "deferred"]) {
+      expect(NEXT_STATUSES[s]).toContain("cancelled");
+    }
+    expect(NEXT_STATUSES.requested).not.toContain("todo");
+    expect(NEXT_STATUSES.requested).not.toContain("in-progress");
+  });
+});
+
+describe("move ops", () => {
+  const it1 = { uid: "I1", item_uid: "I1", versions: { status: 4, qa_assignee: 2 } };
+  it("refuses moves outside the table and missing required comments", () => {
+    expect(() => build.moveOps({ ...it1, status: "requested" }, "in-progress", { me: "dev" })).toThrow(/Can't move/);
+    expect(() => build.moveOps({ ...it1, status: "in-qa" }, "in-progress", { me: "qa" })).toThrow(/comment/);
+  });
+  it("groups a rejection comment with the status change", () => {
+    const [s, n] = build.moveOps({ ...it1, status: "in-qa", qa_assignee: "qa" }, "in-progress", { me: "qa", comment: "broken" });
+    expect(s).toMatchObject({ data: { status: "in-progress" }, base: { status: 4 } });
+    expect(n).toMatchObject({ data: { kind: "qa-rejection", text: "broken", meta: { with_status: "in-progress" } } });
+    expect(n.group).toBe(s.group);
+  });
+  it("claims QA when moving into QA unassigned, and forces on request", () => {
+    const [s] = build.moveOps({ ...it1, status: "ready-for-qa", qa_assignee: null }, "in-qa", { me: "qa" });
+    expect(s.data).toEqual({ status: "in-qa", qa_assignee: "qa" });
+    const [d] = build.moveOps({ ...it1, status: "ready-to-deploy" }, "deployed", { me: "x", force: true });
+    expect(d.force).toBe(true);
+  });
+});
+
+describe("request lock", () => {
+  it("allows request edits in requested and in-triage only", async () => {
+    const r = await w.one("pat", item("R1", { status: "requested" }));
+    await w.one("pat", child("note", "RQ", "R1", { n: 1, kind: "ticket-request", text: "v1", ts: "t" }));
+    const v = async () => (await w.d.query("select versions from notes where uid = 'RQ'"))[0].versions;
+    expect((await w.one("pat", set("note", "RQ", "R1", { text: "v2" }, await v()))).status).toBe("applied");
+    await w.one("dev", set("item", "R1", "R1", { status: "in-triage" }, { status: r.versions!.status }));
+    expect((await w.one("pat", set("note", "RQ", "R1", { text: "v3" }, await v()))).status).toBe("applied");
+    const iv = (await w.d.query("select versions from items where uid = 'R1'"))[0].versions;
+    await w.one("dev", set("item", "R1", "R1", { status: "todo" }, { status: iv.status }));
+    expect(await w.one("pat", set("note", "RQ", "R1", { text: "v4" }, await v()))).toMatchObject({ status: "rejected", reason: "request-locked" });
   });
 });

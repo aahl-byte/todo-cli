@@ -331,7 +331,7 @@ def diff(local: Local, snap: dict) -> list:
     last op was refused for good is skipped until its local data changes."""
     ents = snap["entities"]
     stuck = snap.get("stuck", {})
-    buckets = {k: [] for k in ("item-create", "child-create", "child-set", "item-set", "remove")}
+    buckets = {k: [] for k in ("item-create", "child-create", "child-set", "item-set", "request-set", "remove")}
     for uid, e in local.entities.items():
         entity, data = e["entity"], e["data"]
         if e["item_uid"] in local.incomplete:
@@ -362,7 +362,10 @@ def diff(local: Local, snap: dict) -> list:
                  _fp=_fingerprint(data))
         if entity == "item" and "status" in changed:
             _status_provenance(op, local.history.get(uid, []), data["status"])
-        buckets["item-set" if entity == "item" else "child-set"].append(op)
+        # A request edit goes after status sets: the server only accepts it once
+        # the item is back in requested or triage.
+        late = entity == "note" and s["data"].get("kind") == "ticket-request"
+        buckets["item-set" if entity == "item" else "request-set" if late else "child-set"].append(op)
     for uid, s in ents.items():
         if s["entity"] in ("item", "history") or uid in local.entities:
             continue
@@ -698,7 +701,7 @@ def _log_rejection(root, op, x, local, report) -> None:
 
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
-FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff"}
+FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff", "request-locked"}
 
 
 def _reissue(local: Local, entity: str, old: str, item_uid: str) -> None:

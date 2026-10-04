@@ -1,7 +1,6 @@
 // One query interface over node-postgres (production, DATABASE_URL) or PGlite
 // (tests and local dev, TODO_PGLITE=memory|<dir>).
-import fs from "node:fs";
-import path from "node:path";
+import { SCHEMA } from "./schema";
 
 export type Row = Record<string, any>;
 
@@ -90,6 +89,5 @@ async function pgPool(url: string): Promise<Db> {
 }
 
 export async function migrate(d: Db): Promise<void> {
-  const file = path.join(process.cwd(), "db", "schema.sql");
-  await d.exec(fs.readFileSync(file, "utf8"));
+  await d.exec(SCHEMA);
 }

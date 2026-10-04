@@ -6,22 +6,23 @@ import { Composer } from "./Composer";
 export function RequestForm({ project, users, uploads }: { project: string; users: string[]; uploads: boolean }) {
   const [state, action, pending] = useActionState(requestAction, { ok: true });
   return (
-    <form action={action} className="form-grid">
+    <form action={action} className="form">
       <input type="hidden" name="project" value={project} />
-      <label>Title<input name="title" required placeholder="What should change?" /></label>
+      <input name="title" required aria-label="title" placeholder="What should change?" className="big" autoFocus />
       <div className="row">
-        <label>Type <select name="type" defaultValue="feature"><option>feature</option><option>bug</option></select></label>
-        <label>Priority <select name="priority" defaultValue="medium">{["low", "medium", "high", "urgent"].map((p) => <option key={p}>{p}</option>)}</select></label>
+        <select name="type" defaultValue="feature" aria-label="type"><option>feature</option><option>bug</option></select>
+        <select name="priority" defaultValue="medium" aria-label="priority">{["low", "medium", "high", "urgent"].map((p) => <option key={p}>{p}</option>)}</select>
       </div>
-      <label>Description (Markdown — becomes the original request)
-        <Composer name="description" users={users} rows={8} uploads={uploads} placeholder="Background, steps to reproduce, what done looks like…" />
-      </label>
-      <div className="row">
-        <label>Developer <select name="developer" defaultValue=""><option value="">—</option>{users.map((u) => <option key={u}>{u}</option>)}</select></label>
-        <label>QA <select name="qa" defaultValue=""><option value="">—</option>{users.map((u) => <option key={u}>{u}</option>)}</select></label>
-      </div>
-      <div><button className="primary" disabled={pending}>Submit request</button></div>
-      {!state.ok && <div className="banner" role="alert">{state.message}</div>}
+      <Composer name="description" users={users} rows={8} uploads={uploads} placeholder="Background, steps to reproduce, what done looks like" />
+      <details>
+        <summary className="add">assign</summary>
+        <div className="row" style={{ marginTop: 6 }}>
+          <select name="developer" defaultValue="" aria-label="developer"><option value="">developer —</option>{users.map((u) => <option key={u}>{u}</option>)}</select>
+          <select name="qa" defaultValue="" aria-label="QA"><option value="">QA —</option>{users.map((u) => <option key={u}>{u}</option>)}</select>
+        </div>
+      </details>
+      <div><button className="btn primary" disabled={pending}>Submit</button></div>
+      {!state.ok && <div className="toast" role="alert">{state.message}</div>}
     </form>
   );
 }
