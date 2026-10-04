@@ -44,7 +44,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}${legacy ? `?${legacy}` : ""}`);
   const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged",
-                 tab: Number(q.tab ?? 0) || 0, type: q.type, parked: q.parked === "1" };
+                 tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, parked: q.parked === "1" };
   const { columns, counts } = await board(d, p, f, user.handle);
   return (
     <>

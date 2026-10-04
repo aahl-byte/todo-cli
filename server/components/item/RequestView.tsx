@@ -115,7 +115,7 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
         </div>
       ) : req && (base && !asText ? (
         <div className="req-diff">
-          <div className="faint">changes since v{base.meta?.version ?? 1}{base.meta?.triaged ? " (triaged)" : ""}</div>
+          <div className="faint">Changes since v{base.meta?.version ?? 1}{base.meta?.triaged ? " (triaged)" : ""}</div>
           <Diff before={said(base)} after={said(req)} />
         </div>
       ) : (

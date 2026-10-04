@@ -337,6 +337,13 @@ await d.query(`update notifications n set created = nt.ts::timestamptz from note
 await d.query(`update notifications n set created = coalesce((select max(ts)::timestamptz from status_history h
                  where h.project = n.project and h.item_uid = n.item_uid), n.created) where n.note_uid is null`);
 
+// dev looked at some of their tickets before the latest comments landed.
+await d.query(`insert into item_seen (handle, project, item_uid, seen_at)
+  select 'dev', i.project, i.uid, max(n.ts::timestamptz) - interval '1 hour'
+    from items i join notes n on n.project = i.project and n.item_uid = i.uid
+   where i.developer = 'dev' and n.kind in ('comment', 'qa-rejection') and n.author <> 'dev'
+   group by i.project, i.uid`);
+
 const [{ n }] = await d.query("select count(*)::int as n from items");
 console.log(JSON.stringify({ items: Number(n), users: Object.keys(tokens).length, password: "<handle>-test" }));
 await d.close?.();

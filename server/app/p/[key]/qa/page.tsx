@@ -22,7 +22,7 @@ export default async function QaQueue({ params, searchParams }: {
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}/qa${legacy ? `?${legacy}` : ""}`);
   const { ready, inQa, awaitingFix, counts } = await qaQueue(d, key, user.handle, {
-    entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged", tab: Number(q.tab ?? 0) || 0, type: q.type });
+    entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type });
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} />;
   const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);

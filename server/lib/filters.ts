@@ -30,7 +30,7 @@ export function matches(c: Person, e: Entry): boolean {
 export function matchEntries<T extends Person>(rows: T[], entries: Entry[], view: "merged" | "tabs", tab = 0): T[] {
   if (!entries.length) return rows;
   if (view === "tabs") {
-    const e = entries[Math.min(Math.max(tab, 0), entries.length - 1)];
+    const e = entries[Math.min(Math.max(Math.trunc(tab) || 0, 0), entries.length - 1)];
     return rows.filter((c) => matches(c, e));
   }
   return rows.filter((c) => entries.some((e) => matches(c, e)));

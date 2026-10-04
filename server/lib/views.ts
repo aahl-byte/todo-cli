@@ -246,8 +246,8 @@ export async function qaQueue(d: Db, key: string, me: string, f: BoardFilters = 
   const ready = rows.filter((r) => r.status === "ready-for-qa").sort((a, b) => a.entered.localeCompare(b.entered));
   const inQa = rows.filter((r) => r.status === "in-qa")
     .sort((a, b) => Number(b.qa_assignee === me) - Number(a.qa_assignee === me) || a.entered.localeCompare(b.entered));
-  // What I sent back and is still waiting on a fix.
-  const awaitingFix = rows.filter((r) => r.status === "qa-rejected" && [...r.history].reverse().find((h) => h.to_status === "qa-rejected")?.by === me);
+  // What I sent back and is still waiting on a fix, whatever the filters.
+  const awaitingFix = all.filter((r) => r.status === "qa-rejected" && [...r.history].reverse().find((h) => h.to_status === "qa-rejected")?.by === me);
   return { ready, inQa, awaitingFix, counts };
 }
 

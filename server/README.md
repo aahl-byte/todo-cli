@@ -46,6 +46,11 @@ rule that lets the dashboard post to it:
 [{ "AllowedOrigins": ["https://todo.example.com"], "AllowedMethods": ["POST"], "AllowedHeaders": ["*"] }]
 ```
 
+**Jira and `qa-rejected`.** A project that doesn't map `qa-rejected` in its
+Jira status map sends rejections to Jira as its `in-progress` status. Jira can't
+tell the two apart then, so moving the issue to that status in Jira doesn't take
+a ticket out of `qa-rejected`; map `qa-rejected` to its own Jira status for that.
+
 Without `S3_BUCKET`, a local server keeps images under `TODO_FILES_DIR`
 (default `.files/`). On Vercel, uploads stay off until S3 is configured.
 

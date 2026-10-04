@@ -19,7 +19,7 @@ export function MarkAllRead({ count }: { count: number }) {
     router.refresh();
     notify(`Marked ${r.ids.length} read.`, {
       label: "Undo",
-      run: () => void act.markUnread({ ids: r.ids }).then(() => router.refresh()),
+      run: () => void act.markUnread({ ids: r.ids, readAt: r.readAt }).then(() => router.refresh()),
     });
   };
   return <button type="button" className="btn" onClick={() => void run()}>Mark all read<span className="n">{count}</span></button>;

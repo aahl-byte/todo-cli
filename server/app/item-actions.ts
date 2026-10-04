@@ -8,7 +8,7 @@ import { describe, POSTABLE_KINDS, type ActionState } from "@/lib/action-helpers
 import { db } from "@/lib/db";
 import { later } from "@/lib/http";
 import { flushJira } from "@/lib/jira/flush";
-import { markRead, markSeen } from "@/lib/inbox";
+import { markSeen } from "@/lib/inbox";
 import { LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
@@ -209,21 +209,21 @@ export async function seen(a: { project: string; itemUid: string }) {
   return markSeen(await db(), user.handle, a.project, a.itemUid);
 }
 
-export async function markAllRead(): Promise<ActionState & { ids: number[] }> {
+export async function markAllRead(): Promise<ActionState & { ids: number[]; readAt: string | null }> {
   const user = await requireUser();
   const d = await db();
-  const rows = await d.query("select id from notifications where handle = $1 and read_at is null", [user.handle]);
-  const ids = rows.map((r) => Number(r.id));
-  await markRead(d, user.handle, ids);
+  const rows = await d.query(
+    "update notifications set read_at = now() where handle = $1 and read_at is null returning id, read_at", [user.handle]);
   revalidatePath("/inbox");
-  return { ok: true, at: Date.now(), ids };
+  return { ok: true, at: Date.now(), ids: rows.map((r) => Number(r.id)), readAt: rows[0] ? new Date(rows[0].read_at).toISOString() : null };
 }
 
-/** Put notices back to unread: the undo for mark-all-read. */
-export async function markUnread(a: { ids: number[] }): Promise<ActionState> {
+/** The undo for mark-all-read: notices it read and nothing has read since. */
+export async function markUnread(a: { ids: number[]; readAt: string | null }): Promise<ActionState> {
   const user = await requireUser();
   const d = await db();
-  await d.query("update notifications set read_at = null where handle = $1 and id = any($2::bigint[])", [user.handle, a.ids]);
+  await d.query("update notifications set read_at = null where handle = $1 and id = any($2::bigint[]) and read_at = $3::timestamptz",
+                [user.handle, a.ids, a.readAt]);
   revalidatePath("/inbox");
   return { ok: true, at: Date.now() };
 }

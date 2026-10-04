@@ -7,7 +7,7 @@ export type JiraEvent =
   | { kind: "note"; project: string; itemUid: string; note: Record<string, any> };
 
 /** The Jira status a todo status maps to. An unmapped `qa-rejected` follows
- * `in-progress`, where rejected work went before it had a status of its own. */
+ * `in-progress`, so a rejection still moves the Jira issue. */
 export function jiraTarget(map: Record<string, string> | null | undefined, status: string): string | undefined {
   const m = map ?? {};
   return m[status] ?? (status === "qa-rejected" ? m["in-progress"] : undefined);

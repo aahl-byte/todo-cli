@@ -141,9 +141,6 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
             print(line)
 
 
-# Statuses that mean triage is done; a request worked on past them should have been triaged.
-
-
 def _version(n) -> int:
     return int((n.get("meta") or {}).get("version") or 1)
 

@@ -467,8 +467,9 @@ describe("seen", () => {
     expect(first.unread).toBe(1);                      // N2's notice is still unread
     const unread = await w.d.query("select handle, item_uid from notifications where read_at is null order by handle, item_uid");
     expect(unread).toEqual([{ handle: "bob", item_uid: "N2" }, { handle: "carol", item_uid: "N1" }]);
+    const [{ at }] = await w.d.query("update item_seen set seen_at = seen_at - interval '1 minute' returning seen_at as at");   // a later visit
     const again = await markSeen(w.d, "bob", "p", "N1");
-    expect(Date.parse(again.lastSeen!)).toBeGreaterThan(Date.parse(first.lastSeen!));
+    expect(again.lastSeen).toBe(new Date(at).toISOString());
     expect((await markSeen(w.d, "carol", "p", "N2")).lastSeen).toBeNull();   // nothing pending, never visited
   });
 });
@@ -529,5 +530,40 @@ describe("notices", () => {
       { handle: "bob", kind: "mention", note_uid: "Q1" }, { handle: "carol", kind: "clarification", note_uid: "Q1" },
       { handle: "bob", kind: "qa-rejection", note_uid: "R1" }, { handle: "carol", kind: "mention", note_uid: "R1" },
     ]);
+  });
+});
+
+describe("round-4 validation fixes", () => {
+  it("keeps the baseline through a quick repeat and counts a notice read on the way in", async () => {
+    const { markSeen } = await import("@/lib/inbox");
+    await w.one("alice", item("V1", { developer: "bob" }));
+    await w.one("alice", child("note", "C1", "V1", { kind: "comment", text: "@bob look" }));
+    await w.d.query("update notifications set read_at = now() where handle = 'bob'");   // opened through the inbox row
+    const first = await markSeen(w.d, "bob", "p", "V1");
+    expect(first.lastSeen).not.toBeNull();
+    expect((await markSeen(w.d, "bob", "p", "V1")).lastSeen).toBe(first.lastSeen);
+  });
+
+  it("survives a fractional tab", async () => {
+    const { matchEntries } = await import("@/lib/filters");
+    const rows = [{ developer: "a" }, { developer: "b" }];
+    expect(matchEntries(rows, [{ role: "dev", who: "a" }, { role: "dev", who: "b" }], "tabs", 1.5)).toEqual([{ developer: "b" }]);
+  });
+
+  it("keeps my rejections in Awaiting fix whatever the filters", async () => {
+    const r = await w.one("alice", item("W1", { status: "in-qa", developer: "bob", qa_assignee: "carol" }));
+    await w.apply("carol", ...build.moveOps({ uid: "W1", item_uid: "W1", status: "in-qa", versions: r.versions!, qa_assignee: "carol" },
+      "qa-rejected", { me: "carol", comment: "no" }));
+    const q = await qaQueue(w.d, "p", "carol", { entries: [{ role: "dev", who: "nobody" }] });
+    expect(q.awaitingFix.map((c) => c.uid)).toEqual(["W1"]);
+  });
+
+  it("marks a triaged request on a move into qa-rejected", async () => {
+    const r = await w.one("alice", item("T2", { status: "requested" }));
+    await w.one("alice", child("note", "TR", "T2", { kind: "ticket-request", text: "x" }));
+    await w.one("bob", set("item", "T2", "T2", { status: "in-triage" }, { status: r.versions!.status }));
+    const v = (await w.d.query("select versions from items where uid = 'T2'"))[0].versions;
+    await w.one("bob", set("item", "T2", "T2", { status: "qa-rejected" }, { status: v.status }));
+    expect((await w.d.query("select meta from notes where uid = 'TR'"))[0].meta).toMatchObject({ triaged: true });
   });
 });

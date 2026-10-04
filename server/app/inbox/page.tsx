@@ -69,7 +69,7 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
       <main className="inbox">
         <div className="filters">
           <Link href="/inbox" className={`btn ${all ? "" : "on"}`}>Unread<span className="n">{box.unread}</span></Link>
-          <Link href="/inbox?all=1" className={`btn ${all ? "on" : ""}`}>All</Link>
+          <Link href="/inbox?all=1" className={`btn ${all ? "on" : ""}`}>All<span className="n">{box.total}</span></Link>
           <span className="grow" />
           {box.unread > 0 && <MarkAllRead count={box.unread} />}
         </div>

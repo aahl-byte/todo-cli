@@ -14,8 +14,8 @@ export async function inbox(db: Db, handle: string, opts: { all?: boolean; since
       limit 200`,
     [handle, opts.since ?? 0]);
   const [c] = await db.query(
-    "select count(*)::int as n from notifications where handle = $1 and read_at is null", [handle]);
-  return { notifications: rows.map((r) => ({ ...r, id: Number(r.id) })), unread: Number(c.n) };
+    "select count(*) filter (where read_at is null)::int as n, count(*)::int as total from notifications where handle = $1", [handle]);
+  return { notifications: rows.map((r) => ({ ...r, id: Number(r.id) })), unread: Number(c.n), total: Number(c.total) };
 }
 
 export async function markRead(db: Db, handle: string, ids: number[]): Promise<number> {
@@ -32,21 +32,26 @@ export async function markRead(db: Db, handle: string, ids: number[]): Promise<n
 export async function markSeen(db: Db, handle: string, project: string, itemUid: string):
     Promise<{ lastSeen: string | null; unread: number }> {
   const [prev] = await db.query(
-    "select seen_at from item_seen where handle = $1 and project = $2 and item_uid = $3", [handle, project, itemUid]);
-  let lastSeen: Date | null = prev?.seen_at ?? null;
-  if (!lastSeen) {
+    `select seen_at, baseline, seen_at > now() - interval '10 seconds' as just_now
+       from item_seen where handle = $1 and project = $2 and item_uid = $3`, [handle, project, itemUid]);
+  // A repeat within seconds (a remount, the same page view) keeps its baseline.
+  let lastSeen: Date | null = prev?.just_now ? prev.baseline : prev?.seen_at ?? null;
+  if (!prev) {
+    // First visit: just before the oldest notice still pending, or read in the
+    // last minute (opening a notice reads it before the page loads).
     const [n] = await db.query(
-      `select min(created) as at from notifications where handle = $1 and project = $2 and item_uid = $3 and read_at is null`,
+      `select min(created) as at from notifications where handle = $1 and project = $2 and item_uid = $3
+          and (read_at is null or read_at > now() - interval '1 minute')`,
       [handle, project, itemUid]);
-    // Just before the oldest notice, so the note it's about counts as new.
     lastSeen = n?.at ? new Date(new Date(n.at).getTime() - 1000) : null;
   }
   await db.query(
     "update notifications set read_at = now() where handle = $1 and project = $2 and item_uid = $3 and read_at is null",
     [handle, project, itemUid]);
   await db.query(
-    `insert into item_seen (handle, project, item_uid, seen_at) values ($1, $2, $3, now())
-     on conflict (handle, project, item_uid) do update set seen_at = excluded.seen_at`, [handle, project, itemUid]);
+    `insert into item_seen (handle, project, item_uid, seen_at, baseline) values ($1, $2, $3, now(), $4)
+     on conflict (handle, project, item_uid) do update set seen_at = excluded.seen_at, baseline = excluded.baseline`,
+    [handle, project, itemUid, lastSeen]);
   const [c] = await db.query("select count(*)::int as n from notifications where handle = $1 and read_at is null", [handle]);
   return { lastSeen: lastSeen ? new Date(lastSeen).toISOString() : null, unread: Number(c.n) };
 }
