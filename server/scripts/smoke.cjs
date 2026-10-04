@@ -39,6 +39,7 @@ const errors = [];
     await page.fill('input[name=token]', tokens.dev);
     await page.click("button.primary");
     await page.waitForURL((u) => u.host === new URL(base).host && !u.pathname.startsWith("/login"));
+    if (!(await ctx.cookies()).some((c) => c.name === "todo_token")) throw new Error("sign-in cookie not stored");
   });
   await step("login as dev → board", () => login("dev"));
   await page.screenshot({ path: out + "/board.png", fullPage: true });

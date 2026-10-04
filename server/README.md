@@ -65,4 +65,6 @@ TEST_DATABASE_URL=postgres://... npm test             # also runs the real-Postg
 
 `TODO_PGLITE` runs Postgres in-process (WASM), so you don't need a database
 server. `scripts/smoke.cjs` drives the dashboard through its main flows with
-Playwright against a seeded server.
+Playwright against a seeded server. Point `BASE_URL` at a real hostname rather
+than localhost: browsers treat localhost as secure, which hides cookie problems
+on plain-http hosts.

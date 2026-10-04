@@ -1,7 +1,7 @@
 "use server";
 // Dashboard writes: each action builds ops (lib/ops-builder.ts) and sends them
 // through the same apply path the CLI's sync uses.
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { applyOps, ProjectNotFound, type Op, type Result } from "@/lib/apply";
@@ -195,7 +195,10 @@ export async function loginAction(_prev: ActionState, fd: FormData): Promise<Act
   if (!user || (str(fd, "handle").trim() && user.handle !== str(fd, "handle").trim())) {
     return { ok: false, message: "That handle and token don't match." };
   }
-  (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production",
+  // Secure only over HTTPS: a browser drops a Secure cookie sent over plain
+  // http (a LAN or Tailscale host), which would make sign-in silently fail.
+  const proto = (await headers()).get("x-forwarded-proto") ?? "http";
+  (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: proto.split(",")[0].trim() === "https",
                                          path: "/", maxAge: 60 * 60 * 24 * 90 });
   redirect(safeNext(str(fd, "next")));
 }
