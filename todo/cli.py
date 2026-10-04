@@ -197,14 +197,17 @@ def cmd_url(root: Path, args) -> None:
 
 
 def cmd_request(root: Path, args) -> None:
-    if not " ".join(args.text).strip():
+    if args.text is None:
         if args.url:
-            die("--url goes with the request text.", 2)
+            die("--url goes with --text.", 2)
         cmd_shortcut(root, args)
         return
+    text = args.text.strip()
+    if not text:
+        die("Missing request text.", 2)
     it = store.resolve_item(root, args.query)
     url = _url(args.url)
-    new_id = store.add_note(root, it["id"], _text(args, "request"), now(), kind="ticket-request",
+    new_id = store.add_note(root, it["id"], text, now(), kind="ticket-request",
                             extra={"url": url} if url else None)
     if it["status"] == "requested":
         print(f'{it["id"]}: posted request [{new_id}]')
@@ -718,9 +721,9 @@ def build_parser() -> argparse.ArgumentParser:
     for name, helptext in SHORTCUT_HELP.items():
         if name == "request":
             p = sub.add_parser(name, parents=[common],
-                               help="→ requested; with TEXT, post it as a new version of the ticket request")
+                               help="→ requested; with --text, post a new version of the ticket request")
             p.add_argument("query", help="id or part of a title")
-            p.add_argument("text", nargs="*", help="the full new request text")
+            p.add_argument("-t", "--text", default=None, help="the full new request text")
             p.add_argument("--url", default=None, help="where it happens")
             p.set_defaults(func=cmd_request)
             continue

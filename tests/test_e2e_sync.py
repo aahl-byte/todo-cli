@@ -176,7 +176,7 @@ def test_request_versions_freeze_and_send_the_item_back(server, tmp_path):
     it = store.resolve_item(root, "safari-login")
     assert any("request-frozen" in e["text"] and "todo request" in e["text"] for e in it["log"])
 
-    out = cli(home, repo, "request", "safari-login", "second words")
+    out = cli(home, repo, "request", "safari-login", "--text", "second words")
     assert "moves it back to requested" in out.stdout
     cli(home, repo, "sync")
     cli(home, repo, "sync")
@@ -215,3 +215,23 @@ def test_phase_titles_app_and_relations_sync_both_ways(server, tmp_path):
     it = store.resolve_item((ra / ".TODO").resolve(), "cart-totals")
     assert (it["section"], it["phases"]) == ("cart", {"1": "Schema", "2": "UI"})
     assert [n for n in it["notes"] if n["kind"] == "relation"] == []
+
+
+def test_offline_new_version_beats_a_stale_move_into_triage(server, tmp_path):
+    url, tokens = server
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    home.mkdir()
+    (repo / ".TODO").mkdir(parents=True)
+    cli(home, repo, "login", url, tokens["alice"])
+    cli(home, repo, "add", "Safari login", "--request", "first")
+    cli(home, repo, "link", "--remote", url, "--project", "web")
+    cli(home, repo, "triage", "safari-login")
+    cli(home, repo, "reopen", "safari-login")
+    cli(home, repo, "request", "safari-login", "--text", "second", offline=True)
+    cli(home, repo, "triage", "safari-login", offline=True)
+    cli(home, repo, "sync")
+    cli(home, repo, "sync")
+    it = store.resolve_item((repo / ".TODO").resolve(), "safari-login")
+    assert it["status"] == "requested"
+    current = max((n for n in it["notes"] if n["kind"] == "ticket-request"), key=lambda n: n["meta"].get("version", 0))
+    assert (current["text"], current["meta"].get("frozen")) == ("second", None)

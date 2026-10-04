@@ -338,7 +338,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .request.focus { background: var(--panel-2); border-radius: 5px; }
 @media (max-width: 1300px) { .column.empty-col { display: none; } }
 
-/* round 3: + controls 3× larger; right-aligned rail labels; glowing glance */
+/* add controls, rail labels, the task glance */
 .plus { font-size: 39px; line-height: .6; font-weight: 300; padding: 0 2px; min-width: 28px; min-height: 28px; display: inline-grid; place-items: center; }
 .rail .label .plus { font-size: 39px; }
 .add .pl { font: 300 27px var(--mono); line-height: .5; vertical-align: -6px; margin-right: 4px; letter-spacing: 0; }
@@ -368,9 +368,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .diff .del-l { color: var(--danger); text-decoration: line-through; }
 .diff .same-l { color: var(--dim); }
 .md-box { margin: 4px 0 8px 18px; }
-.flag { font: 600 9px var(--disp); letter-spacing: .12em; text-transform: uppercase; }
+.flag { font: 600 9px var(--disp); letter-spacing: .12em; text-transform: uppercase; border: 0; background: none; padding: 0; cursor: pointer; }
 
-/* round 3b */
+/* request extras, phase titles, related items */
 .card .where { font-size: 11px; color: var(--faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .req-url { display: block; font-size: 12px; margin-bottom: 6px; overflow-wrap: anywhere; }
 .tgroup-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

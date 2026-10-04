@@ -326,7 +326,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
-  if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op);
+  if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
   if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", project: ctx.project, itemUid, note: row });
   return result;
 }
@@ -339,6 +339,10 @@ async function badNoteMeta(ctx: Ctx, itemUid: string, kind: string, meta: Record
     if (typeof target !== "string" || target === itemUid) return "bad-relation";
     const [hit] = await ctx.t.query("select 1 from items where project = $1 and uid = $2", [ctx.project, target]);
     if (!hit) return "bad-relation";
+    const [dup] = await ctx.t.query(
+      `select 1 from notes where project = $1 and kind = 'relation'
+         and ((item_uid = $2 and meta->>'item' = $3) or (item_uid = $3 and meta->>'item' = $2))`, [ctx.project, itemUid, target]);
+    if (dup) return "already-related";
   }
   return null;
 }
@@ -349,6 +353,8 @@ async function badNoteMeta(ctx: Ctx, itemUid: string, kind: string, meta: Record
 // a frozen version never changes: a new one is posted instead, which sends the
 // item back to `requested` so the change gets triaged. These meta keys are the
 // server's own; no client can set them.
+/** Note kinds a note can't be changed to or from: their checks run at create. */
+const FIXED_KINDS = ["ticket-request", "relation"];
 export const REQUEST_META = ["version", "frozen", "frozen_at", "frozen_by", "frozen_via", "triaged", "triaged_at", "triaged_by"];
 /** Statuses that mean triage is done. */
 const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
@@ -373,7 +379,7 @@ async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, 
 }
 
 /** A new request version on an item past `requested` sends it back there. */
-async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op: Op) {
+async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op: Op, noteUid: string) {
   const [item] = await ctx.t.query("select * from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if (!item || item.status === "requested") return;
   const seq = await ctx.bump("item", itemUid, itemUid);
@@ -382,7 +388,9 @@ async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op:
     "update items set status = 'requested', completed = null, versions = $3::jsonb where uid = $1 and project = $2",
     [itemUid, ctx.project, JSON.stringify(versions)]);
   await statusChanged(ctx, { ...op, override: false, reason: `request v${version}` }, item, "requested");
-  for (const who of [item.developer, item.qa_assignee, item.creator]) await ctx.notify(who, "request-changed", itemUid);
+  for (const who of [item.developer, item.qa_assignee, item.creator]) await ctx.notify(who, "request-changed", itemUid, noteUid);
+  // Jira hears of the move back even when Jira's own edit caused it.
+  if (ctx.actor.bridge) await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { kind: "status", project: ctx.project, itemUid, status: "requested" });
 }
 
 async function currentRequest(ctx: Ctx, itemUid: string): Promise<Row | null> {
@@ -406,9 +414,13 @@ async function requestLifecycle(ctx: Ctx, itemUid: string, from: string, to: str
   const req = await currentRequest(ctx, itemUid);
   if (!req) return;
   const meta = req.meta ?? {};
-  if (from === "requested" && to !== "requested" && !meta.frozen) {
-    await writeRequestMeta(ctx, req, { version: meta.version ?? 1, frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle,
-                                       frozen_via: to === "in-triage" ? "triage" : "skip" });
+  if (from === "requested" && to !== "requested") {
+    // Superseded versions freeze too, so no version stays editable.
+    const open = await ctx.t.query(
+      `select * from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' and coalesce(meta->>'frozen', 'false') <> 'true'`,
+      [ctx.project, itemUid]);
+    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: to === "in-triage" ? "triage" : "skip" };
+    for (const n of open) await writeRequestMeta(ctx, n, { version: n.meta?.version ?? 1, ...stamp });
     return;
   }
   if (PAST_TRIAGE.includes(to) && meta.frozen && meta.frozen_via === "triage" && !meta.triaged) {
@@ -431,7 +443,8 @@ export async function backfillRequestVersions(d: Db): Promise<number> {
       const version = Number(v) + 1;
       const frozen = r.status !== "requested";
       const triaged = PAST_TRIAGE.includes(r.status);
-      const patch: Record<string, unknown> = { version, ...(frozen ? { frozen: true, frozen_via: triaged ? "triage" : "skip" } : {}),
+      const viaTriage = triaged || r.status === "in-triage";
+      const patch: Record<string, unknown> = { version, ...(frozen ? { frozen: true, frozen_via: viaTriage ? "triage" : "skip" } : {}),
                                                ...(triaged ? { triaged: true } : {}) };
       const [{ seq }] = await t.query("update projects set seq = seq + 1 where key = $1 returning seq", [r.project]);
       await t.query(`insert into changes (project, seq, entity, uid, item_uid, deleted, author, ts) values ($1, $2, 'note', $3, $4, false, 'migration', $5)`,
@@ -459,7 +472,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       ? (row[jsonCol] ?? {})[field.slice(jsonCol.length + 1)]
       : row[field];
     const version = versions[field];
-    if (!isSettable(entity, field) || (entity === "note" && field.startsWith("meta.") && REQUEST_META.includes(field.slice(5)))) {
+    if (!isSettable(entity, field) || (entity === "note" && field.startsWith("meta.") && REQUEST_META.includes(field.slice(5)))
+        || (entity === "note" && field === "kind" && value !== row.kind && [row.kind, value].some((k) => FIXED_KINDS.includes(k as string)))
+        || (entity === "note" && row.kind === "relation" && field === "meta.item")) {
       rejected.push({ field, reason: "not-settable", server_value: current ?? null, version });
       continue;
     }

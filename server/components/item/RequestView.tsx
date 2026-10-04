@@ -2,7 +2,7 @@
 // The request: its current version, the frozen versions before it with a line
 // diff each, the version triage covered, and editing that posts a new version
 // once the current one is frozen.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as act from "@/app/item-actions";
 import type { ItemView as Data } from "@/lib/views";
 import { Markdown } from "../Markdown";
@@ -13,7 +13,7 @@ import { report, uploadsFor, type Ctx } from "./ItemView";
 type Row = Record<string, any>;
 const LONG_LINES = 6;
 /** What a version says, URL included, for diffing. */
-const said = (v: Row) => (v.meta?.url ? `URL: ${v.meta.url}\n` : "") + (v.text ?? "");
+export const said = (v: Row) => (v.meta?.url ? `URL: ${v.meta.url}\n` : "") + (v.text ?? "");
 
 /** Line diff by longest common subsequence: [kind, line] with kind " ", "+" or "-". */
 export function lineDiff(before: string, after: string): [string, string][] {
@@ -59,6 +59,8 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
   const [refused, setRefused] = useState(false);
   const [open, setOpen] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  // Opened from a "request changed" notice: show what changed.
+  useEffect(() => { if (focus && versions.length > 1) setShowVersions(true); }, [focus, versions.length]);
   const pinned = useRef(req?.versions ?? {});
   const long = (req?.text ?? "").split("\n").length > LONG_LINES || (req?.text ?? "").length > 600;
 
@@ -125,15 +127,16 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
           </button>
         )}
         {data.untriaged && (
-          <span className="hot flag" data-tip="the version being worked on never went through triage">
+          <button type="button" className="hot flag" data-tip="the version being worked on never went through triage — show versions"
+                  onClick={() => setShowVersions(true)}>
             v{version} not triaged{data.triagedVersion ? ` · last triaged v${data.triagedVersion}` : ""}
-          </span>
+          </button>
         )}
       </div>
 
       {showVersions && versions.length > 0 && (
         <ol className="versions">
-          {versions.map((v, i) => <Version key={v.uid} v={v} previous={versions[i + 1]} current={i === 0} />)}
+          {versions.map((v, i) => <Version key={v.uid} v={v} previous={versions[i + 1]} current={i === 0} expanded={i === 0 && !!focus} />)}
         </ol>
       )}
 
@@ -152,8 +155,8 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
   );
 }
 
-function Version({ v, previous, current }: { v: Row; previous?: Row; current: boolean }) {
-  const [open, setOpen] = useState(false);
+function Version({ v, previous, current, expanded }: { v: Row; previous?: Row; current: boolean; expanded: boolean }) {
+  const [open, setOpen] = useState(expanded);
   const meta = v.meta ?? {};
   return (
     <li className="version">

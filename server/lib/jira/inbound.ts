@@ -125,7 +125,8 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
     const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
     if (todo && !echo) data.status = todo;
   }
-  const request = items.some((x) => x.field === "description" || x.field === "summary") ? await changedRequest(db, link, issue) : null;
+  const request = !older(link.last_event_at) && items.some((x) => x.field === "description" || x.field === "summary")
+    ? await changedRequest(db, link, issue) : null;
   if (!Object.keys(data).length && !request) {
     await stamp(db, link, payload);
     return { handled: false, reason: "nothing to apply" };
@@ -167,7 +168,7 @@ async function stamp(db: Db, link: any, payload: any): Promise<void> {
   const at = Number(payload?.timestamp) || null;
   if (at === null) return;
   const items: any[] = payload.changelog?.items ?? [];
-  if (items.some((x) => x.field === "status")) {
+  if (items.some((x) => ["status", "description", "summary"].includes(x.field))) {
     await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1 and project = $3", [link.item_uid, at, link.project]);
   }
   if (items.some((x) => x.field === "assignee")) {

@@ -22,7 +22,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-  page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text().slice(0, 200)); });
+  page.on("console", (m) => { if (m.type() === "error") errors.push("console: " + m.text().slice(0, 200) + " @ " + (m.location()?.url ?? "")); });
   const step = async (name, fn) => {
     try { await fn(); console.log("ok  ", name); }
     catch (e) { console.log("FAIL", name, e.message.split("\n").slice(0, 6).join(" | ")); errors.push(name); }

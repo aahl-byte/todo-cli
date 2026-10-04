@@ -153,7 +153,7 @@ def test_item_file_keeps_unknown_keys_and_comments(root):
 def test_request_posts_a_version_and_sends_an_unsynced_item_back(root, capsys):
     run_cli(root, ["add", "Safari login", "--request", "v1 text"])
     run_cli(root, ["status", "safari-login", "in-progress"])
-    run_cli(root, ["request", "safari-login", "v2 text"])
+    run_cli(root, ["request", "safari-login", "--text", "v2 text"])
     it = store.resolve_item(root, "safari-login")
     assert it["status"] == "requested"
     assert [n["text"] for n in it["notes"] if n["kind"] == "ticket-request"] == ["v1 text", "v2 text"]
@@ -165,7 +165,7 @@ def test_get_shows_only_the_current_request_and_flags_untriaged(root, capsys):
     f = next(item_dir.iterdir())
     meta, body = frontmatter.split(f.read_text())
     f.write_text(frontmatter.join({**meta, "version": 1, "frozen": True, "triaged": True}, body))
-    run_cli(root, ["request", "safari-login", "new words"])
+    run_cli(root, ["request", "safari-login", "--text", "new words"])
     f2 = next(p for p in item_dir.iterdir() if p != f)
     meta, body = frontmatter.split(f2.read_text())
     f2.write_text(frontmatter.join({**meta, "version": 2, "frozen": True, "frozen_via": "skip"}, body))
@@ -224,3 +224,15 @@ def test_relate_shows_on_both_sides_and_unrelates_from_either(root, capsys):
     assert [n["kind"] for n in notes(root, "cart-totals")] == ["relation"]
     run_cli(root, ["unrelate", "tax-rounding", "cart-totals"])
     assert notes(root, "cart-totals") == []
+
+
+def test_request_without_text_only_moves_and_stray_words_are_refused(root):
+    run_cli(root, ["add", "Safari login", "--request", "v1"])
+    run_cli(root, ["status", "safari-login", "in-progress"])
+    with pytest.raises(SystemExit):
+        run_cli(root, ["request", "safari", "login"])
+    assert store.resolve_item(root, "safari-login")["status"] == "in-progress"
+    run_cli(root, ["request", "safari-login"])
+    it = store.resolve_item(root, "safari-login")
+    assert it["status"] == "requested"
+    assert len([n for n in it["notes"] if n["kind"] == "ticket-request"]) == 1

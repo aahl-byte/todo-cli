@@ -129,11 +129,11 @@ function Related({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
     <section>
       <div className="label">Related<button type="button" className="plus" aria-label="relate an item" onClick={() => setAdding(true)}>+</button></div>
       {rows.map((r) => (
-        <div key={r.note_uid} className="rrow" data-uid={r.uid}>
+        <div key={r.uid} className="rrow" data-uid={r.uid}>
           <Led status={r.status} />
           <a className="grow" href={`/p/${ctx.project}/i/${r.id}`}>{r.title}</a>
           {r.developer && <span className="faint">{r.developer}</span>}
-          <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: r.note_item_uid, entity: "note", uid: r.note_uid, versions: r.note_versions })} />
+          <Remove onConfirm={() => act.unrelate({ project: ctx.project, notes: r.notes })} />
         </div>
       ))}
       {adding && (

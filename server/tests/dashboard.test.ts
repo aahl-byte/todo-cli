@@ -344,11 +344,10 @@ describe("request fields, relations and phase titles", () => {
     expect(await w.one("alice", child("note", "R0", "A1", { kind: "relation", text: "related", meta: { item: "A1" } }))).toMatchObject({ reason: "bad-relation" });
     expect(await w.one("alice", child("note", "R0", "A1", { kind: "relation", text: "related", meta: { item: "nope" } }))).toMatchObject({ reason: "bad-relation" });
     await w.one("alice", child("note", "R1", "A1", { kind: "relation", text: "related", meta: { item: "B1" } }));
-    await w.one("bob", child("note", "R2", "B1", { kind: "relation", text: "related", meta: { item: "A1" } }));
     const a = (await loadItem(w.d, "p", "a1"))!;
     const b = (await loadItem(w.d, "p", "b1"))!;
-    expect(a.related.map((r: any) => [r.id, r.status, r.developer, r.note_uid])).toEqual([["b1", "in-progress", "bob", "R1"]]);
-    expect(b.related.map((r: any) => [r.id, r.note_item_uid])).toEqual([["a1", "A1"]]);
+    expect(a.related.map((r: any) => [r.id, r.status, r.developer])).toEqual([["b1", "in-progress", "bob"]]);
+    expect(b.related.map((r: any) => [r.id, r.notes[0].item_uid])).toEqual([["a1", "A1"]]);
     expect(a.links).toEqual([]);
   });
 
@@ -361,5 +360,68 @@ describe("request fields, relations and phase titles", () => {
     v = (await loadItem(w.d, "p", "p1"))!;
     expect(v.phaseTitles).toEqual({});
     expect(r.status).toBe("applied");
+  });
+});
+
+describe("validation fixes", () => {
+  const nv = async (uid: string) => (await w.d.query("select versions, meta from notes where uid = $1", [uid]))[0];
+
+  it("refuses turning a note into a request or relation, or back", async () => {
+    await w.one("alice", item("K1", { status: "requested" }));
+    await w.one("alice", child("note", "C1", "K1", { kind: "context", text: "x", meta: { url: "javascript:alert(1)", version: 99 } }));
+    const r = await w.one("alice", set("note", "C1", "K1", { kind: "ticket-request" }, (await nv("C1")).versions));
+    expect(r, JSON.stringify(r)).toMatchObject({ rejected: [{ field: "kind", reason: "not-settable" }] });
+    await w.one("alice", child("note", "Q1", "K1", { kind: "ticket-request", text: "req" }));
+    const back = await w.one("alice", set("note", "Q1", "K1", { kind: "context" }, (await nv("Q1")).versions));
+    expect(back.rejected?.[0]).toMatchObject({ field: "kind", reason: "not-settable" });
+  });
+
+  it("freezes superseded versions too when the item leaves requested", async () => {
+    const r = await w.one("alice", item("S1", { status: "requested" }));
+    await w.one("alice", child("note", "V1", "S1", { kind: "ticket-request", text: "one" }));
+    await w.one("alice", child("note", "V2", "S1", { kind: "ticket-request", text: "two" }));
+    await w.one("bob", set("item", "S1", "S1", { status: "in-triage" }, { status: r.versions!.status }));
+    expect((await nv("V1")).meta).toMatchObject({ version: 1, frozen: true });
+    expect((await nv("V2")).meta).toMatchObject({ version: 2, frozen: true, frozen_via: "triage" });
+    expect(await w.one("alice", set("note", "V1", "S1", { text: "rewrite" }, (await nv("V1")).versions))).toMatchObject({ reason: "request-frozen" });
+  });
+
+  it("backfills an item caught in triage so leaving triage marks it triaged", async () => {
+    const r = await w.one("alice", item("T1", { status: "in-triage" }));
+    await w.d.query(`insert into notes (uid, item_uid, n, kind, text, author, ts, meta, versions, project)
+                     values ('TQ', 'T1', 1, 'ticket-request', 'x', 'alice', 't', '{}'::jsonb, '{}'::jsonb, 'p')`);
+    await backfillRequestVersions(w.d);
+    await w.one("bob", set("item", "T1", "T1", { status: "todo" }, { status: r.versions!.status }));
+    expect((await nv("TQ")).meta).toMatchObject({ frozen_via: "triage", triaged: true });
+  });
+
+  it("refuses a duplicate relation either way, and unrelating removes every note behind it", async () => {
+    await w.one("alice", item("A1"));
+    await w.one("alice", item("B1"));
+    await w.one("alice", child("note", "R1", "A1", { kind: "relation", text: "related", meta: { item: "B1" } }));
+    expect(await w.one("bob", child("note", "R2", "B1", { kind: "relation", text: "related", meta: { item: "A1" } })))
+      .toMatchObject({ reason: "already-related" });
+    const b = (await loadItem(w.d, "p", "b1"))!;
+    expect(b.related.map((r: any) => r.notes.map((n: any) => n.uid))).toEqual([["R1"]]);
+    const [n] = b.related[0].notes;
+    await w.apply("bob", { ...build.removeOp("note", n), group: "g" });
+    expect((await loadItem(w.d, "p", "a1"))!.related).toEqual([]);
+  });
+
+  it("sets app and section with their own field versions", async () => {
+    const r = await w.one("alice", item("X1"));
+    const s1 = await w.one("alice", set("item", "X1", "X1", { "extra.app": "web", "extra.section": "cart" }, {}));
+    expect(Object.keys(s1.versions!)).toEqual(expect.arrayContaining(["extra.app", "extra.section"]));
+    const stale = await w.one("bob", set("item", "X1", "X1", { "extra.section": "checkout" }, { "extra.section": 1 }));
+    expect(stale.rejected?.[0]).toMatchObject({ field: "extra.section", reason: "stale" });
+    expect(r.status).toBe("applied");
+  });
+});
+
+describe("request diff", () => {
+  it("diffs the URL along with the text", async () => {
+    const { lineDiff, said } = await import("@/components/item/RequestView");
+    const d = lineDiff(said({ text: "a", meta: { url: "https://x/1" } }), said({ text: "a", meta: { url: "https://x/2" } }));
+    expect(d).toEqual([["-", "URL: https://x/1"], ["+", "URL: https://x/2"], [" ", "a"]]);
   });
 });

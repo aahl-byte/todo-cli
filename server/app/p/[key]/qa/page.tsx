@@ -27,6 +27,7 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
           <div><Link href={`/p/${key}/i/${c.id}`} className={link ? "dim" : ""}>{c.title}</Link></div>
           <div className="faint">
             {c.developer} · <Ago ts={c.entered} />{c.bounces > 0 && <span className="hot"> · returned ×{c.bounces}</span>}
+            {c.request_meta && !c.request_meta.triaged && <span className="tag hot" data-tip="the request being tested never went through triage"> v{c.request_meta.version} untriaged</span>}
           </div>
         </div>
         <MoveButtons item={JSON.parse(JSON.stringify(c))} project={key} deployStep={p.deploy_step} to={to} />

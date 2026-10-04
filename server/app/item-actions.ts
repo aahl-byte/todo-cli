@@ -13,6 +13,7 @@ import { LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
 import type { Db } from "@/lib/db";
+import { ulid } from "@/lib/ulid";
 
 type Versions = Record<string, number>;
 const fail = (message: string): ActionState => ({ ok: false, message, at: Date.now() });
@@ -96,6 +97,13 @@ export async function setPhaseTitle(a: { project: string; uid: string; versions:
   if (title) phases[String(a.phase)] = title;
   else delete phases[String(a.phase)];
   return apply(a.project, [build.setOp("item", { uid: a.uid, versions: a.versions }, { "extra.phases": Object.keys(phases).length ? phases : null })], user.handle, d);
+}
+
+/** Remove a relation: every note behind it, on either item, as one group. */
+export async function unrelate(a: { project: string; notes: { uid: string; item_uid: string; versions: Versions }[] }) {
+  const user = await requireUser();
+  const group = ulid();
+  return apply(a.project, a.notes.map((n) => ({ ...build.removeOp("note", n), group })), user.handle);
 }
 
 /** Relate two items as associated work. */

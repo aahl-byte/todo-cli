@@ -83,6 +83,19 @@ describe("inbound", () => {
     expect((await w.d.query("select status from items where uid = $1", [it.uid]))[0].status).toBe("requested");
     await edit("c2");
     expect((await w.d.query("select count(*)::int as n from notes where item_uid = $1", [it.uid]))[0].n).toBe(2);
+    const sent = await w.d.query("select payload from jira_outbox where action = 'transition' and done_at is null");
+    expect(sent.map((r) => r.payload.status)).toEqual(["To Do"]);
+  });
+
+  it("ignores an older description delivered late", async () => {
+    const it = await linkedItem();
+    const ev = (text: string, id: string, timestamp: number) => hook({ webhookEvent: "jira:issue_updated", timestamp,
+      issue: issue({ description: adf(text) }), user: { accountId: "acc-pm" }, changelog: { id, items: [{ field: "description" }] } });
+    await ev("newest", "d2", 2000);
+    await ev("older", "d1", 1000);
+    const texts = (await w.d.query("select text from notes where item_uid = $1 order by n", [it.uid])).map((r) => r.text);
+    expect(texts.at(-1)).toMatch(/newest/);
+    expect(texts.some((t) => /older/.test(t))).toBe(false);
   });
 
   it("maps a shared Jira status to the earliest todo status and skips our own echo", async () => {

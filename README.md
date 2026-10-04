@@ -166,7 +166,7 @@ todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment ch
 todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
 todo request|ready-qa|qa|approve|deploy <query>   # team statuses
-todo request <query> "<text>" [--url U]   # post a new request version
+todo request <query> --text "<text>" [--url U]   # post a new request version
 todo set <query> app|section <value|none>
 todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
 todo relate|unrelate <query> <other>      # related work, shown on both items
@@ -236,7 +236,7 @@ Notes carry a kind: `context` (default), `ticket-request`, `comment` (with
 and status change records who made it and whether a person or an agent did.
 
 A request is a series of versions. The current one freezes when the item leaves
-`requested`; `todo request <item> "<text>"` posts the next version and sends the
+`requested`; `todo request <item> --text "<text>"` posts the next version and sends the
 item back to `requested` for triage. `todo get` shows the current version and
 marks it `(untriaged)` when work began without triaging it.
 

@@ -154,8 +154,8 @@ export function phaseTitles(extra: Row | null | undefined): Record<string, strin
   return Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === "string" && v.trim()) as [string, string][]);
 }
 
-/** Items related to this one, from either side, once each. Each row keeps the
- * relation note's uid, item and versions, so either side can remove it. */
+/** Items related to this one, from either side, once each. Each row lists the
+ * relation notes behind it, so removing it from either item removes them all. */
 async function related(d: Db, key: string, uid: string) {
   const rows = await d.query(
     `select n.uid as note_uid, n.item_uid as note_item_uid, n.versions as note_versions,
@@ -164,8 +164,14 @@ async function related(d: Db, key: string, uid: string) {
         and i.uid = case when n.item_uid = $2 then n.meta->>'item' else n.item_uid end
       where n.project = $1 and n.kind = 'relation' and (n.item_uid = $2 or n.meta->>'item' = $2)
       order by n.ts, n.uid`, [key, uid]);
-  const seen = new Set<string>();
-  return rows.filter((r) => !seen.has(r.uid) && seen.add(r.uid));
+  const out = new Map<string, Row>();
+  for (const r of rows) {
+    const note = { uid: r.note_uid, item_uid: r.note_item_uid, versions: r.note_versions };
+    const cur = out.get(r.uid);
+    if (cur) cur.notes.push(note);
+    else out.set(r.uid, { uid: r.uid, id: r.id, title: r.title, status: r.status, developer: r.developer, notes: [note] });
+  }
+  return [...out.values()];
 }
 
 /** App and section values already used in the project, for pickers. */
