@@ -45,8 +45,7 @@ function sameOrigin(req: Request): boolean {
   }
 }
 
-export async function addUser(db: Db, handle: string, name?: string): Promise<string> {
-  const token = newToken();
+export async function addUser(db: Db, handle: string, name?: string, token: string = newToken()): Promise<string> {
   await db.query(
     `insert into users (handle, name, token_hash) values ($1, $2, $3)
      on conflict (handle) do update set token_hash = excluded.token_hash, name = coalesce(excluded.name, users.name)`,

@@ -1,5 +1,6 @@
 // Demo data for trying the dashboard locally: three users, one project, a
-// handful of items across the lifecycle. Prints each user's token.
+// handful of items across the lifecycle. The demo tokens are fixed
+// (`<handle>-test`) so a reseed never changes them; never use them for real data.
 import { applyOps, type Op } from "../lib/apply";
 import { addProject, addUser } from "../lib/auth";
 import { db } from "../lib/db";
@@ -7,7 +8,9 @@ import { ulid } from "../lib/ulid";
 
 const d = await db();
 const tokens: Record<string, string> = {};
-for (const h of ["pat", "dev", "qa"]) tokens[h] = await addUser(d, h, { pat: "Pat (PM)", dev: "Dana (dev)", qa: "Quinn (QA)" }[h]);
+for (const h of ["pat", "dev", "qa"]) {
+  tokens[h] = await addUser(d, h, { pat: "Pat (PM)", dev: "Dana (dev)", qa: "Quinn (QA)" }[h], `${h}-test`);
+}
 await addProject(d, "web", "Web app");
 
 const now = () => new Date().toISOString();
