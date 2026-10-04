@@ -240,3 +240,50 @@ removes that one entry.
   - an unread comment is highlighted for the second user
   - the role filter in merged and tab views on the board and the QA queue
   - nothing scrolls sideways at 400px
+
+## Revisions after the plan audit
+
+These override the sections above where they differ.
+
+- **Unread highlight.**
+  - **The baseline:** `seen()` returns the previous `seen_at`. The client keeps it in state, set once on mount, so a live refresh never moves the highlight's baseline.
+  - **First visit:** with no `item_seen` row, the baseline falls back to the time of the oldest unread notice for that item.
+  - **Inbox count:** `seen()` also returns the new unread count. The page sends it in a window event that `Live` applies at once.
+- **`qa-rejected` details.**
+  - **Lists:** a single `PAST_TRIAGE` lives in `model.ts` and one in `status.py`, and every copy uses it. `qa-rejected` also joins:
+    - the board's In progress column
+    - `ACTIVE`
+    - both `CALC_PRECEDENCE` lists, ranked first, so a rejected task shows on its parent
+    - the CLI's colours
+  - **Rank:** `rank()` gives `qa-rejected` the rank of `todo`. From it, `in-progress` is the next step and `in-triage` is a step back. `in-qa → qa-rejected` is a step back and needs a comment, posted as a `qa-rejection` note.
+  - **Overrides:** an override into `qa-rejected` also posts its reason as a `qa-rejection` note, so the developer is notified.
+  - **Every place that rejects** now moves to `qa-rejected`:
+    - `rejectOps`
+    - the QA page's Reject button
+    - `cmd_reject` (status and `with_status`)
+    - `bounceCount`, which counts moves into `qa-rejected` as well as the older `in-qa → in-progress` moves
+  - **CLI rejection:** `todo reject` still allows `ready-for-qa`, `in-qa` and `ready-to-deploy`.
+  - **CLI alias:** the hidden status-name commands skip `qa-rejected`, so a rejection always carries its comment.
+  - **Jira:**
+    - **Outbound:** when `qa-rejected` has no mapping, it uses `in-progress`'s.
+    - **Inbound:** the echo check uses the same fallback.
+    - **Shared Jira status:** if a project maps both statuses to the same Jira status, the reverse lookup picks `in-progress`.
+  - **Older CLIs** store `qa-rejected` and file it in OPEN, but `todo list -g` hides it. An old `todo reject` still sends `in-progress`. The team should upgrade; nothing breaks in the meantime.
+  - **QA queue:** a collapsed "Awaiting fix" section lists the viewer's own rejections that are still in `qa-rejected`.
+- **Inbox, rebuilt around what needs you.**
+  - **Two sections:**
+    - **Needs you:** QA rejections on your tickets, questions to you, hand-offs to you, mentions
+    - **FYI:** deployed, request changed, answers
+  - **Grouping:** inside each section, notices are grouped by ticket, newest ticket first.
+  - **Settled notices:** a notice the ticket has since moved past is dimmed and marked "settled", such as a hand-off for a ticket that has left `ready-for-qa`.
+  - **Clearing:** a `✓` clears a ticket's notices, and opening the ticket also clears them. There are no per-row `✓`s, no kind chips and no day headers.
+  - **Mark all read** shows an undo toast instead of asking for confirmation.
+  - **Read notices:** the `Unread · All` toggle stays, so they can be shown.
+- **Filters.**
+  - **Merged view:** it ORs its entries. AND across roles is no longer available; that is accepted.
+  - **Old URLs:** `mine`, `dev` and `qa` URLs redirect on the server to the new `f=` form.
+- **More tests:**
+  - the Jira fallback mapping
+  - `lastSeen` staying put across a live refresh
+  - the old-URL redirect
+  - `moves("qa-rejected")` grouping
