@@ -148,3 +148,30 @@ def test_item_file_keeps_unknown_keys_and_comments(root):
     assert text.startswith("# keep me\n")
     assert "acceptance: it works" in text
     assert "developer: bob" in text
+
+
+def test_request_posts_a_version_and_sends_an_unsynced_item_back(root, capsys):
+    run_cli(root, ["add", "Safari login", "--request", "v1 text"])
+    run_cli(root, ["status", "safari-login", "in-progress"])
+    run_cli(root, ["request", "safari-login", "v2 text"])
+    it = store.resolve_item(root, "safari-login")
+    assert it["status"] == "requested"
+    assert [n["text"] for n in it["notes"] if n["kind"] == "ticket-request"] == ["v1 text", "v2 text"]
+
+
+def test_get_shows_only_the_current_request_and_flags_untriaged(root, capsys):
+    run_cli(root, ["add", "Safari login", "--request", "old words"])
+    item_dir = root / "OPEN" / "safari-login" / "notes"
+    f = next(item_dir.iterdir())
+    meta, body = frontmatter.split(f.read_text())
+    f.write_text(frontmatter.join({**meta, "version": 1, "frozen": True, "triaged": True}, body))
+    run_cli(root, ["request", "safari-login", "new words"])
+    f2 = next(p for p in item_dir.iterdir() if p != f)
+    meta, body = frontmatter.split(f2.read_text())
+    f2.write_text(frontmatter.join({**meta, "version": 2, "frozen": True, "frozen_via": "skip"}, body))
+    run_cli(root, ["status", "safari-login", "in-progress"])
+    capsys.readouterr()
+    run_cli(root, ["get", "safari-login"])
+    out = capsys.readouterr().out
+    assert "new words" in out and "old words" not in out
+    assert "v2" in out and "(untriaged)" in out

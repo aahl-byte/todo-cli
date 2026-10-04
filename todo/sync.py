@@ -701,7 +701,7 @@ def _log_rejection(root, op, x, local, report) -> None:
 
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
-FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff", "request-locked"}
+FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff", "request-frozen"}
 
 
 def _reissue(local: Local, entity: str, old: str, item_uid: str) -> None:
@@ -784,6 +784,8 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         if op.get("_fp"):
             snap.setdefault("stuck", {})[uid] = op["_fp"]
         text = f"{what} not applied ({reason}{': ' + r['message'] if r.get('message') else ''})"
+        if reason == "request-frozen":
+            text += f"; post a new version with `todo request {item_id} \"…\"`"
         report.messages.append(f"{item_id}: {text}")
         if item_id:
             store.add_log(root, item_id, "sync: " + text, _now())

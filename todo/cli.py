@@ -179,6 +179,21 @@ def cmd_url(root: Path, args) -> None:
     print(f'{it["id"]}: added {args.type} link [{new_id}]')
 
 
+def cmd_request(root: Path, args) -> None:
+    if not " ".join(args.text).strip():
+        cmd_shortcut(root, args)
+        return
+    it = store.resolve_item(root, args.query)
+    new_id = store.add_note(root, it["id"], _text(args, "request"), now(), kind="ticket-request")
+    if it["status"] == "requested":
+        print(f'{it["id"]}: posted request [{new_id}]')
+    elif remote.sync_config(root):
+        print(f'{it["id"]}: posted request [{new_id}]; on sync the server moves it back to requested for triage')
+    else:
+        store.update_todo(root, it["id"], {"status": "requested"}, now())
+        print(f'{it["id"]}: posted request [{new_id}]; {it["status"]} → requested for triage')
+
+
 def cmd_ask(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     new_id = store.add_note(root, it["id"], _text(args, "question"), now(), kind="clarification")
@@ -621,6 +636,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_status)
 
     for name, helptext in SHORTCUT_HELP.items():
+        if name == "request":
+            p = sub.add_parser(name, parents=[common],
+                               help="→ requested; with TEXT, post it as a new version of the ticket request")
+            p.add_argument("query", help="id or part of a title")
+            p.add_argument("text", nargs="*", help="the full new request text")
+            p.set_defaults(func=cmd_request)
+            continue
         p = sub.add_parser(name, parents=[common], help=helptext)
         p.add_argument("query", help="id or part of a title")
         if SHORTCUTS[name] == "deployed":

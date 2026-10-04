@@ -81,6 +81,12 @@ def print_item(it, full_log: bool = False) -> None:
     if it["completed"]:
         print(f'completed: {it["completed"]}')
     notes = it.get("notes") or []
+    requests = [n for n in notes if n.get("kind") == "ticket-request"]
+    if requests:
+        req = current_request(requests)
+        print(f"request:   {request_label(req, it['status'])}")
+        print("  " + str(req["text"]).strip().replace("\n", "\n  "))
+        notes = [n for n in notes if n.get("kind") != "ticket-request"]
     open_qs = [n for n in notes if _is_open_question(n)]
     if open_qs:
         print("open questions:")
@@ -115,6 +121,29 @@ def print_item(it, full_log: bool = False) -> None:
             print(f'  … {hidden} earlier (todo history {it["id"]})')
         for line in _history_lines(entries, color):
             print(line)
+
+
+# Statuses that mean triage is done; a request worked on past them should have been triaged.
+PAST_TRIAGE = {"todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"}
+
+
+def _version(n) -> int:
+    return int((n.get("meta") or {}).get("version") or 1)
+
+
+def current_request(requests):
+    """The highest request version; the newest note wins a tie."""
+    return max(requests, key=lambda n: (_version(n), n["id"]))
+
+
+def request_label(req, status: str) -> str:
+    meta = req.get("meta") or {}
+    label = f"v{_version(req)} [{req['id']}]"
+    if status in PAST_TRIAGE and not meta.get("triaged"):
+        label += " (untriaged)"
+    elif not meta.get("frozen") and not meta.get("version"):
+        label += " (unsynced)"
+    return label
 
 
 def _is_open_question(n) -> bool:

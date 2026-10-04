@@ -166,6 +166,7 @@ todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment ch
 todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
 todo request|ready-qa|qa|approve|deploy <query>   # team statuses
+todo request <query> "<text>"   # post a new request version
 todo reject <query> <text...>             # QA → in-progress with a required comment
 todo list --mine                          # where I'm developer or QA
 todo login <url> <token> | whoami | sync | inbox   # team server
@@ -230,6 +231,11 @@ todo deploy safari                                # refused while pre-deploy che
 Notes carry a kind: `context` (default), `ticket-request`, `comment` (with
 `@mentions`), `qa-rejection`, `link`, `clarification`. Every note, log entry
 and status change records who made it and whether a person or an agent did.
+
+A request is a series of versions. The current one freezes when the item leaves
+`requested`; `todo request <item> "<text>"` posts the next version and sends the
+item back to `requested` for triage. `todo get` shows the current version and
+marks it `(untriaged)` when work began without triaging it.
 
 ## Syncing with a team server
 

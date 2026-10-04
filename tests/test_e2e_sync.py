@@ -152,3 +152,36 @@ def test_relinking_between_projects_never_duplicates(server, tmp_path):
         changes = json.loads(urllib.request.urlopen(req).read())["changes"]
         items = [c["data"]["id"] for c in changes if c["entity"] == "item" and c["data"]]
         assert items == ["login-bug"], (project, items)
+
+
+def test_request_versions_freeze_and_send_the_item_back(server, tmp_path):
+    url, tokens = server
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    home.mkdir()
+    (repo / ".TODO").mkdir(parents=True)
+    cli(home, repo, "login", url, tokens["alice"])
+    cli(home, repo, "add", "Safari login", "--request", "first words")
+    cli(home, repo, "link", "--remote", url, "--project", "web")
+    root = (repo / ".TODO").resolve()
+    cli(home, repo, "triage", "safari-login")
+    cli(home, repo, "reopen", "safari-login")
+    cli(home, repo, "sync")             # a command only pushes; the server's triage mark arrives on the next pull
+    req = next(n for n in store.resolve_item(root, "safari-login")["notes"] if n["kind"] == "ticket-request")
+    assert (req["meta"].get("version"), req["meta"].get("frozen"), req["meta"].get("triaged")) == (1, True, True)
+
+    # A frozen version refuses edits; the log says how to post a new one.
+    f = next((root / "OPEN" / "safari-login" / "notes").iterdir())
+    f.write_text(f.read_text().replace("first words", "edited words"))
+    cli(home, repo, "sync")
+    it = store.resolve_item(root, "safari-login")
+    assert any("request-frozen" in e["text"] and "todo request" in e["text"] for e in it["log"])
+
+    out = cli(home, repo, "request", "safari-login", "second words")
+    assert "moves it back to requested" in out.stdout
+    cli(home, repo, "sync")
+    cli(home, repo, "sync")
+    it = store.resolve_item(root, "safari-login")
+    assert it["status"] == "requested"
+    versions = sorted((n["meta"].get("version"), n["text"]) for n in it["notes"] if n["kind"] == "ticket-request")
+    assert versions[-1] == (2, "second words")
+    assert it["history"][-1]["to"] == "requested"
