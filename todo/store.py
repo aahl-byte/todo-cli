@@ -222,6 +222,9 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "creator": to_str(meta.get("creator")) or None,
         "developer": to_str(meta.get("developer")) or None,
         "qa_assignee": to_str(meta.get("qa_assignee")) or None,
+        "app": to_str(meta.get("app")) or None,
+        "section": to_str(meta.get("section")) or None,
+        "phases": phase_titles(meta.get("phases")),
         "notes": [_note(e) for e in _read_entries(item_dir / NOTES_DIR)] if full else [],
         "log": [_log(e) for e in _read_entries(item_dir / LOG_DIR)] if full else [],
         "history": [_history(e) for e in _read_entries(item_dir / HISTORY_DIR)]
@@ -233,6 +236,30 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "completed": to_str(completed) if completed not in (None, "") else None,
         "folder": item_dir.parent.name,
     }
+
+
+def phase_titles(raw) -> dict:
+    """`{"1": "Schema"}`: phase numbers as strings, blank titles dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {str(k): to_str(v).strip() for k, v in raw.items() if v is not None and to_str(v).strip()}
+    return dict(sorted(out.items(), key=lambda kv: int(kv[0]) if kv[0].lstrip("-").isdigit() else 0))
+
+
+def set_phase_title(root: Path, item_id: str, phase: int, title: str) -> bool:
+    """Name a phase, or clear its name with an empty title."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return False
+    y, meta = _load_meta(item_dir)
+    titles = phase_titles(meta.get("phases"))
+    if title.strip():
+        titles[str(phase)] = title.strip()
+    else:
+        titles.pop(str(phase), None)
+    meta["phases"] = phase_titles(titles) or None
+    yamlio.save(y, item_dir / ITEM_FILE, meta)
+    return True
 
 
 def _read_item(item_dir: Path, *, full: bool = True) -> dict:
@@ -323,7 +350,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     for key in ("priority", "type", "title"):
         if isinstance(patch.get(key), str):
             meta[key] = patch[key]
-    for key in PEOPLE:
+    for key in PEOPLE + ("app", "section"):
         if key in patch:
             meta[key] = patch[key] or None
     yamlio.save(y, item_dir / ITEM_FILE, meta)

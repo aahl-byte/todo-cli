@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
-const auth = (token: string | null) => (token ? { authorization: `Bearer ${token}` } : {});
+const auth = (token: string | null): Record<string, string> => (token ? { authorization: `Bearer ${token}` } : {});
 const ask = (token: string | null, body: unknown) =>
   askPOST(new Request("http://x/api/files", { method: "POST", headers: { ...auth(token), "content-type": "application/json" }, body: JSON.stringify(body) }));
 const keyParams = (key: string) => ({ params: Promise.resolve({ key: key.split("/") }) });

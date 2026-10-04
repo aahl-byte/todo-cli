@@ -240,6 +240,8 @@ def _item_flat(d: Path, meta: dict) -> dict:
     for k, v in meta.items():
         if k not in ITEM_KEYS:
             flat[f"extra.{k}"] = _plain(v)
+    if flat.get("extra.phases") is not None:
+        flat["extra.phases"] = store.phase_titles(meta.get("phases")) or None
     return flat
 
 

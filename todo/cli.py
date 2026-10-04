@@ -19,6 +19,7 @@ shape changes.
 
 import argparse
 import contextlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -118,7 +119,23 @@ def cmd_list(root: Path, args) -> None:
 
 
 def cmd_get(root: Path, args) -> None:
-    render.print_item(store.resolve_item(root, args.query), full_log=args.log)
+    it = store.resolve_item(root, args.query)
+    cfg = remote.sync_config(root) or {}
+    render.print_item(it, full_log=args.log, related=related_items(root, it), server=cfg.get("url"))
+
+
+def related_items(root: Path, it: dict) -> list:
+    """Items related to `it` from either side, once each."""
+    items = store.list_todos(root)
+    by_uid = {x["uid"]: x for x in items if x.get("uid")}
+    uids = [(n.get("meta") or {}).get("item") for n in it["notes"] if n["kind"] == "relation"]
+    for other in items:
+        if other["uid"] == it["uid"]:
+            continue
+        full = store.get_item(root, other["id"])
+        if any(n["kind"] == "relation" and (n.get("meta") or {}).get("item") == it["uid"] for n in full["notes"]):
+            uids.append(other["uid"])
+    return [by_uid[u] for u in dict.fromkeys(uids) if u in by_uid]
 
 
 def cmd_status(root: Path, args) -> None:
@@ -181,10 +198,14 @@ def cmd_url(root: Path, args) -> None:
 
 def cmd_request(root: Path, args) -> None:
     if not " ".join(args.text).strip():
+        if args.url:
+            die("--url goes with the request text.", 2)
         cmd_shortcut(root, args)
         return
     it = store.resolve_item(root, args.query)
-    new_id = store.add_note(root, it["id"], _text(args, "request"), now(), kind="ticket-request")
+    url = _url(args.url)
+    new_id = store.add_note(root, it["id"], _text(args, "request"), now(), kind="ticket-request",
+                            extra={"url": url} if url else None)
     if it["status"] == "requested":
         print(f'{it["id"]}: posted request [{new_id}]')
     elif remote.sync_config(root):
@@ -192,6 +213,60 @@ def cmd_request(root: Path, args) -> None:
     else:
         store.update_todo(root, it["id"], {"status": "requested"}, now())
         print(f'{it["id"]}: posted request [{new_id}]; {it["status"]} → requested for triage')
+
+
+def _url(raw) -> str | None:
+    url = (raw or "").strip()
+    if url and not re.match(r"^https?://\S+$", url):
+        die("The URL must start with http:// or https://", 2)
+    return url or None
+
+
+def cmd_set(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    value = " ".join(args.value).strip()
+    value = None if value.lower() in ("", "none", "-") else value
+    store.update_todo(root, it["id"], {args.field: value})
+    print(f'{it["id"]}: {args.field} = {value or "—"}')
+
+
+def cmd_phase(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    title = " ".join(args.title).strip()
+    store.set_phase_title(root, it["id"], args.phase, title)
+    print(f'{it["id"]}: phase {args.phase}' + (f" · {title}" if title else " unnamed"))
+
+
+def _relation(it, other_uid):
+    return next((n for n in it["notes"] if n["kind"] == "relation" and (n.get("meta") or {}).get("item") == other_uid), None)
+
+
+def cmd_relate(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    other = store.resolve_item(root, args.other)
+    if other["id"] == it["id"]:
+        die("An item can't be related to itself.", 2)
+    if not (it["uid"] and other["uid"]):
+        die("Both items need an id first: run `todo sync` (or `todo link`) once.", 2)
+    if _relation(it, other["uid"]) or _relation(other, it["uid"]):
+        print(f'{it["id"]}: already related to {other["id"]}')
+        return
+    store.add_note(root, it["id"], "related", now(), kind="relation", extra={"item": other["uid"]})
+    print(f'{it["id"]}: related to {other["id"]}')
+
+
+def cmd_unrelate(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    other = store.resolve_item(root, args.other)
+    removed = False
+    for a, b in ((it, other), (other, it)):
+        n = _relation(a, b["uid"])
+        if n:
+            store.remove_note(root, a["id"], n["id"])
+            removed = True
+    if not removed:
+        die(f'{it["id"]} and {other["id"]} aren\'t related.', 1)
+    print(f'{it["id"]}: no longer related to {other["id"]}')
 
 
 def cmd_ask(root: Path, args) -> None:
@@ -414,11 +489,16 @@ def cmd_add(root: Path, args) -> None:
     if not title:
         die('Missing title. Usage: todo add "<title>"', 2)
     request = (args.request or "").strip()
+    url = _url(args.url)
+    if url and not request:
+        die("--url goes with --request.", 2)
     it = store.add_todo(root, title, now(), status="requested" if request else "todo")
     if not it:
         die("Could not add (empty title?).", 1)
+    if args.app or args.section:
+        store.update_todo(root, it["id"], {"app": args.app, "section": args.section})
     if request:
-        store.add_note(root, it["id"], request, now(), kind="ticket-request")
+        store.add_note(root, it["id"], request, now(), kind="ticket-request", extra={"url": url} if url else None)
     print(f'added {it["id"]}: {it["title"]}' + ("  (requested)" if request else ""))
 
 
@@ -641,6 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
                                help="→ requested; with TEXT, post it as a new version of the ticket request")
             p.add_argument("query", help="id or part of a title")
             p.add_argument("text", nargs="*", help="the full new request text")
+            p.add_argument("--url", default=None, help="where it happens")
             p.set_defaults(func=cmd_request)
             continue
         p = sub.add_parser(name, parents=[common], help=helptext)
@@ -804,7 +885,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("title", nargs="+", help="the item title")
     p.add_argument("--request", default=None, metavar="TEXT",
                    help="file it as `requested`, with TEXT as the ticket-request note")
+    p.add_argument("--url", default=None, help="with --request: where it happens")
+    p.add_argument("--app", default=None, help="the app it's about")
+    p.add_argument("--section", default=None, help="the section of that app")
     p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("set", parents=[common], help="set an item's app or section (none clears it)")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("field", choices=["app", "section"])
+    p.add_argument("value", nargs="+", help="the value, or none")
+    p.set_defaults(func=cmd_set)
+
+    p = sub.add_parser("phase", parents=[common], help="name a phase of an item's tasks (no title clears it)")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("phase", type=int, help="phase number")
+    p.add_argument("title", nargs="*", help="the phase title")
+    p.set_defaults(func=cmd_phase)
+
+    p = sub.add_parser("relate", parents=[common], help="mark two items as related work")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("other", help="the related item")
+    p.set_defaults(func=cmd_relate)
+
+    p = sub.add_parser("unrelate", parents=[common], help="remove a relation, from whichever side holds it")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("other", help="the related item")
+    p.set_defaults(func=cmd_unrelate)
 
     p = sub.add_parser("archive", parents=[common], help="move done items to .TODO/ARCHIVED/")
     p.set_defaults(func=cmd_archive)

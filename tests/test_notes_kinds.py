@@ -175,3 +175,52 @@ def test_get_shows_only_the_current_request_and_flags_untriaged(root, capsys):
     out = capsys.readouterr().out
     assert "new words" in out and "old words" not in out
     assert "v2" in out and "(untriaged)" in out
+
+
+def test_app_section_and_request_url(root, capsys):
+    run_cli(root, ["add", "Cart bug", "--request", "totals wrong", "--url", "https://shop.test/cart",
+                   "--app", "web", "--section", "checkout"])
+    it = store.resolve_item(root, "cart-bug")
+    assert (it["app"], it["section"]) == ("web", "checkout")
+    assert it["notes"][0]["meta"]["url"] == "https://shop.test/cart"
+    run_cli(root, ["set", "cart-bug", "section", "none"])
+    assert store.resolve_item(root, "cart-bug")["section"] is None
+    capsys.readouterr()
+    run_cli(root, ["get", "cart-bug"])
+    out = capsys.readouterr().out
+    assert "app:       web" in out and "https://shop.test/cart" in out
+    with pytest.raises(SystemExit):
+        run_cli(root, ["add", "x", "--request", "y", "--url", "ftp://nope"])
+
+
+def test_new_link_types(root):
+    run_cli(root, ["url", "beta", "https://design.test/f/1", "--type", "design"])
+    assert notes(root)[0]["meta"]["type"] == "design"
+
+
+def test_phase_titles_round_trip_and_render(root, capsys):
+    run_cli(root, ["task", "add", "beta", "migrate", "--phase", "1"])
+    run_cli(root, ["phase", "beta", "1", "Schema"])
+    run_cli(root, ["phase", "beta", "3", "Rollout"])
+    assert store.resolve_item(root, "beta")["phases"] == {"1": "Schema", "3": "Rollout"}
+    capsys.readouterr()
+    run_cli(root, ["tasks", "beta"])
+    out = capsys.readouterr().out
+    assert "phase 1 · Schema" in out and "phase 3 · Rollout  (no tasks)" in out
+    run_cli(root, ["task", "add", "beta", "another", "--phase", "1"])
+    run_cli(root, ["phase", "beta", "3"])
+    assert store.resolve_item(root, "beta")["phases"] == {"1": "Schema"}
+
+
+def test_relate_shows_on_both_sides_and_unrelates_from_either(root, capsys):
+    run_cli(root, ["add", "Cart totals"])
+    run_cli(root, ["add", "Tax rounding"])
+    run_cli(root, ["relate", "cart-totals", "tax-rounding"])
+    run_cli(root, ["relate", "tax-rounding", "cart-totals"])          # already related: no second note
+    capsys.readouterr()
+    run_cli(root, ["get", "tax-rounding"])
+    out = capsys.readouterr().out
+    assert "related:" in out and "cart-totals" in out.split("related:")[1]
+    assert [n["kind"] for n in notes(root, "cart-totals")] == ["relation"]
+    run_cli(root, ["unrelate", "tax-rounding", "cart-totals"])
+    assert notes(root, "cart-totals") == []

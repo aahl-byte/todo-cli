@@ -185,3 +185,33 @@ def test_request_versions_freeze_and_send_the_item_back(server, tmp_path):
     versions = sorted((n["meta"].get("version"), n["text"]) for n in it["notes"] if n["kind"] == "ticket-request")
     assert versions[-1] == (2, "second words")
     assert it["history"][-1]["to"] == "requested"
+
+
+def test_phase_titles_app_and_relations_sync_both_ways(server, tmp_path):
+    url, tokens = server
+    users = {}
+    for who in ("alice", "bob"):
+        home, repo = tmp_path / who / "home", tmp_path / who / "repo"
+        home.mkdir(parents=True)
+        (repo / ".TODO").mkdir(parents=True)
+        cli(home, repo, "login", url, tokens[who])
+        users[who] = (home, repo)
+    (ha, ra), (hb, rb) = users["alice"], users["bob"]
+    cli(ha, ra, "add", "Cart totals", "--app", "web", "--section", "checkout")
+    cli(ha, ra, "add", "Tax rounding")
+    cli(ha, ra, "phase", "cart-totals", "1", "Schema")
+    cli(ha, ra, "relate", "cart-totals", "tax-rounding")
+    cli(ha, ra, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "link", "--remote", url, "--project", "web")
+    root_b = (rb / ".TODO").resolve()
+    it = store.resolve_item(root_b, "cart-totals")
+    assert (it["app"], it["section"], it["phases"]) == ("web", "checkout", {"1": "Schema"})
+    assert "cart-totals" in cli(hb, rb, "get", "tax-rounding").stdout.split("related:")[1]
+
+    cli(hb, rb, "phase", "cart-totals", "2", "UI")
+    cli(hb, rb, "set", "cart-totals", "section", "cart")
+    cli(hb, rb, "unrelate", "tax-rounding", "cart-totals")
+    cli(ha, ra, "sync")
+    it = store.resolve_item((ra / ".TODO").resolve(), "cart-totals")
+    assert (it["section"], it["phases"]) == ("cart", {"1": "Schema", "2": "UI"})
+    assert [n for n in it["notes"] if n["kind"] == "relation"] == []

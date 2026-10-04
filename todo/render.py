@@ -2,6 +2,7 @@
 (purple `review`, red `blocked`, etc.) only when stdout is a real TTY, so piped
 or redirected output stays plain."""
 
+import re
 import sys
 
 from .status import COMPLETE, colorize
@@ -64,7 +65,15 @@ def _log_lines(entries) -> list:
             for e in entries]
 
 
-def print_item(it, full_log: bool = False) -> None:
+FILES = re.compile(r"\]\((/api/files/[^)\s]+)\)")
+
+
+def absolute_files(text: str, base: str | None) -> str:
+    """Point `/api/files/…` image links at the server, so they can be opened."""
+    return FILES.sub(lambda m: f"]({base.rstrip('/')}{m.group(1)})", text) if base else text
+
+
+def print_item(it, full_log: bool = False, related=(), server: str | None = None) -> None:
     color = _use_color()
     print(f'id:        {it["id"]}')
     print(f'title:     {it["title"]}')
@@ -73,6 +82,8 @@ def print_item(it, full_log: bool = False) -> None:
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
     print(f'priority:  {it["priority"] or "—"}')
+    if it.get("app") or it.get("section"):
+        print(f'app:       {it.get("app") or "—"}' + (f' · {it["section"]}' if it.get("section") else ""))
     for label, key in (("creator", "creator"), ("developer", "developer"), ("qa", "qa_assignee")):
         print(f'{label + ":":<11}{it.get(key) or "—"}')
     if it["super_phase"] is not None:
@@ -85,8 +96,15 @@ def print_item(it, full_log: bool = False) -> None:
     if requests:
         req = current_request(requests)
         print(f"request:   {request_label(req, it['status'])}")
-        print("  " + str(req["text"]).strip().replace("\n", "\n  "))
-        notes = [n for n in notes if n.get("kind") != "ticket-request"]
+        url = (req.get("meta") or {}).get("url")
+        if url:
+            print(f"  {url}")
+        print("  " + absolute_files(str(req["text"]).strip(), server).replace("\n", "\n  "))
+    notes = [n for n in notes if n.get("kind") not in ("ticket-request", "relation")]
+    if related:
+        print("related:")
+        for r in related:
+            print(f'  {colorize(r["status"], r["status"].ljust(12), color)} {r["id"]}  {r["title"]}')
     open_qs = [n for n in notes if _is_open_question(n)]
     if open_qs:
         print("open questions:")
@@ -107,7 +125,7 @@ def print_item(it, full_log: bool = False) -> None:
             print(line)
     if it["tasks"]:
         print("tasks:")
-        for line in _task_lines(it["tasks"], color):
+        for line in _task_lines(it["tasks"], color, it.get("phases")):
             print(line)
     if it.get("checks"):
         print("checks:")
@@ -258,13 +276,15 @@ def print_deploy_plan(ready, after, complete_ids, all_ids) -> None:
                     print("  " + _check_lines([c], it["id"])[0])
 
 
-def _task_lines(tasks, color) -> list:
+def _task_lines(tasks, color, titles=None) -> list:
     """One `  [id] <status> [phase N] <title>` line per task. The phase column
     appears only when at least one task carries a phase, so phase-less items
-    render exactly as before."""
+    render exactly as before. A named phase gets a `phase N · title` header."""
+    titles = titles or {}
     phased = [t for t in tasks if t.get("phase") is not None]
     pw = max((len(f'phase {t["phase"]}') for t in phased), default=0)
     lines = []
+    shown = set()
     for t in tasks:
         cell = colorize(t["status"], f'{t["status"]:<12}', color)
         if pw:
@@ -272,7 +292,14 @@ def _task_lines(tasks, color) -> list:
             pcell = f'{ptxt:<{pw}}  '
         else:
             pcell = ""
+        key = str(t.get("phase"))
+        if key in titles and key not in shown:
+            shown.add(key)
+            lines.append(f'  phase {key} · {titles[key]}')
         lines.append(f'  [{t["id"]}] {cell} {pcell}{t["title"]}')
+    for key, title in titles.items():
+        if key not in shown:
+            lines.append(f'  phase {key} · {title}  (no tasks)')
     return lines
 
 
@@ -287,11 +314,11 @@ def print_log(it, limit=None) -> None:
 
 def print_tasks(it) -> None:
     tasks = it["tasks"]
-    if not tasks:
+    if not tasks and not it.get("phases"):
         print("(no tasks)")
         return
     color = _use_color()
-    for line in _task_lines(tasks, color):
+    for line in _task_lines(tasks, color, it.get("phases")):
         print(line)
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')

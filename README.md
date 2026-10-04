@@ -156,7 +156,7 @@ todo task status <query> <id> <S> # set a task's status explicitly
 todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # reorder within a phase
 todo task rm <query> <id>        # remove task by id
-todo add    "<title>" [--request TEXT]   # add an item (--request: file it as requested)
+todo add    "<title>" [--request TEXT [--url U]] [--app A] [--section S]   # add an item
 todo comment|ask <query> <text...>        # comment (@mentions) | clarification question
 todo answer <query> <id> <text...>        # answer a clarification
 todo url    <query> <url> [--type T] [--label L]   # attach a PR/preview/QA-handoff link
@@ -166,7 +166,10 @@ todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment ch
 todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
 todo request|ready-qa|qa|approve|deploy <query>   # team statuses
-todo request <query> "<text>"   # post a new request version
+todo request <query> "<text>" [--url U]   # post a new request version
+todo set <query> app|section <value|none>
+todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
+todo relate|unrelate <query> <other>      # related work, shown on both items
 todo reject <query> <text...>             # QA → in-progress with a required comment
 todo list --mine                          # where I'm developer or QA
 todo login <url> <token> | whoami | sync | inbox   # team server
