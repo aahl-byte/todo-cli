@@ -135,7 +135,8 @@ the tab bar for the active tab.
 
 - **Default tab:** Questions when any are open, otherwise the user's last tab
   (kept in localStorage), otherwise Comments.
-- **Entry order:** newest first everywhere.
+- **Entry order:** oldest first, as stored, the same as the watchtower drawer.
+  A thread reads top to bottom.
 - **Composer:** the `+` opens a one-line, autogrowing textarea above the list.
   Ctrl/Cmd+Enter adds, Esc closes, and the draft survives a live refresh.
 
@@ -290,3 +291,154 @@ the server-side check in the status action.
   - the request edits while `requested` and is locked after
   - the page doesn't scroll sideways at 400px
 - **(review) Noise:** an audit pass finds no redundant text left on any page.
+
+## Revisions after the plan audit
+
+These override the sections above where they differ.
+
+### Item page
+
+- **Status menu order:**
+  1. the natural next step
+  2. the other forward moves
+  3. the backward moves
+  4. `blocked`, `deferred` and `cancelled`
+
+  A thin divider separates the groups. The menu has no current-status row;
+  the button already shows it.
+- **Backward moves open one comment popup:**
+  - `review → in-progress`: comment optional
+  - `in-qa` or `ready-to-deploy → in-progress`: comment required, posted as a
+    `qa-rejection` note in the same group
+  - `deployed` or `done → in-progress` (regression): comment required
+  - `→ blocked`: comment optional ("blocked on…")
+- **Request edits:**
+  - **Requested or in triage:** the request is editable while the item is
+    `requested` or `in-triage`, since an edit made during triage is already being
+    triaged.
+  - **Later statuses:** the request offers `change request`. Its popup holds the
+    editor and says the item returns to triage. Saving moves the item to
+    `requested`, applies the edit, then moves it to `in-triage`: three applies,
+    each with fresh versions.
+  - **Server lock:** the server's `request-locked` rule allows both
+    `requested` and `in-triage`.
+  - **Sync order:** sync sends a `ticket-request` note's edits after item
+    status sets, so an offline "back to requested, then edit" lands in order.
+- **Default tab, by status:**
+  - `requested` or `in-triage` → Questions
+  - `todo` through `review` → Tasks
+  - QA and deploy statuses → Comments
+  - open questions always → Questions
+- **Tabs:**
+  - Zero counts are hidden. The open-questions count shows in amber.
+  - Done/total appears only on the Tasks tab, not repeated in the tab body.
+  - Each list starts with a faint labelled add control (`+ comment`, `+ ask`,
+    `+ task`, `+ note`, `+ log`) in place of a lone `+` at the end of the tab bar.
+    An empty tab shows only that control.
+- **Composers:** they keep a small send button, since phones have no
+  Ctrl/Cmd+Enter.
+- **Tasks:** the phase chip appears on hover, as the re-phase control. The
+  phase header already names the phase.
+- **Authorship:**
+  - Notes and log entries put the author, AI and "from Jira" in the stamp's
+    tooltip.
+  - Comments keep a tiny AI mark.
+  - Comments have no ✎, since edits don't reach Jira. The author alone gets ✕.
+  - Context notes get ✎ and ✕.
+- **Rail:**
+  - **Details:** shows type, priority, super-phase (when set), the id and Jira.
+    Created is dropped; the oldest history entry shows it.
+  - **Links:** a link of type `other` has no tag.
+  - **Checks:** only post-deploy rows get a `post` tag, and done checks fold
+    under `› n done`.
+  - **History:** newest first. It shows the last 5 entries, with older ones
+    folded under `› n earlier`. The current status, which the header already
+    shows, is dimmed.
+- **Narrow screens:** a one-line summary sits between the request and the tabs:
+  developer and QA initials, type, the link count and pending checks. Tapping it
+  expands the full rail inline.
+- **Touch:** where `hover: none`, row actions show as faint icons, and tapping
+  an element with a tooltip toggles the tooltip.
+- **Deep links:** `#n-N` (and `#t-N`, `#l-N`) opens the tab that owns the entry,
+  expands it, and scrolls to it.
+- **Editor versions:** every editor captures entity versions when it opens: the
+  status menu, click-to-edit fields and popups. A live refresh never resets an
+  open editor, and a refused save keeps it open with the draft.
+- **Conflict notices:** "dana set status → in-qa · 14:02", in local time, with
+  no "reload". Live polling already refreshes the page.
+
+### Transitions (final)
+
+| from | to |
+|---|---|
+| `requested` | `in-triage`, `deferred`, `cancelled` |
+| `in-triage` | `todo`, `requested`, `blocked`, `deferred`, `cancelled` |
+| `todo` | `in-progress`, `in-triage`, `requested`, `blocked`, `deferred`, `cancelled` |
+| `in-progress` | `review`, `todo`, `blocked`, `deferred`, `cancelled` |
+| `review` | `ready-for-qa`, `done`, `in-progress`, `blocked`, `deferred`, `cancelled` |
+| `ready-for-qa` | `in-qa`, `in-progress`, `blocked`, `cancelled` |
+| `in-qa` | `ready-to-deploy`, `ready-for-qa`, `in-progress`, `blocked`, `cancelled` |
+| `ready-to-deploy` | `deployed`, `in-qa`, `in-progress`, `blocked`, `cancelled` |
+| `deployed` | `in-progress` |
+| `done` | `in-progress`, `todo` |
+| `blocked` | the status before it, then `in-triage`, `todo`, `in-progress`, `review`, `ready-for-qa`, `in-qa`, `ready-to-deploy`, `deferred`, `cancelled` |
+| `deferred` | `requested`, `in-triage`, `todo`, `cancelled` |
+| `cancelled` | `requested`, `in-triage` |
+
+- **`review → done`:** offered only when the item has no QA assignee, for chores
+  that don't need QA. This is flagged to the user as a call to confirm.
+- **No deploy step:**
+  - `ready-to-deploy` becomes `done`.
+  - `deployed` is removed everywhere, including from `blocked`.
+  - `in-qa → ready-to-deploy` reads `in-qa → done`.
+- **Unblocking:** the first option from `blocked` is "unblock → <previous
+  status>", taken from history.
+- **Picking up QA:** `blocked → in-qa` assigns QA the same way pick-up does.
+- **One check for every status write:** every dashboard status change goes
+  through the same check. That covers the status menu, reject, back, pick-up,
+  approve, the QA queue buttons and Mark all deployed.
+- **The CLI stays free:** the CLI can still move `requested → todo` directly,
+  because sync collapses offline moves. Request edits stay triage-gated, because
+  the server enforces the lock.
+
+### Other pages
+
+- **Board:**
+  - **Status labels:** a card shows its status label only in mixed columns
+    (In progress, QA, Shipped).
+  - **People:** the card's initials show the person that column is about: the
+    developer in In progress and Ready, QA in the QA column. Both appear in the
+    tooltip.
+- **QA queue:**
+  - **Rows:** the preview or QA-handoff link is the main element of a row. Each
+    row also shows the title, a relative time and "returned ×n"; the slug and
+    "since" are dropped.
+  - **Reject:** uses the shared reject popup.
+  - **Empty states:** an empty section is hidden. The page shows one faint line
+    only when it is entirely empty.
+- **Deploy board:**
+  - Check rows show the item title, faint, in place of the slug.
+  - Done checks fold away.
+  - The "· N pending" line under each item is dropped.
+- **Inbox:**
+  - **Rows:** the whole row is a link that marks it read on open, through
+    `/inbox/open/[id]`. The bullets and the Open button are gone.
+  - **Heading and actions:** the heading carries no count, and the page has
+    "mark all read".
+  - **Previews:** a note preview shows only its first line.
+- **New request:** no narrating labels; placeholders carry the guidance.
+
+### New server actions (each needs its ops, bases and groups covered by tests)
+
+- note text edit, for context notes
+- `change request`, the three-step flow
+- the request edit while `requested` or `in-triage`
+- log add and remove
+- task title edit
+- back moves with an optional or required comment, as a group
+- mark all read
+- the shared transition check helper
+
+### Known limits
+
+- Removing a link note doesn't remove its Jira remote link.
