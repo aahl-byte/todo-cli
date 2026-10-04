@@ -425,3 +425,12 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .iboxes.fyi .ibox { background: var(--panel); }
 .more-n summary { cursor: pointer; color: var(--dim); font-size: 11px; padding: 3px 0; list-style: none; }
 .empty-inbox { text-align: center; padding: 48px 0; color: var(--dim); }
+
+/* role filters */
+.role-filter .entry-row { display: flex; gap: 6px; align-items: center; }
+.role-filter .entry-row select { flex: 1; min-width: 0; }
+.seg { display: inline-flex; }
+.seg .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.seg .btn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+.chip .x { border: 0; background: none; color: var(--dim); cursor: pointer; padding: 0 2px; }
+.role-tabs { margin: -4px 0 14px; overflow-x: auto; }

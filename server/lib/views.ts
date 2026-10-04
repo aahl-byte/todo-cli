@@ -2,6 +2,7 @@
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
 import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus } from "./model";
+import { matchEntries, matches, type Entry } from "./filters";
 
 export interface Project {
   key: string;
@@ -70,10 +71,10 @@ async function cards(d: Db, key: string, where = "", params: unknown[] = []): Pr
 }
 
 export interface BoardFilters {
-  mine?: boolean;
   review?: boolean;
-  developer?: string;
-  qa?: string;
+  entries?: Entry[];
+  view?: "merged" | "tabs";
+  tab?: number;
   type?: string;
   parked?: boolean;
 }
@@ -91,18 +92,32 @@ export const COLUMNS = [
 
 const SHIPPED_DAYS = 14;
 
-export function filterCards(all: Card[], f: BoardFilters, me: string): Card[] {
+/** Cards past the type and review filters, before the role entries. */
+function baseFilter<T extends Card>(all: T[], f: BoardFilters, me: string): T[] {
   return all.filter((c) =>
-    (!f.mine || [c.developer, c.qa_assignee, c.creator].includes(me))
-    && (!f.review || (c.status === "review" && c.last_to === "review" && c.last_via === "agent" && c.developer === me))
-    && (!f.developer || c.developer === f.developer)
-    && (!f.qa || c.qa_assignee === f.qa)
+    (!f.review || (c.status === "review" && c.last_to === "review" && c.last_via === "agent" && c.developer === me))
     && (!f.type || c.type === f.type));
 }
 
+export function filterCards<T extends Card>(all: T[], f: BoardFilters, me: string): T[] {
+  return matchEntries(baseFilter(all, f, me), f.entries ?? [], f.view ?? "merged", f.tab ?? 0);
+}
+
+/** How many cards each entry's tab would show. */
+export function tabCounts(all: Card[], f: BoardFilters, me: string): number[] {
+  const base = baseFilter(all, f, me);
+  return (f.entries ?? []).map((e) => base.filter((c) => matches(c, e)).length);
+}
+
 export async function board(d: Db, p: Project, f: BoardFilters, me: string, now = Date.now()) {
-  const all = filterCards(await cards(d, p.key), f, me);
+  const every = await cards(d, p.key);
   const cutoff = now - SHIPPED_DAYS * 864e5;
+  const visible = every.filter((c) => (f.parked || !PARKED.includes(c.status))
+    && (!["deployed", "done"].includes(c.status) || !c.completed || Date.parse(c.completed) >= cutoff));
+  return { columns: columns(filterCards(every, f, me), p, f, cutoff), counts: tabCounts(visible, f, me) };
+}
+
+function columns(all: Card[], p: Project, f: BoardFilters, cutoff: number) {
   return COLUMNS
     .filter((col) => (col.key !== "parked" || f.parked) && (col.key !== "deploy" || p.deploy_step))
     .map((col) => ({
@@ -224,14 +239,16 @@ async function withHistory(d: Db, rows: Card[]) {
   return out;
 }
 
-export async function qaQueue(d: Db, key: string, me: string) {
-  const rows = await withHistory(d, await cards(d, key, "and i.status in ('ready-for-qa', 'in-qa', 'qa-rejected')"));
+export async function qaQueue(d: Db, key: string, me: string, f: BoardFilters = {}) {
+  const all = await withHistory(d, await cards(d, key, "and i.status in ('ready-for-qa', 'in-qa', 'qa-rejected')"));
+  const counts = tabCounts(all.filter((r) => r.status !== "qa-rejected"), f, me);
+  const rows = filterCards(all, f, me);
   const ready = rows.filter((r) => r.status === "ready-for-qa").sort((a, b) => a.entered.localeCompare(b.entered));
   const inQa = rows.filter((r) => r.status === "in-qa")
     .sort((a, b) => Number(b.qa_assignee === me) - Number(a.qa_assignee === me) || a.entered.localeCompare(b.entered));
   // What I sent back and is still waiting on a fix.
   const awaitingFix = rows.filter((r) => r.status === "qa-rejected" && [...r.history].reverse().find((h) => h.to_status === "qa-rejected")?.by === me);
-  return { ready, inQa, awaitingFix };
+  return { ready, inQa, awaitingFix, counts };
 }
 
 export async function deployPlan(d: Db, key: string) {

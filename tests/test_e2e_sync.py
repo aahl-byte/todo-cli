@@ -235,3 +235,27 @@ def test_offline_new_version_beats_a_stale_move_into_triage(server, tmp_path):
     assert it["status"] == "requested"
     current = max((n for n in it["notes"] if n["kind"] == "ticket-request"), key=lambda n: n["meta"].get("version", 0))
     assert (current["text"], current["meta"].get("frozen")) == ("second", None)
+
+
+def test_qa_rejected_round_trips(server, tmp_path):
+    url, tokens = server
+    users = {}
+    for who in ("alice", "bob"):
+        home, repo = tmp_path / who / "home", tmp_path / who / "repo"
+        home.mkdir(parents=True)
+        (repo / ".TODO").mkdir(parents=True)
+        cli(home, repo, "login", url, tokens[who])
+        users[who] = (home, repo)
+    (ha, ra), (hb, rb) = users["alice"], users["bob"]
+    cli(ha, ra, "add", "Cart totals")
+    cli(ha, ra, "status", "cart-totals", "in-qa")
+    cli(ha, ra, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "reject", "cart-totals", "totals", "wrong")
+    cli(ha, ra, "sync")
+    it = store.resolve_item((ra / ".TODO").resolve(), "cart-totals")
+    assert it["status"] == "qa-rejected"
+    assert it["notes"][-1]["kind"] == "qa-rejection"
+    cli(ha, ra, "start", "cart-totals")
+    cli(hb, rb, "sync")
+    assert store.resolve_item((rb / ".TODO").resolve(), "cart-totals")["status"] == "in-progress"

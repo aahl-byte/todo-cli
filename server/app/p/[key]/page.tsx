@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { BoardFilters } from "@/components/BoardFilters";
+import { redirect } from "next/navigation";
+import { RoleFilter } from "@/components/RoleFilter";
+import { legacyQuery, parseEntries } from "@/lib/filters";
 import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
 import { deriveCalcStatus, PAST_TRIAGE } from "@/lib/model";
@@ -39,11 +41,14 @@ export default async function Board({ params, searchParams }: { params: Promise<
   const d = await db();
   const p = await project(d, key);
   if (!p) notFound();
-  const f: F = { mine: q.mine === "1", review: q.review === "1", developer: q.dev, qa: q.qa, type: q.type, parked: q.parked === "1" };
-  const columns = await board(d, p, f, user.handle);
+  const legacy = legacyQuery(q, user.handle);
+  if (legacy !== null) redirect(`/p/${key}${legacy ? `?${legacy}` : ""}`);
+  const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged",
+                 tab: Number(q.tab ?? 0) || 0, type: q.type, parked: q.parked === "1" };
+  const { columns, counts } = await board(d, p, f, user.handle);
   return (
     <>
-      <BoardFilters users={(await users(d)).map((u) => u.handle)} />
+      <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} review />
       <div className="board">
         {columns.map((col) => (
           <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>

@@ -86,7 +86,7 @@ describe("views", () => {
   it("puts cards in lifecycle columns with their badges", async () => {
     await seed();
     const p = (await project(w.d, "p"))!;
-    const cols = await board(w.d, p, {}, "bob");
+    const { columns: cols } = await board(w.d, p, {}, "bob");
     const by = Object.fromEntries(cols.map((c) => [c.key, c.items.map((i) => i.id)]));
     expect(by.progress).toEqual(["a1"]);
     expect(by.deploy).toEqual(["b1"]);
@@ -94,9 +94,10 @@ describe("views", () => {
     const a = cols.find((c) => c.key === "progress")!.items[0];
     expect(a).toMatchObject({ open_questions: 1, task_statuses: ["done", "todo"] });
     expect(cols.find((c) => c.key === "deploy")!.items[0].pending_pre).toBe(2);
-    const parked = await board(w.d, p, { parked: true }, "bob");
+    const { columns: parked } = await board(w.d, p, { parked: true }, "bob");
     expect(parked.find((c) => c.key === "parked")!.items.map((i) => i.id)).toEqual(["c1"]);
-    expect((await board(w.d, p, { mine: true }, "bob")).flatMap((c) => c.items.map((i) => i.id))).toEqual(["a1"]);
+    const mine = [{ role: "dev", who: "bob" }, { role: "qa", who: "bob" }, { role: "by", who: "bob" }] as const;
+    expect((await board(w.d, p, { entries: [...mine] }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id))).toEqual(["a1"]);
   });
 
   it("finds work an agent parked in review for its developer", async () => {
@@ -105,15 +106,15 @@ describe("views", () => {
     const v = (await w.d.query("select versions from items where uid = 'A1'"))[0].versions;
     await w.one("alice", set("item", "A1", "A1", { status: "review" }, { status: v.status }, { via: "agent" }));
     const p = (await project(w.d, "p"))!;
-    const ids = (await board(w.d, p, { review: true }, "bob")).flatMap((c) => c.items.map((i) => i.id));
+    const ids = (await board(w.d, p, { review: true }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
     expect(ids).toEqual(["a1"]);
-    expect((await board(w.d, p, { review: true }, "carol")).flatMap((c) => c.items)).toEqual([]);
+    expect((await board(w.d, p, { review: true }, "carol")).columns.flatMap((c) => c.items)).toEqual([]);
   });
 
   it("hides the deploy column for projects without a deploy step", async () => {
     await w.d.query("update projects set deploy_step = false");
     const p = (await project(w.d, "p"))!;
-    expect((await board(w.d, p, {}, "x")).map((c) => c.key)).not.toContain("deploy");
+    expect((await board(w.d, p, {}, "x")).columns.map((c) => c.key)).not.toContain("deploy");
   });
 
   it("loads an item with phases, questions, history and bounces", async () => {
@@ -484,5 +485,49 @@ describe("inbox grouping", () => {
     expect(needs.map((g) => [g.item_uid, g.notices.map((x) => x.id)])).toEqual([["B", [5, 2]], ["A", [3, 1]]]);
     expect(needs[0].notices.map((x) => x.settled)).toEqual([true, true]);
     expect(fyi.map((g) => g.item_uid)).toEqual(["C"]);
+  });
+});
+
+describe("role filters", () => {
+  const rows = [
+    { id: "a", developer: "dana", qa_assignee: "quinn", creator: "pat" },
+    { id: "b", developer: "eli", qa_assignee: "quinn", creator: "priya" },
+    { id: "c", developer: "eli", qa_assignee: "rio", creator: "pat" },
+  ];
+  it("merges entries with or, and tabs show one entry each", async () => {
+    const { matchEntries, parseEntries } = await import("@/lib/filters");
+    const e = parseEntries("dev:dana,qa:rio,bogus:x,dev:dana");
+    expect(e).toEqual([{ role: "dev", who: "dana" }, { role: "qa", who: "rio" }]);
+    expect(matchEntries(rows, e, "merged").map((r) => r.id)).toEqual(["a", "c"]);
+    expect(matchEntries(rows, e, "tabs", 1).map((r) => r.id)).toEqual(["c"]);
+    expect(matchEntries(rows, e, "tabs", 9).map((r) => r.id)).toEqual(["c"]);
+    expect(matchEntries(rows, [], "merged")).toHaveLength(3);
+  });
+  it("rewrites links from before entries", async () => {
+    const { legacyQuery } = await import("@/lib/filters");
+    expect(legacyQuery({ type: "bug" }, "bob")).toBeNull();
+    expect(decodeURIComponent(legacyQuery({ mine: "1", type: "bug" }, "bob")!)).toBe("type=bug&f=dev:bob,qa:bob,by:bob");
+    expect(decodeURIComponent(legacyQuery({ dev: "dana", qa: "quinn" }, "bob")!)).toBe("f=dev:dana,qa:quinn");
+  });
+  it("counts each tab on the board", async () => {
+    await w.one("alice", item("F1", { status: "todo", developer: "bob" }));
+    await w.one("alice", item("F2", { status: "todo", qa_assignee: "bob" }));
+    const p = (await project(w.d, "p"))!;
+    const r = await board(w.d, p, { entries: [{ role: "dev", who: "bob" }, { role: "qa", who: "bob" }], view: "tabs", tab: 1 }, "bob");
+    expect(r.counts).toEqual([1, 1]);
+    expect(r.columns.flatMap((c) => c.items.map((i) => i.id))).toEqual(["f2"]);
+  });
+});
+
+describe("notices", () => {
+  it("sends one notice per person per note, the specific kind first", async () => {
+    await w.one("alice", item("D1", { developer: "bob", creator: "carol" }));
+    await w.one("alice", child("note", "R1", "D1", { kind: "qa-rejection", text: "broken @bob @carol" }));
+    await w.one("alice", child("note", "Q1", "D1", { kind: "clarification", text: "@carol @bob which one?" }));
+    const rows = await w.d.query("select handle, kind, note_uid from notifications order by note_uid, handle");
+    expect(rows).toEqual([
+      { handle: "bob", kind: "mention", note_uid: "Q1" }, { handle: "carol", kind: "clarification", note_uid: "Q1" },
+      { handle: "bob", kind: "qa-rejection", note_uid: "R1" }, { handle: "carol", kind: "mention", note_uid: "R1" },
+    ]);
   });
 });

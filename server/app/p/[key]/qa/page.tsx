@@ -1,20 +1,29 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { RoleFilter } from "@/components/RoleFilter";
+import { legacyQuery, parseEntries } from "@/lib/filters";
 import { MoveButtons } from "@/components/QueueActions";
 import { safeUrl } from "@/lib/url";
 import { Ago } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import { project, qaQueue } from "@/lib/views";
+import { project, qaQueue, users } from "@/lib/views";
 
 
-export default async function QaQueue({ params }: { params: Promise<{ key: string }> }) {
+export default async function QaQueue({ params, searchParams }: {
+  params: Promise<{ key: string }>; searchParams: Promise<Record<string, string | undefined>>;
+}) {
   const { key } = await params;
+  const q = await searchParams;
   const user = await requireUser();
   const d = await db();
   const p = await project(d, key);
   if (!p) notFound();
-  const { ready, inQa, awaitingFix } = await qaQueue(d, key, user.handle);
+  const legacy = legacyQuery(q, user.handle);
+  if (legacy !== null) redirect(`/p/${key}/qa${legacy ? `?${legacy}` : ""}`);
+  const { ready, inQa, awaitingFix, counts } = await qaQueue(d, key, user.handle, {
+    entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged", tab: Number(q.tab ?? 0) || 0, type: q.type });
+  const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} />;
   const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);
     return (
@@ -31,9 +40,10 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
       </article>
     );
   };
-  if (!ready.length && !inQa.length && !awaitingFix.length) return <p className="empty">Empty.</p>;
+  if (!ready.length && !inQa.length && !awaitingFix.length) return <>{filters}<p className="empty">Empty.</p></>;
   return (
     <div className="qa-page">
+      {filters}
       {ready.length > 0 && <div className="label">Ready for QA<span>{ready.length}</span></div>}
       <div className="cards">{ready.map((c) => card(c, [{ status: "in-qa", label: "Pick up", primary: true }]))}</div>
       {inQa.length > 0 && <div className="label">In QA<span>{inQa.length}</span></div>}

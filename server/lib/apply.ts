@@ -602,11 +602,12 @@ async function importHistory(ctx: Ctx, itemUid: string, entries: any[]): Promise
 
 async function noteCreated(ctx: Ctx, itemUid: string, note: Row): Promise<void> {
   const [item] = await ctx.t.query("select developer, creator from items where uid = $1 and project = $2", [itemUid, ctx.project]);
-  if (note.kind === "comment" || note.kind === "qa-rejection") {
-    for (const h of mentions(note.text)) await ctx.notify(h, "mention", itemUid, note.uid);
+  // One notice per person per note: the specific kind wins over a mention.
+  const direct = note.kind === "qa-rejection" ? item.developer : note.kind === "clarification" ? item.creator : null;
+  if (direct) await ctx.notify(direct, note.kind, itemUid, note.uid);
+  if (note.kind === "comment" || note.kind === "qa-rejection" || note.kind === "clarification") {
+    for (const h of mentions(note.text)) if (h !== direct) await ctx.notify(h, "mention", itemUid, note.uid);
   }
-  if (note.kind === "qa-rejection") await ctx.notify(item.developer, "qa-rejection", itemUid, note.uid);
-  if (note.kind === "clarification") await ctx.notify(item.creator, "clarification", itemUid, note.uid);
 }
 
 async function recalc(ctx: Ctx, itemUid: string): Promise<void> {

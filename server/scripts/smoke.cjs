@@ -68,9 +68,9 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await login("dev");
     for (const t of ["Requested", "Triage", "In progress", "QA", "Ready to deploy"]) await page.getByRole("region", { name: t }).waitFor();
     await page.click("button:has-text('Mine')");
-    await page.waitForURL(/mine=1/);
+    await page.waitForURL(/f=dev%3Adev%2Cqa%3Adev%2Cby%3Adev|f=dev:dev,qa:dev,by:dev/);
     await page.click("button:has-text('Mine')");
-    await page.waitForURL((u) => !u.search.includes("mine"));
+    await page.waitForURL((u) => !u.search.includes("f="));
     await page.screenshot({ path: out + "/board.png", fullPage: true });
   });
 
@@ -196,11 +196,14 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.fill(".popup textarea", "Safari 16 and 17 bounce back to /login after a password reset.");
     await page.click(".popup button.primary");
     await page.waitForFunction(() => document.querySelector(".head .stat-label")?.textContent === "requested");
+    await page.locator(".req-diff .add-l", { hasText: "URL: https://example.com/reset" }).waitFor();
+    await page.click(".request button:has-text('show as text')");
     await page.locator(".request a.req-url", { hasText: "example.com/reset" }).waitFor();
+    await page.click(".request button:has-text('show changes')");
     await page.click(".request button:has-text('versions')");
     await page.locator(".version .tgroup").first().click();
-    await page.locator(".diff .add-l", { hasText: "16 and 17" }).waitFor();
-    await page.locator(".diff .del-l").first().waitFor();
+    await page.locator(".versions .diff .add-l", { hasText: "16 and 17" }).waitFor();
+    await page.locator(".versions .diff .del-l").first().waitFor();
     await page.screenshot({ path: out + "/request-versions.png", fullPage: true });
   });
 
@@ -298,12 +301,16 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   await step("QA: reject needs a comment", async () => {
     await login("qa", "/p/web/qa");
     await page.screenshot({ path: out + "/qa.png", fullPage: true });
-    const row = page.locator(".lrow", { hasText: "Maintenance banner" });
+    const cards = await page.locator(".qa-page > .cards .qa-card").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
+    if (cards.length > 1 && new Set(cards.map(Math.round)).size === cards.length) throw new Error("QA cards don't share rows");
+    const row = page.locator(".qa-page > .cards .qa-card", { hasText: "Maintenance banner" });
     await row.locator("button:has-text('Reject')").click();
     if (await page.locator(".popup button.danger").isEnabled()) throw new Error("reject without a comment allowed");
     await page.fill(".popup textarea", "Banner overlaps the nav on mobile");
     await page.click(".popup button.danger");
-    await page.locator(".lrow", { hasText: "Maintenance banner" }).waitFor({ state: "detached" });
+    await page.locator(".qa-page > .cards .qa-card", { hasText: "Maintenance banner" }).waitFor({ state: "detached" });
+    await page.locator(".awaiting summary", { hasText: "Awaiting fix" }).click();
+    await page.locator(".awaiting .qa-card", { hasText: "Maintenance banner" }).waitFor();
   });
 
   await step("deploy: pending checks need a confirmed force", async () => {
@@ -317,15 +324,60 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator(".ticket", { hasText: "Store times in UTC" }).locator("button:has-text('Mark deployed')").waitFor({ state: "detached" });
   });
 
-  await step("inbox: rows open the item and mark read", async () => {
+  await step("dev: the rejection waits in qa-rejected, highlighted, and opening it clears the notice", async () => {
+    await login("dev", "/inbox");
+    await page.screenshot({ path: out + "/inbox.png", fullPage: true });
+    const box = page.locator(".ibox", { hasText: "Maintenance banner" });
+    await box.locator(".notice .kind.hot").first().waitFor();
+    const count = async () => Number((await page.locator(".topbar .count").first().textContent().catch(() => "0")) || 0);
+    await page.waitForFunction(() => document.querySelector(".topbar .count"));
+    const before = await count();
+    await box.locator("header a.title").click();
+    await page.waitForURL(/maintenance-banner/);
+    await page.waitForFunction(() => document.querySelector(".head .stat-label")?.textContent === "qa-rejected");
+    await page.click("role=tab[name=/Comments/]");
+    await page.locator(".entry.is-new", { hasText: "Banner overlaps" }).waitFor();
+    await page.waitForFunction((b) => Number(document.querySelector(".topbar .count")?.textContent || 0) < b, before);
+    await page.screenshot({ path: out + "/item-new.png", fullPage: true });
+    await page.click("button[aria-label=status]");
+    const opts = await page.locator(".menu li .stat-label").allTextContents();
+    await page.keyboard.press("Escape");
+    if (opts[0] !== "in-progress" || !opts.includes("in-triage")) throw new Error(JSON.stringify(opts));
+  });
+
+  await step("inbox: clear a ticket, mark all read, undo", async () => {
     await page.goto(base + "/inbox");
-    const row = page.locator("a.notice.unread").first();
-    await row.waitFor();
-    await row.click();
-    await page.waitForURL(/\/p\/web\/i\//);
-    await page.goto(base + "/inbox");
+    const first = page.locator(".ibox").first();
+    const title = await first.locator("header a.title").textContent();
+    await first.locator("button.clear").click();
+    await page.locator(".ibox", { hasText: title }).waitFor({ state: "detached" });
     await page.click("button:has-text('Mark all read')");
     await page.waitForFunction(() => !document.querySelector("a.notice.unread"));
+    await page.click(".toast button:has-text('Undo')");
+    await page.locator("a.notice.unread").first().waitFor();
+    const row = page.locator("a.notice.unread").first();
+    await row.click();
+    await page.waitForURL(/\/p\/web\/i\//);
+  });
+
+  await step("filters: role entries merged and as tabs, on the board and the QA queue", async () => {
+    await page.goto(base + "/p/web?mine=1");
+    await page.waitForURL(/f=/);
+    await page.goto(base + "/p/web");
+    await page.click("summary:has-text('Filter')");
+    await page.click(".role-filter button.add");
+    await page.waitForURL(/f=/);
+    await page.click(".role-filter button.add");
+    await page.waitForFunction(() => document.querySelectorAll(".role-filter .entry-row").length === 2);
+    await page.keyboard.press("Escape");
+    if ((await page.locator(".filters .chip").count()) !== 2) throw new Error("no chips in merged view");
+    await page.click(".seg button:has-text('tabs')");
+    await page.locator(".role-tabs [role=tab]").nth(1).click();
+    await page.waitForURL(/tab=1/);
+    await page.screenshot({ path: out + "/board-tabs.png", fullPage: true });
+    await page.goto(base + "/p/web/qa?f=qa:qa,qa:rio&view=tabs");
+    await page.locator(".role-tabs [role=tab]", { hasText: "qa by rio" }).waitFor();
+    await page.screenshot({ path: out + "/qa.png", fullPage: true });
   });
 
   await step("new request with app, section, URL and a dropped image", async () => {

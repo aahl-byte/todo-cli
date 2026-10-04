@@ -332,6 +332,11 @@ for (const [i, it] of items.entries()) {
   await d.query("update items set completed = (select max(ts) from status_history h where h.project = $1 and h.item_uid = $2) where project = $1 and uid = $2 and completed is not null", [it.project, it.uid]);
 }
 
+// Notices arrive when the note or move behind them did.
+await d.query(`update notifications n set created = nt.ts::timestamptz from notes nt where nt.uid = n.note_uid and nt.project = n.project`);
+await d.query(`update notifications n set created = coalesce((select max(ts)::timestamptz from status_history h
+                 where h.project = n.project and h.item_uid = n.item_uid), n.created) where n.note_uid is null`);
+
 const [{ n }] = await d.query("select count(*)::int as n from items");
 console.log(JSON.stringify({ items: Number(n), users: Object.keys(tokens).length, password: "<handle>-test" }));
 await d.close?.();
