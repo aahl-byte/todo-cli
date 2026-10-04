@@ -59,6 +59,9 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
   const [refused, setRefused] = useState(false);
   const [open, setOpen] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  // A version not yet triaged opens as its changes since the one triage last saw.
+  const base = req && !req.meta?.triaged ? (versions.slice(1).find((v) => v.meta?.triaged) ?? versions[1] ?? null) : null;
+  const [asText, setAsText] = useState(false);
   // Opened from a "request changed" notice: show what changed.
   useEffect(() => { if (focus && versions.length > 1) setShowVersions(true); }, [focus, versions.length]);
   const pinned = useRef(req?.versions ?? {});
@@ -109,15 +112,23 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
             <button type="button" className="btn primary" disabled={(!draft.trim() && !url.trim()) || uploading} onClick={() => void save(false)}>Save</button>
           </div>
         </div>
-      ) : req && (
+      ) : req && (base && !asText ? (
+        <div className="req-diff">
+          <div className="faint">changes since v{base.meta?.version ?? 1}{base.meta?.triaged ? " (triaged)" : ""}</div>
+          <Diff before={said(base)} after={said(req)} />
+        </div>
+      ) : (
         <>
           {req.meta?.url && <a className="req-url" href={req.meta.url} target="_blank" rel="noreferrer">{req.meta.url}</a>}
           <Markdown text={req.text} />
         </>
-      )}
+      ))}
 
       <div className="request-acts">
         {long && mode !== "inline" && <button type="button" className="more" onClick={() => setOpen((o) => !o)}>{open ? "less" : "more"}</button>}
+        {base && mode !== "inline" && (
+          <button type="button" className="more" onClick={() => setAsText((t) => !t)}>{asText ? "show changes" : "show as text"}</button>
+        )}
         {mode !== "inline" && (
           <button type="button" className="add" onClick={start}>{!req ? <><span className="pl" aria-hidden="true">+</span>request</> : editable ? "✎ edit" : "✎ new version"}</button>
         )}
