@@ -369,3 +369,15 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .diff .same-l { color: var(--dim); }
 .md-box { margin: 4px 0 8px 18px; }
 .flag { font: 600 9px var(--disp); letter-spacing: .12em; text-transform: uppercase; }
+
+/* round 3b */
+.card .where { font-size: 11px; color: var(--faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.req-url { display: block; font-size: 12px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.tgroup-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.phase-title .edit-text { font-size: 12px; color: var(--dim); }
+.phase-title.unnamed { opacity: 0; transition: opacity .12s; }
+.tgroup-row:hover .phase-title.unnamed, .phase-title.unnamed:focus-within { opacity: 1; }
+.picklist { display: grid; gap: 2px; max-height: 50vh; overflow-y: auto; }
+.rrow.pick { border: 0; background: none; text-align: left; width: 100%; cursor: pointer; border-radius: 6px; padding: 4px 6px; }
+.rrow.pick:hover, .rrow.pick:focus-visible { background: var(--raise); }
+.md img { max-width: 100%; border-radius: 6px; }

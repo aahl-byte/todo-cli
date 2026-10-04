@@ -99,7 +99,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
         <div role="tabpanel">
           {tab === "comments" && <Comments data={data} ctx={ctx} focus={focus} />}
           {tab === "questions" && <Questions data={data} ctx={ctx} focus={focus} />}
-          {tab === "tasks" && <Tasks tasks={data.tasks} ctx={ctx} focus={focus} />}
+          {tab === "tasks" && <Tasks tasks={data.tasks} ctx={ctx} focus={focus} titles={data.phaseTitles} item={data.item} />}
           {tab === "notes" && <Entries kind="context" rows={data.notes} ctx={ctx} focus={focus} />}
           {tab === "log" && <Entries kind="log" rows={data.logs} ctx={ctx} focus={focus} />}
         </div>
@@ -248,8 +248,11 @@ export function initials(handle?: string | null): string {
 }
 
 // ── composer shared by every tab ──────────────────────────────────────────────
+export const uploadsFor = (ctx: Ctx) => (ctx.uploads ? { project: ctx.project, scope: ctx.itemUid } : null);
+
 export function AddBox({ label, placeholder, onAdd, users, uploads, children }: {
-  label: string; placeholder: string; onAdd: (text: string) => Promise<boolean>; users?: string[]; uploads?: boolean; children?: ReactNode;
+  label: string; placeholder: string; onAdd: (text: string) => Promise<boolean>; users?: string[];
+  uploads?: { project: string; scope: string } | null; children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -281,7 +284,7 @@ export function AddBox({ label, placeholder, onAdd, users, uploads, children }: 
 function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
   return (
     <>
-      <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={ctx.uploads}
+      <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={uploadsFor(ctx)}
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
       <ul className="entries">
         {data.comments.map((c) => (
@@ -388,7 +391,7 @@ function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Ro
   return (
     <>
       <AddBox label={kind === "log" ? "log" : "note"} placeholder={kind === "log" ? "What you did, what broke, what you swapped" : "Context — the why, a decision, a gotcha"}
-              users={ctx.users} uploads={ctx.uploads}
+              users={ctx.users} uploads={uploadsFor(ctx)}
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: kind === "log" ? "log" : "context", text }))} />
       {rows.length > 1 && (
         <div className="list-head">

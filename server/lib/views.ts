@@ -47,6 +47,7 @@ export interface Card extends Row {
   last_via: string | null;
   last_to: string | null;
   request_meta: { version: number; triaged: boolean } | null;
+  extra: Record<string, any> | null;
 }
 
 async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
@@ -140,7 +141,44 @@ export async function item(d: Db, key: string, id: string) {
     checks,
     history,
     bounces: bounceCount(history),
+    related: await related(d, key, it.uid),
+    phaseTitles: phaseTitles(it.extra),
+    choices: await choices(d, key),
   };
+}
+
+/** Phase titles from `extra.phases`, keyed by phase number. */
+export function phaseTitles(extra: Row | null | undefined): Record<string, string> {
+  const raw = extra?.phases;
+  if (!raw || typeof raw !== "object") return {};
+  return Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === "string" && v.trim()) as [string, string][]);
+}
+
+/** Items related to this one, from either side, once each. Each row keeps the
+ * relation note's uid, item and versions, so either side can remove it. */
+async function related(d: Db, key: string, uid: string) {
+  const rows = await d.query(
+    `select n.uid as note_uid, n.item_uid as note_item_uid, n.versions as note_versions,
+            i.uid, i.id, i.title, i.status, i.developer
+       from notes n join items i on i.project = n.project
+        and i.uid = case when n.item_uid = $2 then n.meta->>'item' else n.item_uid end
+      where n.project = $1 and n.kind = 'relation' and (n.item_uid = $2 or n.meta->>'item' = $2)
+      order by n.ts, n.uid`, [key, uid]);
+  const seen = new Set<string>();
+  return rows.filter((r) => !seen.has(r.uid) && seen.add(r.uid));
+}
+
+/** App and section values already used in the project, for pickers. */
+export async function choices(d: Db, key: string) {
+  const rows = await d.query(
+    `select distinct extra->>'app' as app, extra->>'section' as section from items
+      where project = $1 and coalesce(extra->>'app', '') <> '' order by 1, 2`, [key]);
+  const apps: Record<string, string[]> = {};
+  for (const r of rows) {
+    apps[r.app] ??= [];
+    if (r.section) apps[r.app].push(r.section);
+  }
+  return apps;
 }
 
 export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>>;

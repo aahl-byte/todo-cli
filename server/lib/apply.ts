@@ -300,6 +300,10 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 
   }
   if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? { ...data[jsonCol] } : {};
+  if (entity === "note") {
+    const bad = await badNoteMeta(ctx, itemUid, row.kind, row.meta);
+    if (bad) return reject(op, bad);
+  }
   let request: { bounce: boolean } | null = null;
   if (entity === "note" && row.kind === "ticket-request") request = await newRequestVersion(ctx, itemUid, row);
 
@@ -327,7 +331,18 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   return result;
 }
 
-// ── set ──────────────────────────────────────────────────────────────────────
+/** A request's URL must be http(s); a relation must name another item here. */
+async function badNoteMeta(ctx: Ctx, itemUid: string, kind: string, meta: Record<string, any>): Promise<string | null> {
+  if (kind === "ticket-request" && meta.url != null && !/^https?:\/\/\S+$/.test(String(meta.url))) return "invalid-url";
+  if (kind === "relation") {
+    const target = meta.item;
+    if (typeof target !== "string" || target === itemUid) return "bad-relation";
+    const [hit] = await ctx.t.query("select 1 from items where project = $1 and uid = $2", [ctx.project, target]);
+    if (!hit) return "bad-relation";
+  }
+  return null;
+}
+
 // ── request versions ──────────────────────────────────────────────────────────
 // A request is a series of ticket-request notes, meta.version 1, 2, 3…; the
 // highest is current. A version freezes once its item leaves `requested`, and
@@ -451,6 +466,13 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     if (value !== null && invalid(entity, field, value)) {
       rejected.push({ field, reason: "invalid", server_value: current ?? null, version });
       continue;
+    }
+    if (entity === "note" && field.startsWith("meta.")) {
+      const bad = await badNoteMeta(ctx, row.item_uid, row.kind, { ...(row.meta ?? {}), [field.slice(5)]: value });
+      if (bad) {
+        rejected.push({ field, reason: bad, server_value: current ?? null, version });
+        continue;
+      }
     }
     if (same(value, current)) {
       out[field] = version ?? 0;

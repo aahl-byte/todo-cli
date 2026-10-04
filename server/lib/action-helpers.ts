@@ -33,6 +33,8 @@ const REASONS: Record<string, string> = {
   removed: "it was removed",
   "no-item": "the item no longer exists",
   "request-frozen": "this request version is frozen — post a new version",
+  "bad-relation": "that item can't be related here",
+  "invalid-url": "the URL must start with http:// or https://",
   "reason-required": "an override needs a reason",
 };
 

@@ -67,18 +67,35 @@ export function approveOps(item: Ref, deployStep: boolean): Op[] {
 }
 
 export function requestOps(form: { title: string; type: string; priority: string; description: string;
-                                   developer?: string | null; qa_assignee?: string | null }, me: string): Op[] {
+                                   developer?: string | null; qa_assignee?: string | null;
+                                   app?: string | null; section?: string | null; url?: string | null }, me: string): Op[] {
   const title = form.title.trim();
   if (!title) throw new Error("A request needs a title.");
+  const url = requestUrl(form.url);
+  const extra = Object.fromEntries((["app", "section"] as const).map((k) => [k, form[k]?.trim()]).filter(([, v]) => v));
   const item = createOp("item", "", {
     title, type: form.type || "feature", priority: form.priority || "medium", status: "requested",
     creator: me, developer: form.developer || null, qa_assignee: form.qa_assignee || null, created: nowIso(),
+    ...(Object.keys(extra).length ? { extra } : {}),
   });
   const ops = [item];
-  if (form.description.trim()) {
-    ops.push(createOp("note", item.uid, { kind: "ticket-request", text: form.description.trim(), ts: nowIso() }));
+  if (form.description.trim() || url) {
+    ops.push(createOp("note", item.uid, { kind: "ticket-request", text: form.description.trim(), ts: nowIso(), meta: url ? { url } : {} }));
   }
   return ops;
+}
+
+/** A request's "where it happens" URL: blank, or http(s). */
+export function requestUrl(raw: string | null | undefined): string | null {
+  const url = (raw ?? "").trim();
+  if (!url) return null;
+  if (!/^https?:\/\/\S+$/.test(url)) throw new Error("The URL must start with http:// or https://");
+  return url;
+}
+
+export function relationOps(itemUid: string, target: string): Op[] {
+  if (!target || target === itemUid) throw new Error("Pick another item.");
+  return [createOp("note", itemUid, { kind: "relation", text: "related", ts: nowIso(), meta: { item: target } })];
 }
 
 export function answerOps(note: Ref, text: string, me: string): Op[] {

@@ -14,7 +14,9 @@ const keyOf = (phase: number | null) => (phase === null ? "none" : String(phase)
 // The statuses a task moves through; the QA and deploy ones belong to items.
 const TASK_STATUSES = ["todo", "in-triage", "in-progress", "review", "blocked", "done", "deferred", "cancelled"];
 
-export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: string | null }) {
+export function Tasks({ tasks, ctx, focus, titles = {}, item }: {
+  tasks: Row[]; ctx: Ctx; focus: string | null; titles?: Record<string, string>; item?: Row;
+}) {
   const [showDone, setShowDone] = useState(false);
   const [pinnedPhase, setPinnedPhase] = useState<Record<string, boolean>>({});
   const groups: { phase: number | null; rows: Row[] }[] = [];
@@ -23,6 +25,12 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
     if (last && last.phase === t.phase) last.rows.push(t);
     else groups.push({ phase: t.phase, rows: [t] });
   }
+  // A named phase shows even before it has tasks.
+  for (const k of Object.keys(titles)) {
+    const n = Number(k);
+    if (!groups.some((g) => g.phase === n)) groups.push({ phase: n, rows: [] });
+  }
+  groups.sort((a, b) => (a.phase ?? Infinity) - (b.phase ?? Infinity));
   const anyFinished = tasks.some((t) => finished(t.status));
   const focusN = focus?.startsWith("t-") ? Number(focus.slice(2)) : null;
 
@@ -46,18 +54,33 @@ export function Tasks({ tasks, ctx, focus }: { tasks: Row[]; ctx: Ctx; focus: st
         const shown = mode === "all" ? g.rows : mode === "none" ? [] : g.rows.filter((t) => !finished(t.status) || t.n === focusN);
         const folded = g.rows.length - shown.length;
         return (
-          <div key={k}>
-            <button type="button" className="tgroup" aria-expanded={mode !== "none"}
-                    onClick={() => setPinnedPhase((p) => ({ ...p, [k]: mode !== "all" }))}>
-              <span className={`chev ${mode !== "none" ? "open" : ""}`}>›</span>
-              {g.phase === null ? "no phase" : `phase ${g.phase}`}
+          <div key={k} className="tphase-group">
+            <div className="tgroup-row">
+              <button type="button" className="tgroup" aria-expanded={mode !== "none"}
+                      onClick={() => setPinnedPhase((p) => ({ ...p, [k]: mode !== "all" }))}>
+                <span className={`chev ${mode !== "none" ? "open" : ""}`}>›</span>
+                {g.phase === null ? "no phase" : `phase ${g.phase}`}
+              </button>
+              {g.phase !== null && item && <PhaseTitle phase={g.phase} title={titles[k] ?? ""} item={item} ctx={ctx} />}
               {folded > 0 && <span className="faint">· {folded} done</span>}
-            </button>
+              {!g.rows.length && <span className="faint">· no tasks</span>}
+            </div>
             {shown.map((t) => <TaskRow key={t.uid} t={t} ctx={ctx} focus={t.n === focusN} />)}
           </div>
         );
       })}
     </>
+  );
+}
+
+function PhaseTitle({ phase, title, item, ctx }: { phase: number; title: string; item: Row; ctx: Ctx }) {
+  const pinned = useRef(item.versions);
+  return (
+    <span className={`phase-title ${title ? "" : "unnamed"}`} onFocusCapture={() => { pinned.current = item.versions; }}>
+      <EditableText value={title} label={`phase ${phase} title`} placeholder="name" allowEmpty
+                    onStart={() => { pinned.current = item.versions; }}
+                    onSave={async (t) => report(await act.setPhaseTitle({ project: ctx.project, uid: item.uid, versions: pinned.current, phase, title: t }))} />
+    </span>
   );
 }
 

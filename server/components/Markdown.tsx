@@ -1,5 +1,5 @@
 // A small, safe Markdown renderer: escapes everything, then allows paragraphs,
-// lists, code, emphasis, links and images with http(s) URLs.
+// lists, code, emphasis, links, and images from http(s) URLs or our own file store.
 import type { ReactNode } from "react";
 
 function inline_(text: string): ReactNode[] {
@@ -8,7 +8,7 @@ function inline_(text: string): ReactNode[] {
 
 function inline(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /(!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\))|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(https?:\/\/[^\s<]+)/g;
+  const re = /(!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/files\/[\w-]+\/[\w-]+\/[0-9A-Z]{26}\.(?:png|jpe?g|gif|webp))\))|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(https?:\/\/[^\s<]+)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;

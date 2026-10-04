@@ -35,8 +35,9 @@ UNPHASED_DIR = "unphased"
 
 PEOPLE = ("creator", "developer", "qa_assignee")
 NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
-              "clarification"]
-LINK_TYPES = ["pr", "preview", "qa-handoff", "other"]
+              "clarification", "relation"]
+LINK_TYPES = ["pr", "preview", "qa-handoff", "external-ticket", "bug-ticket",
+              "documentation", "design", "other"]
 CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag",
                "manual-step", "other"]
 CHECK_TIMINGS = ["pre-deploy", "post-deploy"]

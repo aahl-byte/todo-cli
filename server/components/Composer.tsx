@@ -1,19 +1,21 @@
 "use client";
 // A Markdown textarea with @mention autocomplete and image paste/drop upload.
 import { useRef, useState } from "react";
+import { images, insertImages } from "@/lib/upload-client";
 
 export function Composer({ name = "text", users, placeholder, required, uploads, rows = 3, autoFocus }: {
   name?: string;
   users: string[];
   placeholder?: string;
   required?: boolean;
-  uploads?: boolean;
+  uploads?: { project: string; scope: string } | null;
   rows?: number;
   autoFocus?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const onInput = () => {
     const el = ref.current!;
@@ -34,23 +36,14 @@ export function Composer({ name = "text", users, placeholder, required, uploads,
     setQuery(null);
   };
 
-  const upload = async (files: FileList | File[]) => {
-    const images = [...files].filter((f) => f.type.startsWith("image/"));
-    if (!images.length || !uploads) return false;
+  const upload = (files: FileList | File[]) => {
+    const el = ref.current!;
+    if (!uploads || !images(files).length) return false;
     setBusy(true);
-    try {
-      for (const f of images) {
-        const fd = new FormData();
-        fd.append("file", f);
-        const res = await fetch("/api/upload", { method: "POST", body: fd });
-        if (!res.ok) continue;
-        const { url } = await res.json();
-        const el = ref.current!;
-        el.value += `${el.value && !el.value.endsWith("\n") ? "\n" : ""}![${f.name}](${url})\n`;
-      }
-    } finally {
-      setBusy(false);
-    }
+    void insertImages(files, el.selectionStart, {
+      project: uploads.project, scope: uploads.scope, get: () => el.value,
+      set: (v) => { el.value = v; onInput(); }, error: setError,
+    }).finally(() => setBusy(false));
     return true;
   };
 
@@ -58,14 +51,15 @@ export function Composer({ name = "text", users, placeholder, required, uploads,
   return (
     <div style={{ position: "relative" }}>
       <textarea ref={ref} name={name} rows={rows} placeholder={placeholder} aria-label={placeholder ?? name} required={required} onInput={onInput} autoFocus={autoFocus}
-        onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); void upload(e.clipboardData.files); } }}
-        onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); void upload(e.dataTransfer.files); } }} />
+        onPaste={(e) => { if (upload(e.clipboardData.files)) e.preventDefault(); }}
+        onDrop={(e) => { if (upload(e.dataTransfer.files)) e.preventDefault(); }} />
       {matches.length > 0 && (
         <div className="suggest">
           {matches.map((u) => <button type="button" key={u} onMouseDown={(e) => { e.preventDefault(); pick(u); }}>@{u}</button>)}
         </div>
       )}
       {busy && <div className="muted">uploading…</div>}
+      {error && <div className="hot" role="alert">{error}</div>}
     </div>
   );
 }

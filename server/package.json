@@ -17,7 +17,9 @@
     "user:jira": "tsx scripts/user-jira.ts"
   },
   "dependencies": {
-    "@vercel/blob": "^2.8.0",
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-presigned-post": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "next": "^16.3.8",
     "pg": "^8.23.1",
     "react": "^19.3.0",

@@ -10,11 +10,12 @@ import { Ago, Led, Menu, Popup } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { Glance } from "./Glance";
+import { AppFields } from "../AppFields";
 
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const TYPES = ["feature", "bug", "refactor", "question"];
-const LINK_TAG: Record<string, string> = { pr: "PR", preview: "preview", "qa-handoff": "QA" };
+const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA" };
 
 
 export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: () => void }) {
@@ -34,7 +35,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
   };
   return (
     <>
-      <Glance tasks={data.tasks} onOpen={() => onTasks?.()} />
+      <Glance tasks={data.tasks} titles={data.phaseTitles} onOpen={() => onTasks?.()} />
       <section>
         <div className="label">People</div>
         <div className="kv">
@@ -46,6 +47,8 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
       <section>
         <div className="label">Details</div>
         <div className="kv">
+          <span className="k">app</span>
+          <AppValue data={data} ctx={ctx} />
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
                 options={TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />
@@ -67,10 +70,86 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
           )}
         </div>
       </section>
+      <Related rows={data.related} ctx={ctx} />
       <Links rows={data.links} ctx={ctx} />
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
       <History rows={data.history} current={it.status} created={it.created} />
     </>
+  );
+}
+
+function AppValue({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const [open, setOpen] = useState(false);
+  const pinned = useRef(it.versions);
+  const app = it.extra?.app ?? "", section = it.extra?.section ?? "";
+  const save = async (fd: FormData) => {
+    const v = (k: string) => String(fd.get(k) ?? "").trim() || null;
+    const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
+                                   data: { "extra.app": v("app"), "extra.section": v("section") } });
+    if (report(r)) setOpen(false);
+  };
+  return (
+    <>
+      <button type="button" className="edit-text" onClick={() => { pinned.current = it.versions; setOpen(true); }}>
+        {app ? <>{app}{section && <span className="faint"> · {section}</span>}</> : <span className="faint">—</span>}
+      </button>
+      {open && (
+        <Popup title="App and section" onClose={() => setOpen(false)}>
+          <form className="row" action={(fd) => void save(fd)}>
+            <AppFields apps={data.choices} app={app} section={section} />
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
+              <button className="btn primary">Save</button>
+            </div>
+          </form>
+        </Popup>
+      )}
+    </>
+  );
+}
+
+function Related({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
+  const [adding, setAdding] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<Row[]>([]);
+  const search = async (text: string) => {
+    setQ(text);
+    setHits(text.trim() ? await act.findItems({ project: ctx.project, q: text, not: ctx.itemUid }) : []);
+  };
+  const pick = async (uid: string) => {
+    if (report(await act.relate({ project: ctx.project, itemUid: ctx.itemUid, target: uid }))) {
+      setAdding(false);
+      setQ("");
+      setHits([]);
+    }
+  };
+  const taken = new Set(rows.map((r) => r.uid));
+  return (
+    <section>
+      <div className="label">Related<button type="button" className="plus" aria-label="relate an item" onClick={() => setAdding(true)}>+</button></div>
+      {rows.map((r) => (
+        <div key={r.note_uid} className="rrow" data-uid={r.uid}>
+          <Led status={r.status} />
+          <a className="grow" href={`/p/${ctx.project}/i/${r.id}`}>{r.title}</a>
+          {r.developer && <span className="faint">{r.developer}</span>}
+          <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: r.note_item_uid, entity: "note", uid: r.note_uid, versions: r.note_versions })} />
+        </div>
+      ))}
+      {adding && (
+        <Popup title="Relate an item" onClose={() => setAdding(false)}>
+          <input autoFocus value={q} placeholder="title or id" aria-label="find an item" onChange={(e) => void search(e.target.value)} />
+          <div className="picklist">
+            {hits.filter((h) => !taken.has(h.uid)).map((h) => (
+              <button type="button" key={h.uid} className="rrow pick" onClick={() => void pick(h.uid)}>
+                <Led status={h.status} /><span className="grow">{h.title}</span><span className="faint mono-id">{h.id}</span>
+              </button>
+            ))}
+            {q.trim() && !hits.length && <div className="faint">No match.</div>}
+          </div>
+        </Popup>
+      )}
+    </section>
   );
 }
 
@@ -88,7 +167,7 @@ function Links({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
       <div className="label">Links<button type="button" className="plus" aria-label="add link" onClick={() => setAdding(true)}>+</button></div>
       {rows.map((l) => {
         const url = safeUrl(l.meta?.url);
-        const tag = LINK_TAG[l.meta?.type];
+        const tag = LINK_TAG[l.meta?.type] ?? (l.meta?.type && l.meta.type !== "other" ? l.meta.type : null);
         return (
           <div key={l.uid} className="rrow" data-uid={l.uid}>
             {tag && <span className="tag">{tag}</span>}

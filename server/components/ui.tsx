@@ -196,7 +196,7 @@ export function Tooltips() {
 }
 
 /** Text that turns into an input on click: Enter or blur saves, Esc cancels. */
-export function EditableText({ value, onSave, onStart, label, className, multiline }: {
+export function EditableText({ value, onSave, onStart, label, className, multiline, placeholder, allowEmpty }: {
   value: string;
   /** Resolves false when the save was refused; the editor then stays open. */
   onSave: (v: string) => Promise<boolean> | void;
@@ -205,6 +205,10 @@ export function EditableText({ value, onSave, onStart, label, className, multili
   label: string;
   className?: string;
   multiline?: boolean;
+  /** Shown faintly while there's no value. */
+  placeholder?: string;
+  /** Saving an empty value clears it instead of cancelling. */
+  allowEmpty?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -214,7 +218,7 @@ export function EditableText({ value, onSave, onStart, label, className, multili
     if (done.current) return;
     done.current = true;
     const v = draft.trim();
-    if (!v || v === value) { setEditing(false); return; }
+    if ((!v && !allowEmpty) || v === value) { setEditing(false); return; }
     const saved = await onSave(v);
     if (saved === false) { done.current = false; return; }
     setEditing(false);
@@ -223,7 +227,7 @@ export function EditableText({ value, onSave, onStart, label, className, multili
     return (
       <button type="button" className={`edit-text ${className ?? ""}`} aria-label={`${label}: ${value}`}
               onClick={() => { done.current = false; onStart?.(); setEditing(true); }}>
-        {value}
+        {value || (placeholder && <span className="faint">{placeholder}</span>)}
       </button>
     );
   }

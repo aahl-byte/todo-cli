@@ -18,7 +18,7 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `CRON_SECRET` | the Jira retry cron (`/api/jira/flush`) |
    | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_WEBHOOK_SECRET` | the Jira bridge |
    | `JIRA_ACCOUNT_ID` | optional; the integration's own account, else fetched from `/myself` |
-   | `BLOB_READ_WRITE_TOKEN` | image paste/drop in the dashboard (a Vercel Blob store) |
+   | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
 
 4. **Create the schema, then users and projects**, from your machine with the
    same `DATABASE_URL`:
@@ -35,6 +35,19 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
 
    `migrate` refuses a database built from the pre-release schema (entity rows
    keyed by uid alone); recreate such a database.
+
+**Images.** Pasted images upload from the browser straight to S3 through a
+presigned POST, and are read back through `/api/files/…`, which checks the
+session and redirects to a URL that expires after five minutes. The bucket stays
+private. It needs the IAM rights `s3:PutObject` and `s3:GetObject`, and a CORS
+rule that lets the dashboard post to it:
+
+```json
+[{ "AllowedOrigins": ["https://todo.example.com"], "AllowedMethods": ["POST"], "AllowedHeaders": ["*"] }]
+```
+
+Without `S3_BUCKET`, a local server keeps images under `TODO_FILES_DIR`
+(default `.files/`). On Vercel, uploads stay off until S3 is configured.
 
 Every signed-in user can read and write every project. Access is team-wide by
 design; there are no per-project roles.

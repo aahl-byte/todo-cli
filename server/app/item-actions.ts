@@ -59,7 +59,7 @@ export async function moveItem(a: { project: string; uid: string; versions: Vers
             previous: cur.status === "blocked" ? cur.blocked_from : null }), user.handle, d);
 }
 
-const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase"];
+const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section"];
 
 export async function editItem(a: { project: string; uid: string; versions: Versions; data: Record<string, unknown> }) {
   const user = await requireUser();
@@ -71,14 +71,48 @@ export async function editItem(a: { project: string; uid: string; versions: Vers
 /** Edit the current request in place while it isn't frozen; otherwise post a
  * new version, which sends the item back to requested. */
 export async function saveRequest(a: { project: string; itemUid: string; noteUid?: string | null;
-                                       versions?: Versions; text: string; newVersion?: boolean }) {
+                                       versions?: Versions; text: string; url?: string | null; newVersion?: boolean }) {
   const user = await requireUser();
   const text = a.text.trim();
-  if (!text) return fail("Write the request first.");
-  const ops = a.noteUid && !a.newVersion
-    ? [build.setOp("note", { uid: a.noteUid, item_uid: a.itemUid, versions: a.versions ?? {} }, { text })]
-    : [build.createOp("note", a.itemUid, { kind: "ticket-request", text, ts: nowIso() })];
-  return apply(a.project, ops, user.handle);
+  return apply(a.project, () => {
+    const url = build.requestUrl(a.url);
+    if (!text && !url) throw new Error("Write the request first.");
+    return a.noteUid && !a.newVersion
+      ? [build.setOp("note", { uid: a.noteUid, item_uid: a.itemUid, versions: a.versions ?? {} }, { text, "meta.url": url })]
+      : [build.createOp("note", a.itemUid, { kind: "ticket-request", text, ts: nowIso(), meta: url ? { url } : {} })];
+  }, user.handle);
+}
+
+/** Name a phase, or clear its name with an empty title. Titles live together
+ * in `extra.phases`, so the base is that map's version. */
+export async function setPhaseTitle(a: { project: string; uid: string; versions: Versions; phase: number; title: string }) {
+  const user = await requireUser();
+  if (!Number.isInteger(a.phase)) return fail("Pick a phase.");
+  const d = await db();
+  const [row] = await d.query("select extra from items where uid = $1 and project = $2", [a.uid, a.project]);
+  if (!row) return fail("No such item.");
+  const phases: Record<string, string> = { ...(row.extra?.phases ?? {}) };
+  const title = a.title.trim();
+  if (title) phases[String(a.phase)] = title;
+  else delete phases[String(a.phase)];
+  return apply(a.project, [build.setOp("item", { uid: a.uid, versions: a.versions }, { "extra.phases": Object.keys(phases).length ? phases : null })], user.handle, d);
+}
+
+/** Relate two items as associated work. */
+export async function relate(a: { project: string; itemUid: string; target: string }) {
+  const user = await requireUser();
+  return apply(a.project, () => build.relationOps(a.itemUid, a.target), user.handle);
+}
+
+/** Items to relate to, by title or id. */
+export async function findItems(a: { project: string; q: string; not: string }) {
+  await requireUser();
+  const d = await db();
+  const q = `%${a.q.trim().toLowerCase().replace(/[%_\\]/g, "")}%`;
+  return d.query(
+    `select uid, id, title, status from items where project = $1 and uid <> $2
+       and (lower(title) like $3 or lower(id) like $3) order by (status in ('done', 'deployed', 'cancelled')), created desc limit 12`,
+    [a.project, a.not, q]) as Promise<{ uid: string; id: string; title: string; status: string }[]>;
 }
 
 export async function addEntry(a: { project: string; itemUid: string; kind: string; text: string }) {

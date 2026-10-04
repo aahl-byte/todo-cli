@@ -56,7 +56,8 @@ export async function requestAction(_prev: ActionState, fd: FormData): Promise<A
   let ops: Op[];
   try {
     ops = build.requestOps({ title: str(fd, "title"), type: str(fd, "type"), priority: str(fd, "priority"),
-      description: str(fd, "description"), developer: str(fd, "developer"), qa_assignee: str(fd, "qa") }, user.handle);
+      description: str(fd, "description"), developer: str(fd, "developer"), qa_assignee: str(fd, "qa"),
+      app: str(fd, "app"), section: str(fd, "section"), url: str(fd, "url") }, user.handle);
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as build from "@/lib/ops-builder";
 import { allowedMove, moves, NEXT_STATUSES } from "@/lib/model";
-import { board, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
+import { board, choices, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
 import { backfillRequestVersions, type Op } from "@/lib/apply";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -319,5 +319,47 @@ describe("status override", () => {
   it("refuses an override without a reason before building ops", () => {
     expect(() => build.moveOps({ uid: "I", item_uid: "I", status: "todo", versions: { status: 1 } }, "deployed", { me: "a", override: true, comment: "" }))
       .toThrow();
+  });
+});
+
+describe("request fields, relations and phase titles", () => {
+  it("files app, section and URL with a request, and refuses a non-http URL", async () => {
+    const ops = build.requestOps({ title: "Cart", type: "bug", priority: "high", description: "steps", app: "web", section: "checkout",
+                                   url: "https://example.com/cart" }, "alice");
+    expect(ops[0].data!.extra).toEqual({ app: "web", section: "checkout" });
+    expect(ops[1].data!.meta).toEqual({ url: "https://example.com/cart" });
+    expect(() => build.requestOps({ title: "x", type: "", priority: "", description: "", url: "javascript:alert(1)" }, "a")).toThrow(/http/);
+    await w.apply("alice", ...ops);
+    expect(await choices(w.d, "p")).toEqual({ web: ["checkout"] });
+    expect(await w.one("alice", child("note", "BAD", ops[0].uid, { kind: "ticket-request", text: "x", meta: { url: "ftp://x" } })))
+      .toMatchObject({ status: "rejected", reason: "invalid-url" });
+    const [n] = await w.d.query("select uid, versions from notes where uid = $1", [ops[1].uid]);
+    const r = await w.one("alice", set("note", n.uid, ops[0].uid, { "meta.url": "file:///etc" }, n.versions));
+    expect(r.rejected?.[0]).toMatchObject({ field: "meta.url", reason: "invalid-url" });
+  });
+
+  it("shows a relation on both items once, and refuses self or unknown targets", async () => {
+    await w.one("alice", item("A1"));
+    await w.one("alice", item("B1", { status: "in-progress", developer: "bob" }));
+    expect(await w.one("alice", child("note", "R0", "A1", { kind: "relation", text: "related", meta: { item: "A1" } }))).toMatchObject({ reason: "bad-relation" });
+    expect(await w.one("alice", child("note", "R0", "A1", { kind: "relation", text: "related", meta: { item: "nope" } }))).toMatchObject({ reason: "bad-relation" });
+    await w.one("alice", child("note", "R1", "A1", { kind: "relation", text: "related", meta: { item: "B1" } }));
+    await w.one("bob", child("note", "R2", "B1", { kind: "relation", text: "related", meta: { item: "A1" } }));
+    const a = (await loadItem(w.d, "p", "a1"))!;
+    const b = (await loadItem(w.d, "p", "b1"))!;
+    expect(a.related.map((r: any) => [r.id, r.status, r.developer, r.note_uid])).toEqual([["b1", "in-progress", "bob", "R1"]]);
+    expect(b.related.map((r: any) => [r.id, r.note_item_uid])).toEqual([["a1", "A1"]]);
+    expect(a.links).toEqual([]);
+  });
+
+  it("keeps phase titles in extra.phases", async () => {
+    const r = await w.one("alice", item("P1"));
+    await w.one("alice", set("item", "P1", "P1", { "extra.phases": { "1": "Schema", "2": "UI" } }, {}));
+    let v = (await loadItem(w.d, "p", "p1"))!;
+    expect(v.phaseTitles).toEqual({ "1": "Schema", "2": "UI" });
+    await w.one("alice", set("item", "P1", "P1", { "extra.phases": null }, { "extra.phases": v.item.versions["extra.phases"] }));
+    v = (await loadItem(w.d, "p", "p1"))!;
+    expect(v.phaseTitles).toEqual({});
+    expect(r.status).toBe("applied");
   });
 });
