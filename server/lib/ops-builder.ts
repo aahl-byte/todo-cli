@@ -49,7 +49,7 @@ function withNote(item: Ref, to: string, kind: string, text: string, meta: Recor
 
 export function rejectOps(item: Ref, text: string): Op[] {
   if (!text.trim()) throw new Error("A rejection needs a comment saying what failed.");
-  return withNote(item, "in-progress", "qa-rejection", text.trim(), { with_status: "in-progress" });
+  return withNote(item, "qa-rejected", "qa-rejection", text.trim(), { with_status: "qa-rejected" });
 }
 
 export function backToWorkOps(item: Ref, comment: string): Op[] {
@@ -139,7 +139,10 @@ function overrideOps(item: MoveItem, to: string, reason: string, opts: { me: str
   const group = ulid();
   return [
     setOp("item", item, data, { group, override: true, reason, ...(opts.force ? { force: true } : {}) }),
-    createOp("note", item.uid, { kind: "comment", text: `status override → ${to}: ${reason}`, ts: nowIso() }, { group }),
+    // A rejection, even an overriding one, reaches the developer as a QA rejection.
+    to === "qa-rejected"
+      ? createOp("note", item.uid, { kind: "qa-rejection", text: reason, ts: nowIso(), meta: { with_status: to } }, { group })
+      : createOp("note", item.uid, { kind: "comment", text: `status override → ${to}: ${reason}`, ts: nowIso() }, { group }),
   ];
 }
 

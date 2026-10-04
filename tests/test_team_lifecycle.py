@@ -33,12 +33,12 @@ def test_reject_needs_text_and_files_a_qa_rejection(root):
     assert status(root) == "in-qa"
     run_cli(root, ["reject", "beta", "still", "broken", "@bob"])
     it = store.resolve_item(root, "beta")
-    assert it["status"] == "in-progress"
+    assert it["status"] == "qa-rejected"
     note = it["notes"][-1]
     assert note["kind"] == "qa-rejection"
     assert note["text"] == "still broken @bob"
     assert note["meta"]["mentions"] == ["bob"]
-    assert note["meta"]["with_status"] == "in-progress"
+    assert note["meta"]["with_status"] == "qa-rejected"
 
 
 def test_agent_cannot_hand_to_qa(root, monkeypatch):

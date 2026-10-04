@@ -3,7 +3,7 @@
 
 export const STATUSES = [
   "requested", "todo", "in-triage", "in-progress", "review", "ready-for-qa",
-  "in-qa", "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done",
+  "in-qa", "qa-rejected", "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done",
 ] as const;
 export type Status = (typeof STATUSES)[number];
 
@@ -11,9 +11,12 @@ export const COMPLETE = ["done", "deployed"];
 export const TERMINAL = [...COMPLETE, "cancelled"];
 export const PARKED = ["deferred", "cancelled"];
 const CALC_PRECEDENCE = [
-  "in-progress", "blocked", "in-qa", "ready-for-qa", "review", "ready-to-deploy",
+  "qa-rejected", "in-progress", "blocked", "in-qa", "ready-for-qa", "review", "ready-to-deploy",
   "in-triage", "requested", "todo",
 ];
+
+/** Statuses that mean triage is done: work runs on the request from here on. */
+export const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-rejected", "ready-to-deploy", "deployed", "done"];
 
 export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
@@ -92,11 +95,12 @@ export const NEXT_STATUSES: Record<string, string[]> = {
   "in-progress": ["review", "todo", "blocked", "deferred", "cancelled"],
   review: ["ready-for-qa", "done", "in-progress", "blocked", "deferred", "cancelled"],
   "ready-for-qa": ["in-qa", "in-progress", "blocked", "cancelled"],
-  "in-qa": ["ready-to-deploy", "ready-for-qa", "in-progress", "blocked", "cancelled"],
-  "ready-to-deploy": ["deployed", "in-qa", "in-progress", "blocked", "cancelled"],
+  "in-qa": ["ready-to-deploy", "ready-for-qa", "qa-rejected", "blocked", "cancelled"],
+  "qa-rejected": ["in-progress", "in-triage", "blocked", "cancelled"],
+  "ready-to-deploy": ["deployed", "in-qa", "qa-rejected", "blocked", "cancelled"],
   deployed: ["in-progress"],
   done: ["in-progress", "todo"],
-  blocked: ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deferred", "cancelled"],
+  blocked: ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-rejected", "ready-to-deploy", "deferred", "cancelled"],
   deferred: ["requested", "in-triage", "todo", "cancelled"],
   cancelled: ["requested", "in-triage"],
 };
@@ -122,7 +126,8 @@ export interface MoveContext {
 }
 
 function rank(s: string): number {
-  const i = LIFECYCLE.indexOf(s);
+  // A rejected ticket waits to be worked again: it sits where `todo` does.
+  const i = LIFECYCLE.indexOf(s === "qa-rejected" ? "todo" : s);
   return i < 0 ? -1 : s === "done" ? LIFECYCLE.indexOf("deployed") : i;
 }
 
@@ -155,7 +160,7 @@ export function moves(from: string, ctx: MoveContext = {}): Move[] {
 }
 
 export function commentRule(from: string, to: string): Pick<Move, "comment" | "rejection"> {
-  if (to === "in-progress" && (from === "in-qa" || from === "ready-to-deploy")) return { comment: "required", rejection: true };
+  if (to === "qa-rejected") return { comment: "required", rejection: true };
   if (to === "in-progress" && (from === "deployed" || from === "done")) return { comment: "required" };
   if (to === "in-progress" && from === "review") return { comment: "optional" };
   if (to === "blocked") return { comment: "optional" };

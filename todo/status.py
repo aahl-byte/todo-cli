@@ -15,15 +15,16 @@ will never be done.
 Team lifecycle (docs/plans/2026-10-02-team-store-design.md):
     requested → in-triage → todo → in-progress ⇄ review → ready-for-qa → in-qa
     → ready-to-deploy → deployed
-QA rejection returns an item to in-progress.
+QA rejection parks an item in qa-rejected until its developer picks it up
+again (in-progress) or sends it back to triage.
 """
 
 # Order is the click-to-cycle ring order. `review`/`blocked` are special states
 # an item enters on demand rather than flowing through, but they're first-class
 # valid statuses everywhere.
 STATUSES = ["requested", "todo", "in-triage", "in-progress", "review", "ready-for-qa",
-            "in-qa", "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled",
-            "done"]
+            "in-qa", "qa-rejected", "ready-to-deploy", "deployed", "blocked", "deferred",
+            "cancelled", "done"]
 
 # Finished with, one way or the other: hidden from the everyday `todo list` and
 # swept up by `todo archive`.
@@ -35,7 +36,11 @@ COMPLETE = ["done", "deployed"]
 # The "active" set — items actually in motion right now. Drives the default of
 # the cross-project view (`todo list -g`): what's on my plate across every repo,
 # excluding not-yet-started (todo/in-triage), parked (deferred), and done.
-ACTIVE = ["in-progress", "blocked", "review", "ready-for-qa", "in-qa"]
+ACTIVE = ["in-progress", "blocked", "review", "ready-for-qa", "in-qa", "qa-rejected"]
+
+# Statuses that mean triage is done: work runs on the request from here on.
+PAST_TRIAGE = {"todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-rejected",
+               "ready-to-deploy", "deployed", "done"}
 
 # Shortcut subcommand → status it sets.
 SHORTCUTS = {
@@ -80,6 +85,7 @@ _COLORS = {
     "in-progress": "36",   # cyan
     "review": "35",        # purple/magenta
     "blocked": "31",       # red
+    "qa-rejected": "1;31", # bold red
     "deferred": "90",      # bright black (dim)
     "cancelled": "2;31",   # dim red
     "done": "32",          # green
@@ -102,7 +108,7 @@ def colorize(status: str, text: str, enabled: bool) -> str:
 # Precedence for the DERIVED parent scalar (calc-status), highest first.
 # `done` (all live tasks done) and the all-parked cases are handled separately;
 # this list ranks the in-flight states.
-CALC_PRECEDENCE = ["in-progress", "blocked", "in-qa", "ready-for-qa", "review",
+CALC_PRECEDENCE = ["qa-rejected", "in-progress", "blocked", "in-qa", "ready-for-qa", "review",
                    "ready-to-deploy", "in-triage", "requested", "todo"]
 
 # Parked children — excluded from the completion math, since work nobody intends

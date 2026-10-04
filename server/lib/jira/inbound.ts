@@ -8,7 +8,7 @@ import { STATUSES, nowIso } from "../model";
 import { adfToText } from "./adf";
 import type { Fetch } from "./client";
 import { COMMENT_MARK, jiraConfig, ownAccountId } from "./config";
-import { enqueue } from "./outbound";
+import { enqueue, jiraTarget } from "./outbound";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
@@ -120,7 +120,7 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
   if (status) {
     const jiraStatus = String((Object.hasOwn(status, "toString") ? status.toString : null) ?? issue.fields?.status?.name ?? "");
     const map: Record<string, string> = link.jira_status_map ?? {};
-    const echo = (map[link.status] ?? "").toLowerCase() === jiraStatus.toLowerCase();
+    const echo = (jiraTarget(map, link.status) ?? "").toLowerCase() === jiraStatus.toLowerCase();
     // jsonb keeps no key order, so ties go to the earliest status in the lifecycle.
     const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
     if (todo && !echo) data.status = todo;

@@ -123,11 +123,12 @@ const WORK: [string, "feature" | "bug" | "refactor"][] = [
   ["Customer notes on orders", "feature"], ["Merge duplicate customers", "feature"], ["Status page link in footer", "feature"],
   ["Slow first paint on dashboard", "bug"], ["Remove jQuery", "refactor"], ["SSO with Okta", "feature"],
   ["Team invites expire", "feature"], ["Usage-based pricing meter", "feature"], ["Email templates editor", "feature"],
+  ["Receipt emails show the wrong currency", "bug"], ["Saved searches", "feature"], ["Bulk archive orders", "feature"],
 ];
 
 // Shipped is the largest pile; the rest spread over the lifecycle.
 const TARGETS: [string, number][] = [
-  ["deployed", 16], ["ready-to-deploy", 4], ["in-qa", 5], ["ready-for-qa", 4], ["review", 5], ["in-progress", 9],
+  ["deployed", 16], ["ready-to-deploy", 4], ["in-qa", 5], ["qa-rejected", 3], ["ready-for-qa", 4], ["review", 5], ["in-progress", 9],
   ["todo", 6], ["in-triage", 3], ["requested", 5], ["blocked", 3], ["deferred", 2], ["cancelled", 2],
 ];
 const PATH = ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed"];
@@ -144,19 +145,24 @@ const COMMENTS = [
 const LOGS = ["first pass compiles; tests red on the timezone case", "swapped the ORM call for a raw query, 4× faster",
               "flaky test was the clock; froze it", "split the PR in two for review", "rebased on main after the auth change"];
 
+/** QA sends it back: qa-rejected, with the rejection note, as one group. */
+async function reject(it: Seeded, text: string) {
+  const [row] = await d.query("select versions from items where uid = $1 and project = $2", [it.uid, it.project]);
+  const group = ulid();
+  await run(it.project, it.qa, [
+    { op: "set", entity: "item", uid: it.uid, item_uid: it.uid, data: { status: "qa-rejected" }, base: { status: row.versions.status }, group },
+    { op: "create", entity: "note", uid: ulid(), item_uid: it.uid, group, data: { kind: "qa-rejection", text, meta: { with_status: "qa-rejected" } } },
+  ]);
+}
+
 async function walk(it: Seeded, to: string, opts: { bounce?: boolean } = {}) {
   const end = PATH.indexOf(to);
   for (let i = 1; i <= end; i++) {
     const s = PATH[i];
     await status(it, mover(it, s), s);
     if (s === "in-qa" && opts.bounce && i < end) {
-      await run(it.project, it.qa, [
-        { op: "set", entity: "item", uid: it.uid, item_uid: it.uid, data: { status: "in-progress" },
-          base: { status: (await d.query("select versions from items where uid = $1 and project = $2", [it.uid, it.project]))[0].versions.status }, group: `b${it.uid}` },
-        { op: "create", entity: "note", uid: ulid(), item_uid: it.uid, group: `b${it.uid}`,
-          data: { kind: "qa-rejection", text: `Fails on mobile web: the ${pick(["button", "modal", "table", "form"])} overflows. @${it.dev}`, meta: { with_status: "in-progress" } } },
-      ]);
-      for (const s2 of ["review", "ready-for-qa", "in-qa"]) await status(it, mover(it, s2), s2);
+      await reject(it, `Fails on mobile web: the ${pick(["button", "modal", "table", "form"])} overflows. @${it.dev}`);
+      for (const s2 of ["in-progress", "review", "ready-for-qa", "in-qa"]) await status(it, mover(it, s2), s2);
     }
   }
 }
@@ -207,6 +213,12 @@ for (const [to, count] of TARGETS) {
     k++;
     const bounce = ["deployed", "ready-to-deploy", "in-qa"].includes(to) && k % 4 === 0;
     if (to === "blocked") { await walk(it, "in-progress"); await flesh(it, "in-progress"); await status(it, it.dev, "blocked"); await child(it, it.dev, "note", { kind: "comment", text: `Blocked on the ${pick(["payments vendor", "design review", "infra ticket"])}. @${it.creator}` }); continue; }
+    if (to === "qa-rejected") {
+      await walk(it, "in-qa");
+      await flesh(it, "in-qa");
+      await reject(it, `${pick(["Crashes on submit", "Empty state is missing", "Wrong totals after refresh"])} — steps in the screenshot thread. @${it.dev}`);
+      continue;
+    }
     if (to === "deferred") { await walk(it, "todo"); await status(it, it.creator, "deferred"); continue; }
     if (to === "cancelled") { await walk(it, "in-triage"); await status(it, it.creator, "cancelled"); continue; }
     if (to === "ready-to-deploy" || to === "deployed") {
@@ -218,12 +230,8 @@ for (const [to, count] of TARGETS) {
       for (const s of PATH.slice(PATH.indexOf("review"), PATH.indexOf("ready-to-deploy") + 1)) {
         await status(it, mover(it, s), s);
         if (s === "in-qa" && bounce) {
-          await run("web", it.qa, [
-            { op: "set", entity: "item", uid: it.uid, item_uid: it.uid, data: { status: "in-progress" }, group: `b${it.uid}`,
-              base: { status: (await d.query("select versions from items where uid = $1 and project = 'web'", [it.uid]))[0].versions.status } },
-            { op: "create", entity: "note", uid: ulid(), item_uid: it.uid, group: `b${it.uid}`, data: { kind: "qa-rejection", text: `Totals are wrong for multi-currency carts. @${it.dev}`, meta: { with_status: "in-progress" } } },
-          ]);
-          for (const s2 of ["review", "ready-for-qa", "in-qa"]) await status(it, mover(it, s2), s2);
+          await reject(it, `Totals are wrong for multi-currency carts. @${it.dev}`);
+          for (const s2 of ["in-progress", "review", "ready-for-qa", "in-qa"]) await status(it, mover(it, s2), s2);
         }
       }
       if (to === "deployed") {

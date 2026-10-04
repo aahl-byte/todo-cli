@@ -6,6 +6,13 @@ export type JiraEvent =
   | { kind: "status"; project: string; itemUid: string; status: string }
   | { kind: "note"; project: string; itemUid: string; note: Record<string, any> };
 
+/** The Jira status a todo status maps to. An unmapped `qa-rejected` follows
+ * `in-progress`, where rejected work went before it had a status of its own. */
+export function jiraTarget(map: Record<string, string> | null | undefined, status: string): string | undefined {
+  const m = map ?? {};
+  return m[status] ?? (status === "qa-rejected" ? m["in-progress"] : undefined);
+}
+
 export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<void> {
   if (actor.bridge) return;
   const [link] = await t.query(
@@ -13,7 +20,7 @@ export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<
       where l.project = $1 and l.item_uid = $2`, [event.project, event.itemUid]);
   if (!link) return;
   if (event.kind === "status") {
-    const target = (link.jira_status_map ?? {})[event.status];
+    const target = jiraTarget(link.jira_status_map, event.status);
     if (!target) return;
     // A newer transition supersedes any older one still waiting, so a retried
     // old row can never land after the new one.

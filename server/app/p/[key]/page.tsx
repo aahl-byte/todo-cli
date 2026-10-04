@@ -3,13 +3,12 @@ import { notFound } from "next/navigation";
 import { BoardFilters } from "@/components/BoardFilters";
 import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
-import { deriveCalcStatus } from "@/lib/model";
+import { deriveCalcStatus, PAST_TRIAGE } from "@/lib/model";
 import { requireUser } from "@/lib/session";
 import { board, project, users, type BoardFilters as F, type Card } from "@/lib/views";
 
 type Search = Record<string, string | undefined>;
 
-const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
 const untriaged = (c: Card) => !!c.request_meta && !c.request_meta.triaged && PAST_TRIAGE.includes(c.status);
 
 function initials(h?: string | null) {

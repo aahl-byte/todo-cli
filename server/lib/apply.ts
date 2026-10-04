@@ -2,7 +2,7 @@
 // all send ops here; see docs/plans/2026-10-02-team-store-implementation.md §2.3.
 import type { Db, Row } from "./db";
 import {
-  CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, SETTABLE, STATUSES, TABLE,
+  CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE,
   deriveCalcStatus, isSettable, mentions, nowIso, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
@@ -357,7 +357,6 @@ async function badNoteMeta(ctx: Ctx, itemUid: string, kind: string, meta: Record
 const FIXED_KINDS = ["ticket-request", "relation"];
 export const REQUEST_META = ["version", "frozen", "frozen_at", "frozen_by", "frozen_via", "triaged", "triaged_at", "triaged_by"];
 /** Statuses that mean triage is done. */
-const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
 
 async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, any>): Promise<{ bounce: boolean }> {
   for (const k of REQUEST_META) delete row.meta[k];

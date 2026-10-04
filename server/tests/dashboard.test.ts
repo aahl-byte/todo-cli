@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as build from "@/lib/ops-builder";
-import { allowedMove, moves, NEXT_STATUSES } from "@/lib/model";
-import { board, choices, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
+import { allowedMove, deriveCalcStatus, moves, NEXT_STATUSES, PAST_TRIAGE } from "@/lib/model";
+import { board, bounceCount, choices, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
 import { backfillRequestVersions, type Op } from "@/lib/apply";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -26,9 +26,9 @@ describe("ops builder", () => {
     const [status, note] = build.rejectOps(it1, "broken on Safari");
     expect(status.group).toBeTruthy();
     expect(note.group).toBe(status.group);
-    expect(status.data).toEqual({ status: "in-progress" });
+    expect(status.data).toEqual({ status: "qa-rejected" });
     expect(note).toMatchObject({ op: "create", entity: "note", item_uid: "I1",
-      data: { kind: "qa-rejection", text: "broken on Safari", meta: { with_status: "in-progress" } } });
+      data: { kind: "qa-rejection", text: "broken on Safari", meta: { with_status: "qa-rejected" } } });
   });
 
   it("sends back to work with an optional grouped comment", () => {
@@ -153,7 +153,7 @@ describe("transitions", () => {
   });
   it("swaps deploy statuses for done without a deploy step", () => {
     expect(moves("in-qa", { deployStep: false }).map((m: any) => m.status)).toEqual(
-      ["done", "ready-for-qa", "in-progress", "blocked", "cancelled"]);
+      ["done", "ready-for-qa", "qa-rejected", "blocked", "cancelled"]);
     expect(moves("blocked", { deployStep: false }).map((m: any) => m.status)).not.toContain("deployed");
   });
   it("offers unblock to the previous status first", () => {
@@ -161,7 +161,8 @@ describe("transitions", () => {
   });
   it("asks for the right comments", () => {
     const m = (from: string, to: string) => moves(from, {}).find((x: any) => x.status === to);
-    expect(m("in-qa", "in-progress")).toMatchObject({ comment: "required", rejection: true });
+    expect(m("in-qa", "qa-rejected")).toMatchObject({ comment: "required", rejection: true, group: "back" });
+    expect(m("in-qa", "in-progress")).toBeUndefined();
     expect(m("deployed", "in-progress")).toMatchObject({ comment: "required" });
     expect(m("review", "in-progress")).toMatchObject({ comment: "optional" });
     expect(m("todo", "blocked")).toMatchObject({ comment: "optional" });
@@ -180,12 +181,12 @@ describe("move ops", () => {
   const it1 = { uid: "I1", item_uid: "I1", versions: { status: 4, qa_assignee: 2 } };
   it("refuses moves outside the table and missing required comments", () => {
     expect(() => build.moveOps({ ...it1, status: "requested" }, "in-progress", { me: "dev" })).toThrow(/Can't move/);
-    expect(() => build.moveOps({ ...it1, status: "in-qa" }, "in-progress", { me: "qa" })).toThrow(/comment/);
+    expect(() => build.moveOps({ ...it1, status: "in-qa" }, "qa-rejected", { me: "qa" })).toThrow(/comment/);
   });
   it("groups a rejection comment with the status change", () => {
-    const [s, n] = build.moveOps({ ...it1, status: "in-qa", qa_assignee: "qa" }, "in-progress", { me: "qa", comment: "broken" });
-    expect(s).toMatchObject({ data: { status: "in-progress" }, base: { status: 4 } });
-    expect(n).toMatchObject({ data: { kind: "qa-rejection", text: "broken", meta: { with_status: "in-progress" } } });
+    const [s, n] = build.moveOps({ ...it1, status: "in-qa", qa_assignee: "qa" }, "qa-rejected", { me: "qa", comment: "broken" });
+    expect(s).toMatchObject({ data: { status: "qa-rejected" }, base: { status: 4 } });
+    expect(n).toMatchObject({ data: { kind: "qa-rejection", text: "broken", meta: { with_status: "qa-rejected" } } });
     expect(n.group).toBe(s.group);
   });
   it("claims QA when moving into QA unassigned, and forces on request", () => {
@@ -423,5 +424,31 @@ describe("request diff", () => {
     const { lineDiff, said } = await import("@/components/item/RequestView");
     const d = lineDiff(said({ text: "a", meta: { url: "https://x/1" } }), said({ text: "a", meta: { url: "https://x/2" } }));
     expect(d).toEqual([["-", "URL: https://x/1"], ["+", "URL: https://x/2"], [" ", "a"]]);
+  });
+});
+
+describe("qa-rejected", () => {
+  it("offers back to work first, then triage, and counts as past triage", () => {
+    expect(moves("qa-rejected", {}).map((m: any) => [m.status, m.group])).toEqual([
+      ["in-progress", "next"], ["in-triage", "back"], ["blocked", "park"], ["cancelled", "park"]]);
+    expect(PAST_TRIAGE).toContain("qa-rejected");
+    expect(deriveCalcStatus(["in-progress", "qa-rejected", "done"])).toBe("qa-rejected");
+  });
+
+  it("notifies the developer, counts both bounce forms, and rejects by override too", async () => {
+    const r = await w.one("alice", item("Q1", { status: "in-qa", developer: "bob", qa_assignee: "carol" }));
+    await w.apply("carol", ...build.moveOps({ uid: "Q1", item_uid: "Q1", status: "in-qa", versions: r.versions!, qa_assignee: "carol" },
+      "qa-rejected", { me: "carol", comment: "totals wrong" }));
+    expect((await w.d.query("select handle, kind from notifications where item_uid = 'Q1'"))).toEqual([{ handle: "bob", kind: "qa-rejection" }]);
+    expect(bounceCount([{ from_status: "in-qa", to_status: "qa-rejected" }, { from_status: "in-qa", to_status: "in-progress" }])).toBe(2);
+    const ops = build.moveOps({ uid: "Q1", item_uid: "Q1", status: "todo", versions: {}, qa_assignee: null }, "qa-rejected",
+      { me: "carol", override: true, comment: "bad" });
+    expect(ops[1].data).toMatchObject({ kind: "qa-rejection", meta: { with_status: "qa-rejected" } });
+  });
+
+  it("falls back to in-progress's Jira status", async () => {
+    const { jiraTarget } = await import("@/lib/jira/outbound");
+    expect(jiraTarget({ "in-progress": "In Progress" }, "qa-rejected")).toBe("In Progress");
+    expect(jiraTarget({ "in-progress": "In Progress", "qa-rejected": "Rejected" }, "qa-rejected")).toBe("Rejected");
   });
 });

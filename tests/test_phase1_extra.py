@@ -58,7 +58,7 @@ def test_reject_only_from_qa_statuses(root):
         run_cli(root, ["reject", "beta", "nope"])
     run_cli(root, ["approve", "beta"])
     run_cli(root, ["reject", "beta", "found", "a", "bug"])
-    assert store.resolve_item(root, "beta")["status"] == "in-progress"
+    assert store.resolve_item(root, "beta")["status"] == "qa-rejected"
 
 
 def test_task_counter_counts_deployed_as_complete(root, capsys):
@@ -106,3 +106,17 @@ def test_identity_precedence(tmp_path, monkeypatch):
     assert identity.via() == "agent"
     identity.set_via("human")
     assert identity.via() == "human"
+
+
+def test_rejected_work_goes_back_to_work_with_start(root):
+    run_cli(root, ["approve", "beta"])
+    run_cli(root, ["reject", "beta", "totals", "wrong"])
+    it = store.resolve_item(root, "beta")
+    assert it["notes"][-1]["meta"]["with_status"] == "qa-rejected"
+    run_cli(root, ["start", "beta"])
+    assert store.resolve_item(root, "beta")["status"] == "in-progress"
+
+
+def test_qa_rejected_has_no_bare_alias(root):
+    with pytest.raises(SystemExit):
+        run_cli(root, ["qa-rejected", "beta"])

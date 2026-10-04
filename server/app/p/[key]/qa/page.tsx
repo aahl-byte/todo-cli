@@ -14,7 +14,7 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
   const d = await db();
   const p = await project(d, key);
   if (!p) notFound();
-  const { ready, inQa } = await qaQueue(d, key, user.handle);
+  const { ready, inQa, awaitingFix } = await qaQueue(d, key, user.handle);
   const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);
     return (
@@ -31,7 +31,7 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
       </article>
     );
   };
-  if (!ready.length && !inQa.length) return <p className="empty">Empty.</p>;
+  if (!ready.length && !inQa.length && !awaitingFix.length) return <p className="empty">Empty.</p>;
   return (
     <div className="qa-page">
       {ready.length > 0 && <div className="label">Ready for QA<span>{ready.length}</span></div>}
@@ -39,8 +39,14 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
       {inQa.length > 0 && <div className="label">In QA<span>{inQa.length}</span></div>}
       <div className="cards">{inQa.map((c) => card(c, [
         { status: p.deploy_step ? "ready-to-deploy" : "done", label: "Approve", primary: true },
-        { status: "in-progress", label: "Reject" },
+        { status: "qa-rejected", label: "Reject" },
       ]))}</div>
+      {awaitingFix.length > 0 && (
+        <details className="awaiting">
+          <summary className="label">Awaiting fix<span>{awaitingFix.length}</span></summary>
+          <div className="cards">{awaitingFix.map((c) => card(c, []))}</div>
+        </details>
+      )}
     </div>
   );
 }

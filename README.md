@@ -170,7 +170,7 @@ todo request <query> --text "<text>" [--url U]   # post a new request version
 todo set <query> app|section <value|none>
 todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
 todo relate|unrelate <query> <other>      # related work, shown on both items
-todo reject <query> <text...>             # QA → in-progress with a required comment
+todo reject <query> <text...>             # QA → qa-rejected with a required comment
 todo list --mine                          # where I'm developer or QA
 todo login <url> <token> | whoami | sync | inbox   # team server
 todo link --remote <url> [--project KEY]  # sync this store with a team server
@@ -214,7 +214,8 @@ requested → in-triage → todo → in-progress ⇄ review → ready-for-qa →
 ```
 
 QA sends work back with `todo reject <q> "<what failed>"`, which needs the
-comment. An agent parks finished work in `review`; only a person moves it to
+comment and parks the item in `qa-rejected`. Its developer takes it back with
+`todo start`, or returns it to `in-triage` when the scope was wrong. An agent parks finished work in `review`; only a person moves it to
 `ready-for-qa`. `--agent`/`--human` override the detection (`$CLAUDECODE`,
 `$TODO_VIA`).
 

@@ -5,7 +5,7 @@ or redirected output stays plain."""
 import re
 import sys
 
-from .status import COMPLETE, colorize
+from .status import COMPLETE, PAST_TRIAGE, colorize
 
 
 def _use_color() -> bool:
@@ -142,7 +142,6 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
 
 
 # Statuses that mean triage is done; a request worked on past them should have been triaged.
-PAST_TRIAGE = {"todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"}
 
 
 def _version(n) -> int:

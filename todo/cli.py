@@ -163,10 +163,10 @@ def cmd_reject(root: Path, args) -> None:
         die("A rejection needs a comment saying what failed.", 2)
     if it["status"] not in REJECTABLE:
         die(f'{it["id"]} is {it["status"]}; QA rejects from {", ".join(REJECTABLE)}.', 2)
-    store.update_todo(root, it["id"], {"status": "in-progress"}, now())
+    store.update_todo(root, it["id"], {"status": "qa-rejected"}, now())
     new_id = store.add_note(root, it["id"], text, now(), kind="qa-rejection",
-                            extra={"with_status": "in-progress"})
-    print(f'{it["id"]}: {it["status"]} → in-progress  (qa-rejection note [{new_id}])')
+                            extra={"with_status": "qa-rejected"})
+    print(f'{it["id"]}: {it["status"]} → qa-rejected  (qa-rejection note [{new_id}])')
 
 
 def _text(args, what: str) -> str:
@@ -735,7 +735,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.set_defaults(func=cmd_shortcut)
 
     p = sub.add_parser("reject", parents=[common],
-                       help="→ in-progress with a required qa-rejection comment")
+                       help="→ qa-rejected with a required qa-rejection comment")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("text", nargs="*", help="what failed QA")
     p.set_defaults(func=cmd_reject)
@@ -960,7 +960,8 @@ def build_parser() -> argparse.ArgumentParser:
     # intended UX); names already taken as commands — review, done — are skipped
     # since their shortcut sets the same status.
     for status in STATUSES:
-        if status in sub.choices:
+        # qa-rejected goes through `todo reject`, which asks for the comment.
+        if status in sub.choices or status == "qa-rejected":
             continue
         # No `help=`: argparse keeps the subcommand callable but leaves it out
         # of the listed commands (SUPPRESS would print a literal "==SUPPRESS==").

@@ -31,6 +31,7 @@
   --s-deployed: #5ad1c4;
   --s-done: #5ad1c4;
   --s-blocked: #e5534b;
+  --s-qa-rejected: #ff6b6b;
   --s-deferred: #2d3742;
   --s-cancelled: #8a4a46;
   color-scheme: dark;
@@ -102,11 +103,12 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 .s-deployed { --c: var(--s-deployed); }
 .s-done { --c: var(--s-done); }
 .s-blocked { --c: var(--s-blocked); }
+.s-qa-rejected { --c: var(--s-qa-rejected); }
 .s-deferred { --c: var(--dim); }
 .s-deferred .led { background: var(--s-deferred); }
 .s-cancelled { --c: var(--s-cancelled); }
 .s-in-triage .led, .s-in-progress .led, .s-review .led, .s-ready-for-qa .led, .s-in-qa .led,
-.s-ready-to-deploy .led, .s-deployed .led, .s-done .led, .s-blocked .led { box-shadow: 0 0 7px var(--c); }
+.s-ready-to-deploy .led, .s-deployed .led, .s-done .led, .s-blocked .led, .s-qa-rejected .led { box-shadow: 0 0 7px var(--c); }
 
 /* ---- menu, popup, tooltip ------------------------------------------------- */
 .menu-btn { border: 0; background: none; padding: 2px 4px; margin: -2px -4px; border-radius: 5px; color: inherit; text-align: left; }
@@ -350,7 +352,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .glance-block .cap { width: 18px; height: 4.5px; border-radius: 3px; background: var(--c, var(--s-todo)); }
 .glance-block .dot, .glance .dot { background: var(--c, var(--s-todo)); }
 .glance-block .dot { width: 6px; height: 6px; border-radius: 50%; }
-.glance-block :is(.cap, .dot):is(.s-in-triage, .s-in-progress, .s-review, .s-blocked, .s-done, .s-deployed, .s-in-qa, .s-ready-for-qa, .s-ready-to-deploy) { box-shadow: 0 0 7px var(--c); }
+.glance-block :is(.cap, .dot):is(.s-in-triage, .s-in-progress, .s-review, .s-blocked, .s-done, .s-deployed, .s-in-qa, .s-ready-for-qa, .s-ready-to-deploy, .s-qa-rejected) { box-shadow: 0 0 7px var(--c); }
 .cap.s-deferred, .dot.s-deferred { --c: var(--s-deferred); }
 .ticket { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; background: var(--panel); display: grid; gap: 4px; }
 .ticket-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-bottom: 4px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
@@ -391,3 +393,5 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .qa-card footer { margin-top: 8px; display: flex; justify-content: flex-end; }
 .tag.link { text-transform: none; letter-spacing: 0; }
 @media (max-width: 600px) { .qa-card { max-width: none; flex-basis: 100%; } }
+.awaiting > summary { cursor: pointer; list-style: none; display: flex; gap: 6px; margin: 4px 2px 8px; }
+.awaiting > summary::-webkit-details-marker { display: none; }

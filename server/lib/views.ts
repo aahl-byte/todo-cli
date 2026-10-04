@@ -1,7 +1,7 @@
 // Read models for the dashboard pages. Every entity carries its `versions`
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
-import { CHECK_KINDS, COMPLETE, PARKED, deriveCalcStatus } from "./model";
+import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus } from "./model";
 
 export interface Project {
   key: string;
@@ -82,7 +82,7 @@ export const COLUMNS = [
   { key: "requested", label: "Requested", statuses: ["requested"] },
   { key: "triage", label: "Triage", statuses: ["in-triage"] },
   { key: "ready", label: "Ready", statuses: ["todo"] },
-  { key: "progress", label: "In progress", statuses: ["in-progress", "review", "blocked"] },
+  { key: "progress", label: "In progress", statuses: ["in-progress", "qa-rejected", "review", "blocked"] },
   { key: "qa", label: "QA", statuses: ["ready-for-qa", "in-qa"] },
   { key: "deploy", label: "Ready to deploy", statuses: ["ready-to-deploy"] },
   { key: "shipped", label: "Shipped", statuses: ["deployed", "done"] },
@@ -107,8 +107,10 @@ export async function board(d: Db, p: Project, f: BoardFilters, me: string, now 
     .filter((col) => (col.key !== "parked" || f.parked) && (col.key !== "deploy" || p.deploy_step))
     .map((col) => ({
       ...col,
+      // Rejected work leads its column: it's waiting on someone.
       items: all.filter((c) => col.statuses.includes(c.status)
-        && (col.key !== "shipped" || !c.completed || Date.parse(c.completed) >= cutoff)),
+        && (col.key !== "shipped" || !c.completed || Date.parse(c.completed) >= cutoff))
+        .sort((a, b) => Number(b.status === "qa-rejected") - Number(a.status === "qa-rejected")),
     }));
 }
 
@@ -189,7 +191,6 @@ export async function choices(d: Db, key: string) {
 
 export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>>;
 
-const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed", "done"];
 const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
 
 /** The current request (highest version), every version newest first, the last
@@ -208,7 +209,7 @@ export function requestView(notes: Row[], status: string) {
 }
 
 export function bounceCount(history: Row[]): number {
-  return history.filter((h) => h.from_status === "in-qa" && h.to_status === "in-progress").length;
+  return history.filter((h) => h.to_status === "qa-rejected" || (h.from_status === "in-qa" && h.to_status === "in-progress")).length;
 }
 
 async function withHistory(d: Db, rows: Card[]) {
@@ -218,17 +219,19 @@ async function withHistory(d: Db, rows: Card[]) {
     const links = await d.query(
       "select * from notes where project = $2 and item_uid = $1 and kind = 'link' and meta->>'type' in ('preview', 'qa-handoff') order by n", [c.uid, c.project]);
     const entered = [...history].reverse().find((h) => h.to_status === c.status)?.ts ?? c.created;
-    out.push({ ...c, bounces: bounceCount(history), links, entered });
+    out.push({ ...c, bounces: bounceCount(history), links, entered, history });
   }
   return out;
 }
 
 export async function qaQueue(d: Db, key: string, me: string) {
-  const rows = await withHistory(d, await cards(d, key, "and i.status in ('ready-for-qa', 'in-qa')"));
+  const rows = await withHistory(d, await cards(d, key, "and i.status in ('ready-for-qa', 'in-qa', 'qa-rejected')"));
   const ready = rows.filter((r) => r.status === "ready-for-qa").sort((a, b) => a.entered.localeCompare(b.entered));
   const inQa = rows.filter((r) => r.status === "in-qa")
     .sort((a, b) => Number(b.qa_assignee === me) - Number(a.qa_assignee === me) || a.entered.localeCompare(b.entered));
-  return { ready, inQa };
+  // What I sent back and is still waiting on a fix.
+  const awaitingFix = rows.filter((r) => r.status === "qa-rejected" && [...r.history].reverse().find((h) => h.to_status === "qa-rejected")?.by === me);
+  return { ready, inQa, awaitingFix };
 }
 
 export async function deployPlan(d: Db, key: string) {

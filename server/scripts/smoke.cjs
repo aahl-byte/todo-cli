@@ -224,7 +224,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   });
 
   await step("override: other… needs a reason and is marked in history", async () => {
-    await page.goto(item("gift-cards"));
+    await page.goto(item("keyboard-shortcuts"));
     await page.click("button[aria-label=status]");
     await page.locator(".menu li", { hasText: "other…" }).click();
     if (await page.locator(".popup button.danger").isEnabled()) throw new Error("override without a reason allowed");
