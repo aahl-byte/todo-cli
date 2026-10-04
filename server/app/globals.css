@@ -400,3 +400,28 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .entry.is-new { box-shadow: inset 2px 0 0 var(--cyan); padding-left: 8px; background: linear-gradient(90deg, rgba(90, 209, 196, .06), transparent 60%); }
 .tag.new { color: var(--cyan); border-color: var(--cyan-dim); margin-right: 6px; }
 .new-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); margin-right: 5px; vertical-align: 1px; }
+
+/* inbox */
+.inbox .filters .grow { flex: 1; }
+.inbox .btn .n, .inbox .label span { margin-left: 6px; color: var(--dim); }
+.inbox > .label { display: flex; gap: 6px; margin: 14px 2px 8px; }
+.iboxes { display: grid; gap: 10px; }
+.ibox { position: relative; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 6px 13px; overflow: hidden; }
+.ibox::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--s-todo)); }
+.ibox header { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
+.ibox header .title { color: var(--text); font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ibox .clear { border: 1px solid var(--line-2); background: none; color: var(--dim); border-radius: 6px; width: 26px; height: 24px; cursor: pointer; }
+.ibox .clear:hover { color: var(--cyan); border-color: var(--cyan-dim); }
+.notice { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--line); color: var(--text); }
+.notice:hover { color: var(--md-strong); }
+.notice .kind { width: 16px; text-align: center; font-weight: 700; color: var(--dim); flex: none; }
+.notice .kind.hot { color: var(--danger); } .notice .kind.amber { color: var(--amber); } .notice .kind.cyan { color: var(--cyan); } .notice .kind.ok { color: var(--s-ready-to-deploy); }
+.notice .what { flex: 1; min-width: 0; font-size: 12.5px; }
+.notice .who { color: var(--md-strong); }
+.notice .excerpt { display: block; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notice .tag { margin-left: 6px; }
+.notice.read, .notice.settled { opacity: .55; }
+.notice.unread .kind::after { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); margin-left: 2px; vertical-align: 6px; }
+.iboxes.fyi .ibox { background: var(--panel); }
+.more-n summary { cursor: pointer; color: var(--dim); font-size: 11px; padding: 3px 0; list-style: none; }
+.empty-inbox { text-align: center; padding: 48px 0; color: var(--dim); }

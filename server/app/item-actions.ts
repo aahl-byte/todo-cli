@@ -209,11 +209,31 @@ export async function seen(a: { project: string; itemUid: string }) {
   return markSeen(await db(), user.handle, a.project, a.itemUid);
 }
 
-export async function markAllRead(): Promise<ActionState> {
+export async function markAllRead(): Promise<ActionState & { ids: number[] }> {
   const user = await requireUser();
   const d = await db();
   const rows = await d.query("select id from notifications where handle = $1 and read_at is null", [user.handle]);
-  await markRead(d, user.handle, rows.map((r) => Number(r.id)));
+  const ids = rows.map((r) => Number(r.id));
+  await markRead(d, user.handle, ids);
+  revalidatePath("/inbox");
+  return { ok: true, at: Date.now(), ids };
+}
+
+/** Put notices back to unread: the undo for mark-all-read. */
+export async function markUnread(a: { ids: number[] }): Promise<ActionState> {
+  const user = await requireUser();
+  const d = await db();
+  await d.query("update notifications set read_at = null where handle = $1 and id = any($2::bigint[])", [user.handle, a.ids]);
+  revalidatePath("/inbox");
+  return { ok: true, at: Date.now() };
+}
+
+/** Clear one ticket's notices from the inbox without opening it. */
+export async function readItem(a: { project: string; itemUid: string }): Promise<ActionState> {
+  const user = await requireUser();
+  const d = await db();
+  await d.query("update notifications set read_at = now() where handle = $1 and project = $2 and item_uid = $3 and read_at is null",
+                [user.handle, a.project, a.itemUid]);
   revalidatePath("/inbox");
   return { ok: true, at: Date.now() };
 }

@@ -471,3 +471,18 @@ describe("seen", () => {
     expect((await markSeen(w.d, "carol", "p", "N2")).lastSeen).toBeNull();   // nothing pending, never visited
   });
 });
+
+describe("inbox grouping", () => {
+  it("splits what needs you from the rest, groups by ticket, and marks settled notices", async () => {
+    const { groupInbox } = await import("@/lib/inbox");
+    const n = (id: number, kind: string, item: string, status: string, extra = {}) =>
+      ({ id, kind, project: "p", item_uid: item, item_id: item.toLowerCase(), item_title: item, item_status: status, created: new Date(2026, 9, 1, 0, id), ...extra });
+    const { needs, fyi } = groupInbox([
+      n(1, "mention", "A", "in-progress"), n(2, "ready-for-qa", "B", "in-qa"), n(3, "mention", "A", "in-progress"),
+      n(4, "deployed", "C", "deployed"), n(5, "clarification", "B", "in-qa", { note_meta: { state: "answered" } }),
+    ]);
+    expect(needs.map((g) => [g.item_uid, g.notices.map((x) => x.id)])).toEqual([["B", [5, 2]], ["A", [3, 1]]]);
+    expect(needs[0].notices.map((x) => x.settled)).toEqual([true, true]);
+    expect(fyi.map((g) => g.item_uid)).toEqual(["C"]);
+  });
+});

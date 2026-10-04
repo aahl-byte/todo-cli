@@ -69,6 +69,3 @@ export function CheckBox({ check, project }: { check: Row; project: string }) {
   );
 }
 
-export function MarkAllRead() {
-  return <button type="button" className="btn" onClick={() => void act.markAllRead().then(report)}>Mark all read</button>;
-}

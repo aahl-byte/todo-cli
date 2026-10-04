@@ -319,13 +319,13 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
 
   await step("inbox: rows open the item and mark read", async () => {
     await page.goto(base + "/inbox");
-    const row = page.locator("a.lrow.unread").first();
+    const row = page.locator("a.notice.unread").first();
     await row.waitFor();
     await row.click();
     await page.waitForURL(/\/p\/web\/i\//);
     await page.goto(base + "/inbox");
     await page.click("button:has-text('Mark all read')");
-    await page.waitForFunction(() => !document.querySelector("a.lrow.unread"));
+    await page.waitForFunction(() => !document.querySelector("a.notice.unread"));
   });
 
   await step("new request with app, section, URL and a dropped image", async () => {

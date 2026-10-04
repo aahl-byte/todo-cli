@@ -5,7 +5,7 @@ export async function inbox(db: Db, handle: string, opts: { all?: boolean; since
   const rows = await db.query(
     `select n.id, n.kind, n.project, n.created, n.read_at, n.note_uid, n.actor,
             i.id as item_id, i.title as item_title, i.status as item_status,
-            nt.n as note_n, nt.text as note_text, nt.author as note_author
+            n.item_uid, nt.n as note_n, nt.text as note_text, nt.author as note_author, nt.kind as note_kind, nt.meta as note_meta
        from notifications n
        join items i on i.uid = n.item_uid and i.project = n.project
        left join notes nt on nt.uid = n.note_uid and nt.project = n.project
@@ -49,4 +49,48 @@ export async function markSeen(db: Db, handle: string, project: string, itemUid:
      on conflict (handle, project, item_uid) do update set seen_at = excluded.seen_at`, [handle, project, itemUid]);
   const [c] = await db.query("select count(*)::int as n from notifications where handle = $1 and read_at is null", [handle]);
   return { lastSeen: lastSeen ? new Date(lastSeen).toISOString() : null, unread: Number(c.n) };
+}
+
+/** Notices that ask something of you; the rest are for your information. */
+export const NEEDS_YOU = ["qa-rejection", "clarification", "ready-for-qa", "mention"];
+
+export interface InboxGroup {
+  key: string;
+  project: string;
+  item_uid: string;
+  item_id: string;
+  title: string;
+  status: string;
+  newest: number;
+  notices: Record<string, any>[];
+}
+
+/** Whether the ticket has moved past what the notice asked for. */
+export function settled(n: Record<string, any>): boolean {
+  if (n.kind === "ready-for-qa") return n.item_status !== "ready-for-qa";
+  if (n.kind === "qa-rejection") return n.item_status !== "qa-rejected";
+  if (n.kind === "clarification") return n.note_meta?.state === "answered";
+  return false;
+}
+
+/** Notices grouped by ticket, newest ticket first, split into what needs you
+ * and what's for your information. */
+export function groupInbox(rows: Record<string, any>[]): { needs: InboxGroup[]; fyi: InboxGroup[] } {
+  const split = { needs: new Map<string, InboxGroup>(), fyi: new Map<string, InboxGroup>() };
+  for (const n of rows) {
+    const side = NEEDS_YOU.includes(n.kind) ? split.needs : split.fyi;
+    const key = `${n.project}/${n.item_uid}`;
+    const at = new Date(n.created).getTime();
+    let g = side.get(key);
+    if (!g) {
+      g = { key, project: n.project, item_uid: n.item_uid, item_id: n.item_id, title: n.item_title, status: n.item_status, newest: at, notices: [] };
+      side.set(key, g);
+    }
+    g.newest = Math.max(g.newest, at);
+    g.notices.push({ ...n, settled: settled(n) });
+  }
+  const order = (m: Map<string, InboxGroup>) => [...m.values()]
+    .map((g) => ({ ...g, notices: g.notices.sort((a, b) => b.id - a.id) }))
+    .sort((a, b) => b.newest - a.newest);
+  return { needs: order(split.needs), fyi: order(split.fyi) };
 }

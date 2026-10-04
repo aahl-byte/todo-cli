@@ -5,16 +5,19 @@ import { useEffect, useState } from "react";
 
 export const NOTICE = "todo:notice";
 
-export function notify(message: string) {
-  window.dispatchEvent(new CustomEvent(NOTICE, { detail: message }));
+export interface ToastAction { label: string; run: () => void }
+
+export function notify(message: string, action?: ToastAction) {
+  window.dispatchEvent(new CustomEvent(NOTICE, { detail: { message, action } }));
 }
 
 export function Toaster() {
-  const [messages, setMessages] = useState<{ id: number; text: string }[]>([]);
+  const [messages, setMessages] = useState<{ id: number; text: string; action?: ToastAction }[]>([]);
   useEffect(() => {
     const on = (e: Event) => {
-      const text = String((e as CustomEvent).detail ?? "");
-      setMessages((m) => [...m.slice(-2), { id: Date.now() + Math.random(), text }]);
+      const d = (e as CustomEvent).detail ?? {};
+      const text = String(typeof d === "string" ? d : d.message ?? "");
+      setMessages((m) => [...m.slice(-2), { id: Date.now() + Math.random(), text, action: d.action }]);
     };
     window.addEventListener(NOTICE, on);
     return () => window.removeEventListener(NOTICE, on);
@@ -25,6 +28,11 @@ export function Toaster() {
       {messages.map((m) => (
         <div key={m.id} className="toast banner">
           <span>{m.text}</span>
+          {m.action && (
+            <button type="button" className="btn" onClick={() => { m.action!.run(); setMessages((all) => all.filter((x) => x.id !== m.id)); }}>
+              {m.action.label}
+            </button>
+          )}
           <button aria-label="dismiss" onClick={() => setMessages((all) => all.filter((x) => x.id !== m.id))}>✕</button>
         </div>
       ))}
