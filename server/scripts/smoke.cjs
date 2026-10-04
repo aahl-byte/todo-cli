@@ -392,9 +392,13 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.waitForURL((u) => u.pathname === "/p/web/qa" && u.search.includes("f="));
     await page.goto(base + "/p/web/qa?f=qa:qa,qa:rio");
     await page.locator(".role-tabs [role=tab]", { hasText: "qa by rio" }).waitFor();
+    await page.goto(base + "/p/web/qa");
     const labels = await page.locator(".qa-page > .label").allTextContents();
     const iq = labels.findIndex((t) => t.startsWith("In QA")), rq = labels.findIndex((t) => t.startsWith("Ready for QA"));
-    if (iq >= 0 && rq >= 0 && iq > rq) throw new Error("Ready for QA shown above In QA");
+    if (iq < 0 || rq < 0 || iq > rq) throw new Error(`QA sections out of order: ${labels.join(" / ")}`);
+    await page.goto(base + "/p/web/deploy?f=dev:kai");
+    await page.locator(".ticket", { hasText: "Push notifications on mobile web" }).waitFor();
+    if (await page.locator(".ticket", { hasText: "Digest email for mentions" }).count()) throw new Error("deploy filter shows another developer's ticket");
     await page.goto(base + "/p/web/deploy?f=dev:nobody-here");
     await page.locator(".filters").waitFor();
     await page.locator("p.empty").waitFor();
