@@ -88,16 +88,40 @@ describe("views", () => {
     const p = (await project(w.d, "p"))!;
     const { columns: cols } = await board(w.d, p, {}, "bob");
     const by = Object.fromEntries(cols.map((c) => [c.key, c.items.map((i) => i.id)]));
-    expect(by.progress).toEqual(["a1"]);
+    expect(by.ready).toEqual(["a1"]);
     expect(by.deploy).toEqual(["b1"]);
     expect(cols.find((c) => c.key === "parked")).toBeUndefined();
-    const a = cols.find((c) => c.key === "progress")!.items[0];
+    const a = cols.find((c) => c.key === "ready")!.items[0];
     expect(a).toMatchObject({ open_questions: 1, task_statuses: ["done", "todo"] });
     expect(cols.find((c) => c.key === "deploy")!.items[0].pending_pre).toBe(2);
     const { columns: parked } = await board(w.d, p, { parked: true }, "bob");
     expect(parked.find((c) => c.key === "parked")!.items.map((i) => i.id)).toEqual(["c1"]);
     const mine = [{ role: "dev", who: "bob" }, { role: "qa", who: "bob" }, { role: "by", who: "bob" }] as const;
-    expect((await board(w.d, p, { entries: [...mine] }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id))).toEqual(["a1"]);
+    expect((await board(w.d, p, { entries: [...mine], view: "merged" }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id))).toEqual(["a1"]);
+  });
+
+  it("groups each column by status in its order, then bugs first", async () => {
+    for (const [uid, status, type] of [["O1", "requested", "bug"], ["O2", "in-triage", "feature"], ["O3", "blocked", "feature"],
+      ["O4", "qa-rejected", "feature"], ["O5", "in-triage", "bug"], ["Q1", "ready-for-qa", "bug"], ["Q2", "in-qa", "feature"],
+      ["R1", "todo", "feature"], ["R2", "review", "feature"], ["R3", "todo", "bug"]]) {
+      await w.one("alice", item(uid, { title: uid, status, type }));
+    }
+    const p = (await project(w.d, "p"))!;
+    const by = Object.fromEntries((await board(w.d, p, {}, "bob")).columns.map((c) => [c.key, c.items.map((i) => i.id)]));
+    expect(by.open).toEqual(["o4", "o3", "o5", "o2", "o1"]);
+    expect(by.ready).toEqual(["r2", "r3", "r1"]);
+    expect(by.qa).toEqual(["q2", "q1"]);
+    expect(by.progress).toEqual([]);
+  });
+
+  it("shows the first entry's tab when no view is given", async () => {
+    await w.one("alice", item("F1", { status: "todo", developer: "bob" }));
+    await w.one("alice", item("F2", { status: "todo", qa_assignee: "bob" }));
+    const p = (await project(w.d, "p"))!;
+    const entries = [{ role: "dev", who: "bob" }, { role: "qa", who: "bob" }] as const;
+    const ids = async (f: object) => (await board(w.d, p, { entries: [...entries], ...f }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
+    expect(await ids({})).toEqual(["f1"]);
+    expect((await ids({ view: "merged" })).sort()).toEqual(["f1", "f2"]);
   });
 
   it("finds work an agent parked in review for its developer", async () => {
@@ -138,6 +162,21 @@ describe("views", () => {
     expect(plan.ready.map((r) => r.id)).toEqual(["b1"]);
     expect(plan.byTicket[0].checks.filter((c) => c.timing === "pre-deploy").map((c) => c.kind)).toEqual(["prereq-branch", "db-script"]);
     expect(plan.byTicket[0].checks[0].warning).toBe("not deployed");
+  });
+
+  it("filters the deploy plan by role entries and counts each tab", async () => {
+    await w.one("alice", item("D1", { status: "ready-to-deploy", developer: "bob" }));
+    await w.one("alice", item("D2", { status: "ready-to-deploy", developer: "eve" }));
+    await w.one("alice", item("D3", { status: "deployed", developer: "eve" }));
+    await w.one("alice", child("check", "P1", "D3", { n: 1, kind: "manual-step", title: "verify", timing: "post-deploy" }));
+    const f = { entries: [{ role: "dev" as const, who: "bob" }, { role: "dev" as const, who: "eve" }] };
+    const bob = await deployPlan(w.d, "p", "x", f);
+    expect(bob.byTicket.map((t) => t.item.id)).toEqual(["d1"]);
+    expect(bob.afterByTicket).toEqual([]);
+    expect(bob.counts).toEqual([1, 2]);
+    const eve = await deployPlan(w.d, "p", "x", { ...f, tab: 1 });
+    expect(eve.byTicket.map((t) => t.item.id)).toEqual(["d2"]);
+    expect(eve.afterByTicket.map((t) => t.item.id)).toEqual(["d3"]);
   });
 });
 
@@ -507,7 +546,7 @@ describe("role filters", () => {
   it("rewrites links from before entries", async () => {
     const { legacyQuery } = await import("@/lib/filters");
     expect(legacyQuery({ type: "bug" }, "bob")).toBeNull();
-    expect(decodeURIComponent(legacyQuery({ mine: "1", type: "bug" }, "bob")!)).toBe("type=bug&f=dev:bob,qa:bob,by:bob");
+    expect(decodeURIComponent(legacyQuery({ mine: "1", type: "bug" }, "bob")!)).toBe("type=bug&f=dev:bob,qa:bob,by:bob&view=merged");
     expect(decodeURIComponent(legacyQuery({ dev: "dana", qa: "quinn" }, "bob")!)).toBe("f=dev:dana,qa:quinn");
   });
   it("counts each tab on the board", async () => {

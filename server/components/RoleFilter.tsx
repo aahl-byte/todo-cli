@@ -10,7 +10,7 @@ export function RoleFilter({ users, me, counts, review }: { users: string[]; me:
   const path = usePathname();
   const q = useSearchParams();
   const entries = parseEntries(q.get("f"));
-  const view = q.get("view") === "tabs" ? "tabs" : "merged";
+  const view = q.get("view") === "merged" ? "merged" : "tabs";
   const tab = Math.min(Number(q.get("tab") ?? 0) || 0, Math.max(entries.length - 1, 0));
   const go = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(q.toString());
@@ -35,7 +35,7 @@ export function RoleFilter({ users, me, counts, review }: { users: string[]; me:
     <>
       <div className="filters">
         <button type="button" className={`btn ${isMine ? "on" : ""}`} aria-pressed={isMine}
-                onClick={() => setEntries(isMine ? [] : mine, { view: null })}>Mine</button>
+                onClick={() => setEntries(isMine ? [] : mine, { view: isMine ? null : "merged" })}>Mine</button>
         {review && (
           <button type="button" className={`btn ${q.get("review") === "1" ? "on" : ""}`} aria-pressed={q.get("review") === "1"}
                   onClick={() => go({ review: q.get("review") === "1" ? null : "1" })}>Needs my review</button>
@@ -69,8 +69,8 @@ export function RoleFilter({ users, me, counts, review }: { users: string[]; me:
         </details>
         {entries.length > 1 && (
           <span className="seg" role="group" aria-label="view">
-            <button type="button" className={`btn ${view === "merged" ? "on" : ""}`} aria-pressed={view === "merged"} onClick={() => go({ view: null, tab: null })}>merged</button>
-            <button type="button" className={`btn ${view === "tabs" ? "on" : ""}`} aria-pressed={view === "tabs"} onClick={() => go({ view: "tabs", tab: null })}>tabs</button>
+            <button type="button" className={`btn ${view === "merged" ? "on" : ""}`} aria-pressed={view === "merged"} onClick={() => go({ view: "merged", tab: null })}>merged</button>
+            <button type="button" className={`btn ${view === "tabs" ? "on" : ""}`} aria-pressed={view === "tabs"} onClick={() => go({ view: null, tab: null })}>tabs</button>
           </span>
         )}
         {(view === "merged" || entries.length === 1) && entries.map((e, i) => (

@@ -48,5 +48,6 @@ export function legacyQuery(q: Record<string, string | undefined>, me: string): 
   const next = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) if (v && !["mine", "dev", "qa", "f"].includes(k)) next.set(k, v);
   if (entries.length) next.set("f", formatEntries(entries));
+  if (q.mine === "1") next.set("view", "merged");
   return next.toString();
 }

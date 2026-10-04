@@ -80,11 +80,10 @@ export interface BoardFilters {
 }
 
 export const COLUMNS = [
-  { key: "requested", label: "Requested", statuses: ["requested"] },
-  { key: "triage", label: "Triage", statuses: ["in-triage"] },
-  { key: "ready", label: "Ready", statuses: ["todo"] },
-  { key: "progress", label: "In progress", statuses: ["in-progress", "qa-rejected", "review", "blocked"] },
-  { key: "qa", label: "QA", statuses: ["ready-for-qa", "in-qa"] },
+  { key: "open", label: "Open", statuses: ["qa-rejected", "blocked", "in-triage", "requested"] },
+  { key: "ready", label: "Ready", statuses: ["review", "todo"] },
+  { key: "progress", label: "In progress", statuses: ["in-progress"] },
+  { key: "qa", label: "QA", statuses: ["in-qa", "ready-for-qa"] },
   { key: "deploy", label: "Ready to deploy", statuses: ["ready-to-deploy"] },
   { key: "shipped", label: "Shipped", statuses: ["deployed", "done"] },
   { key: "parked", label: "Parked", statuses: PARKED },
@@ -100,7 +99,7 @@ function baseFilter<T extends Card>(all: T[], f: BoardFilters, me: string): T[] 
 }
 
 export function filterCards<T extends Card>(all: T[], f: BoardFilters, me: string): T[] {
-  return matchEntries(baseFilter(all, f, me), f.entries ?? [], f.view ?? "merged", f.tab ?? 0);
+  return matchEntries(baseFilter(all, f, me), f.entries ?? [], f.view ?? "tabs", f.tab ?? 0);
 }
 
 /** How many cards each entry's tab would show. */
@@ -122,10 +121,11 @@ function columns(all: Card[], p: Project, f: BoardFilters, cutoff: number) {
     .filter((col) => (col.key !== "parked" || f.parked) && (col.key !== "deploy" || p.deploy_step))
     .map((col) => ({
       ...col,
-      // Rejected work leads its column: it's waiting on someone.
+      // Grouped by status in the column's order, then bugs before features.
       items: all.filter((c) => col.statuses.includes(c.status)
         && (col.key !== "shipped" || !c.completed || Date.parse(c.completed) >= cutoff))
-        .sort((a, b) => Number(b.status === "qa-rejected") - Number(a.status === "qa-rejected")),
+        .sort((a, b) => col.statuses.indexOf(a.status) - col.statuses.indexOf(b.status)
+          || Number(b.type === "bug") - Number(a.type === "bug")),
     }));
 }
 
@@ -251,9 +251,11 @@ export async function qaQueue(d: Db, key: string, me: string, f: BoardFilters = 
   return { ready, inQa, awaitingFix, counts };
 }
 
-export async function deployPlan(d: Db, key: string) {
-  const ready = await cards(d, key, "and i.status = 'ready-to-deploy'");
-  const deployed = await cards(d, key, "and i.status = 'deployed'");
+export async function deployPlan(d: Db, key: string, me = "", f: BoardFilters = {}) {
+  const allReady = await cards(d, key, "and i.status = 'ready-to-deploy'");
+  const allDeployed = await cards(d, key, "and i.status = 'deployed'");
+  const ready = filterCards(allReady, f, me);
+  const deployed = filterCards(allDeployed, f, me);
   const all = await d.query("select id, status from items where project = $1", [key]);
   const complete = new Set(all.filter((r) => COMPLETE.includes(r.status)).map((r) => r.id));
   const ids = new Set(all.map((r) => r.id));
@@ -261,7 +263,9 @@ export async function deployPlan(d: Db, key: string) {
     ? d.query("select c.*, i.id as item_id, i.title as item_title from checks c join items i on i.uid = c.item_uid and i.project = c.project where c.project = $2 and c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids, key])
     : [];
   const readyChecks = await checksFor(ready.map((r) => r.uid));
-  const after = (await checksFor(deployed.map((r) => r.uid))).filter((c) => c.timing === "post-deploy" && c.status !== "done");
+  const allAfter = (await checksFor(allDeployed.map((r) => r.uid))).filter((c) => c.timing === "post-deploy" && c.status !== "done");
+  const stillToDo = allDeployed.filter((it) => allAfter.some((c) => c.item_uid === it.uid));
+  const after = allAfter.filter((c) => deployed.some((it) => it.uid === c.item_uid));
   const warn = (c: Row): Row => ({
     ...c, warning: c.kind === "prereq-branch" && c.payload && ids.has(c.payload) && !complete.has(c.payload) ? "not deployed" : null,
   });
@@ -275,5 +279,6 @@ export async function deployPlan(d: Db, key: string) {
   const afterByTicket = deployed
     .map((it) => ({ item: it, checks: after.filter((c) => c.item_uid === it.uid) }))
     .filter((t) => t.checks.length);
-  return { ready, afterDeploy: after, byTicket, afterByTicket };
+  const counts = tabCounts([...allReady, ...stillToDo], f, me);
+  return { ready, afterDeploy: after, byTicket, afterByTicket, counts };
 }

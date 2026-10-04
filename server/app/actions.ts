@@ -1,5 +1,5 @@
 "use server";
-// Form-driven writes: new requests, deploy-all, inbox reads, sign-in. The item
+// Form-driven writes: new requests, inbox reads, sign-in. The item
 // page's writes live in item-actions.ts.
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -11,44 +11,10 @@ import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
 import * as build from "@/lib/ops-builder";
 import { COOKIE, requireUser } from "@/lib/session";
-import { later } from "@/lib/http";
-import { flushJira } from "@/lib/jira/flush";
 
 export type { ActionState };
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "");
-
-/** Mark every ready item deployed; items with pending pre-deploy checks or a
- * newer change are held back and named. */
-export async function deployAllAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
-  const project = str(fd, "project");
-  const items: { uid: string; versions: Record<string, number> }[] = JSON.parse(str(fd, "items") || "[]");
-  const user = await requireUser();
-  const d = await db();
-  const ops: Op[] = [];
-  const held: string[] = [];
-  for (const it of items) {
-    try {
-      ops.push(...build.moveOps({ uid: it.uid, item_uid: it.uid, versions: it.versions, status: "ready-to-deploy" },
-        "deployed", { me: user.handle }));
-    } catch {
-      held.push(it.uid);
-    }
-  }
-  let results: Result[];
-  try {
-    results = await applyOps(d, project, ops, { handle: user.handle });
-  } catch (e) {
-    if (e instanceof ProjectNotFound) return { ok: false, message: "No such project.", at: Date.now() };
-    throw e;
-  }
-  later(() => flushJira(d));
-  revalidatePath(`/p/${project}`, "layout");
-  held.push(...ops.filter((_, i) => results[i].rejected?.length || results[i].status === "rejected").map((op) => op.uid));
-  if (!held.length) return { ok: true, message: `Deployed ${results.length}.`, at: Date.now() };
-  const ids = (await d.query("select id from items where project = $2 and uid = any($1::text[]) order by id", [held, project])).map((r) => r.id);
-  return { ok: false, at: Date.now(), message: `Held back ${ids.join(", ")}: pending checks or a newer change.` };
-}
 
 export async function requestAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const project = str(fd, "project");

@@ -1,22 +1,29 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { deployAllAction } from "@/app/actions";
-import { ActionForm } from "@/components/ActionForm";
+import { notFound, redirect } from "next/navigation";
+import { RoleFilter } from "@/components/RoleFilter";
+import { legacyQuery, parseEntries } from "@/lib/filters";
 import { CheckBox, MoveButtons } from "@/components/QueueActions";
 import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import { deployPlan, project } from "@/lib/views";
+import { deployPlan, project, users } from "@/lib/views";
 import type { Row } from "@/lib/db";
 
-export default async function Deploy({ params }: { params: Promise<{ key: string }> }) {
+export default async function Deploy({ params, searchParams }: {
+  params: Promise<{ key: string }>; searchParams: Promise<Record<string, string | undefined>>;
+}) {
   const { key } = await params;
-  await requireUser();
+  const q = await searchParams;
+  const user = await requireUser();
   const d = await db();
   const p = await project(d, key);
   if (!p || !p.deploy_step) notFound();
-  const plan = JSON.parse(JSON.stringify(await deployPlan(d, key)));
-  if (!plan.ready.length && !plan.afterDeploy.length) return <p className="empty">Empty.</p>;
+  const legacy = legacyQuery(q, user.handle);
+  if (legacy !== null) redirect(`/p/${key}/deploy${legacy ? `?${legacy}` : ""}`);
+  const plan = JSON.parse(JSON.stringify(await deployPlan(d, key, user.handle, {
+    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type })));
+  const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={plan.counts} />;
+  if (!plan.byTicket.length && !plan.afterByTicket.length) return <>{filters}<p className="empty">Empty.</p></>;
 
   const check = (c: Row) => (
     <div key={c.uid} className="rrow check-row" data-uid={c.uid}>
@@ -42,17 +49,11 @@ export default async function Deploy({ params }: { params: Promise<{ key: string
 
   return (
     <div className="rows">
-      <div className="filters">
-        {plan.ready.length > 1 && (
-          <ActionForm action={deployAllAction} fields={{ project: key, items: JSON.stringify(plan.ready.map((it: Row) => ({ uid: it.uid, versions: it.versions }))) }}>
-            <button className="btn">Deploy all</button>
-          </ActionForm>
-        )}
-      </div>
+      {filters}
       {plan.byTicket.map((t: any) => ticket(t, true))}
       {plan.afterByTicket.length > 0 && (
         <>
-          <div className="label" style={{ marginTop: 16 }}>Deployed · still to do</div>
+          <div className="label section">Deployed · still to do</div>
           {plan.afterByTicket.map((t: any) => ticket(t, false))}
         </>
       )}

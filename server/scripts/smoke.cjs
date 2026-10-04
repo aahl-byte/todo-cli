@@ -28,6 +28,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     catch (e) { console.log("FAIL", name, e.message.split("\n").slice(0, 6).join(" | ")); errors.push(name); }
   };
   const login = async (who, path = "/p/web") => {
+    await page.goto("about:blank");
     await ctx.clearCookies();
     await page.goto(base + "/login?next=" + encodeURIComponent(path));
     await page.fill("input[name=handle]", who);
@@ -66,9 +67,11 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
 
   await step("board: columns and filters that apply on click", async () => {
     await login("dev");
-    for (const t of ["Requested", "Triage", "In progress", "QA", "Ready to deploy"]) await page.getByRole("region", { name: t }).waitFor();
+    for (const t of ["Open", "Ready", "In progress", "QA", "Ready to deploy"]) await page.getByRole("region", { name: t, exact: true }).waitFor();
+    if (await page.getByRole("region", { name: "Triage" }).count()) throw new Error("Triage column still shown");
     await page.click("button:has-text('Mine')");
     await page.waitForURL(/f=dev%3Adev%2Cqa%3Adev%2Cby%3Adev|f=dev:dev,qa:dev,by:dev/);
+    await page.waitForURL(/view=merged/);
     await page.click("button:has-text('Mine')");
     await page.waitForURL((u) => !u.search.includes("f="));
     await page.screenshot({ path: out + "/board.png", fullPage: true });
@@ -320,7 +323,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await ticket.locator(".check-row", { hasText: "convert timestamps" }).waitFor();
     await ticket.locator("button:has-text('Mark deployed')").click();
     await page.locator(".popup button.danger", { hasText: "Deploy anyway" }).click();
-    await page.locator(".label", { hasText: "Deployed · still to do" }).waitFor();
+    await page.locator(".label.section", { hasText: "Deployed · still to do" }).waitFor();
+    if (await page.locator("button:has-text('Deploy all')").count()) throw new Error("Deploy all still shown");
     await page.locator(".ticket", { hasText: "Store times in UTC" }).locator("button:has-text('Mark deployed')").waitFor({ state: "detached" });
   });
 
@@ -369,14 +373,31 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.waitForURL(/f=/);
     await page.click(".role-filter button.add");
     await page.waitForFunction(() => document.querySelectorAll(".role-filter .entry-row").length === 2);
+    for (const w of await page.locator(".role-filter .entry-row select").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().width))) {
+      if (w < 80) throw new Error(`filter dropdown only ${w}px wide`);
+    }
+    const rows = await page.locator(".role-filter .entry-row").evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+    if (rows.some((h) => h > 40)) throw new Error(`filter row wraps: ${rows.join(", ")}px tall`);
+    await page.screenshot({ path: out + "/filter-menu.png" });
     await page.keyboard.press("Escape");
-    if ((await page.locator(".filters .chip").count()) !== 2) throw new Error("no chips in merged view");
-    await page.click(".seg button:has-text('tabs')");
     await page.locator(".role-tabs [role=tab]").nth(1).click();
     await page.waitForURL(/tab=1/);
     await page.screenshot({ path: out + "/board-tabs.png", fullPage: true });
-    await page.goto(base + "/p/web/qa?f=qa:qa,qa:rio&view=tabs");
+    await page.click(".seg button:has-text('merged')");
+    await page.waitForURL(/view=merged/);
+    if ((await page.locator(".filters .chip").count()) !== 2) throw new Error("no chips in merged view");
+    await page.click(".seg button:has-text('tabs')");
+    await page.waitForURL((u) => !u.search.includes("view="));
+    await page.click(".topbar nav a:has-text('QA')");
+    await page.waitForURL((u) => u.pathname === "/p/web/qa" && u.search.includes("f="));
+    await page.goto(base + "/p/web/qa?f=qa:qa,qa:rio");
     await page.locator(".role-tabs [role=tab]", { hasText: "qa by rio" }).waitFor();
+    const labels = await page.locator(".qa-page > .label").allTextContents();
+    const iq = labels.findIndex((t) => t.startsWith("In QA")), rq = labels.findIndex((t) => t.startsWith("Ready for QA"));
+    if (iq >= 0 && rq >= 0 && iq > rq) throw new Error("Ready for QA shown above In QA");
+    await page.goto(base + "/p/web/deploy?f=dev:nobody-here");
+    await page.locator(".filters").waitFor();
+    await page.locator("p.empty").waitFor();
     await page.screenshot({ path: out + "/qa.png", fullPage: true });
   });
 

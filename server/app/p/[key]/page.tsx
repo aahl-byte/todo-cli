@@ -43,7 +43,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
   if (!p) notFound();
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}${legacy ? `?${legacy}` : ""}`);
-  const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged",
+  const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs",
                  tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, parked: q.parked === "1" };
   const { columns, counts } = await board(d, p, f, user.handle);
   return (
@@ -54,10 +54,10 @@ export default async function Board({ params, searchParams }: { params: Promise<
           <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>
             <div className="label">{col.label}{col.items.length > 0 && <span>{col.items.length}</span>}</div>
             {col.items.map((c) => {
-              const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (col.key === "requested" ? c.creator : null);
+              const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (c.status === "requested" ? c.creator : null);
               return (
                 <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card s-${c.status}`} data-uid={c.uid}>
-                  {c.status !== col.statuses[0] && <Led status={c.status} label />}
+                  {col.statuses.length > 1 && <Led status={c.status} label />}
                   <div className="title">{c.title}</div>
                   {c.extra?.app && <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>}
                   <div className="meta">

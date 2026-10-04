@@ -22,7 +22,7 @@ export default async function QaQueue({ params, searchParams }: {
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}/qa${legacy ? `?${legacy}` : ""}`);
   const { ready, inQa, awaitingFix, counts } = await qaQueue(d, key, user.handle, {
-    entries: parseEntries(q.f), view: q.view === "tabs" ? "tabs" : "merged", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type });
+    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type });
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} />;
   const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);
@@ -44,13 +44,13 @@ export default async function QaQueue({ params, searchParams }: {
   return (
     <div className="qa-page">
       {filters}
-      {ready.length > 0 && <div className="label">Ready for QA<span>{ready.length}</span></div>}
-      <div className="cards">{ready.map((c) => card(c, [{ status: "in-qa", label: "Pick up", primary: true }]))}</div>
       {inQa.length > 0 && <div className="label">In QA<span>{inQa.length}</span></div>}
       <div className="cards">{inQa.map((c) => card(c, [
         { status: p.deploy_step ? "ready-to-deploy" : "done", label: "Approve", primary: true },
         { status: "qa-rejected", label: "Reject" },
       ]))}</div>
+      {ready.length > 0 && <div className="label">Ready for QA<span>{ready.length}</span></div>}
+      <div className="cards">{ready.map((c) => card(c, [{ status: "in-qa", label: "Pick up", primary: true }]))}</div>
       {awaitingFix.length > 0 && (
         <details className="awaiting">
           <summary className="label">Awaiting fix<span>{awaitingFix.length}</span></summary>

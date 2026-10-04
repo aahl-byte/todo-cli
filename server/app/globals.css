@@ -6,9 +6,9 @@
   --raise: #1c222b;
   --line: #232a33;
   --line-2: #2d3742;
-  --text: #c4ccd6;
-  --dim: #737e8b;
-  --faint: #4a535e;
+  --text: #d2d9e2;
+  --dim: #858f9c;
+  --faint: #5d6772;
   --amber: #ffb454;
   --amber-dim: #7a5a2a;
   --cyan: #5ad1c4;
@@ -16,7 +16,7 @@
   --danger: #e5534b;
   --danger-dim: #8a4a46;
   --md-strong: #f0f3f7;
-  --md-em: #8b95a2;
+  --md-em: #9aa4b1;
   --disp: var(--font-disp), "Space Grotesk", system-ui, sans-serif;
   --mono: var(--font-mono), "JetBrains Mono", ui-monospace, Menlo, monospace;
 
@@ -330,7 +330,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .summary[open] > summary .chev { transform: rotate(90deg); }
 @media (max-width: 700px) { .column.empty-col { display: none; } }
 
-.filter .menu { min-width: 220px; gap: 8px; padding: 10px; }
+.filter .menu { min-width: 300px; gap: 8px; padding: 10px; }
 .filter .k { display: grid; gap: 3px; font: 600 8px var(--disp); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
 .filter .check { display: flex; gap: 6px; align-items: center; font-size: 12px; }
 .title-row .big { flex: 4; }
@@ -426,9 +426,15 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .more-n summary { cursor: pointer; color: var(--dim); font-size: 11px; padding: 3px 0; list-style: none; }
 .empty-inbox { text-align: center; padding: 48px 0; color: var(--dim); }
 
+.label.section { font-size: 11px; color: var(--text); margin: 20px 0 8px; }
+
 /* role filters */
-.role-filter .entry-row { display: flex; gap: 6px; align-items: center; }
-.role-filter .entry-row select { flex: 1; min-width: 0; }
+.role-filter .entry-row { display: flex; flex-wrap: nowrap; gap: 6px; align-items: center; }
+.role-filter .entry-row > .x { flex: none; min-width: 0; }
+.role-filter select { font: 12px var(--mono); letter-spacing: 0; text-transform: none; color: var(--text); }
+.role-filter .entry-row select { flex: 1 1 0; min-width: 0; }
+.role-filter .entry-row select[aria-label="role"] { flex: 0 0 9.5em; }
+.role-filter .entry-row .x { opacity: 1; }
 .seg { display: inline-flex; }
 .seg .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .seg .btn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }

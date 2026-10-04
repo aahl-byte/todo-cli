@@ -216,7 +216,12 @@ for (const [to, count] of TARGETS) {
     if (to === "qa-rejected") {
       await walk(it, "in-qa");
       await flesh(it, "in-qa");
-      await reject(it, `${pick(["Crashes on submit", "Empty state is missing", "Wrong totals after refresh"])} — steps in the screenshot thread. @${it.dev}`);
+      const [problem, steps] = pick([
+        ["Crashes on submit.", "1. Fill in every field\n2. Press **Save**\n3. The page goes blank and the console shows a `TypeError`"],
+        ["The empty state is missing.", "1. Sign in as a new user with no data\n2. Open the page\n3. It shows a bare table header and nothing else"],
+        ["Totals are wrong after a refresh.", "1. Add two items\n2. Reload the page\n3. The total counts the first item twice"],
+      ]);
+      await reject(it, `${problem}\n\n${steps}\n\n@${it.dev}`);
       continue;
     }
     if (to === "deferred") { await walk(it, "todo"); await status(it, it.creator, "deferred"); continue; }
