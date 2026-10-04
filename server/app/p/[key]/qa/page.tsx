@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { RoleFilter } from "@/components/RoleFilter";
-import { legacyQuery, parseEntries } from "@/lib/filters";
+import { cookies } from "next/headers";
+import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/filters";
 import { MoveButtons } from "@/components/QueueActions";
 import { safeUrl } from "@/lib/url";
 import { Ago } from "@/components/ui";
@@ -21,6 +22,8 @@ export default async function QaQueue({ params, searchParams }: {
   if (!p) notFound();
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}/qa${legacy ? `?${legacy}` : ""}`);
+  const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
+  if (restored) redirect(`/p/${key}/qa?${restored}`);
   const { ready, inQa, awaitingFix, counts } = await qaQueue(d, key, user.handle, {
     entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type });
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} />;

@@ -123,3 +123,40 @@ These override the sections above where they differ.
   are rewritten for Open and the tabs default.
 - **Known gap:** item pages don't carry `f`, so the Board link from an item page
   drops the filter.
+
+## 5b. Filters persist through navigation
+
+**Goal:** the board, QA and deploy pages always open with your last filter,
+however you get there: the nav, the brand link, the project switcher, a ticket's
+Board link, the back button, or a typed URL. Clearing the filter sticks too.
+
+- **Store:** one cookie per project, `todo_filter_<project>`, holding the filter
+  params (`f`, `view`, `tab`, `type`, `review`, `parked`) as a query string.
+  `SameSite=Lax`, path `/`, 30 days.
+- **Write:** `RoleFilter` writes the cookie synchronously in `go()`, before
+  `router.replace`, so the server render that follows already sees it. Clearing
+  everything deletes it. On load, an effect also writes the URL's params, so
+  opening a shared filtered link makes that filter the remembered one.
+- **Restore:** board, QA and deploy pages, after the legacy redirect: when the
+  URL has none of the filter params and the cookie is set, redirect to the same
+  path with the cookie's params added. New `restoreFilter(q, cookie)` in
+  `lib/filters.ts` returns that query string or null.
+- **Nav** keeps carrying the shared params, which saves the redirect.
+
+**Acceptance**
+- (js) `restoreFilter`: null when the URL has any filter param or the cookie is
+  empty; otherwise the cookie's filter params merged with the URL's other params.
+- (smoke) set a two-entry filter on the board; open a ticket; the nav's Board
+  link lands filtered. `/p/web` typed directly lands filtered. Clear the filter,
+  reload `/p/web`: it stays unfiltered.
+
+**Revisions after the 5b audit**
+- The on-load effect writes the cookie only when the URL carries a filter param,
+  so an older tab can't overwrite a newer filter with nothing.
+- `review` and `parked` are board-only. A change made on QA or Deploy keeps
+  whatever the cookie already holds for them; those pages ignore both params.
+- The cookie name replaces anything outside `[\w-]` in the project key with `_`.
+- `tab` stays in the cookie: the deploy page's actions follow the active tab,
+  and `matchEntries` clamps a stale index.
+- Clearing deletes the cookie synchronously before navigating, so nothing is
+  left to restore.

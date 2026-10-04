@@ -3,7 +3,7 @@
 // plus type and parked. Every change applies at once through the URL.
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
-import { formatEntries, parseEntries, roleLabel, ROLES, type Entry, type Role } from "@/lib/filters";
+import { cookieQuery, filterCookie, filterPart, formatEntries, parseEntries, roleLabel, FILTER_KEYS, ROLES, SHARED_KEYS, type Entry, type Role } from "@/lib/filters";
 
 export function RoleFilter({ users, me, counts, review }: { users: string[]; me: string; counts: number[]; review?: boolean }) {
   const router = useRouter();
@@ -12,11 +12,27 @@ export function RoleFilter({ users, me, counts, review }: { users: string[]; me:
   const entries = parseEntries(q.get("f"));
   const view = q.get("view") === "merged" ? "merged" : "tabs";
   const tab = Math.min(Number(q.get("tab") ?? 0) || 0, Math.max(entries.length - 1, 0));
+  const project = decodeURIComponent(path.split("/")[2] ?? "");
+  // Remember the filter for this project; pages without the board's own
+  // toggles leave the remembered review/parked alone.
+  const remember = (next: URLSearchParams) => {
+    const name = filterCookie(project);
+    const raw = document.cookie.split("; ").find((c) => c.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+    const out = new URLSearchParams(filterPart(new URLSearchParams(cookieQuery(raw))));
+    for (const k of review ? FILTER_KEYS : SHARED_KEYS) { const v = next.get(k); if (v) out.set(k, v); else out.delete(k); }
+    const value = out.toString();
+    document.cookie = value
+      ? `${name}=${encodeURIComponent(value)}; path=/; max-age=${30 * 86400}; samesite=lax`
+      : `${name}=; path=/; max-age=0; samesite=lax`;
+  };
   const go = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(q.toString());
     for (const [k, v] of Object.entries(patch)) { if (v) next.set(k, v); else next.delete(k); }
+    remember(next);
     router.replace(`${path}${next.toString() ? `?${next}` : ""}`);
   };
+  // A filtered link opened directly becomes the remembered filter.
+  useEffect(() => { if (filterPart(q)) remember(new URLSearchParams(q.toString())); }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
   const setEntries = (list: Entry[], extra: Record<string, string | null> = {}) => go({ f: formatEntries(list) || null, tab: null, ...extra });
   const mine: Entry[] = [{ role: "dev", who: me }, { role: "qa", who: me }, { role: "by", who: me }];
   const isMine = entries.length === 3 && mine.every((m) => entries.some((e) => e.role === m.role && e.who === m.who));

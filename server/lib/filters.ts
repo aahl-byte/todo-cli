@@ -51,3 +51,33 @@ export function legacyQuery(q: Record<string, string | undefined>, me: string): 
   if (q.mine === "1") next.set("view", "merged");
   return next.toString();
 }
+
+/** URL params that make up a work-queue filter, remembered per project. */
+export const FILTER_KEYS = ["f", "view", "tab", "type", "review", "parked"];
+export const SHARED_KEYS = ["f", "view", "tab", "type"];
+export const filterCookie = (project: string) => `todo_filter_${project.replace(/[^\w-]/g, "_")}`;
+
+/** The query string a filter cookie holds, decoded once if it is still encoded. */
+export function cookieQuery(raw: string): string {
+  if (raw.includes("=")) return raw;
+  try { return decodeURIComponent(raw); } catch { return ""; }
+}
+
+/** The filter part of a query string, or "" when there is none. */
+export function filterPart(q: URLSearchParams): string {
+  const out = new URLSearchParams();
+  for (const k of FILTER_KEYS) { const v = q.get(k); if (v) out.set(k, v); }
+  return out.toString();
+}
+
+/** The query string to redirect to when the URL has no filter but one is
+ * remembered, or null. */
+export function restoreFilter(q: Record<string, string | undefined>, cookie: string | undefined): string | null {
+  if (!cookie || FILTER_KEYS.some((k) => q[k])) return null;
+  const saved = new URLSearchParams(filterPart(new URLSearchParams(cookieQuery(cookie))));
+  if (!saved.toString()) return null;
+  const next = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) if (v) next.set(k, v);
+  for (const [k, v] of saved) next.set(k, v);
+  return next.toString();
+}

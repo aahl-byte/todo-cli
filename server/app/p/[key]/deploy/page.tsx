@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { RoleFilter } from "@/components/RoleFilter";
-import { legacyQuery, parseEntries } from "@/lib/filters";
+import { cookies } from "next/headers";
+import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/filters";
 import { CheckBox, MoveButtons } from "@/components/QueueActions";
 import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
@@ -20,6 +21,8 @@ export default async function Deploy({ params, searchParams }: {
   if (!p || !p.deploy_step) notFound();
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}/deploy${legacy ? `?${legacy}` : ""}`);
+  const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
+  if (restored) redirect(`/p/${key}/deploy?${restored}`);
   const plan = JSON.parse(JSON.stringify(await deployPlan(d, key, user.handle, {
     entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type })));
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={plan.counts} />;

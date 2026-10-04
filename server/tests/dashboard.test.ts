@@ -549,6 +549,16 @@ describe("role filters", () => {
     expect(decodeURIComponent(legacyQuery({ mine: "1", type: "bug" }, "bob")!)).toBe("type=bug&f=dev:bob,qa:bob,by:bob&view=merged");
     expect(decodeURIComponent(legacyQuery({ dev: "dana", qa: "quinn" }, "bob")!)).toBe("f=dev:dana,qa:quinn");
   });
+  it("restores a remembered filter only when the URL has none", async () => {
+    const { restoreFilter } = await import("@/lib/filters");
+    const saved = "f=dev%3Abob%2Cqa%3Abob&tab=1&junk=x";
+    expect(restoreFilter({}, undefined)).toBeNull();
+    expect(restoreFilter({}, "")).toBeNull();
+    expect(restoreFilter({ type: "bug" }, saved)).toBeNull();
+    expect(restoreFilter({}, "junk=x")).toBeNull();
+    expect(decodeURIComponent(restoreFilter({ other: "1" }, saved)!)).toBe("other=1&f=dev:bob,qa:bob&tab=1");
+    expect(decodeURIComponent(restoreFilter({}, encodeURIComponent(saved))!)).toBe("f=dev:bob,qa:bob&tab=1");
+  });
   it("counts each tab on the board", async () => {
     await w.one("alice", item("F1", { status: "todo", developer: "bob" }));
     await w.one("alice", item("F2", { status: "todo", qa_assignee: "bob" }));

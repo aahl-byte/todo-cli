@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { redirect } from "next/navigation";
 import { RoleFilter } from "@/components/RoleFilter";
-import { legacyQuery, parseEntries } from "@/lib/filters";
+import { cookies } from "next/headers";
+import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/filters";
 import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
 import { deriveCalcStatus, PAST_TRIAGE } from "@/lib/model";
@@ -43,6 +44,8 @@ export default async function Board({ params, searchParams }: { params: Promise<
   if (!p) notFound();
   const legacy = legacyQuery(q, user.handle);
   if (legacy !== null) redirect(`/p/${key}${legacy ? `?${legacy}` : ""}`);
+  const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
+  if (restored) redirect(`/p/${key}?${restored}`);
   const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs",
                  tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, parked: q.parked === "1" };
   const { columns, counts } = await board(d, p, f, user.handle);

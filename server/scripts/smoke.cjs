@@ -405,6 +405,26 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.screenshot({ path: out + "/qa.png", fullPage: true });
   });
 
+  await step("filters: remembered through navigation until cleared", async () => {
+    await login("dev");
+    await page.click("button:has-text('Mine')");
+    await page.waitForURL(/f=/);
+    await page.locator(".board .card").first().click();
+    await page.waitForURL(/\/i\//);
+    await page.click(".topbar nav a:has-text('Board')");
+    await page.waitForURL((u) => u.pathname === "/p/web" && u.search.includes("f="));
+    await page.goto(base + "/p/web");
+    await page.waitForURL((u) => u.search.includes("f="));
+    await page.goto(base + "/p/web/deploy");
+    await page.waitForURL((u) => u.search.includes("f="));
+    await page.goto(base + "/p/web");
+    await page.click("button:has-text('Mine')");
+    await page.waitForURL((u) => !u.search.includes("f="));
+    await page.goto(base + "/p/web");
+    await page.waitForLoadState("networkidle");
+    if (new URL(page.url()).search.includes("f=")) throw new Error("cleared filter came back");
+  });
+
   await step("new request with app, section, URL and a dropped image", async () => {
     await login("pat", "/p/web/new");
     await page.fill("input[name=title]", "Dark mode for reports");
