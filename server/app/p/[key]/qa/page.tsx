@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { MoveButtons } from "@/components/QueueActions";
 import { safeUrl } from "@/lib/url";
-import { Ago, Led } from "@/components/ui";
+import { Ago } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { project, qaQueue } from "@/lib/views";
@@ -15,35 +15,32 @@ export default async function QaQueue({ params }: { params: Promise<{ key: strin
   const p = await project(d, key);
   if (!p) notFound();
   const { ready, inQa } = await qaQueue(d, key, user.handle);
-  const row = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
+  const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);
     return (
-      <div key={c.uid} className="lrow" data-uid={c.uid}>
-        <Led status={c.status} />
-        <div className="grow">
-          {link
-            ? <a className="qa-link" href={link.url} target="_blank" rel="noreferrer">{link.label} ↗</a>
-            : null}
-          <div><Link href={`/p/${key}/i/${c.id}`} className={link ? "dim" : ""}>{c.title}</Link></div>
-          <div className="faint">
-            {c.developer} · <Ago ts={c.entered} />{c.bounces > 0 && <span className="hot"> · returned ×{c.bounces}</span>}
-            {c.request_meta && !c.request_meta.triaged && <span className="tag hot" data-tip="the request being tested never went through triage"> v{c.request_meta.version} untriaged</span>}
-          </div>
+      <article key={c.uid} className={`card qa-card s-${c.status}`} data-uid={c.uid}>
+        <Link href={`/p/${key}/i/${c.id}`} className="title">{c.title}</Link>
+        {c.extra?.app && <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>}
+        <div className="meta">
+          <span className="faint">{c.developer ?? "—"} · <Ago ts={c.entered} /></span>
+          {c.bounces > 0 && <span className="tag hot" data-tip="sent back by QA before">returned ×{c.bounces}</span>}
+          {c.request_meta && !c.request_meta.triaged && <span className="tag hot" data-tip="the request being tested never went through triage">v{c.request_meta.version} untriaged</span>}
+          {link && <a className="tag link" href={link.url} target="_blank" rel="noreferrer" data-tip={link.url}>{link.label} ↗</a>}
         </div>
-        <MoveButtons item={JSON.parse(JSON.stringify(c))} project={key} deployStep={p.deploy_step} to={to} />
-      </div>
+        <footer><MoveButtons item={JSON.parse(JSON.stringify(c))} project={key} deployStep={p.deploy_step} to={to} /></footer>
+      </article>
     );
   };
   if (!ready.length && !inQa.length) return <p className="empty">Empty.</p>;
   return (
-    <div className="rows">
-      {ready.length > 0 && <div className="label">Ready for QA</div>}
-      {ready.map((c) => row(c, [{ status: "in-qa", label: "Pick up", primary: true }]))}
-      {inQa.length > 0 && <div className="label" style={{ marginTop: 16 }}>In QA</div>}
-      {inQa.map((c) => row(c, [
+    <div className="qa-page">
+      {ready.length > 0 && <div className="label">Ready for QA<span>{ready.length}</span></div>}
+      <div className="cards">{ready.map((c) => card(c, [{ status: "in-qa", label: "Pick up", primary: true }]))}</div>
+      {inQa.length > 0 && <div className="label">In QA<span>{inQa.length}</span></div>}
+      <div className="cards">{inQa.map((c) => card(c, [
         { status: p.deploy_step ? "ready-to-deploy" : "done", label: "Approve", primary: true },
         { status: "in-progress", label: "Reject" },
-      ]))}
+      ]))}</div>
     </div>
   );
 }

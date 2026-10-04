@@ -381,3 +381,13 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .rrow.pick { border: 0; background: none; text-align: left; width: 100%; cursor: pointer; border-radius: 6px; padding: 4px 6px; }
 .rrow.pick:hover, .rrow.pick:focus-visible { background: var(--raise); }
 .md img { max-width: 100%; border-radius: 6px; }
+
+/* QA queue cards */
+.qa-page > .label { display: flex; gap: 6px; margin: 4px 2px 8px; }
+.qa-page .cards { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.qa-card { flex: 1 1 260px; max-width: 320px; margin: 0; display: flex; flex-direction: column; }
+.qa-card .title { display: block; }
+.qa-card .meta { flex: 1; align-content: flex-start; }
+.qa-card footer { margin-top: 8px; display: flex; justify-content: flex-end; }
+.tag.link { text-transform: none; letter-spacing: 0; }
+@media (max-width: 600px) { .qa-card { max-width: none; flex-basis: 100%; } }
