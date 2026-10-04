@@ -11,6 +11,7 @@ const tokens = process.env.TOKENS ? JSON.parse(fs.readFileSync(process.env.TOKEN
 const base = process.env.BASE_URL || "http://127.0.0.1:3917";
 const out = process.env.SHOTS || os.tmpdir();
 const errors = [];
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 (async () => {
   for (let i = 0; i < 60; i++) {
@@ -105,7 +106,7 @@ const errors = [];
   });
 
   await step("item: comments open a composer on demand", async () => {
-    await page.click("button.add:has-text('+ comment')");
+    await page.click("button.add:has-text('comment')");
     await page.locator(".composer textarea").fill("@qa ready soon");
     await page.click(".composer button.primary");
     await page.locator(".entry", { hasText: "@qa ready soon" }).waitFor();
@@ -123,7 +124,7 @@ const errors = [];
       document.querySelector(".trow.s-done") !== null);
     await page.click("button:has-text('show done')");
     await page.locator(".trow", { hasText: "query builder" }).waitFor();
-    await page.click("button.add:has-text('+ task')");
+    await page.click("button.add:has-text('task')");
     await page.locator(".composer textarea").fill("write docs");
     await page.click(".composer button.primary");
     await page.locator(".trow", { hasText: "write docs" }).waitFor();
@@ -137,7 +138,7 @@ const errors = [];
     await page.locator(".entry .md strong", { hasText: "Stream the CSV" }).waitFor();
     await page.click("role=tab[name=/Log/]");
     await page.locator(".entry .stamp").first().waitFor();
-    await page.click("button.add:has-text('+ log')");
+    await page.click("button.add:has-text('log')");
     await page.locator(".composer textarea").fill("switched to streaming writer");
     await page.click(".composer button.primary");
     await page.locator(".entry", { hasText: "switched to streaming writer" }).waitFor();
@@ -188,21 +189,79 @@ const errors = [];
     if (await rows.first().locator(".ago").count() !== 1) throw new Error("no time");
   });
 
-  await step("request: editable while triaging", async () => {
+  await step("request: a frozen version takes a new one and goes back to requested", async () => {
     await page.goto(item("safari-login-fails-after-password-reset"));
-    await page.click("button.add:has-text('edit request')");
-    await page.fill(".request textarea", "Safari 16 and 17 bounce back to /login after a password reset.");
-    await page.click(".request button.primary");
-    await page.locator(".request", { hasText: "16 and 17" }).waitFor();
+    await page.click("button.add:has-text('new version')");
+    await page.fill(".popup input[aria-label=URL]", "https://example.com/reset");
+    await page.fill(".popup textarea", "Safari 16 and 17 bounce back to /login after a password reset.");
+    await page.click(".popup button.primary");
+    await page.waitForFunction(() => document.querySelector(".head .stat-label")?.textContent === "requested");
+    await page.locator(".request a.req-url", { hasText: "example.com/reset" }).waitFor();
+    await page.click(".request button:has-text('versions')");
+    await page.locator(".version .tgroup").first().click();
+    await page.locator(".diff .add-l", { hasText: "16 and 17" }).waitFor();
+    await page.locator(".diff .del-l").first().waitFor();
+    await page.screenshot({ path: out + "/request-versions.png", fullPage: true });
   });
 
-  await step("request: a later change goes back to triage", async () => {
+  await step("request: editable in place while requested", async () => {
+    await page.click("button.add:has-text('edit')");
+    await page.fill(".request textarea", "Safari 16 and 17 bounce back to /login after a password reset. Chrome is fine.");
+    await page.click(".request button.primary");
+    await page.locator(".request", { hasText: "Chrome is fine" }).waitFor();
+  });
+
+  await step("request: a refused edit keeps the draft and offers a new version", async () => {
+    await page.click("button.add:has-text('edit')");
+    await page.fill(".request textarea", "my draft");
+    const v = await (await fetch(base + "/api/projects/web/changes?since=0&limit=5000", { headers: { authorization: "Bearer " + tokens.pat } })).json();
+    const it = v.changes.filter((c) => c.entity === "item" && c.data && c.data.id === "safari-login-fails-after-password-reset").pop();
+    await api("dev", [{ op_id: "tri-" + Date.now(), op: "set", entity: "item", uid: it.uid, item_uid: it.uid, data: { status: "in-triage" }, base: { status: it.data.versions.status } }]);
+    await page.click(".request button.primary");
+    await page.locator(".request button:has-text('Save as v3')").waitFor();
+    if ((await page.inputValue(".request textarea")) !== "my draft") throw new Error("draft lost");
+    await page.keyboard.press("Escape");
+  });
+
+  await step("override: other… needs a reason and is marked in history", async () => {
+    await page.goto(item("gift-cards"));
+    await page.click("button[aria-label=status]");
+    await page.locator(".menu li", { hasText: "other…" }).click();
+    if (await page.locator(".popup button.danger").isEnabled()) throw new Error("override without a reason allowed");
+    await page.selectOption(".popup select", "in-progress");
+    await page.fill(".popup textarea", "already built during the spike");
+    await page.click(".popup button.danger");
+    await page.waitForFunction(() => document.querySelector(".head .stat-label")?.textContent === "in-progress");
+    await page.locator(".wide-only .hist .tag", { hasText: "override" }).waitFor();
+  });
+
+  await step("rail: app and section, related items, glance opens tasks", async () => {
     await page.goto(item("export-invoices-as-csv"));
-    await page.click("button.add:has-text('change request')");
-    await page.fill(".popup textarea", "Finance wants CSV and XLSX exports.");
+    await page.locator(".wide-only .kv button.edit-text").first().click();
+    await page.fill(".popup input[aria-label=app]", "billing");
+    await page.fill(".popup input[aria-label=section]", "invoices");
     await page.click(".popup button.primary");
-    await page.waitForFunction(() => document.querySelector(".head .stat-label")?.textContent === "in-triage");
-    await page.locator(".request", { hasText: "XLSX" }).waitFor();
+    await page.locator(".wide-only .kv", { hasText: "invoices" }).waitFor();
+    await page.click(".wide-only button[aria-label='relate an item']");
+    await page.fill(".popup input[aria-label='find an item']", "Maintenance");
+    await page.locator(".popup .pick", { hasText: "Maintenance banner" }).click();
+    await page.locator(".wide-only .rrow a", { hasText: "Maintenance banner" }).waitFor();
+    await page.click(".wide-only .glance-block");
+    await page.locator("role=tab[name=/Tasks/][selected=true]").waitFor();
+    await page.screenshot({ path: out + "/item-rail.png", fullPage: true });
+    await page.goto(item("maintenance-banner"));
+    await page.locator(".wide-only .rrow a", { hasText: "Export invoices" }).waitFor();
+  });
+
+  await step("tasks: a phase takes a title", async () => {
+    await page.goto(item("export-invoices-as-csv"));
+    await page.click("role=tab[name=/Tasks/]");
+    const row = page.locator(".tgroup-row", { hasText: "phase 2" });
+    await row.hover();
+    await row.locator(".phase-title button").click();
+    await row.locator(".phase-title input").fill("UI");
+    await page.keyboard.press("Enter");
+    await page.locator(".tgroup-row .phase-title", { hasText: "UI" }).waitFor();
   });
 
   await step("a stale write shows a notice and keeps the page", async () => {
@@ -236,36 +295,6 @@ const errors = [];
     await p3.close();
   });
 
-  await step("a refused change request leaves the status alone", async () => {
-    const p4 = await ctx.newPage();
-    await p4.route("**/api/projects/*/changes*", (r) => r.abort());
-    await p4.goto(item("maintenance-banner"));
-    const before = await p4.locator(".head .stat-label").first().textContent();
-    await p4.click("button.add:has-text('change request')");
-    // Pat sends it back to requested, edits the request and returns it, so the
-    // popup's pinned version of the request is now stale.
-    const row = async (pred) => {
-      const v = await (await fetch(base + "/api/projects/web/changes?since=0&limit=2000", { headers: { authorization: "Bearer " + tokens.pat } })).json();
-      return v.changes.find(pred);
-    };
-    const it = await row((c) => c.entity === "item" && c.data && c.data.title === "Maintenance banner");
-    const req = await row((c) => c.entity === "note" && c.data && c.data.kind === "ticket-request" && c.item_uid === it.uid);
-    const move = async (to) => {
-      const cur = await row((c) => c.uid === it.uid);
-      await api("pat", [{ op_id: "mv-" + to + Date.now(), op: "set", entity: "item", uid: it.uid, item_uid: it.uid, data: { status: to }, base: { status: cur.data.versions.status } }]);
-    };
-    await move("requested");
-    await api("pat", [{ op_id: "rq-" + Date.now(), op: "set", entity: "note", uid: req.uid, item_uid: it.uid, data: { text: req.data.text + " (pat)" }, base: { text: req.data.versions.text } }]);
-    await move(before);
-    await p4.fill(".popup textarea", "my change");
-    await p4.click(".popup button.primary");
-    await p4.locator(".toasts .toast").waitFor();
-    await p4.close();
-    await page.goto(item("maintenance-banner"));
-    const after = await page.locator(".head .stat-label").first().textContent();
-    if (after !== before) throw new Error(`${before} → ${after}`);
-  });
-
   await step("QA: reject needs a comment", async () => {
     await login("qa", "/p/web/qa");
     await page.screenshot({ path: out + "/qa.png", fullPage: true });
@@ -280,9 +309,12 @@ const errors = [];
   await step("deploy: pending checks need a confirmed force", async () => {
     await page.goto(base + "/p/web/deploy");
     await page.screenshot({ path: out + "/deploy.png", fullPage: true });
-    await page.locator(".lrow", { hasText: "Store times in UTC" }).locator("button:has-text('Mark deployed')").click();
+    const ticket = page.locator(".ticket", { hasText: "Store times in UTC" });
+    await ticket.locator(".check-row", { hasText: "convert timestamps" }).waitFor();
+    await ticket.locator("button:has-text('Mark deployed')").click();
     await page.locator(".popup button.danger", { hasText: "Deploy anyway" }).click();
-    await page.locator(".lrow", { hasText: "Store times in UTC" }).waitFor({ state: "detached" });
+    await page.locator(".label", { hasText: "Deployed · still to do" }).waitFor();
+    await page.locator(".ticket", { hasText: "Store times in UTC" }).locator("button:has-text('Mark deployed')").waitFor({ state: "detached" });
   });
 
   await step("inbox: rows open the item and mark read", async () => {
@@ -296,13 +328,28 @@ const errors = [];
     await page.waitForFunction(() => !document.querySelector("a.lrow.unread"));
   });
 
-  await step("new request lands on its item page", async () => {
+  await step("new request with app, section, URL and a dropped image", async () => {
     await login("pat", "/p/web/new");
     await page.fill("input[name=title]", "Dark mode for reports");
+    await page.fill("input[name=app]", "storefront");
+    await page.fill("input[name=section]", "reports");
+    await page.fill("input[name=url]", "https://example.com/reports");
     await page.fill("textarea[name=description]", "Reports are unreadable at night.");
+    await page.evaluate(async (png) => {
+      const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "night.png", { type: "image/png" }));
+      const ta = document.querySelector("textarea[name=description]");
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      ta.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }, PNG);
+    await page.waitForFunction(() => /\/api\/files\/web\/new\/\w+\.png/.test(document.querySelector("textarea[name=description]").value));
     await page.click("button:has-text('Submit')");
     await page.waitForURL(/\/i\/dark-mode-for-reports/);
     await page.locator(".request", { hasText: "unreadable at night" }).waitFor();
+    await page.locator(".request a.req-url").waitFor();
+    await page.waitForFunction(() => { const i = document.querySelector(".request img"); return i && i.complete && i.naturalWidth > 0; });
+    await page.locator(".wide-only .kv", { hasText: "reports" }).waitFor();
   });
 
   await step("live refresh picks up another user's change", async () => {
@@ -317,7 +364,7 @@ const errors = [];
     const mobile = await browser.newContext({ viewport: { width: 400, height: 860 } });
     await mobile.addCookies(await ctx.cookies());
     const mp = await mobile.newPage();
-    for (const path of ["/p/web", "/p/web/i/export-invoices-as-csv", "/p/web/qa", "/inbox"]) {
+    for (const path of ["/p/web", "/p/web/i/export-invoices-as-csv", "/p/web/i/safari-login-fails-after-password-reset", "/p/web/qa", "/p/web/deploy", "/inbox"]) {
       await mp.goto(base + path);
       await mp.waitForTimeout(400);
       if (await mp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) throw new Error(path + " overflows");

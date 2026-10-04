@@ -94,7 +94,12 @@ await child(tz, "dev", "check", { kind: "env-var", title: "set TZ", payload: "TZ
 await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check reports", timing: "post-deploy" });
 
 // ── the bulk ─────────────────────────────────────────────────────────────────
-const AREAS = ["checkout", "billing", "search", "onboarding", "notifications", "reports", "settings", "admin", "mobile web", "API"];
+// [app, section]
+const AREAS: [string, string][] = [
+  ["storefront", "checkout"], ["billing", "invoices"], ["storefront", "search"], ["storefront", "onboarding"],
+  ["notifications", "email"], ["reports", "dashboards"], ["account", "settings"], ["admin", "users"],
+  ["mobile", "navigation"], ["api", "webhooks"], ["billing", "plans"],
+];
 const WORK: [string, "feature" | "bug" | "refactor"][] = [
   ["Apple Pay at checkout", "feature"], ["Coupon codes stack twice", "bug"], ["Saved carts across devices", "feature"],
   ["Tax rounding off by a cent", "bug"], ["Annual billing toggle", "feature"], ["Prorate seat changes", "feature"],
@@ -161,6 +166,11 @@ async function flesh(it: Seeded, to: string) {
   const started = at >= PATH.indexOf("in-progress") || ["blocked"].includes(to);
   if (started) {
     const n = 2 + Math.floor(rand() * 5);
+    if (chance(0.6)) {
+      const [row] = await d.query("select versions from items where uid = $1 and project = $2", [it.uid, it.project]);
+      await run(it.project, it.dev, [{ op: "set", entity: "item", uid: it.uid, item_uid: it.uid, base: row.versions,
+        data: { "extra.phases": pick([{ "1": "Build", "2": "Polish" }, { "1": "Backend", "2": "UI" }, { "1": "Schema", "2": "Rollout" }]) } }]);
+    }
     const shipped = at >= PATH.indexOf("review");
     for (let i = 0; i < n; i++) {
       const phase = i < n / 2 ? 1 : 2;
@@ -173,6 +183,8 @@ async function flesh(it: Seeded, to: string) {
   if (at >= PATH.indexOf("review")) {
     const pr = 100 + Math.floor(rand() * 900);
     await child(it, it.dev, "note", { kind: "link", text: `PR #${pr}`, meta: { url: `https://example.com/pr/${pr}`, label: `PR #${pr}`, type: "pr" } });
+    if (chance(0.3)) await child(it, it.creator, "note", { kind: "link", text: "Figma", meta: { url: `https://example.com/design/${pr}`, label: "Figma", type: "design" } });
+    if (chance(0.2)) await child(it, it.dev, "note", { kind: "link", text: "Runbook", meta: { url: `https://example.com/docs/${pr}`, label: "Runbook", type: "documentation" } });
     if (chance(0.5)) await child(it, it.dev, "note", { kind: "link", text: "Preview", meta: { url: `https://example.com/preview/${pr}`, label: "Preview", type: "preview" } });
   }
   if (chance(0.45)) await child(it, pick([it.creator, it.dev, it.qa]), "note", { kind: "comment", text: pick(COMMENTS).replace("%qa", it.qa).replace("%dev", it.dev) });
@@ -188,8 +200,9 @@ let k = 0;
 for (const [to, count] of TARGETS) {
   for (let i = 0; i < count; i++, w++) {
     const [title, type] = WORK[w % WORK.length];
-    const area = AREAS[(w * 7) % AREAS.length];
-    const it = await item("web", title, { type, priority: pick(["low", "medium", "medium", "medium", "high", "high", "urgent"]) },
+    const [app, area] = AREAS[(w * 7) % AREAS.length];
+    const it = await item("web", title, { type, priority: pick(["low", "medium", "medium", "medium", "high", "high", "urgent"]),
+                                          extra: { app, section: area } },
       `${type === "bug" ? "Broken" : "Wanted"} in ${area}: ${title.toLowerCase()}.\n\n${type === "bug" ? "Steps:\n\n- open " + area + "\n- try it\n- see it fail" : "Why: customers keep asking in support tickets."}`);
     k++;
     const bounce = ["deployed", "ready-to-deploy", "in-qa"].includes(to) && k % 4 === 0;
@@ -249,6 +262,16 @@ const [cur3] = await d.query("select text from notes where item_uid = $1 and kin
 await newVersion(untriaged, `${cur3.text}\n\nScope change: include the mobile web layout.`);
 await status(untriaged, untriaged.dev, "in-progress");          // straight back to work, skipping triage
 
+// Related work: neighbours in the same area.
+const web = await d.query("select uid, extra->>'section' as section from items where project = 'web' and extra ? 'section' order by created, uid");
+const bySection = new Map<string, string[]>();
+for (const r of web) bySection.set(r.section, [...(bySection.get(r.section) ?? []), r.uid]);
+for (const uids of bySection.values()) {
+  for (let i = 0; i + 1 < uids.length && i < 4; i += 2) {
+    await run("web", pick(DEVS), [{ op: "create", entity: "note", uid: ulid(), item_uid: uids[i], data: { kind: "relation", text: "related", ts: now(), meta: { item: uids[i + 1] } } }]);
+  }
+}
+
 // An override, so history shows one.
 const hot = await pickItem("todo", 2);
 await status(hot, "pat", "in-qa", { override: true, reason: "hotfix already on staging; QA to verify directly" });
@@ -282,6 +305,21 @@ for (const [i, it] of items.entries()) {
   for (const table of ["notes", "logs"]) {
     const rows = await d.query(`select uid from ${table} where project = $1 and item_uid = $2 order by n`, [it.project, it.uid]);
     for (const [n, r] of rows.entries()) await d.query(`update ${table} set ts = $3 where project = $1 and uid = $2`, [it.project, r.uid, at(Math.min(n + 1, hist.length + 1))]);
+  }
+  // Request versions freeze, and are triaged, on the moves that did it. Version
+  // k becomes current at the k-th move back to `requested`.
+  const moves = await d.query("select from_status, to_status, ts from status_history where project = $1 and item_uid = $2 order by n", [it.project, it.uid]);
+  const reqs = await d.query("select uid, meta from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' order by n", [it.project, it.uid]);
+  const backs = moves.map((h, n) => (h.to_status === "requested" ? n : -1)).filter((n) => n >= 0);
+  for (const [k, r] of reqs.entries()) {
+    const m = { ...r.meta };
+    const from = k === 0 ? 0 : backs[k - 1] + 1;
+    const freeze = moves.findIndex((h, n) => n >= from && h.from_status === "requested");
+    if (m.frozen && freeze >= 0) m.frozen_at = moves[freeze].ts;
+    const triage = moves.findIndex((h, n) => n > freeze && h.from_status === "in-triage");
+    if (m.triaged && triage >= 0) m.triaged_at = moves[triage].ts;
+    await d.query("update notes set meta = $3::jsonb, ts = $4 where project = $1 and uid = $2",
+                  [it.project, r.uid, JSON.stringify(m), k === 0 ? new Date(start).toISOString() : moves[from - 1].ts]);
   }
   await d.query("update items set completed = (select max(ts) from status_history h where h.project = $1 and h.item_uid = $2) where project = $1 and uid = $2 and completed is not null", [it.project, it.uid]);
 }
