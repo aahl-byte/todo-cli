@@ -457,6 +457,13 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.getByText("Created by the API").waitFor({ timeout: 10000 });
   });
 
+  await step("settings: linked from the nav; an unlinked project says so", async () => {
+    await page.goto(base + "/p/web");
+    await page.locator("nav").getByRole("link", { name: "Settings" }).click();
+    await page.waitForURL(/\/p\/web\/settings$/);
+    await page.getByText("This project isn't linked to Jira.").waitFor({ timeout: 5000 });
+  });
+
   await step("narrow screens never scroll sideways", async () => {
     const mobile = await browser.newContext({ viewport: { width: 400, height: 860 } });
     await mobile.addCookies(await ctx.cookies());
