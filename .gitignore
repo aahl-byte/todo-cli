@@ -9,3 +9,6 @@ dist
 TODO.yaml
 /ARCHIVE/
 .TODO
+
+.env
+.env.*
