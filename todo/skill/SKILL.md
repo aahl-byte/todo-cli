@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.8.0
+version: 0.8.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -195,6 +195,7 @@ todo reject <query> <text...>    # QA → qa-rejected with a required comment
 todo add "<title>" --request "<text>"   # file a requested item with its ticket request
 todo request <query> --text "<text>" [--url U]   # post a new request version (back to requested)
 todo add "<title>" --request "<text>" [--url U] [--app A] [--section S]
+todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items

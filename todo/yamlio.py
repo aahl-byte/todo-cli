@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import SingleQuotedScalarString
 
@@ -50,18 +51,26 @@ def load(file: Path):
     return y, y.load(file.read_text())
 
 
-_reader = None
+_readers = {}
+
+
+def _reader(pure: bool) -> YAML:
+    if pure not in _readers:
+        r = YAML(typ="safe", pure=pure)
+        r.constructor.add_constructor("tag:yaml.org,2002:timestamp", lambda c, n: n.value)
+        _readers[pure] = r
+    return _readers[pure]
 
 
 def read(file: Path):
     """Parse for reading only — plain dicts/lists via the C loader, several times
-    faster than the round-trip parser. Timestamps stay strings, as in `yaml()`."""
-    global _reader
-    if _reader is None:
-        _reader = YAML(typ="safe")
-        _reader.constructor.add_constructor("tag:yaml.org,2002:timestamp",
-                                            lambda c, n: n.value)
-    return _reader.load(file.read_text())
+    faster than the round-trip parser. Timestamps stay strings, as in `yaml()`.
+    Flow maps the C loader (YAML 1.1) rejects fall back to the pure loader."""
+    text = file.read_text()
+    try:
+        return _reader(False).load(text)
+    except YAMLError:
+        return _reader(True).load(text)
 
 
 def dump(y: YAML, data) -> str:

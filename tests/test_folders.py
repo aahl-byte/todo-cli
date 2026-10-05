@@ -7,7 +7,7 @@ from pathlib import Path
 from todo import store
 from todo.cli import build_parser
 
-from .conftest import TS
+from .conftest import TS, run_cli
 
 
 def run(root, argv):
@@ -79,3 +79,13 @@ def test_add_never_reuses_an_archived_id(root):
 def test_list_orders_by_created(root):
     store.add_todo(root, "zeta", "2026-01-01T00:00:00.000Z")
     assert [it["id"] for it in store.list_todos(root)] == ["zeta", "alpha", "beta"]
+
+
+def test_get_reads_items_the_c_loader_rejects(root, capsys):
+    d = root / "ARCHIVED" / "old-flow"
+    d.mkdir(parents=True)
+    (d / store.ITEM_FILE).write_text(
+        "{id: old-flow, title: old flow, status: done, priority: medium,\n"
+        "phase: null, created: 2026-06-24T01:03:56.298Z, completed: 2026-06-24T21:23:30.207Z}\n")
+    run_cli(root, ["get", "beta"])
+    assert store.get_item(root, "old-flow")["created"] == "2026-06-24T01:03:56.298Z"

@@ -236,3 +236,10 @@ def test_request_without_text_only_moves_and_stray_words_are_refused(root):
     it = store.resolve_item(root, "safari-login")
     assert it["status"] == "requested"
     assert len([n for n in it["notes"] if n["kind"] == "ticket-request"]) == 1
+
+
+def test_set_title_renames_and_refuses_empty(root):
+    run_cli(root, ["set", "beta", "title", "Beta", "merged"])
+    assert store.resolve_item(root, "beta")["title"] == "Beta merged"
+    with pytest.raises(SystemExit):
+        run_cli(root, ["set", "beta", "title", "none"])

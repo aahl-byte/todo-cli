@@ -229,6 +229,8 @@ def cmd_set(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     value = " ".join(args.value).strip()
     value = None if value.lower() in ("", "none", "-") else value
+    if args.field == "title" and not value:
+        die("A title can't be cleared.", 2)
     store.update_todo(root, it["id"], {args.field: value})
     print(f'{it["id"]}: {args.field} = {value or "—"}')
 
@@ -893,9 +895,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--section", default=None, help="the section of that app")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("set", parents=[common], help="set an item's app or section (none clears it)")
+    p = sub.add_parser("set", parents=[common], help="set an item's title, app or section (none clears app/section)")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("field", choices=["app", "section"])
+    p.add_argument("field", choices=["title", "app", "section"])
     p.add_argument("value", nargs="+", help="the value, or none")
     p.set_defaults(func=cmd_set)
 
