@@ -1,6 +1,7 @@
 // The todo → Jira half: apply.ts queues rows, flush.ts delivers them.
 import type { Db } from "../db";
 import type { Actor } from "../apply";
+import { jiraReadOnly } from "./config";
 
 export type JiraEvent =
   | { kind: "status"; project: string; itemUid: string; status: string }
@@ -44,6 +45,7 @@ export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<
 }
 
 export async function enqueue(t: Db, project: string, itemUid: string, action: string, payload: Record<string, unknown>) {
+  if (jiraReadOnly()) return;
   await t.query("insert into jira_outbox (project, item_uid, action, payload) values ($1, $2, $3, $4::jsonb)",
     [project, itemUid, action, JSON.stringify(payload)]);
 }

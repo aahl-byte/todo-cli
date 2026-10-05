@@ -1,4 +1,4 @@
-import type { JiraConfig } from "./config";
+import { jiraReadOnly, type JiraConfig } from "./config";
 
 export type Fetch = typeof fetch;
 
@@ -9,6 +9,10 @@ export class JiraClient {
   constructor(private cfg: JiraConfig, private fetchImpl: Fetch = fetch) {}
 
   async call(method: string, path: string, body?: unknown): Promise<any> {
+    // Search is a POST that only reads; every other non-GET writes.
+    if (jiraReadOnly() && method !== "GET" && !path.startsWith("/rest/api/3/search")) {
+      throw new Error(`Jira is read-only here: refused ${method} ${path}`);
+    }
     const auth = Buffer.from(`${this.cfg.email}:${this.cfg.token}`).toString("base64");
     const res = await this.fetchImpl(this.cfg.baseUrl + path, {
       method,

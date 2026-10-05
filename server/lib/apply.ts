@@ -7,6 +7,7 @@ import {
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
+import { jiraReadOnly } from "./jira/config";
 
 export interface Op {
   op_id: string;
@@ -366,6 +367,13 @@ async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, 
   row.meta.version = Number(m.n) === 0 ? 1 : Number(m.v) + 1;
   const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if (!item || item.status === "requested") return { bounce: false };
+  // Mirroring a read-only Jira, the item stays where Jira has it, and Jira's
+  // workflow is the triage.
+  if (ctx.actor.bridge && jiraReadOnly()) {
+    Object.assign(row.meta, { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: "jira",
+                              triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle });
+    return { bounce: false };
+  }
   // An item's first request, arriving after work began, records what it was
   // built against: frozen at once and flagged untriaged.
   if (row.meta.version === 1) {
@@ -418,7 +426,10 @@ async function requestLifecycle(ctx: Ctx, itemUid: string, from: string, to: str
     const open = await ctx.t.query(
       `select * from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' and coalesce(meta->>'frozen', 'false') <> 'true'`,
       [ctx.project, itemUid]);
-    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: to === "in-triage" ? "triage" : "skip" };
+    const viaJira = ctx.actor.bridge && jiraReadOnly() && to !== "in-triage";
+    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle,
+                    frozen_via: to === "in-triage" ? "triage" : viaJira ? "jira" : "skip",
+                    ...(viaJira ? { triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle } : {}) };
     for (const n of open) await writeRequestMeta(ctx, n, { version: n.meta?.version ?? 1, ...stamp });
     return;
   }
@@ -495,6 +506,11 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     const checked = !ctx.actor.unconditional && field !== "position";
     if (checked && version !== undefined && op.base?.[field] !== version) {
       rejected.push({ field, reason: "stale", server_value: current, version, ...(await ctx.who(version)) });
+      continue;
+    }
+    if (entity === "item" && field === "status" && !ctx.actor.bridge && jiraReadOnly()
+        && (await ctx.t.query("select 1 from jira_links where project = $1 and item_uid = $2", [ctx.project, row.uid])).length) {
+      rejected.push({ field, reason: "jira-read-only", server_value: current, version });
       continue;
     }
     if (entity === "item" && field === "status") {

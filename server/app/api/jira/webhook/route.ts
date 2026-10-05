@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   const cfg = jiraConfig();
   if (!cfg) return json({ error: "jira bridge not configured" }, 503);
   const secret = new URL(req.url).searchParams.get("secret") ?? "";
-  if (!matches(secret, cfg.webhookSecret)) return json({ error: "unauthorized" }, 401);
+  if (!cfg.webhookSecret || !matches(secret, cfg.webhookSecret)) return json({ error: "unauthorized" }, 401);
   const payload = await req.json().catch(() => null);
   const d = await db();
   const result = await handleWebhook(d, payload, {

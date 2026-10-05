@@ -7,8 +7,13 @@ import { applyOps, type Actor, type Op } from "../apply";
 import { STATUSES, nowIso } from "../model";
 import { adfToText } from "./adf";
 import type { Fetch } from "./client";
-import { COMMENT_MARK, jiraConfig, ownAccountId } from "./config";
+import { COMMENT_MARK, jiraConfig, jiraReadOnly, ownAccountId } from "./config";
 import { enqueue, jiraTarget } from "./outbound";
+
+const PRIORITY: Record<string, string> = { critical: "urgent", highest: "urgent", blocker: "urgent", high: "high",
+                                           medium: "medium", low: "low", lowest: "low" };
+/** The todo priority for a Jira priority name; unknown names are medium. */
+export const jiraPriority = (name: unknown) => PRIORITY[String(name ?? "").toLowerCase()] ?? "medium";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
@@ -21,11 +26,11 @@ export interface InboundResult {
 }
 
 /** A stable 26-char uid for a Jira-originated entity. */
-function jiraUid(...parts: string[]): string {
+export function jiraUid(...parts: string[]): string {
   return "J" + crypto.createHash("sha1").update(parts.join("\u001f")).digest("hex").slice(0, 25).toUpperCase();
 }
 
-async function handleFor(db: Db, p: Person): Promise<string | null> {
+export async function handleFor(db: Db, p: Person): Promise<string | null> {
   if (!p) return null;
   if (p.accountId) {
     const [u] = await db.query("select handle from users where jira_account_id = $1", [p.accountId]);
@@ -60,8 +65,10 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
     return created(db, project.key, issue);
   }
   if (!link) return { handled: false, reason: "issue not linked" };
+  // Read-only, todo never writes to Jira, so no change there is our echo.
+  const readOnly = jiraReadOnly();
   const cfg = jiraConfig();
-  const own = cfg ? await ownAccountId(cfg, opts.fetchImpl) : null;
+  const own = cfg && !readOnly ? await ownAccountId(cfg, opts.fetchImpl) : null;
   if (event === "jira:issue_updated") {
     if (own && payload.user?.accountId === own) {
       await stamp(db, link, payload);
@@ -70,7 +77,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
     // Without knowing our own account, a late echo of our transition could roll
     // the item back; ask Jira to redeliver once the account is known.
     const statusChange = (payload.changelog?.items ?? []).some((x: any) => x.field === "status");
-    if (!own && statusChange) {
+    if (!own && !readOnly && statusChange) {
       // Apply the rest now; ask Jira to redeliver for the status.
       const rest = { ...payload, changelog: { ...payload.changelog, items: payload.changelog.items.filter((x: any) => x.field !== "status") } };
       await updated(db, link, issue, rest, opts.deliveryId, ":rest");
@@ -125,6 +132,10 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
     const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
     if (todo && !echo) data.status = todo;
   }
+  if (items.some((x) => x.field === "summary") && !older(link.last_event_at) && issue.fields?.summary) {
+    data.title = String(issue.fields.summary);
+  }
+  if (items.some((x) => x.field === "priority") && issue.fields?.priority?.name) data.priority = jiraPriority(issue.fields.priority.name);
   const request = !older(link.last_event_at) && items.some((x) => x.field === "description" || x.field === "summary")
     ? await changedRequest(db, link, issue) : null;
   if (!Object.keys(data).length && !request) {
@@ -198,6 +209,7 @@ async function commented(db: Db, link: any, comment: any, own: string | null): P
   if (ours.length) return { handled: false, reason: "own comment" };
   const op: Op = { op_id: `jira:comment:${comment.id}`, op: "create", entity: "note",
                    uid: jiraUid("comment", String(comment.id)), item_uid: link.item_uid,
-                   data: { kind: "comment", text, meta: { jira_comment_id: String(comment.id) }, source: "jira" } };
+                   data: { kind: "comment", text, meta: { jira_comment_id: String(comment.id) }, source: "jira",
+                           ...(comment.created ? { ts: new Date(comment.created).toISOString() } : {}) } };
   return { handled: true, results: await applyOps(db, link.project, [op], await bridgeActor(db, comment.author)) };
 }

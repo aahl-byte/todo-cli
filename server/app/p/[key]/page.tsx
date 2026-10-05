@@ -62,9 +62,11 @@ export default async function Board({ params, searchParams }: { params: Promise<
                 <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card s-${c.status}`} data-uid={c.uid}>
                   {col.statuses.length > 1 && <Led status={c.status} label />}
                   <div className="title">{c.title}</div>
-                  {c.extra?.app && <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>}
+                  {c.extra?.app ? <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>
+                    : c.extra?.epic && <div className="where" data-tip="epic">{c.extra.epic}</div>}
                   <div className="meta">
                     {who && <span className="av" data-tip={[c.developer && `dev ${c.developer}`, c.qa_assignee && `qa ${c.qa_assignee}`].filter(Boolean).join(" · ")}>{initials(who)}</span>}
+                    {c.jira_key && <span className="tag key">{c.jira_key}</span>}
                     {c.type === "bug" && <span className="tag bug">bug</span>}
                     {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
                     {c.open_questions > 0 && <span className="tag hot" data-tip="open questions">?{c.open_questions}</span>}

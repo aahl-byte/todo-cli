@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { logoutAction } from "@/app/actions";
 import type { Project } from "@/lib/views";
+import { jiraReadOnly } from "@/lib/jira/config";
 import { Live } from "./Live";
 import { Nav } from "./Nav";
 import { Toaster } from "./Toaster";
@@ -18,6 +19,7 @@ export function TopBar({ handle, project, all }: { handle: string; project?: Pro
       ) : project && <span className="label proj">{project.name || project.key}</span>}
       {project && <Nav projectKey={project.key} deployStep={project.deploy_step} />}
       <span className="spacer" />
+      {jiraReadOnly() && <span className="tag" data-tip="Jira is mirrored here; nothing is written back">Jira read-only</span>}
       {project && <Link href={`/p/${project.key}/new`} className="add"><span className="pl" aria-hidden="true">+</span>request</Link>}
       <Live project={project?.key} cursor={project?.seq} />
       <details className="switcher user">

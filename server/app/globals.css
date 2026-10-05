@@ -426,6 +426,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .more-n summary { cursor: pointer; color: var(--dim); font-size: 11px; padding: 3px 0; list-style: none; }
 .empty-inbox { text-align: center; padding: 48px 0; color: var(--dim); }
 
+.tag.key { font-family: var(--mono); letter-spacing: 0; text-transform: none; }
 .label.section { font-size: 11px; color: var(--text); margin: 20px 0 8px; }
 
 /* role filters */

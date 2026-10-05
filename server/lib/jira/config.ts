@@ -4,22 +4,26 @@ export interface JiraConfig {
   baseUrl: string;
   email: string;
   token: string;
-  webhookSecret: string;
+  /** Unset when only polling; the webhook route then refuses every call. */
+  webhookSecret?: string;
   /** The integration's own account, whose changes are never imported. */
   accountId?: string;
 }
 
 export function jiraConfig(): JiraConfig | null {
   const { JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_WEBHOOK_SECRET, JIRA_ACCOUNT_ID } = process.env;
-  if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN || !JIRA_WEBHOOK_SECRET) return null;
+  if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN) return null;
   return {
     baseUrl: JIRA_BASE_URL.replace(/\/+$/, ""),
     email: JIRA_EMAIL,
     token: JIRA_API_TOKEN,
-    webhookSecret: JIRA_WEBHOOK_SECRET,
+    webhookSecret: JIRA_WEBHOOK_SECRET || undefined,
     accountId: JIRA_ACCOUNT_ID || undefined,
   };
 }
+
+/** Jira is mirrored but never written to: no outbox rows, no deliveries. */
+export const jiraReadOnly = () => process.env.JIRA_READ_ONLY === "1";
 
 let cachedAccount: string | null = null;
 let failedAt = 0;

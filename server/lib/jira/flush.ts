@@ -7,11 +7,11 @@ import { ulid } from "../ulid";
 import { nowIso } from "../model";
 import { textToAdf } from "./adf";
 import { JiraClient, type Fetch } from "./client";
-import { COMMENT_MARK, LEASE_MINUTES, MAX_ATTEMPTS, jiraConfig } from "./config";
+import { COMMENT_MARK, LEASE_MINUTES, MAX_ATTEMPTS, jiraConfig, jiraReadOnly } from "./config";
 
 export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: number; failed: number }> {
   const cfg = jiraConfig();
-  if (!cfg) return { sent: 0, failed: 0 };
+  if (!cfg || jiraReadOnly()) return { sent: 0, failed: 0 };
   const jira = new JiraClient(cfg, fetchImpl);
   const rows = await db.query(
     `select id from jira_outbox
