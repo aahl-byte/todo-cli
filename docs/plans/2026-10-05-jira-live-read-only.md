@@ -182,3 +182,50 @@ These override the sections above where they differ.
 - **Running:** the Postgres container restarts on its own. The :3940 server and
   the `--every 60` sync run as session background jobs; making them survive a
   session restart (systemd user units) is a separate ask.
+
+## Revision: Jira statuses map to sets of todo statuses
+
+The user's workflow: Jira `Open` is the backlog, `Ready` is todo's `requested`,
+and `In Development` holds all accepted work, which todo splits into
+`in-triage`, `todo`, `in-progress`, `review` and `qa-rejected`.
+
+- **New `projects.jira_inbound` (jsonb):**
+  ```json
+  { "statuses": { "Ready": ["requested"],
+                  "In Development": ["in-progress", "in-triage", "todo", "review", "qa-rejected"],
+                  "Blocked": ["blocked"], "QA": ["ready-for-qa", "in-qa"],
+                  "Ready to Deploy": ["ready-to-deploy"], "Done": ["done", "deployed"] },
+    "transitions": [ { "from": "QA", "to": "In Development", "status": "qa-rejected" } ] }
+  ```
+  - Each Jira status names its set of todo statuses. The first one is the
+    default for an item arriving from outside the set.
+  - Matching is case-insensitive.
+  - A Jira status with no entry is ignored.
+- **Inbound status change** (webhook or replayed changelog, `from` and `to`
+  Jira names):
+  1. A matching transition rule wins.
+  2. Otherwise, if the item's status is already in `to`'s set, nothing changes.
+  3. Otherwise, the item moves to the set's default.
+- **Without `jira_inbound`,** the existing reverse lookup of `jira_status_map`
+  still applies.
+- **Import:** a new item takes the default of its Jira status's set.
+- **Active scope (default JQL):** `statusCategory != Done` and status in the
+  set's keys. Unmapped statuses such as `Open` (the backlog) stay out.
+- **Read-only local moves:** a status move is refused only when the target's
+  Jira status differs from the current one's. Moves inside a set are allowed,
+  because Jira would not change.
+- **Setup:** `npm run jira:project -- sr SR '<status map>' 'Dev Work'
+  '<inbound json>'`.
+- **Outbound** (todo → Jira transitions, comments) is the separate event-rules
+  item, and the read-only mirror doesn't use it.
+- **Re-import** into a fresh database, because existing items took the old
+  mapping.
+
+**Acceptance (js)**
+- An item in `review` stays in `review` when Jira says `In Development`.
+- `QA → In Development` makes it `qa-rejected`.
+- `Ready` maps to `requested`.
+- Import uses each set's default.
+- The JQL excludes `Open`.
+- Read-only allows `in-triage → in-progress` locally and refuses `in-progress →
+  in-qa`.

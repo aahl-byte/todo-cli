@@ -181,6 +181,7 @@ create table if not exists jira_links (
 );
 
 alter table projects add column if not exists jira_synced_at timestamptz;
+alter table projects add column if not exists jira_inbound jsonb;
 alter table jira_links add column if not exists replayed_through bigint;
 alter table status_history add column if not exists override boolean not null default false;
 alter table status_history add column if not exists note text;

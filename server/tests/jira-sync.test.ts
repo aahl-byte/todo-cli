@@ -118,3 +118,54 @@ describe("jira sync", () => {
     await expect(sync(fakeJira().impl)).rejects.toThrow(/JIRA_READ_ONLY/);
   });
 });
+
+describe("jira status sets", () => {
+  const INBOUND = { statuses: { "Ready": ["requested"], "In Development": ["in-progress", "in-triage", "todo", "review", "qa-rejected"],
+                                "Blocked": ["blocked"], "QA": ["ready-for-qa", "in-qa"], "Ready to Deploy": ["ready-to-deploy"],
+                                "Done": ["done", "deployed"] },
+                    transitions: [{ from: "QA", to: "In Development", status: "qa-rejected" }] };
+  beforeEach(async () => {
+    await w.d.query("update projects set jira_inbound = $1::jsonb where key = 'p'", [JSON.stringify(INBOUND)]);
+  });
+  const step = (jira: ReturnType<typeof fakeJira>, id: string, at: string, from: string, to: string) => {
+    jira.state.issue.fields.status = { name: to };
+    jira.state.changelog.push({ id, author: pat, created: at, items: [{ field: "status", fromString: from, toString: to }] });
+  };
+  const status = async () => (await w.d.query("select status from items"))[0].status;
+
+  it("imports into each set's default and scopes the search to mapped statuses", async () => {
+    const jira = fakeJira();
+    jira.state.issue.fields.status = { name: "In Development" };
+    await sync(jira.impl);
+    expect(await status()).toBe("in-progress");
+    const jql = jira.state.calls.find((c) => c.url.endsWith("/search/jql"))!.body.jql;
+    for (const s of Object.keys(INBOUND.statuses)) expect(jql).toContain(`"${s}"`);
+    expect(jql).not.toContain("Open");
+  });
+
+  it("keeps todo's finer status inside a set, and reads QA → In Development as a rejection", async () => {
+    const jira = fakeJira();
+    jira.state.issue.fields.status = { name: "In Development" };
+    await sync(jira.impl);
+    const [it] = await w.d.query("select * from items");
+    expect((await w.one("bob", set("item", it.uid, it.uid, { status: "review" }, { status: it.versions.status }))).status).toBe("applied");
+    const v = (await w.d.query("select versions from items"))[0].versions;
+    expect((await w.one("bob", set("item", it.uid, it.uid, { status: "in-qa" }, { status: v.status }))).rejected?.[0].reason).toBe("jira-read-only");
+    // A stale QA → In Development doesn't touch an item that isn't in QA.
+    step(jira, "200", "2026-10-02T09:00:00.000+0000", "QA", "In Development");
+    await sync(jira.impl);
+    expect(await status()).toBe("review");
+    step(jira, "201", "2026-10-02T10:00:00.000+0000", "In Development", "QA");
+    await sync(jira.impl);
+    expect(await status()).toBe("ready-for-qa");
+    step(jira, "202", "2026-10-02T11:00:00.000+0000", "QA", "In Development");
+    await sync(jira.impl);
+    expect(await status()).toBe("qa-rejected");
+    step(jira, "203", "2026-10-02T12:00:00.000+0000", "In Development", "Ready to Deploy");
+    step(jira, "204", "2026-10-02T13:00:00.000+0000", "Ready to Deploy", "Done");
+    jira.state.issue.fields.status = { name: "Done", statusCategory: { key: "done" } } as any;
+    await sync(jira.impl);
+    expect(await status()).toBe("done");
+    expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
+  });
+});

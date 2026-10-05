@@ -9,6 +9,7 @@ import { adfToText } from "./adf";
 import type { Fetch } from "./client";
 import { COMMENT_MARK, jiraConfig, jiraReadOnly, ownAccountId } from "./config";
 import { enqueue, jiraTarget } from "./outbound";
+import { inboundRules, inboundStatus } from "./rules";
 
 const PRIORITY: Record<string, string> = { critical: "urgent", highest: "urgent", blocker: "urgent", high: "high",
                                            medium: "medium", low: "low", lowest: "low" };
@@ -53,7 +54,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   const issue = payload?.issue;
   if (!issue?.key) return { handled: false, reason: "no issue" };
   const [link] = await db.query(
-    `select l.item_uid, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map from jira_links l
+    `select l.item_uid, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map, p.jira_inbound from jira_links l
        join items i on i.uid = l.item_uid and i.project = l.project join projects p on p.key = l.project
       where l.jira_key = $1`, [issue.key]);
 
@@ -126,11 +127,18 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
   const status = older(link.last_event_at) ? undefined : items.find((x) => x.field === "status");
   if (status) {
     const jiraStatus = String((Object.hasOwn(status, "toString") ? status.toString : null) ?? issue.fields?.status?.name ?? "");
-    const map: Record<string, string> = link.jira_status_map ?? {};
-    const echo = (jiraTarget(map, link.status) ?? "").toLowerCase() === jiraStatus.toLowerCase();
-    // jsonb keeps no key order, so ties go to the earliest status in the lifecycle.
-    const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
-    if (todo && !echo) data.status = todo;
+    const rules = inboundRules(link.jira_inbound);
+    if (rules) {
+      const from = Object.hasOwn(status, "fromString") ? status.fromString : null;
+      const todo = inboundStatus(rules, link.status, from, jiraStatus);
+      if (todo) data.status = todo;
+    } else {
+      const map: Record<string, string> = link.jira_status_map ?? {};
+      const echo = (jiraTarget(map, link.status) ?? "").toLowerCase() === jiraStatus.toLowerCase();
+      // jsonb keeps no key order, so ties go to the earliest status in the lifecycle.
+      const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
+      if (todo && !echo) data.status = todo;
+    }
   }
   if (items.some((x) => x.field === "summary") && !older(link.last_event_at) && issue.fields?.summary) {
     data.title = String(issue.fields.summary);

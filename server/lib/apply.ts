@@ -8,6 +8,7 @@ import {
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
 import { jiraReadOnly } from "./jira/config";
+import { inboundRules, jiraStatusFor } from "./jira/rules";
 
 export interface Op {
   op_id: string;
@@ -466,6 +467,16 @@ export async function backfillRequestVersions(d: Db): Promise<number> {
   return count;
 }
 
+/** Whether a move on a Jira-linked item would need a different Jira status. */
+async function changesJiraStatus(ctx: Ctx, itemUid: string, from: string, to: string): Promise<boolean> {
+  const [link] = await ctx.t.query(
+    `select p.jira_inbound from jira_links l join projects p on p.key = l.project where l.project = $1 and l.item_uid = $2`,
+    [ctx.project, itemUid]);
+  if (!link) return false;
+  const rules = inboundRules(link.jira_inbound);
+  return !rules || jiraStatusFor(rules, from) !== jiraStatusFor(rules, to);
+}
+
 async function set(ctx: Ctx, op: Op): Promise<Result> {
   const { entity } = op;
   const row = await load(ctx, entity, op.uid);
@@ -509,7 +520,7 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       continue;
     }
     if (entity === "item" && field === "status" && !ctx.actor.bridge && jiraReadOnly()
-        && (await ctx.t.query("select 1 from jira_links where project = $1 and item_uid = $2", [ctx.project, row.uid])).length) {
+        && await changesJiraStatus(ctx, row.uid, String(current), String(value))) {
       rejected.push({ field, reason: "jira-read-only", server_value: current, version });
       continue;
     }

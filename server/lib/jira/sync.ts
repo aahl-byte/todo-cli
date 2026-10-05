@@ -9,6 +9,7 @@ import { adfToText } from "./adf";
 import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
 import { handleFor, handleWebhook, jiraPriority, jiraUid } from "./inbound";
+import { inboundRules, inboundStatus, statusSet, type InboundRules } from "./rules";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
@@ -24,10 +25,20 @@ const TASK_STATUS: Record<string, string> = { requested: "todo", todo: "todo", "
 
 const isBug = (f: any) => ["bug", "defect"].includes(String(f?.issuetype?.name ?? "").toLowerCase());
 
-/** Issues to mirror: active work, meaning past the backlog and not done. */
-export function defaultJql(jiraProject: string, map: Record<string, string>): string {
-  const backlog = map.requested ? ` AND status != "${map.requested}"` : "";
-  return `project = "${jiraProject}" AND issuetype not in (Epic, subTaskIssueTypes()) AND statusCategory != Done${backlog}`;
+/** Issues to mirror: active work, meaning a mapped status that isn't done. */
+export function defaultJql(jiraProject: string, map: Record<string, string>, rules: InboundRules | null): string {
+  const scope = rules
+    ? ` AND status in (${Object.keys(rules.statuses).map((k) => `"${k}"`).join(", ")})`
+    : map.requested ? ` AND status != "${map.requested}"` : "";
+  return `project = "${jiraProject}" AND issuetype not in (Epic, subTaskIssueTypes()) AND statusCategory != Done${scope}`;
+}
+
+/** Whether an issue falls in the active scope `defaultJql` selects. */
+function inScope(f: any, map: Record<string, string>, rules: InboundRules | null): boolean {
+  if (f.statusCategory?.key === "done" || f.status?.statusCategory?.key === "done") return false;
+  const name = String(f.status?.name ?? "");
+  if (rules) return statusSet(rules, name) !== null;
+  return !map.requested || name.toLowerCase() !== map.requested.toLowerCase();
 }
 
 /** The todo status a Jira status maps to; ties go to the earliest in `map`'s lifecycle order. */
@@ -97,13 +108,20 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   const meet = async (who: Person) => { if (opts.createUsers && await ensureUser(db, who)) out.users++; };
 
   const imported: string[] = [];
-  const issues = await search(jira, `(${p.jira_jql || defaultJql(p.jira_project, map)})${window} ORDER BY updated ASC`, FIELDS);
+  const rules = inboundRules(p.jira_inbound);
+  const active = defaultJql(p.jira_project, map, rules);
+  // Later passes look at everything that changed, so linked issues that left
+  // the active scope (moved to Done, say) still bring their last moves.
+  const issues = await search(jira, window
+    ? `project = "${p.jira_project}" AND issuetype not in (Epic, subTaskIssueTypes())${window} ORDER BY updated ASC`
+    : `${active} ORDER BY updated ASC`, FIELDS);
   for (const issue of issues) {
     const f = issue.fields ?? {};
-    for (const who of [f.reporter, f.assignee]) await meet(who);
     const [link] = await db.query("select * from jira_links where jira_key = $1", [issue.key]);
+    if (!link && !inScope(f, map, rules)) continue;
+    for (const who of [f.reporter, f.assignee]) await meet(who);
     if (!link) {
-      if (await importIssue(db, projectKey, map, issue)) { out.imported++; imported.push(issue.key); }
+      if (await importIssue(db, projectKey, map, rules, issue)) { out.imported++; imported.push(issue.key); }
     } else {
       const done = Number(link.replayed_through ?? 0);
       const entries = (await changelog(jira, issue.key)).filter((e) => Date.parse(e.created) > done)
@@ -123,19 +141,20 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
       if (r.handled && (r.results as any[])?.some((x) => x.status === "applied" && !x.duplicate)) out.comments++;
     }
   }
-  out.tasks = await syncSubtasks(db, jira, projectKey, p.jira_project, map, window, imported, meet);
+  out.tasks = await syncSubtasks(db, jira, projectKey, p.jira_project, map, rules, window, imported, meet);
   await db.query("update projects set jira_synced_at = $2 where key = $1", [projectKey, startedAt.toISOString()]);
   return out;
 }
 
 /** Create the item, its request and its link, as the issue stands now. */
-async function importIssue(db: Db, project: string, map: Record<string, string>, issue: any): Promise<boolean> {
+async function importIssue(db: Db, project: string, map: Record<string, string>, rules: InboundRules | null, issue: any): Promise<boolean> {
   const f = issue.fields ?? {};
   const uid = jiraUid("item", issue.key);
   const summary = String(f.summary ?? issue.key);
   const description = adfToText(f.description);
   const creator = (await handleFor(db, f.reporter)) ?? "jira-bridge";
-  const status = todoStatus(map, String(f.status?.name ?? "")) ?? "requested";
+  const jiraStatus = String(f.status?.name ?? "");
+  const status = (rules ? inboundStatus(rules, null, null, jiraStatus) : todoStatus(map, jiraStatus)) ?? "requested";
   const epic = f.parent?.fields?.issuetype?.name === "Epic" ? f.parent.fields.summary : undefined;
   const ops: Op[] = [
     { op_id: `jira:${issue.key}:create`, op: "create", entity: "item", uid, item_uid: uid,
@@ -158,7 +177,7 @@ async function importIssue(db: Db, project: string, map: Record<string, string>,
 }
 
 /** Sub-tasks of linked issues, as tasks on the parent item. */
-async function syncSubtasks(db: Db, jira: JiraClient, project: string, jiraProject: string, map: Record<string, string>,
+async function syncSubtasks(db: Db, jira: JiraClient, project: string, jiraProject: string, map: Record<string, string>, rules: InboundRules | null,
                             window: string, imported: string[], meet: (p: Person) => Promise<void>): Promise<number> {
   const links = await db.query("select jira_key, item_uid from jira_links where project = $1", [project]);
   const parentOf = new Map<string, string>(links.map((l) => [l.jira_key, l.item_uid]));
@@ -174,7 +193,9 @@ async function syncSubtasks(db: Db, jira: JiraClient, project: string, jiraProje
     const itemUid = parentOf.get(s.fields?.parent?.key);
     if (!itemUid) continue;
     await meet(s.fields?.assignee);
-    const status = TASK_STATUS[todoStatus(map, String(s.fields?.status?.name ?? "")) ?? "todo"] ?? "todo";
+    const jiraStatus = String(s.fields?.status?.name ?? "");
+    const mapped = rules ? statusSet(rules, jiraStatus)?.[0] : todoStatus(map, jiraStatus);
+    const status = TASK_STATUS[mapped ?? "todo"] ?? "todo";
     const title = String(s.fields?.summary ?? s.key);
     const uid = jiraUid("task", s.key);
     const [task] = await db.query("select title, status, versions from tasks where project = $1 and uid = $2", [project, uid]);
