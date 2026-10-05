@@ -80,7 +80,7 @@ export interface BoardFilters {
 }
 
 export const COLUMNS = [
-  { key: "open", label: "Open", statuses: ["qa-rejected", "blocked", "in-triage", "requested"] },
+  { key: "open", label: "Open", statuses: ["qa-rejected", "in-triage", "blocked", "requested"] },
   { key: "ready", label: "Ready", statuses: ["review", "todo"] },
   { key: "progress", label: "In progress", statuses: ["in-progress"] },
   { key: "qa", label: "QA", statuses: ["in-qa", "ready-for-qa"] },

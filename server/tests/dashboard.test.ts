@@ -108,7 +108,7 @@ describe("views", () => {
     }
     const p = (await project(w.d, "p"))!;
     const by = Object.fromEntries((await board(w.d, p, {}, "bob")).columns.map((c) => [c.key, c.items.map((i) => i.id)]));
-    expect(by.open).toEqual(["o4", "o3", "o5", "o2", "o1"]);
+    expect(by.open).toEqual(["o4", "o5", "o2", "o3", "o1"]);
     expect(by.ready).toEqual(["r2", "r3", "r1"]);
     expect(by.qa).toEqual(["q2", "q1"]);
     expect(by.progress).toEqual([]);

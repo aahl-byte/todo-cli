@@ -112,8 +112,7 @@ These override the sections above where they differ.
   three roles at once.
 - **Ready lists review first**, then todo: the column reads furthest-along
   first, like QA.
-- **Open keeps blocked above in-triage.** The request fixes only the ends
-  (qa-rejected top, requested bottom); stuck work leads the middle.
+- **Open lists qa-rejected, in-triage, blocked, requested.**
 - **Deploy empty state:** decided from the filtered ticket lists, with the
   filter bar still shown.
 - **Tests:** the default-view test targets `filterCards`/`board()` with entries
