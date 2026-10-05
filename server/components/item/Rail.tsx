@@ -126,9 +126,10 @@ function Files({ rows, jiraBase }: { rows: Row[]; jiraBase: string | null }) {
       </div>
       {rows.filter((f) => !f.file_key).map((f) => (
         <div key={f.attachment_id} className="rrow file-row">
+          <span className="tag">{String(f.filename).split(".").pop()?.slice(0, 5) || "file"}</span>
           {jiraBase
-            ? <a className="grow" href={`${jiraBase}/secure/attachment/${f.attachment_id}/${encodeURIComponent(f.filename)}`} target="_blank" rel="noreferrer">📎 {f.filename}</a>
-            : <span className="grow">📎 {f.filename}</span>}
+            ? <a className="grow" href={`${jiraBase}/secure/attachment/${f.attachment_id}/${encodeURIComponent(f.filename)}`} target="_blank" rel="noreferrer">{f.filename} ↗</a>
+            : <span className="grow">{f.filename}</span>}
           <span className="faint">{size(f.size)}</span>
         </div>
       ))}

@@ -437,9 +437,10 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .more-n summary { cursor: pointer; color: var(--dim); font-size: 11px; padding: 3px 0; list-style: none; }
 .empty-inbox { text-align: center; padding: 48px 0; color: var(--dim); }
 
+.files .label span { margin-left: 6px; }
 .files .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
 .files .thumbs img { width: 64px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line-2); background: var(--ink); }
-.file-row { display: flex; gap: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.file-row { display: flex; gap: 8px; align-items: baseline; font-size: 12px; overflow-wrap: anywhere; }
 .tag.key { font-family: var(--mono); letter-spacing: 0; text-transform: none; }
 .label.section { font-size: 11px; color: var(--text); margin: 20px 0 8px; }
 
