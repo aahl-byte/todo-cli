@@ -456,3 +456,25 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .seg .btn:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
 .chip .x { border: 0; background: none; color: var(--dim); cursor: pointer; padding: 0 2px; }
 .role-tabs { margin: -4px 0 14px; overflow-x: auto; }
+
+/* Jira settings */
+.settings { max-width: 900px; }
+.settings-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; margin: 0 0 6px; }
+.hint { color: var(--dim); font-size: 11px; }
+.jira-settings section { margin-bottom: 18px; }
+.jira-settings .label.sub { margin: 14px 0 6px; }
+.rule-table { display: grid; gap: 6px; margin-bottom: 4px; }
+.rule-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.rule-row select, .rule-row input { font: 12px var(--mono); min-width: 9em; }
+.rule-row .arrow { color: var(--faint); font-size: 11px; }
+.rule-row .chips { display: inline-flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+.rule-row .chip.first { color: var(--text); border-color: var(--cyan-dim); }
+.rule-row .x { border: 0; background: none; color: var(--faint); cursor: pointer; padding: 0 2px; font-size: 11px; }
+.rule-row .x:hover { color: var(--danger); }
+.rule-row.tester .result { color: var(--text); }
+.jira-settings .switch { display: flex; gap: 8px; align-items: center; font-size: 12px; margin: 4px 0; }
+.problems { margin: 0 0 10px; padding-left: 18px; font-size: 12px; }
+.problems .error { color: var(--danger); }
+.problems .warning { color: var(--amber); }
+.save-row { display: flex; gap: 10px; align-items: center; }
+.dry-runs { display: grid; gap: 4px; }

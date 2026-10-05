@@ -5,6 +5,7 @@ import { flushJira } from "@/lib/jira/flush";
 import { adfToText } from "@/lib/jira/adf";
 import { resetAccountCache } from "@/lib/jira/config";
 import { describeMove, outboundRules, outboundTarget, validateRules } from "@/lib/jira/rules";
+import { dryRuns, loadJiraSettings, saveJiraSettings } from "@/lib/jira/settings";
 import { STATUSES } from "@/lib/model";
 import { item, set, world, type World } from "./helpers";
 
@@ -595,6 +596,21 @@ describe("event rules", () => {
     await hook({ webhookEvent: "jira:issue_updated", issue: issue({ status: { name: "Done" } }), user: { accountId: "acc-qa" },
                  changelog: { id: "c9", items: [{ field: "status", toString: "Done" }] } });
     expect(await rows()).toEqual([{ action: "comment", status: null, pending: false, result: { dry_run: true } }]);
+  });
+
+  it("saves valid settings with a stamp, stores nothing when invalid, and lists dry runs", async () => {
+    const statuses = vi.fn(async () => new Response(JSON.stringify([{ statuses: [{ name: "To Do" }, { name: "In Progress" }] }])));
+    const bad = await saveJiraSettings(w.d, "p", "alice", INBOUND, outboundRules({ never: ["Open"], triggers: [{ from: "todo", to: "done", jira: "Open" }] })!);
+    expect(bad.map((p) => p.level)).toEqual(["error"]);
+    expect((await w.d.query("select jira_outbound from projects where key = 'p'"))[0].jira_outbound).toBeNull();
+    const ok = await saveJiraSettings(w.d, "p", "alice", INBOUND, outboundRules({ triggers: RULES.triggers.slice(0, 2) })!, ["To Do", "In Progress"]);
+    expect(ok.map((p) => p.message)).toEqual(["Jira has no status In QA."]);
+    const s = await loadJiraSettings(w.d, "p", statuses as unknown as typeof fetch);
+    expect(s).toMatchObject({ jiraProject: "WEB", jiraUrl: "https://acme.atlassian.net/browse/WEB", savedBy: "alice",
+                              jiraStatuses: ["In Progress", "To Do"], inbound: INBOUND, outbound: { writes: false, triggers: RULES.triggers.slice(0, 2) } });
+    const uid = await triaged();
+    await move(uid, "in-progress");
+    expect(await dryRuns(w.d, "p")).toMatchObject([{ action: "transition", key: "WEB-7", status: "In Progress", title: "Safari login fails" }]);
   });
 
   it("tells the trigger which status a request edit bounced the item from", async () => {
