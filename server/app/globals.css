@@ -251,8 +251,7 @@ h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercas
 .trow { display: flex; gap: 8px; align-items: center; padding: 2px 0 2px 18px; }
 .trow .tid { font: 10px var(--mono); color: var(--faint); }
 .trow .ttitle { flex: 1; min-width: 0; font-size: 12.5px; }
-.trow.fin .ttitle { color: var(--dim); }
-.trow.s-done .ttitle .edit-text, .trow.s-cancelled .ttitle .edit-text { text-decoration: line-through; }
+.trow.fin .ttitle { color: var(--faint); }
 .tphase { border: 0; background: none; font: 10px var(--mono); color: var(--faint); padding: 0 3px; border-radius: 3px; }
 .tphase:hover { background: var(--raise); color: var(--dim); }
 .tphase-in { width: 46px; padding: 1px 4px; font-size: 11px; }

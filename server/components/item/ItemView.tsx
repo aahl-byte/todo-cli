@@ -55,17 +55,14 @@ const Fresh = createContext<IsNew>(() => false);
 export const useIsNew = () => useContext(Fresh);
 const NewTag = () => <span className="tag new">new</span>;
 
-function defaultTab(status: string, openQuestions: number): Tab {
-  if (openQuestions) return "questions";
-  if (status === "requested" || status === "in-triage") return "questions";
-  if (["todo", "in-progress", "review", "blocked"].includes(status)) return "tasks";
-  return "comments";
+function defaultTab(openQuestions: number): Tab {
+  return openQuestions ? "questions" : "comments";
 }
 
 export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   const it = data.item;
   const openQs = data.questions.filter((q) => q.meta?.state !== "answered");
-  const [tab, setTab] = useState<Tab>(() => defaultTab(it.status, openQs.length));
+  const [tab, setTab] = useState<Tab>(() => defaultTab(openQs.length));
   const [focus, setFocus] = useState<string | null>(null);
 
   // `#n-3`, `#t-2`, `#l-5`: open the owning tab, expand and scroll to the entry.
@@ -323,7 +320,7 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
       <AddBox label="comment" placeholder="Comment — @ to mention" users={ctx.users} uploads={uploadsFor(ctx)}
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
       <ul className="entries">
-        {data.comments.map((c) => (
+        {[...data.comments].reverse().map((c) => (
           <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""} ${isNew(c.ts, c.author) ? "is-new" : ""}`} data-uid={c.uid}>
             <div className="body">
               <div className="who">
@@ -443,7 +440,7 @@ function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Ro
         </div>
       )}
       <ul className="entries">
-        {rows.map((r) => <Entry key={r.uid} row={r} kind={kind} ctx={ctx} id={`${prefix}-${r.n}`}
+        {[...rows].reverse().map((r) => <Entry key={r.uid} row={r} kind={kind} ctx={ctx} id={`${prefix}-${r.n}`}
                                 open={!!open[`${prefix}-${r.n}`]} focus={focus === `${prefix}-${r.n}`}
                                 toggle={() => setOpen((o) => ({ ...o, [`${prefix}-${r.n}`]: !o[`${prefix}-${r.n}`] }))} />)}
       </ul>
