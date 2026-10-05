@@ -73,6 +73,31 @@ def read(file: Path):
         return _reader(True).load(text)
 
 
+def _block(node) -> None:
+    if isinstance(node, (CommentedMap, CommentedSeq)):
+        node.fa.set_block_style()
+        for child in (node.values() if isinstance(node, CommentedMap) else node):
+            _block(child)
+
+
+def to_block(file: Path) -> bool:
+    """Rewrite `file` in block style if the C loader rejects it. Writes only
+    when the result parses to the same data under both loaders."""
+    text = file.read_text()
+    try:
+        _reader(False).load(text)
+        return False
+    except YAMLError:
+        pass
+    y, data = load(file)
+    _block(data)
+    out = dump(y, data)
+    if _reader(False).load(out) != _reader(True).load(text):
+        return False
+    write_atomic(file, out)
+    return True
+
+
 def dump(y: YAML, data) -> str:
     """Render to text. ruamel appends a trailing space when it re-folds a long
     plain scalar across lines, so trailing whitespace is stripped per line to

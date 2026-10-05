@@ -4,7 +4,9 @@ the CLI reads only the folders a command needs."""
 import os
 from pathlib import Path
 
-from todo import store
+from ruamel.yaml import YAML
+
+from todo import migrate, store, yamlio
 from todo.cli import build_parser
 
 from .conftest import TS, run_cli
@@ -89,3 +91,16 @@ def test_get_reads_items_the_c_loader_rejects(root, capsys):
         "phase: null, created: 2026-06-24T01:03:56.298Z, completed: 2026-06-24T21:23:30.207Z}\n")
     run_cli(root, ["get", "beta"])
     assert store.get_item(root, "old-flow")["created"] == "2026-06-24T01:03:56.298Z"
+
+
+def test_migrate_rewrites_files_the_c_loader_rejects_as_block_style(root):
+    f = root / "ARCHIVED" / "old-flow" / store.ITEM_FILE
+    f.parent.mkdir(parents=True)
+    f.write_text("# kept\n{id: old-flow, title: what?, status: done,\n"
+                 "created: 2026-06-24T01:03:56.298Z}\n")
+    before = yamlio.read(f)
+    run_cli(root, ["migrate"])
+    assert "{" not in f.read_text() and "# kept" in f.read_text()
+    assert YAML(typ="safe").load(f.read_text())["title"] == "what?"
+    assert yamlio.read(f) == before
+    assert not migrate.to_block_style(root)

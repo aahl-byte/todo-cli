@@ -175,6 +175,7 @@ todo list --mine                          # where I'm developer or QA
 todo login <url> <token> | whoami | sync | inbox   # team server
 todo link --remote <url> [--project KEY]  # sync this store with a team server
 todo archive                     # move done items to .TODO/ARCHIVED/
+todo migrate [-g]                # rewrite files the fast YAML loader rejects
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
 todo unlink                      # move the global store back into ./.TODO
 todo projects                    # list all global-stored projects

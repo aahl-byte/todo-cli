@@ -211,3 +211,10 @@ def convert_note_meta(root: Path) -> int:
                     changed += 1
     yamlio.write_atomic(marker, NOTE_FORMAT + "\n")
     return changed
+
+
+def to_block_style(root: Path) -> list:
+    """Rewrite every item file the C loader rejects in block style; the paths
+    rewritten. Migration backups are left as they are."""
+    files = sorted(f for folder in store.FOLDERS for f in (root / folder).rglob("*.yaml"))
+    return [f for f in files if yamlio.to_block(f)]

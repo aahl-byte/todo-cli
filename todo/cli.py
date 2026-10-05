@@ -36,7 +36,7 @@ from .util import die, now
 ITEM_ONLY = {"deploy"}
 
 # Commands that manage sync themselves.
-NO_AUTO_SYNC = {"sync", "whoami", "inbox"}
+NO_AUTO_SYNC = {"sync", "whoami", "inbox", "migrate"}
 
 # Where QA can send work back from.
 REJECTABLE = ["ready-for-qa", "in-qa", "ready-to-deploy"]
@@ -636,6 +636,19 @@ def cmd_projects(root: Path, args) -> None:
         print(f"{r['key']:<{width}}  {r['count']:>3} item(s){origin}")
 
 
+def cmd_migrate(root: Path, args) -> None:
+    if args.all_projects:
+        stores = [(p["key"], p["root"]) for p in link_mod.project_stores()]
+    else:
+        _require_root(root)
+        stores = [(str(root), root)]
+    for label, r in stores:
+        fixed = migrate.to_block_style(r)
+        print(f"{label}: {len(fixed)} file(s) rewritten in block style")
+        for f in fixed:
+            print(f"    {f.relative_to(r)}")
+
+
 def cmd_init(root: Path, args) -> None:
     try:
         results = init_mod.do_init(force=args.force)
@@ -951,6 +964,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("projects", help="list all global-stored projects (~/.todo/projects/*)")
     p.set_defaults(func=cmd_projects)
+
+    p = sub.add_parser("migrate", parents=[common],
+                       help="rewrite store files the fast YAML loader rejects in block style")
+    p.add_argument("-g", "--all-projects", action="store_true",
+                   help="every linked project's store")
+    p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("init", help="install the todo skill into ~/.agents and ~/.claude")
     p.add_argument("--force", action="store_true",
