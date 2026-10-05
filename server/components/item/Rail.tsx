@@ -64,7 +64,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
             <>
               <span className="k">jira</span>
               {ctx.jiraBase
-                ? <a href={`${ctx.jiraBase}/browse/${it.jira_key}`} target="_blank" rel="noreferrer">{it.jira_key}</a>
+                ? <a href={`${ctx.jiraBase}/browse/${it.jira_key}`} target="_blank" rel="noreferrer">{it.jira_key} ↗</a>
                 : <span>{it.jira_key}</span>}
             </>
           )}

@@ -24,11 +24,10 @@ const TASK_STATUS: Record<string, string> = { requested: "todo", todo: "todo", "
 
 const isBug = (f: any) => ["bug", "defect"].includes(String(f?.issuetype?.name ?? "").toLowerCase());
 
-/** Issues to mirror: open work that has moved or is recent, plus what closed lately. */
+/** Issues to mirror: active work, meaning past the backlog and not done. */
 export function defaultJql(jiraProject: string, map: Record<string, string>): string {
-  const backlog = map.requested ? ` AND (status != "${map.requested}" OR updated >= -30d)` : "";
-  return `project = "${jiraProject}" AND issuetype not in (Epic, subTaskIssueTypes())`
-    + ` AND ((statusCategory != Done${backlog}) OR resolved >= -14d)`;
+  const backlog = map.requested ? ` AND status != "${map.requested}"` : "";
+  return `project = "${jiraProject}" AND issuetype not in (Epic, subTaskIssueTypes()) AND statusCategory != Done${backlog}`;
 }
 
 /** The todo status a Jira status maps to; ties go to the earliest in `map`'s lifecycle order. */
