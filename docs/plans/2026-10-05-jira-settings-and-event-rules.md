@@ -172,3 +172,44 @@ on.
   to QA; a comment added on a mirror item appears under Would send and nothing
   reaches Jira (the client refuses non-GET calls regardless).
 - **(smoke)** the smoke run stays clean, with a settings-page step.
+
+## Revisions after the plan audit
+
+These override the sections above where they differ.
+
+- **Dropping section 4.** The read-only rules, the sync guard and own-account
+  echo detection stay keyed on `JIRA_READ_ONLY`. Keying them per project has
+  no consumer while polling with writes on is out of scope, and it would drop
+  the user's own Jira changes as echoes (their token is their own account).
+- **The writes gate lives in `enqueue`**, so every path goes through it,
+  including inbound's `gated()` "Not moved" comment.
+  - `enqueue` looks up the project's writes: off (env read-only, or
+    `writes: false`) → the dry-run row.
+  - `flushJira` skips rows of projects whose writes are off, so a row queued
+    while writes were on doesn't deliver after they're switched off.
+  - `superseded()` ignores dry-run rows, so one never cancels a real queued
+    move.
+- **Remote links aren't sent** for a project with `jira_outbound`; the user's
+  events are comments and the four moves.
+- **Triggers are exact** `from → to` pairs, with no `*`, no ordering, and
+  duplicates refused.
+- **Comment dedup by id already exists**; that bullet and its test are dropped.
+- **The tester is outbound only,** and also names the Jira status set on each
+  side, e.g. "in-triage → in-progress: both under In Development; no trigger
+  needed" or "requested → in-triage: Ready → In Development; no trigger, Jira
+  stays in Ready". That shows where the triggers and sets disagree.
+- **Nav:** Settings is always the last link.
+- **Deliberate test changes:** `jira-sync.test.ts` asserts no outbox rows
+  under `JIRA_READ_ONLY=1`; those become "no undelivered rows", and the local
+  comment there leaves one dry-run row.
+- **Added acceptance:**
+  - `gated()` under writes off leaves a dry-run row and sends nothing
+  - flush skips a project whose writes are off, with a row queued before
+  - a dry-run row doesn't supersede an older real one
+  - `bounceToRequested` passes `from`
+- **For the user** (in the report, not blocking the build):
+  - `in-triage → in-progress` stays inside In Development under the sets they
+    gave, and `requested → in-triage` crosses Ready → In Development with no
+    trigger. Which one is meant?
+  - `qa` read as `in-qa`, `shipped` as `deployed`; SR has no `Deployed`.
+  - With comment-id dedup in place, the `(via todo)` header is optional.
