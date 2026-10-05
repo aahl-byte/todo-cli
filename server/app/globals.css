@@ -327,6 +327,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
   .topbar { gap: 10px; }
   .topbar .proj, .topbar .switcher:not(.user) { display: none; }
   .topbar nav { gap: 10px; }
+  .topbar nav .wide-nav { display: none; }
   .topbar .add { font-size: 0; }
   .topbar .add::before { content: "+"; font-size: 15px; }
   .topbar .user summary { font-size: 0; }

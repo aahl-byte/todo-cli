@@ -471,7 +471,10 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     for (const path of ["/p/web", "/p/web/i/export-invoices-as-csv", "/p/web/i/safari-login-fails-after-password-reset", "/p/web/qa", "/p/web/deploy", "/inbox"]) {
       await mp.goto(base + path);
       await mp.waitForTimeout(400);
-      if (await mp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)) throw new Error(path + " overflows");
+      const wide = await mp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1
+        && [...document.querySelectorAll("body *")].filter((e) => e.getBoundingClientRect().right > window.innerWidth + 1
+             && !e.closest(".board")).map((e) => `${e.tagName.toLowerCase()}.${e.className}`).slice(0, 3).join(", "));
+      if (wide !== false) throw new Error(`${path} overflows: ${wide}`);
     }
     await mp.goto(base + "/p/web/i/export-invoices-as-csv");
     await mp.screenshot({ path: out + "/item-mobile.png", fullPage: true });

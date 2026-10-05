@@ -16,11 +16,12 @@ export function Nav({ projectKey, deployStep }: { projectKey: string; deployStep
     { href: base, label: "Board", on: path === base || path.startsWith(`${base}/i/`) },
     { href: `${base}/qa`, label: "QA", on: path === `${base}/qa` },
     ...(deployStep ? [{ href: `${base}/deploy`, label: "Deploy", on: path === `${base}/deploy` }] : []),
-    { href: `${base}/settings`, label: "Settings", on: path === `${base}/settings` },
+    { href: `${base}/settings`, label: "Settings", on: path === `${base}/settings`, wideOnly: true },
   ];
   return (
     <nav>
-      {links.map((l) => <Link key={l.href} href={l.label === "Settings" ? l.href : `${l.href}${suffix}`} aria-current={l.on ? "page" : undefined}>{l.label}</Link>)}
+      {links.map((l) => <Link key={l.href} href={l.wideOnly ? l.href : `${l.href}${suffix}`} className={l.wideOnly ? "wide-nav" : undefined}
+                            aria-current={l.on ? "page" : undefined}>{l.label}</Link>)}
     </nav>
   );
 }
