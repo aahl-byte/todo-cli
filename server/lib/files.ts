@@ -13,6 +13,10 @@ export const KEY_RE = /^[\w-]+\/[\w-]+\/[0-9A-Z]{26}\.(png|jpe?g|gif|webp)$/;
 const READ_SECONDS = 300;
 
 export const s3 = () => !!process.env.S3_BUCKET;
+/** S3 the browser never talks to: the app streams reads and takes uploads itself. */
+export const proxied = () => s3() && process.env.S3_PROXY === "1";
+/** Whether the app itself receives uploads and serves bytes (local files or proxied S3). */
+export const viaApp = () => !s3() || proxied();
 /** Uploads work with S3, or locally off Vercel (whose disk doesn't keep files). */
 export const filesEnabled = () => s3() || !process.env.VERCEL;
 export const typeOf = (key: string) => TYPES[key.split(".").pop()!.toLowerCase()];
@@ -35,7 +39,7 @@ async function client(browser = false) {
 /** Where and how the browser sends the file: a multipart POST of `fields`
  * plus the file as `file`, last. */
 export async function uploadTarget(key: string, contentType: string): Promise<{ url: string; fields: Record<string, string> }> {
-  if (!s3()) return { url: `/api/files/${key}`, fields: {} };
+  if (viaApp()) return { url: `/api/files/${key}`, fields: {} };
   const { createPresignedPost } = await import("@aws-sdk/s3-presigned-post");
   return createPresignedPost(await client(true), {
     Bucket: process.env.S3_BUCKET!,
@@ -60,6 +64,22 @@ export async function putObject(key: string, bytes: Uint8Array, contentType: str
   }
   const { PutObjectCommand } = await import("@aws-sdk/client-s3");
   await (await client()).send(new PutObjectCommand({ Bucket: process.env.S3_BUCKET!, Key: key, Body: bytes, ContentType: contentType }));
+}
+
+/** A stored file's bytes, from S3 or local disk; null when absent. */
+export async function getObject(key: string): Promise<Uint8Array | null> {
+  if (!s3()) {
+    const b = await readLocal(key);
+    return b ? new Uint8Array(b) : null;
+  }
+  const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+  try {
+    const res = await (await client()).send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET!, Key: key }));
+    return res.Body ? await res.Body.transformToByteArray() : null;
+  } catch (e) {
+    if ((e as { name?: string }).name === "NoSuchKey") return null;
+    throw e;
+  }
 }
 
 export async function hasObject(key: string): Promise<boolean> {

@@ -24,10 +24,15 @@ export function mediaKey(project: string, itemUid: string, mediaId: string, name
  * attachment's media id. A failed copy is retried on the next pass. */
 export async function mirrorAttachments(db: Db, jira: JiraClient, project: string, itemUid: string, issue: any): Promise<number> {
   let copied = 0;
-  for (const a of issue.fields?.attachment ?? []) {
+  const current: any[] = issue.fields?.attachment ?? [];
+  // Attachments removed in Jira leave the Files list.
+  await db.query("delete from jira_files where issue_key = $1 and not (attachment_id = any($2::text[]))",
+    [issue.key, current.map((a) => String(a.id))]);
+  for (const a of current) {
     const id = String(a.id);
     const [row] = await db.query("select * from jira_files where attachment_id = $1", [id]);
     const image = !!MIME_EXT[a.mimeType] && Number(a.size ?? 0) <= MAX_BYTES;
+    if (row && row.size == null) await db.query("update jira_files set size = $2 where attachment_id = $1", [id, a.size ?? null]);
     if (row && (!image || (row.file_key && await hasObject(row.file_key)))) continue;
     try {
       const path = `/rest/api/3/attachment/content/${encodeURIComponent(id)}`;
@@ -39,9 +44,10 @@ export async function mirrorAttachments(db: Db, jira: JiraClient, project: strin
         copied++;
       }
       await db.query(
-        `insert into jira_files (project, attachment_id, issue_key, media_id, filename, mime, file_key) values ($1, $2, $3, $4, $5, $6, $7)
-         on conflict (attachment_id) do update set media_id = excluded.media_id, file_key = excluded.file_key`,
-        [project, id, issue.key, mediaId, String(a.filename ?? ""), a.mimeType ?? null, key]);
+        `insert into jira_files (project, attachment_id, issue_key, media_id, filename, mime, file_key, size) values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (attachment_id) do update set media_id = excluded.media_id, file_key = excluded.file_key,
+           filename = excluded.filename, size = excluded.size`,
+        [project, id, issue.key, mediaId, String(a.filename ?? ""), a.mimeType ?? null, key, a.size ?? null]);
     } catch (e) {
       console.error(`attachment ${issue.key}/${a.filename}: ${(e as Error).message}`);
     }

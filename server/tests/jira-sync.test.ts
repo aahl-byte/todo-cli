@@ -227,3 +227,38 @@ describe("jira rich text and files", () => {
     delete process.env.TODO_FILES_DIR;
   });
 });
+
+describe("jira comment edits and files", () => {
+  it("updates an edited comment once and marks it edited", async () => {
+    const jira = fakeJira();
+    const c1 = jira.state.issue.fields.comment.comments[0];
+    c1.updated = c1.created;
+    await sync(jira.impl);
+    const note = async () => (await w.d.query("select text, meta from notes where kind = 'comment'"))[0];
+    expect((await note()).meta.edited_at).toBeUndefined();
+    c1.body = adf("seen on prod, and on staging");
+    c1.updated = "2026-10-03T08:00:00.000+0000";
+    await sync(jira.impl);
+    expect(await note()).toMatchObject({ text: "seen on prod, and on staging",
+      meta: { jira_updated: "2026-10-03T08:00:00.000Z", edited_at: "2026-10-03T08:00:00.000Z" } });
+    const seq = (await w.d.query("select seq from projects where key = 'p'"))[0].seq;
+    await sync(jira.impl);
+    expect((await w.d.query("select seq from projects where key = 'p'"))[0].seq).toBe(seq);
+  });
+
+  it("lists every attachment with the item and drops ones removed in Jira", async () => {
+    process.env.TODO_FILES_DIR = (await import("node:os")).tmpdir() + "/todo-files-" + Date.now();
+    const jira = fakeJira();
+    const f = jira.state.issue.fields;
+    f.attachment = [{ id: "10", filename: "shot.png", mimeType: "image/png", size: 70 },
+                    { id: "11", filename: "spec.pdf", mimeType: "application/pdf", size: 900 }];
+    await sync(jira.impl);
+    const { item } = await import("@/lib/views");
+    const files = async () => (await item(w.d, "p", "web-1"))!.files.map((x: any) => [x.filename, !!x.file_key, Number(x.size)]);
+    expect(await files()).toEqual([["shot.png", true, 70], ["spec.pdf", false, 900]]);
+    f.attachment = [f.attachment[0]];
+    await sync(jira.impl);
+    expect(await files()).toEqual([["shot.png", true, 70]]);
+    delete process.env.TODO_FILES_DIR;
+  });
+});

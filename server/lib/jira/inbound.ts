@@ -87,7 +87,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
     }
     return updated(db, link, issue, payload, opts.deliveryId);
   }
-  if (event === "comment_created") return commented(db, link, payload.comment, own, issue.key);
+  if (event === "comment_created" || event === "comment_updated") return commented(db, link, payload.comment, own, issue.key);
   return { handled: false, reason: `ignored ${event}` };
 }
 
@@ -216,9 +216,22 @@ async function commented(db: Db, link: any, comment: any, own: string | null, is
   const ours = await db.query("select 1 from jira_outbox where result->>'comment_id' = $1", [String(comment.id)]);
   if (ours.length) return { handled: false, reason: "own comment" };
   const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, link.item_uid, issueKey, jiraConfig()?.baseUrl));
-  const op: Op = { op_id: `jira:comment:${comment.id}`, op: "create", entity: "note",
-                   uid: jiraUid("comment", String(comment.id)), item_uid: link.item_uid,
-                   data: { kind: "comment", text, meta: { jira_comment_id: String(comment.id) }, source: "jira",
+  const uid = jiraUid("comment", String(comment.id));
+  const updated = comment.updated ? new Date(comment.updated).toISOString() : null;
+  const [note] = await db.query("select meta, text from notes where project = $1 and uid = $2", [link.project, uid]);
+  const actor = await bridgeActor(db, comment.updateAuthor ?? comment.author);
+  if (note) {
+    // An edit in Jira: newer than the copy we hold, and actually different.
+    const held = note.meta?.jira_updated ?? null;
+    if (!updated || (held && Date.parse(held) >= Date.parse(updated))) return { handled: false, reason: "comment unchanged" };
+    const op: Op = { op_id: `jira:comment:${comment.id}:${updated}`, op: "set", entity: "note", uid, item_uid: link.item_uid,
+                     data: { ...(note.text !== text ? { text, "meta.edited_at": updated } : {}), "meta.jira_updated": updated } };
+    return { handled: true, results: await applyOps(db, link.project, [op], actor) };
+  }
+  const op: Op = { op_id: `jira:comment:${comment.id}`, op: "create", entity: "note", uid, item_uid: link.item_uid,
+                   data: { kind: "comment", text, source: "jira",
+                           meta: { jira_comment_id: String(comment.id), ...(updated ? { jira_updated: updated } : {}),
+                                   ...(updated && comment.created && Date.parse(updated) - Date.parse(comment.created) > 60_000 ? { edited_at: updated } : {}) },
                            ...(comment.created ? { ts: new Date(comment.created).toISOString() } : {}) } };
   return { handled: true, results: await applyOps(db, link.project, [op], await bridgeActor(db, comment.author)) };
 }

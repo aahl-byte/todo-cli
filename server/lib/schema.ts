@@ -190,6 +190,7 @@ create table if not exists jira_files (
   file_key      text
 );
 alter table projects add column if not exists jira_synced_at timestamptz;
+alter table jira_files add column if not exists size bigint;
 alter table projects add column if not exists jira_inbound jsonb;
 alter table jira_links add column if not exists replayed_through bigint;
 alter table status_history add column if not exists override boolean not null default false;

@@ -159,6 +159,8 @@ export async function item(d: Db, key: string, id: string) {
     history,
     bounces: bounceCount(history),
     related: await related(d, key, it.uid),
+    files: it.jira_key ? await d.query(
+      "select attachment_id, filename, mime, size, file_key from jira_files where issue_key = $1 order by filename", [it.jira_key]) : [],
     phaseTitles: phaseTitles(it.extra),
     choices: await choices(d, key),
   };

@@ -151,3 +151,44 @@ These override the sections above where they differ.
   - Presigning uses a second client on `S3_PUBLIC_ENDPOINT`.
 - **Known limits:** comments edited in Jira after import don't update, which
   is already true. Files attached but not referenced in the text don't show.
+
+## Round 2: images through the app, edited comments, all files
+
+The user reported three things: images don't show, edited comments don't
+update, and attachments missing from the text aren't shown.
+
+1. **Images through the app (`S3_PROXY=1`).**
+   - **Reads:** `GET /api/files/<key>` streams the object from S3 with its
+     content type, `nosniff` and private caching, instead of redirecting to a
+     presigned URL.
+   - **Uploads:** `POST /api/files` returns the local-style target
+     (`/api/files/<key>`), and `POST /api/files/<key>` stores the upload with
+     `putObject`. The checks match the local fallback: type matches the key,
+     size ≤ 10 MB, one write per key.
+   - **Bucket:** never reachable from a browser, so port 9000 returns to
+     `127.0.0.1` only.
+   - **Without `S3_PROXY`,** presigned behaviour is unchanged, which keeps
+     Vercel and real S3 off the 4.5 MB function limit.
+2. **Edited comments.**
+   - **Detecting an edit:** the bridge stores Jira's `updated` on each comment
+     note as `meta.jira_updated`. When a pass or a `comment_updated` webhook
+     sees a newer `updated`, it sets the note's `text` and
+     `meta.jira_updated`, as the bridge.
+   - **Display:** the comment header shows "edited".
+   - **Scope:** deleted Jira comments are out of scope.
+3. **Every attachment in a Files section.**
+   - **Where:** a new rail section, Files, listing the issue's `jira_files`
+     rows. Images show as small thumbnails from our store, linking to the full
+     image. Other files link to Jira, with their name and size.
+   - **Copying:** `mirrorAttachments` already copies every image attachment,
+     whether or not the text references it.
+   - **New `jira_files.size`.**
+
+**Acceptance**
+- (js) proxy mode: the GET returns the bytes and an upload stores them, with
+  no presigned URL anywhere.
+- (js) a comment edited in Jira updates its note once, and a repeat pass
+  changes nothing.
+- (js) `item()` returns the files.
+- (live) images load at `http://leaf-rain:3940` with port 9000 closed to the
+  tailnet; SR tickets with unreferenced attachments list them under Files.

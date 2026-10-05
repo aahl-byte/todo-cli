@@ -331,6 +331,7 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
                 {c.kind === "qa-rejection" && <span className="tag rej">QA rejected</span>} {c.author}
                 {c.via === "agent" && <span className="ai">AI</span>}
                 {c.source === "jira" && <span className="faint"> · jira</span>} <Ago ts={c.ts} />
+                {c.meta?.edited_at && <span className="faint" data-tip={`edited ${new Date(c.meta.edited_at).toLocaleString()}`}> · edited</span>}
               </div>
               <Markdown text={c.text} />
             </div>

@@ -72,6 +72,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
       </section>
       <Related rows={data.related} ctx={ctx} />
       <Links rows={data.links} ctx={ctx} />
+      {data.files?.length > 0 && <Files rows={data.files} jiraBase={ctx.jiraBase} />}
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
       <History rows={data.history} current={it.status} created={it.created} />
     </>
@@ -106,6 +107,32 @@ function AppValue({ data, ctx }: { data: Data; ctx: Ctx }) {
         </Popup>
       )}
     </>
+  );
+}
+
+const size = (n: number | null) => (n == null ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+/** Every file attached in Jira: our copies of images, Jira links for the rest. */
+function Files({ rows, jiraBase }: { rows: Row[]; jiraBase: string | null }) {
+  return (
+    <section className="files">
+      <div className="label">Files<span>{rows.length}</span></div>
+      <div className="thumbs">
+        {rows.filter((f) => f.file_key).map((f) => (
+          <a key={f.attachment_id} href={`/api/files/${f.file_key}`} target="_blank" rel="noreferrer" data-tip={f.filename}>
+            <img src={`/api/files/${f.file_key}`} alt={f.filename} loading="lazy" />
+          </a>
+        ))}
+      </div>
+      {rows.filter((f) => !f.file_key).map((f) => (
+        <div key={f.attachment_id} className="rrow file-row">
+          {jiraBase
+            ? <a className="grow" href={`${jiraBase}/secure/attachment/${f.attachment_id}/${encodeURIComponent(f.filename)}`} target="_blank" rel="noreferrer">📎 {f.filename}</a>
+            : <span className="grow">📎 {f.filename}</span>}
+          <span className="faint">{size(f.size)}</span>
+        </div>
+      ))}
+    </section>
   );
 }
 
