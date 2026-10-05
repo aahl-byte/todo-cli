@@ -4,6 +4,8 @@ import { GET as flushRoute } from "@/app/api/jira/flush/route";
 import { flushJira } from "@/lib/jira/flush";
 import { adfToText } from "@/lib/jira/adf";
 import { resetAccountCache } from "@/lib/jira/config";
+import { describeMove, outboundRules, outboundTarget, validateRules } from "@/lib/jira/rules";
+import { STATUSES } from "@/lib/model";
 import { item, set, world, type World } from "./helpers";
 
 let w: World;
@@ -437,5 +439,172 @@ describe("final pass", () => {
       { type: "text", text: " by " }, { type: "date", attrs: { timestamp: "1790985600000" } },
       { type: "text", text: " " }, { type: "status", attrs: { text: "BLOCKED" } }] }] };
     expect(adfToText(doc)).toBe("See https://github.com/acme/pr/1 🎉 by 2026-10-03 BLOCKED");
+  });
+});
+
+describe("event rules", () => {
+  const RULES = {
+    writes: true, comments: true, never: ["Open"],
+    triggers: [
+      { from: "in-triage", to: "in-progress", jira: "In Progress" },
+      { from: "in-progress", to: "in-qa", jira: "In QA" },
+      { from: "in-progress", to: "requested", jira: "To Do" },
+      { from: "in-qa", to: "in-progress", jira: "Open" },
+    ],
+  };
+  const INBOUND = { statuses: { "To Do": ["requested"], "In Progress": ["in-progress", "in-triage"], "In QA": ["in-qa"] } };
+  const outbound = (patch: Record<string, unknown> = {}) =>
+    w.d.query("update projects set jira_outbound = $1::jsonb where key = 'p'", [JSON.stringify({ ...RULES, ...patch })]);
+  const move = async (uid: string, status: string) => {
+    const [it] = await w.d.query("select versions from items where uid = $1", [uid]);
+    return w.one("alice", set("item", uid, uid, { status }, { status: it.versions.status }));
+  };
+  const rows = () => w.d.query("select action, payload->>'status' as status, done_at is null as pending, result from jira_outbox order by id");
+  function fakeJira() {
+    const posts: string[] = [];
+    const impl = vi.fn(async (url: any, init: any) => {
+      if (init.method === "POST") posts.push(String(url));
+      if (String(url).endsWith("?fields=status")) return new Response(JSON.stringify({ fields: { status: { name: "To Do" } } }));
+      if (String(url).endsWith("/transitions") && init.method === "GET") {
+        return new Response(JSON.stringify({ transitions: [{ id: "1", to: { name: "In Progress" } }, { id: "2", to: { name: "In QA" } },
+                                                            { id: "3", to: { name: "Open" } }] }));
+      }
+      return new Response(JSON.stringify({ id: "9" }));
+    });
+    return { posts, impl: impl as unknown as typeof fetch };
+  }
+  async function triaged() {
+    await hook({ webhookEvent: "jira:issue_created", issue: issue() });
+    const [it] = await w.d.query("select uid from items");
+    await move(it.uid, "in-triage");
+    await w.d.query("delete from jira_outbox");
+    return it.uid as string;
+  }
+
+  it("picks the trigger for an exact move, never a never-target", () => {
+    const r = outboundRules(RULES)!;
+    expect(outboundTarget(r, "in-triage", "in-progress")).toBe("In Progress");
+    expect(outboundTarget(r, "todo", "in-progress")).toBeNull();
+    expect(outboundTarget(r, "in-qa", "in-progress")).toBeNull();
+    expect(describeMove(INBOUND, r, "in-triage", "in-progress")).toBe("both under In Progress; moves Jira to In Progress.");
+    expect(describeMove(INBOUND, r, "requested", "in-triage")).toBe("To Do → In Progress; no trigger, Jira stays in To Do.");
+    expect(describeMove(INBOUND, r, "in-qa", "in-progress")).toBe("In QA → In Progress; the trigger is ignored: Open is never moved to.");
+  });
+
+  it("validates rule sets, warning on statuses Jira doesn't have", () => {
+    const bad = validateRules(
+      { statuses: { A: ["requested", "nope"], B: ["requested"], C: [] }, transitions: [{ from: "A", to: "Z", status: "todo" }] },
+      outboundRules({ never: ["Open"], triggers: [{ from: "todo", to: "done", jira: "Open" }, { from: "todo", to: "done", jira: "A" }] })!,
+      STATUSES, ["A", "B", "Open"]);
+    expect(bad.filter((p) => p.level === "error").map((p) => p.message)).toEqual([
+      "nope under A isn't a todo status.", "requested is under both A and B.", "C covers no todo status.",
+      "The rule A → Z names Z, which has no status set.",
+      "The trigger todo → done moves Jira to Open, which is never moved to.", "todo → done has two triggers.",
+    ]);
+    expect(bad.filter((p) => p.level === "warning").map((p) => p.message)).toEqual(["Jira has no status C.", "Jira has no status Z."]);
+    expect(validateRules(INBOUND, outboundRules({ ...RULES, triggers: RULES.triggers.slice(0, 3) })!, STATUSES)).toEqual([]);
+  });
+
+  it("records matching moves as dry runs while writes are off, and sends nothing", async () => {
+    await outbound({ writes: false });
+    const uid = await triaged();
+    await move(uid, "in-progress");
+    await move(uid, "blocked");
+    await move(uid, "in-progress");
+    await move(uid, "in-qa");
+    await move(uid, "in-progress");
+    expect(await rows()).toEqual([
+      { action: "transition", status: "In Progress", pending: false, result: { dry_run: true } },
+      { action: "transition", status: "In QA", pending: false, result: { dry_run: true } },
+    ]);
+    const jira = fakeJira();
+    expect(await flushJira(w.d, jira.impl)).toEqual({ sent: 0, failed: 0 });
+    expect(jira.posts).toEqual([]);
+  });
+
+  it("is a dry run under JIRA_READ_ONLY whatever the project says", async () => {
+    await outbound();
+    const uid = await triaged();
+    process.env.JIRA_READ_ONLY = "1";
+    try {
+      await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: uid, data: { kind: "comment", text: "hi", ts: "t" } });
+    } finally {
+      delete process.env.JIRA_READ_ONLY;
+    }
+    expect(await rows()).toEqual([{ action: "comment", status: null, pending: false, result: { dry_run: true } }]);
+  });
+
+  it("sends triggered moves and comments, but no links, while writes are on", async () => {
+    await outbound();
+    const uid = await triaged();
+    await move(uid, "in-progress");
+    await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: uid, data: { kind: "comment", text: "hi", ts: "t" } });
+    await w.one("alice", { op: "create", entity: "note", uid: "N2", item_uid: uid,
+                           data: { kind: "link", text: "PR", ts: "t", meta: { url: "https://gh/pr/1", type: "pr" } } });
+    const jira = fakeJira();
+    expect(await flushJira(w.d, jira.impl)).toEqual({ sent: 2, failed: 0 });
+    expect(jira.posts.map((u) => u.split("/").pop())).toEqual(["transitions", "comment"]);
+  });
+
+  it("queues no comments with the comments switch off", async () => {
+    await outbound({ comments: false });
+    const uid = await triaged();
+    await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: uid, data: { kind: "comment", text: "hi", ts: "t" } });
+    expect(await rows()).toEqual([]);
+  });
+
+  it("refuses a queued never-target at delivery", async () => {
+    await outbound();
+    const uid = await triaged();
+    await w.d.query("insert into jira_outbox (project, item_uid, action, payload) values ('p', $1, 'transition', '{\"key\":\"WEB-7\",\"status\":\"open\"}')", [uid]);
+    const jira = fakeJira();
+    expect(await flushJira(w.d, jira.impl)).toEqual({ sent: 0, failed: 0 });
+    expect(jira.posts).toEqual([]);
+    expect((await rows())[0]).toMatchObject({ pending: false, result: { refused: "never" } });
+  });
+
+  it("holds rows queued before writes were switched off", async () => {
+    await outbound();
+    const uid = await triaged();
+    await move(uid, "in-progress");
+    await outbound({ writes: false });
+    const jira = fakeJira();
+    expect(await flushJira(w.d, jira.impl)).toEqual({ sent: 0, failed: 0 });
+    expect((await rows())[0]).toMatchObject({ pending: true });
+  });
+
+  it("never lets a dry run supersede a real queued move", async () => {
+    await outbound();
+    const uid = await triaged();
+    await move(uid, "in-progress");
+    await outbound({ writes: false });
+    await move(uid, "in-qa");
+    await outbound();
+    const jira = fakeJira();
+    expect(await flushJira(w.d, jira.impl)).toEqual({ sent: 1, failed: 0 });
+    expect(jira.posts).toHaveLength(1);
+  });
+
+  it("records Jira's deploy-gate comment as a dry run while writes are off", async () => {
+    await outbound({ writes: false });
+    await hook({ webhookEvent: "jira:issue_created", issue: issue() });
+    const [it] = await w.d.query("select uid from items");
+    await w.d.query("update items set status = 'ready-to-deploy'");
+    await w.one("alice", { op: "create", entity: "check", uid: "C1", item_uid: it.uid, data: { kind: "db-script", title: "migrate" } });
+    await w.d.query("update projects set jira_status_map = jira_status_map || '{\"deployed\":\"Done\"}'::jsonb");
+    await hook({ webhookEvent: "jira:issue_updated", issue: issue({ status: { name: "Done" } }), user: { accountId: "acc-qa" },
+                 changelog: { id: "c9", items: [{ field: "status", toString: "Done" }] } });
+    expect(await rows()).toEqual([{ action: "comment", status: null, pending: false, result: { dry_run: true } }]);
+  });
+
+  it("tells the trigger which status a request edit bounced the item from", async () => {
+    await outbound();
+    const uid = await triaged();
+    await move(uid, "in-progress");
+    await w.d.query("delete from jira_outbox");
+    await hook({ webhookEvent: "jira:issue_updated", issue: issue({ description: adf("Steps: v2") }),
+                 user: { accountId: "acc-pm" }, changelog: { id: "c1", items: [{ field: "description" }] } });
+    expect((await w.d.query("select status from items"))[0].status).toBe("requested");
+    expect(await rows()).toEqual([{ action: "transition", status: "To Do", pending: true, result: null }]);
   });
 });

@@ -6,6 +6,7 @@ import { applyOps } from "../apply";
 import { ulid } from "../ulid";
 import { nowIso } from "../model";
 import { textToAdf } from "./adf";
+import { outboundRules } from "./rules";
 import { JiraClient, type Fetch } from "./client";
 import { COMMENT_MARK, LEASE_MINUTES, MAX_ATTEMPTS, jiraConfig, jiraReadOnly } from "./config";
 
@@ -15,7 +16,7 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
   const jira = new JiraClient(cfg, fetchImpl);
   const rows = await db.query(
     `select id from jira_outbox
-      where done_at is null and attempts < $1
+      where done_at is null and attempts < $1 and project in (select key from projects where ${WRITING})
         and (next_attempt_at is null or next_attempt_at <= now())
         and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
       order by id limit 50`, [MAX_ATTEMPTS, LEASE_MINUTES]);
@@ -34,6 +35,10 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
           and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
         returning id, project, item_uid, action, payload, attempts`, [id, LEASE_MINUTES]);
     if (!row) continue;
+    if (row.action === "transition" && await neverTarget(db, row)) {
+      await db.query(`update jira_outbox set done_at = now(), claimed_at = null, result = '{"refused":"never"}'::jsonb where id = $1`, [row.id]);
+      continue;
+    }
     if (row.action === "transition" && await superseded(db, row)) {
       await db.query(`update jira_outbox set done_at = now(), claimed_at = null, result = '{"superseded":true}'::jsonb where id = $1`, [row.id]);
       continue;
@@ -61,10 +66,20 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
   return { sent, failed };
 }
 
-/** A newer transition for the same item makes this one moot. */
+/** Projects whose writes are on; a project with only the legacy map writes. */
+const WRITING = "jira_outbound is null or coalesce((jira_outbound->>'writes')::boolean, false)";
+
+async function neverTarget(db: Db, row: any): Promise<boolean> {
+  const [p] = await db.query("select jira_outbound from projects where key = $1", [row.project]);
+  const never = outboundRules(p?.jira_outbound)?.never ?? [];
+  return never.some((n) => n.toLowerCase() === String(row.payload.status).toLowerCase());
+}
+
+/** A newer transition for the same item makes this one moot; a dry run doesn't. */
 async function superseded(db: Db, row: any): Promise<boolean> {
   const newer = await db.query(
-    "select 1 from jira_outbox where project = $3 and item_uid = $1 and action = 'transition' and id > $2 limit 1",
+    `select 1 from jira_outbox where project = $3 and item_uid = $1 and action = 'transition' and id > $2
+        and not coalesce((result->>'dry_run')::boolean, false) limit 1`,
     [row.item_uid, row.id, row.project]);
   return newer.length > 0;
 }

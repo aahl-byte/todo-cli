@@ -398,7 +398,7 @@ async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op:
   await statusChanged(ctx, { ...op, override: false, reason: `request v${version}` }, item, "requested");
   for (const who of [item.developer, item.qa_assignee, item.creator]) await ctx.notify(who, "request-changed", itemUid, noteUid);
   // Jira hears of the move back even when Jira's own edit caused it.
-  if (ctx.actor.bridge) await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { kind: "status", project: ctx.project, itemUid, status: "requested" });
+  if (ctx.actor.bridge) await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { kind: "status", project: ctx.project, itemUid, from: item.status, status: "requested" });
 }
 
 async function currentRequest(ctx: Ctx, itemUid: string): Promise<Row | null> {
@@ -608,7 +608,7 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   const [fresh] = await ctx.t.query("select developer, qa_assignee, creator from items where uid = $1 and project = $2", [item.uid, ctx.project]);
   if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
-  await queueJira(ctx.t, ctx.actor, { kind: "status", project: ctx.project, itemUid: item.uid, status: to });
+  await queueJira(ctx.t, ctx.actor, { kind: "status", project: ctx.project, itemUid: item.uid, from: item.status, status: to });
 }
 
 /** Status history an item gathered before it was ever synced. */

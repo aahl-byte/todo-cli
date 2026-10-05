@@ -105,7 +105,7 @@ describe("jira sync", () => {
     const before = (await w.d.query("select seq from projects where key = 'p'"))[0].seq;
     expect(await sync(jira.impl)).toEqual({ imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0 });
     expect((await w.d.query("select seq from projects where key = 'p'"))[0].seq).toBe(before);
-    expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
+    expect((await w.d.query("select count(*)::int as n from jira_outbox where done_at is null"))[0].n).toBe(0);
   });
 
   it("refuses local status moves on mirrored items and queues nothing for Jira", async () => {
@@ -115,7 +115,8 @@ describe("jira sync", () => {
     const r = await w.one("alice", set("item", it.uid, it.uid, { status: "done" }, { status: it.versions.status }));
     expect(r.rejected?.[0]).toMatchObject({ field: "status", reason: "jira-read-only" });
     await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: it.uid, data: { kind: "comment", text: "local", ts: "t" } });
-    expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
+    expect(await w.d.query("select action, result from jira_outbox")).toEqual([{ action: "comment", result: { dry_run: true } }]);
+    expect((await w.d.query("select count(*)::int as n from jira_outbox where done_at is null"))[0].n).toBe(0);
   });
 
   it("only polls read-only, and needs no webhook secret", async () => {
@@ -172,7 +173,7 @@ describe("jira status sets", () => {
     jira.state.issue.fields.status = { name: "Done", statusCategory: { key: "done" } } as any;
     await sync(jira.impl);
     expect(await status()).toBe("done");
-    expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
+    expect((await w.d.query("select count(*)::int as n from jira_outbox where done_at is null"))[0].n).toBe(0);
   });
 });
 
