@@ -50,17 +50,23 @@ function fakeJira() {
       return Response.json({ issues: sub ? [state.subtask] : [state.issue], isLast: true });
     }
     if (u.includes("/changelog")) return Response.json({ values: state.changelog, isLast: true });
+    const att = u.match(/\/attachment\/content\/(\w+)$/);
+    if (att) return new Response(null, { status: 303, headers: { location: `https://media.test/file/${MEDIA[att[1]]}/binary?token=t` } });
+    if (u.startsWith("https://media.test/file/")) return new Response(PNG, { headers: { "content-type": "image/png" } });
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
   return { state, impl };
 }
+
+const MEDIA: Record<string, string> = { "10": "11111111-2222-3333-4444-555555555555", "11": "66666666-7777-8888-9999-000000000000" };
+const PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
 
 const sync = (impl: typeof fetch) => syncJira(w.d, "p", { createUsers: true, fetchImpl: impl });
 
 describe("jira sync", () => {
   it("imports an issue as it stands, with people, epic, comments and sub-tasks", async () => {
     const jira = fakeJira();
-    expect(await sync(jira.impl)).toEqual({ imported: 1, events: 0, comments: 1, tasks: 1, users: 2 });
+    expect(await sync(jira.impl)).toEqual({ imported: 1, events: 0, comments: 1, tasks: 1, users: 2, files: 0 });
     const [it] = await w.d.query("select * from items");
     expect(it).toMatchObject({ id: "web-1", title: "Totals wrong", status: "in-progress", type: "bug", priority: "urgent",
                                developer: "bob", creator: "pat-pm", extra: { epic: "Checkout revamp" } });
@@ -89,7 +95,7 @@ describe("jira sync", () => {
       { id: "102", author: pat, created: "2026-10-02T10:05:00.000+0000",
         items: [{ field: "description" }, { field: "summary" }, { field: "priority", toString: "Low" }] });
     jira.state.subtask.fields.status = { name: "In Progress" };
-    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 2, comments: 1, tasks: 1, users: 0 });
+    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 2, comments: 1, tasks: 1, users: 0, files: 0 });
     const [it] = await w.d.query("select * from items");
     expect(it).toMatchObject({ status: "in-qa", title: "Totals wrong after refresh", priority: "low" });
     const requests = await w.d.query("select meta from notes where kind = 'ticket-request' order by n");
@@ -97,7 +103,7 @@ describe("jira sync", () => {
     expect(await w.d.query("select status from tasks")).toEqual([{ status: "in-progress" }]);
 
     const before = (await w.d.query("select seq from projects where key = 'p'"))[0].seq;
-    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 0, comments: 0, tasks: 0, users: 0 });
+    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0 });
     expect((await w.d.query("select seq from projects where key = 'p'"))[0].seq).toBe(before);
     expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
   });
@@ -167,5 +173,57 @@ describe("jira status sets", () => {
     await sync(jira.impl);
     expect(await status()).toBe("done");
     expect((await w.d.query("select count(*)::int as n from jira_outbox"))[0].n).toBe(0);
+  });
+});
+
+describe("jira rich text and files", () => {
+  it("converts links, marks, headings, lists, code and tables to Markdown", async () => {
+    const { adfToMarkdown } = await import("@/lib/jira/adf");
+    const t = (text: string, marks: any[] = []) => ({ type: "text", text, marks });
+    const p = (...content: any[]) => ({ type: "paragraph", content });
+    const doc = { type: "doc", content: [
+      { type: "heading", attrs: { level: 2 }, content: [t("Plan")] },
+      p(t("See "), t("PR 215", [{ type: "link", attrs: { href: "https://github.com/x/y/pull/215" } }]), t(" and "),
+        t("https://a.test/b", [{ type: "link", attrs: { href: "https://a.test/b" } }]), t(" with "), t("ro_id", [{ type: "code" }]),
+        t(" and "), t("bold", [{ type: "strong" }])),
+      { type: "bulletList", content: [{ type: "listItem", content: [p(t("one")),
+        { type: "bulletList", content: [{ type: "listItem", content: [p(t("nested"))] }] }] }] },
+      { type: "codeBlock", attrs: { language: "sql" }, content: [{ type: "text", text: "select 1;\n\nselect 2;" }] },
+      { type: "table", content: [
+        { type: "tableRow", content: [{ type: "tableHeader", content: [p(t("a"))] }, { type: "tableHeader", content: [p(t("b|c"))] }] },
+        { type: "tableRow", content: [{ type: "tableCell", content: [p(t("1"))] }, { type: "tableCell", content: [p(t("2"))] }] }] },
+      { type: "mediaSingle", content: [{ type: "media", attrs: { type: "file", id: "m1", alt: "shot.png" } }] },
+      { type: "mediaSingle", content: [{ type: "media", attrs: { type: "file", id: "m2", alt: "spec.pdf" } }] },
+    ] };
+    const md = adfToMarkdown(doc, (a) => (a.id === "m1" ? { image: "/api/files/p/I/ABC.png" } : null));
+    expect(md).toBe([
+      "## Plan",
+      "See [PR 215](https://github.com/x/y/pull/215) and https://a.test/b with `ro_id` and **bold**",
+      "- one\n  - nested",
+      "```sql\nselect 1;\n\nselect 2;\n```",
+      "| a | b\\|c |\n| --- | --- |\n| 1 | 2 |",
+      "![shot.png](/api/files/p/I/ABC.png)",
+      "📎 spec.pdf",
+    ].join("\n\n"));
+  });
+
+  it("copies image attachments once and links other files to Jira", async () => {
+    process.env.TODO_FILES_DIR = (await import("node:os")).tmpdir() + "/todo-files-" + Date.now();
+    const jira = fakeJira();
+    const f = jira.state.issue.fields;
+    f.attachment = [{ id: "10", filename: "shot.png", mimeType: "image/png", size: 70 },
+                    { id: "11", filename: "spec.pdf", mimeType: "application/pdf", size: 900 }];
+    f.description = { type: "doc", content: [
+      { type: "mediaSingle", content: [{ type: "media", attrs: { type: "file", id: MEDIA["10"], alt: "shot.png" } }] },
+      { type: "mediaSingle", content: [{ type: "media", attrs: { type: "file", id: MEDIA["11"], alt: "spec.pdf" } }] }] };
+    expect((await sync(jira.impl)).files).toBe(1);
+    const [req] = await w.d.query("select text from notes where kind = 'ticket-request'");
+    const key = req.text.match(/\(\/api\/files\/([^)]+)\)/)[1];
+    expect(key).toMatch(/^p\/J[0-9A-F]{25}\/J[0-9A-F]{25}\.png$/);
+    expect(req.text).toContain("[📎 spec.pdf](https://acme.atlassian.net/secure/attachment/11/spec.pdf)");
+    const { readLocal } = await import("@/lib/files");
+    expect((await readLocal(key))?.length).toBe(PNG.length);
+    expect((await sync(jira.impl)).files).toBe(0);
+    delete process.env.TODO_FILES_DIR;
   });
 });

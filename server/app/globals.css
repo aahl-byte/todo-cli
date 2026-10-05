@@ -232,6 +232,17 @@ h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercas
 .md pre { background: var(--ink); border: 1px solid var(--line); padding: 8px; border-radius: 5px; overflow-x: auto; }
 .md img { max-width: 100%; border-radius: 5px; }
 .md a { color: var(--cyan); }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { font: 600 1em var(--mono); color: var(--md-strong); margin: .8em 0 .3em; }
+.md h1 { font-size: 1.15em; } .md h2 { font-size: 1.08em; }
+.md ol { margin: .3em 0; padding-left: 22px; }
+.md li > ul, .md li > ol { margin: 0; }
+.md blockquote { margin: .4em 0; padding-left: 10px; border-left: 2px solid var(--line-2); color: var(--dim); }
+.md hr { border: 0; border-top: 1px solid var(--line-2); margin: .8em 0; }
+.md :not(pre) > code { background: var(--raise); border-radius: 3px; padding: 0 3px; }
+.md-table { overflow-x: auto; margin: .4em 0; }
+.md table { border-collapse: collapse; font-size: .95em; }
+.md th, .md td { border: 1px solid var(--line-2); padding: 3px 7px; text-align: left; vertical-align: top; }
+.md th { color: var(--md-strong); background: var(--raise); }
 
 /* tasks */
 .tgroup { border: 0; background: none; display: flex; gap: 6px; align-items: center; padding: 8px 0 3px; color: var(--faint);

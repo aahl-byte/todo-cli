@@ -180,6 +180,15 @@ create table if not exists jira_links (
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
+create table if not exists jira_files (
+  project       text not null,
+  attachment_id text primary key,
+  issue_key     text not null,
+  media_id      text,
+  filename      text not null,
+  mime          text,
+  file_key      text
+);
 alter table projects add column if not exists jira_synced_at timestamptz;
 alter table projects add column if not exists jira_inbound jsonb;
 alter table jira_links add column if not exists replayed_through bigint;

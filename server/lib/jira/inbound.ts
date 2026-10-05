@@ -5,7 +5,8 @@ import crypto from "node:crypto";
 import type { Db } from "../db";
 import { applyOps, type Actor, type Op } from "../apply";
 import { STATUSES, nowIso } from "../model";
-import { adfToText } from "./adf";
+import { adfToMarkdown, adfToText } from "./adf";
+import { mediaRef } from "./media";
 import type { Fetch } from "./client";
 import { COMMENT_MARK, jiraConfig, jiraReadOnly, ownAccountId } from "./config";
 import { enqueue, jiraTarget } from "./outbound";
@@ -86,7 +87,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
     }
     return updated(db, link, issue, payload, opts.deliveryId);
   }
-  if (event === "comment_created") return commented(db, link, payload.comment, own);
+  if (event === "comment_created") return commented(db, link, payload.comment, own, issue.key);
   return { handled: false, reason: `ignored ${event}` };
 }
 
@@ -95,7 +96,7 @@ async function created(db: Db, project: string, issue: any): Promise<InboundResu
   const uid = jiraUid("item", issue.key);
   const actor = await bridgeActor(db, f.reporter);
   const summary = String(f.summary ?? issue.key);
-  const description = adfToText(f.description);
+  const description = adfToMarkdown(f.description, await mediaRef(db, project, uid, issue.key, jiraConfig()?.baseUrl));
   const isBug = String(f.issuetype?.name ?? "").toLowerCase() === "bug";
   const ops: Op[] = [
     { op_id: `jira:${issue.key}:create`, op: "create", entity: "item", uid, item_uid: uid,
@@ -173,7 +174,7 @@ async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: 
 async function changedRequest(db: Db, link: any, issue: any): Promise<string | null> {
   const f = issue.fields ?? {};
   const summary = String(f.summary ?? issue.key);
-  const description = adfToText(f.description);
+  const description = adfToMarkdown(f.description, await mediaRef(db, link.project, link.item_uid, issue.key, jiraConfig()?.baseUrl));
   const text = description ? `${summary}\n\n${description}` : summary;
   const [cur] = await db.query(
     `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
@@ -207,14 +208,14 @@ async function gated(db: Db, link: any, key: string, to: string, reason: string,
     { key, author: "todo", label: "comment", text: `Not moved to ${to} in todo: ${why}.` });
 }
 
-async function commented(db: Db, link: any, comment: any, own: string | null): Promise<InboundResult> {
+async function commented(db: Db, link: any, comment: any, own: string | null, issueKey: string): Promise<InboundResult> {
   if (!comment?.id) return { handled: false, reason: "no comment" };
-  const text = adfToText(comment.body);
-  if ((own && comment.author?.accountId === own) || text.includes(COMMENT_MARK)) {
+  if ((own && comment.author?.accountId === own) || adfToText(comment.body).includes(COMMENT_MARK)) {
     return { handled: false, reason: "own comment" };
   }
   const ours = await db.query("select 1 from jira_outbox where result->>'comment_id' = $1", [String(comment.id)]);
   if (ours.length) return { handled: false, reason: "own comment" };
+  const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, link.item_uid, issueKey, jiraConfig()?.baseUrl));
   const op: Op = { op_id: `jira:comment:${comment.id}`, op: "create", entity: "note",
                    uid: jiraUid("comment", String(comment.id)), item_uid: link.item_uid,
                    data: { kind: "comment", text, meta: { jira_comment_id: String(comment.id) }, source: "jira",

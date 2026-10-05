@@ -5,7 +5,8 @@
 import type { Db } from "../db";
 import { applyOps, type Op } from "../apply";
 import { addUser } from "../auth";
-import { adfToText } from "./adf";
+import { adfToMarkdown } from "./adf";
+import { mediaRef, mirrorAttachments } from "./media";
 import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
 import { handleFor, handleWebhook, jiraPriority, jiraUid } from "./inbound";
@@ -13,10 +14,10 @@ import { inboundRules, inboundStatus, statusSet, type InboundRules } from "./rul
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
-export interface SyncResult { imported: number; events: number; comments: number; tasks: number; users: number }
+export interface SyncResult { imported: number; events: number; comments: number; tasks: number; users: number; files: number }
 
 const FIELDS = ["summary", "description", "status", "assignee", "reporter", "issuetype", "priority", "parent",
-                "created", "updated", "comment"];
+                "created", "updated", "comment", "attachment"];
 /** Overlap between passes, so an issue updated mid-pass is seen again. */
 const OVERLAP_MINUTES = 2;
 const TASK_STATUS: Record<string, string> = { requested: "todo", todo: "todo", "in-triage": "todo", "in-progress": "in-progress",
@@ -104,7 +105,7 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   const startedAt = new Date();
   const since = p.jira_synced_at ? new Date(p.jira_synced_at) : null;
   const window = since ? ` AND updated >= -${Math.ceil((startedAt.getTime() - since.getTime()) / 60_000) + OVERLAP_MINUTES}m` : "";
-  const out: SyncResult = { imported: 0, events: 0, comments: 0, tasks: 0, users: 0 };
+  const out: SyncResult = { imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0 };
   const meet = async (who: Person) => { if (opts.createUsers && await ensureUser(db, who)) out.users++; };
 
   const imported: string[] = [];
@@ -120,6 +121,8 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
     const [link] = await db.query("select * from jira_links where jira_key = $1", [issue.key]);
     if (!link && !inScope(f, map, rules)) continue;
     for (const who of [f.reporter, f.assignee]) await meet(who);
+    // Files first, so the request and comments can point at them.
+    out.files += await mirrorAttachments(db, jira, projectKey, link?.item_uid ?? jiraUid("item", issue.key), issue);
     if (!link) {
       if (await importIssue(db, projectKey, map, rules, issue)) { out.imported++; imported.push(issue.key); }
     } else {
@@ -151,7 +154,7 @@ async function importIssue(db: Db, project: string, map: Record<string, string>,
   const f = issue.fields ?? {};
   const uid = jiraUid("item", issue.key);
   const summary = String(f.summary ?? issue.key);
-  const description = adfToText(f.description);
+  const description = adfToMarkdown(f.description, await mediaRef(db, project, uid, issue.key, jiraConfig()?.baseUrl));
   const creator = (await handleFor(db, f.reporter)) ?? "jira-bridge";
   const jiraStatus = String(f.status?.name ?? "");
   const status = (rules ? inboundStatus(rules, null, null, jiraStatus) : todoStatus(map, jiraStatus)) ?? "requested";

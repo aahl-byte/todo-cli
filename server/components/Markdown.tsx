@@ -1,45 +1,40 @@
-// A small, safe Markdown renderer: escapes everything, then allows paragraphs,
-// lists, code, emphasis, links, and images from http(s) URLs or our own file store.
-import type { ReactNode } from "react";
+// Safe Markdown: GitHub-flavoured (tables, strike, nested lists), no raw HTML,
+// links only to http(s) or mailto, images only from http(s) or our file store.
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 
-function inline_(text: string): ReactNode[] {
-  return inline(text.replace(/^#+\s*/, "").replace(/^\s*([-*]|\d+\.)\s+/, ""), "i");
+const FILE_SRC = /^\/api\/files\/[\w-]+\/[\w-]+\/[0-9A-Z]{26}\.(?:png|jpe?g|gif|webp)$/;
+const INLINE = ["a", "code", "em", "strong", "del", "img", "br"];
+
+export function safeUrl(url: string, key: string): string {
+  if (key === "src") return /^https?:\/\//i.test(url) || FILE_SRC.test(url) ? url : "";
+  return /^(https?:|mailto:)/i.test(url) ? url : "";
 }
 
-function inline(text: string, key: string): ReactNode[] {
-  const out: ReactNode[] = [];
-  const re = /(!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/files\/[\w-]+\/[\w-]+\/[0-9A-Z]{26}\.(?:png|jpe?g|gif|webp))\))|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(https?:\/\/[^\s<]+)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  let i = 0;
-  while ((m = re.exec(text))) {
-    if (m.index > last) out.push(text.slice(last, m.index));
-    const k = `${key}-${i++}`;
-    if (m[1]) out.push(<img key={k} src={m[3]} alt={m[2]} />);
-    else if (m[4]) out.push(<a key={k} href={m[6]} rel="noreferrer" target="_blank">{m[5]}</a>);
-    else if (m[7]) out.push(<code key={k}>{m[8]}</code>);
-    else if (m[9]) out.push(<strong key={k}>{m[10]}</strong>);
-    else if (m[11]) out.push(<em key={k}>{m[12]}</em>);
-    else if (m[13]) out.push(<a key={k} href={m[13]} rel="noreferrer" target="_blank">{m[13]}</a>);
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
-}
+const components: Components = {
+  a: ({ node: _node, href, children, ...rest }) => href
+    ? <a {...rest} href={href} target="_blank" rel="noreferrer">{children}</a>
+    : <>{children}</>,
+  img: ({ node: _node, src, alt }) => (src ? <img src={String(src)} alt={alt ?? ""} /> : <>{alt}</>),
+  table: ({ node: _node, children }) => <div className="md-table"><table>{children}</table></div>,
+};
 
 export function Markdown({ text, oneLine }: { text: string; oneLine?: boolean }) {
-  if (oneLine) return <span className="md">{inline_(String(text ?? ""))}</span>;
-  const blocks = String(text ?? "").split(/\n{2,}/);
+  const md = String(text ?? "");
+  if (oneLine) {
+    return (
+      <span className="md">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={safeUrl} components={components}
+                       allowedElements={INLINE} unwrapDisallowed>
+          {md.split("\n")[0].replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")}
+        </ReactMarkdown>
+      </span>
+    );
+  }
   return (
     <div className="md">
-      {blocks.map((b, i) => {
-        if (b.startsWith("```")) return <pre key={i}><code>{b.replace(/^```\w*\n?|```$/g, "")}</code></pre>;
-        const lines = b.split("\n");
-        if (lines.every((l) => /^\s*([-*]|\d+\.)\s+/.test(l))) {
-          return <ul key={i}>{lines.map((l, j) => <li key={j}>{inline(l.replace(/^\s*([-*]|\d+\.)\s+/, ""), `${i}-${j}`)}</li>)}</ul>;
-        }
-        return <p key={i}>{lines.flatMap((l, j) => (j ? [<br key={`br${j}`} />, ...inline(l, `${i}-${j}`)] : inline(l, `${i}-${j}`)))}</p>;
-      })}
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={safeUrl} components={components}>{md}</ReactMarkdown>
     </div>
   );
 }
