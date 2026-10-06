@@ -9,6 +9,7 @@ import { describe, safeNext, type ActionState } from "@/lib/action-helpers";
 import { userForToken } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
+import { COMPLETE } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { COOKIE, requireUser } from "@/lib/session";
 
@@ -39,6 +40,22 @@ export async function requestAction(_prev: ActionState, fd: FormData): Promise<A
   if (!state.ok) return state;
   const [row] = await d.query("select id from items where uid = $1 and project = $2", [ops[0].uid, project]);
   redirect(`/p/${project}/i/${row.id}`);
+}
+
+/** Archive every complete item in the project, which clears the Shipped column. */
+export async function clearShippedAction(fd: FormData): Promise<void> {
+  const project = str(fd, "project");
+  const user = await requireUser();
+  const d = await db();
+  const rows = await d.query(
+    `select uid, versions from items where project = $1 and status = any($2)
+       and coalesce((extra->>'archived')::boolean, false) = false`, [project, COMPLETE]);
+  if (rows.length) {
+    await applyOps(d, project, rows.map((r) => build.setOp("item", { uid: r.uid, versions: r.versions ?? {} }, { "extra.archived": true })),
+                   { handle: user.handle });
+  }
+  revalidatePath(`/p/${project}`);
+  redirect(safeNext(str(fd, "to") || `/p/${project}`));
 }
 
 export async function readAction(fd: FormData): Promise<void> {

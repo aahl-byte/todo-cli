@@ -1067,7 +1067,7 @@ def _write_item(root, now: Local, uid, flat, row) -> bool:
     d = now.item_dirs.get(uid)
     want_id = flat["id"]
     if d is None or not d.exists():
-        folder = store.folder_for(flat["status"])
+        folder = store.folder_for(flat["status"], archived=bool(flat.get("extra.archived")))
         d = root / folder / want_id
         if d.exists():
             return False
@@ -1103,7 +1103,7 @@ def _write_item(root, now: Local, uid, flat, row) -> bool:
         if not _same(_plain(meta.get(k)), v):
             meta[k] = v
     yamlio.save(y, d / store.ITEM_FILE, meta)
-    moved = store._place(d, flat["status"])
+    moved = store._place(d, flat["status"], bool(extras.get("archived")))
     if moved != d:
         for k, f in list(now.files.items()):
             if d in f.parents:

@@ -985,3 +985,20 @@ def test_command_exits_distinctly_when_its_push_is_rejected(pair, server, monkey
     monkeypatch.setenv("TODO_USER", "alice")
     code = cli.run_synced(a, cli.build_parser().parse_args(["note", "login-bug", "again"]))
     assert code == cli.EXIT_SYNC_REJECTED
+
+
+def test_archive_flag_syncs_and_files_the_item_on_both_sides(pair, server):
+    a, b = pair
+    run_cli(a, ["status", "login-bug", "done"])
+    run_cli(a, ["archive"])
+    assert item(a)["folder"] == store.ARCHIVED
+    assert rnd(a, server, "alice").error is None
+    assert rnd(b, server, "bob").error is None
+    assert item(b)["folder"] == store.ARCHIVED
+
+    run_cli(b, ["reopen", "login-bug"])
+    it = item(b)
+    assert it["folder"] == store.OPEN and "archived" not in yamlio.read(store._find_dir(b, "login-bug") / store.ITEM_FILE)
+    assert rnd(b, server, "bob").error is None
+    assert rnd(a, server, "alice").error is None
+    assert item(a)["folder"] == store.OPEN

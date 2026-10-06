@@ -61,7 +61,9 @@ Only `done` stamps `completed`.
 
 Each status files the item into a folder of `.TODO/`: `DEFERRED/` for
 `deferred`, `CANCELLED/` for `cancelled`, and `OPEN/` for everything else.
-`done` items stay in `OPEN/` until `todo archive` moves them to `ARCHIVED/`.
+`done` items stay in `OPEN/` until `todo archive` flags them `archived` and moves them to
+`ARCHIVED/`. In a synced store the flag syncs: archived items leave the dashboard's Shipped
+column (its **clear** button archives the whole column), and reopening one unarchives it.
 `todo list` reads only `OPEN/`, so parked and finished work costs nothing;
 `--all` and `--status` read every folder.
 
@@ -178,7 +180,7 @@ todo reject <query> <text...>             # QA → qa-rejected with a required c
 todo list --mine                          # where I'm developer or QA
 todo login <url> <token> | whoami | sync | inbox   # team server
 todo link --remote <url> [--project KEY]  # sync this store with a team server
-todo archive                     # move done items to .TODO/ARCHIVED/
+todo archive                     # archive done items (synced; clears Shipped)
 todo migrate [-g]                # rewrite files the fast YAML loader rejects
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
 todo unlink                      # move the global store back into ./.TODO

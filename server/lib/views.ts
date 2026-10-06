@@ -113,11 +113,16 @@ export function tabCounts(all: Card[], f: BoardFilters, me: string): number[] {
   return (f.entries ?? []).map((e) => base.filter((c) => matches(c, e)).length);
 }
 
+/** Still on the Shipped column: not archived, and completed within the window. */
+function shipped(c: Card, cutoff: number): boolean {
+  return !c.extra?.archived && (!c.completed || Date.parse(c.completed) >= cutoff);
+}
+
 export async function board(d: Db, p: Project, f: BoardFilters, me: string, now = Date.now()) {
   const every = await cards(d, p.key);
   const cutoff = now - SHIPPED_DAYS * 864e5;
   const visible = every.filter((c) => (f.parked || !PARKED.includes(c.status))
-    && (!["deployed", "done"].includes(c.status) || !c.completed || Date.parse(c.completed) >= cutoff));
+    && (!["deployed", "done"].includes(c.status) || shipped(c, cutoff)));
   return { columns: columns(filterCards(every, f, me), p, f, cutoff), counts: tabCounts(visible, f, me) };
 }
 
@@ -128,7 +133,7 @@ function columns(all: Card[], p: Project, f: BoardFilters, cutoff: number) {
       ...col,
       // Grouped by status in the column's order, then bugs before features.
       items: all.filter((c) => col.statuses.includes(c.status)
-        && (col.key !== "shipped" || !c.completed || Date.parse(c.completed) >= cutoff))
+        && (col.key !== "shipped" || shipped(c, cutoff)))
         .sort((a, b) => col.statuses.indexOf(a.status) - col.statuses.indexOf(b.status)
           || Number(b.type === "bug") - Number(a.type === "bug")),
     }));

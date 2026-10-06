@@ -55,15 +55,15 @@ _TS_FILE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(.+)$")
 UNDATED = "0000-00-00T00:00:00.000Z"
 
 
-def folder_for(status: str, current: str | None = None) -> str:
+def folder_for(status: str, current: str | None = None, archived: bool = False) -> str:
     """The folder an item with `status` belongs in. A complete item (`done`,
-    `deployed`) stays in ARCHIVED once archived, and otherwise sits in OPEN until
-    `todo archive`."""
+    `deployed`) goes to ARCHIVED when flagged `archived` and stays there once
+    filed; otherwise it sits in OPEN until `todo archive`."""
     if status == "deferred":
         return DEFERRED
     if status == "cancelled":
         return CANCELLED
-    if status in COMPLETE and current == ARCHIVED:
+    if status in COMPLETE and (archived or current == ARCHIVED):
         return ARCHIVED
     return OPEN
 
@@ -86,11 +86,11 @@ def _find_dir(root: Path, item_id: str) -> Path | None:
     return None
 
 
-def _place(item_dir: Path, status: str) -> Path:
+def _place(item_dir: Path, status: str, archived: bool = False) -> Path:
     """Move the item directory into the folder its status selects. Returns its
     (possibly new) path."""
     current = item_dir.parent.name
-    want = folder_for(status, current)
+    want = folder_for(status, current, archived)
     if want == current:
         return item_dir
     dest = item_dir.parent.parent / want / item_dir.name
@@ -287,7 +287,7 @@ def _read_item(item_dir: Path, *, full: bool = True) -> dict:
     """Load one item, first moving it if it sits in the wrong folder."""
     meta = yamlio.read(item_dir / ITEM_FILE)
     meta = meta if isinstance(meta, dict) else {}
-    item_dir = _place(item_dir, to_str(meta.get("status")) or "todo")
+    item_dir = _place(item_dir, to_str(meta.get("status")) or "todo", bool(meta.get("archived")))
     return _to_item(item_dir, meta, full=full)
 
 
@@ -366,6 +366,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
             meta["completed"] = now_iso
         elif new not in COMPLETE and was in COMPLETE:
             meta["completed"] = None
+            meta.pop("archived", None)
         if new != was:
             moved = (was, new)
     for key in ("priority", "type", "title"):
@@ -382,7 +383,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     yamlio.save(y, item_dir / ITEM_FILE, meta)
     if moved:
         _write_history(item_dir, moved[0], moved[1], now_iso, forced)
-    _place(item_dir, to_str(meta.get("status")) or "todo")
+    _place(item_dir, to_str(meta.get("status")) or "todo", bool(meta.get("archived")))
     return True
 
 
@@ -405,11 +406,17 @@ def _now() -> str:
 
 
 def archive_todos(root: Path):
-    """Move every `done` item out of OPEN into ARCHIVED. Returns
-    (count, archive_dir)."""
+    """Flag every complete item `archived` and move it from OPEN into ARCHIVED.
+    Returns (count moved, archive_dir)."""
     moved = 0
-    for d in _item_dirs(root, [OPEN]):
-        if to_str(yamlio.read(d / ITEM_FILE).get("status")) in COMPLETE:
+    for d in _item_dirs(root, [OPEN, ARCHIVED]):
+        y, meta = _load_meta(d)
+        if to_str(meta.get("status")) not in COMPLETE:
+            continue
+        if not meta.get("archived"):
+            meta["archived"] = True
+            yamlio.save(y, d / ITEM_FILE, meta)
+        if d.parent.name == OPEN:
             dest = root / ARCHIVED / d.name
             if dest.exists():
                 die(f"Can't archive {d.name}: {dest} already exists.", 1)

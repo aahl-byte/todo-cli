@@ -546,6 +546,12 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     accepted.push([field, value]);
   }
 
+  // Reopening an archived item brings it back out of the archive.
+  const reopened = accepted.find(([f, v]) => f === "status" && !COMPLETE.includes(String(v)));
+  if (entity === "item" && reopened && row.extra?.archived && !accepted.some(([f]) => f === "extra.archived")) {
+    accepted.push(["extra.archived", null]);
+  }
+
   if (accepted.length) {
     const itemUid = entity === "item" ? row.uid : row.item_uid;
     const seq = await ctx.bump(entity, op.uid, itemUid);

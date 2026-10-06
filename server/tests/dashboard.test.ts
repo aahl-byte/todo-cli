@@ -579,6 +579,25 @@ describe("role filters", () => {
   });
 });
 
+describe("archiving shipped items", () => {
+  it("leaves archived items off Shipped, and reopening one unarchives it", async () => {
+    await w.one("alice", item("S1", { status: "done" }));
+    await w.one("alice", item("S2", { status: "done" }));
+    const p = (await project(w.d, "p"))!;
+    const shipped = async () => (await board(w.d, p, {}, "bob")).columns.find((c) => c.key === "shipped")!.items.map((i) => i.id);
+    expect(await shipped()).toEqual(["s1", "s2"]);
+
+    const [row] = await w.d.query("select versions from items where uid = 'S2'");
+    await w.one("alice", set("item", "S2", "S2", { "extra.archived": true }, row.versions));
+    expect(await shipped()).toEqual(["s1"]);
+
+    const [again] = await w.d.query("select versions from items where uid = 'S2'");
+    await w.one("alice", set("item", "S2", "S2", { status: "in-progress" }, again.versions));
+    const [after] = await w.d.query("select extra from items where uid = 'S2'");
+    expect(after.extra?.archived).toBeUndefined();
+  });
+});
+
 describe("notices", () => {
   it("sends one notice per person per note, the specific kind first", async () => {
     await w.one("alice", item("D1", { developer: "bob", creator: "carol" }));

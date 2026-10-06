@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.10.1
+version: 0.10.2
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -233,7 +233,7 @@ todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order w
 todo task title <query> <id> <title...>  # retitle a task
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>" [--type T] # add a new item (type defaults to feature)
-todo archive                     # move done items to .TODO/ARCHIVED/
+todo archive                     # archive done items (synced; clears Shipped)
 todo migrate [-g]                # rewrite files the fast YAML loader rejects
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
 todo unlink                      # move the global store back into ./.TODO

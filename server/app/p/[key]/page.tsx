@@ -5,6 +5,7 @@ import { RoleFilter } from "@/components/RoleFilter";
 import { cookies } from "next/headers";
 import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/filters";
 import { Led } from "@/components/ui";
+import { clearShippedAction } from "@/app/actions";
 import { db } from "@/lib/db";
 import { deriveCalcStatus, PAST_TRIAGE } from "@/lib/model";
 import { requireUser } from "@/lib/session";
@@ -55,7 +56,13 @@ export default async function Board({ params, searchParams }: { params: Promise<
       <div className="board">
         {columns.map((col) => (
           <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>
-            <div className="label">{col.label}{col.items.length > 0 && <span>{col.items.length}</span>}</div>
+            <div className="label">{col.label}{col.items.length > 0 && <span>{col.items.length}</span>}
+              {col.key === "shipped" && col.items.length > 0 && (
+                <form action={clearShippedAction} className="clear-col">
+                  <input type="hidden" name="project" value={key} />
+                  <button type="submit" className="plus" data-tip="archive every shipped item">clear</button>
+                </form>)}
+            </div>
             {col.items.map((c) => {
               const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (c.status === "requested" ? c.creator : null);
               return (
