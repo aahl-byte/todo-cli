@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.9.1
+version: 0.10.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -100,6 +100,14 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   so the plan reads as steps rather than numbers.
 - **Relate associated work:** `todo relate <q> <other>` marks two items as
   related, and `todo get` lists them from either side.
+- **Link the Jira tickets an item covers:** `todo jira link <q> CNS-123 [CNS-456 …]`,
+  and `todo jira unlink <q> CNS-456` to drop one. An item can hold several keys,
+  and one key can sit on several items, in this project or others. On the
+  server's next Jira poll, each newly linked ticket's summary and description
+  are appended to the item's request as a `## CNS-123 · <summary>` block, and
+  its Jira comments arrive as comment notes. If the request was frozen, that
+  append is a new version and **the item goes back to `requested`** for triage.
+  Jira's status never moves the item; `todo get` shows it next to each key.
 - **Record what a deploy needs** as deployment checks the moment you create the
   need: a migration, a new env var, a branch that must land first. `todo deploy`
   refuses while pre-deploy checks are pending.
@@ -205,6 +213,7 @@ todo set <query> type <type>
 todo set <query> repo|branch <value|none>   # where the work lives
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items
+todo jira link|unlink <query> <KEY...>   # Jira tickets this item covers
 todo list --mine                 # items where I'm developer or QA
 todo sync | todo inbox | todo whoami | todo login <url> <token>
 todo link --remote <url> [--project KEY]   # sync this store with a team server

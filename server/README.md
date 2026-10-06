@@ -59,6 +59,36 @@ design; there are no per-project roles.
 
 ## Jira bridge
 
+A project mirrors Jira in one of two modes, `projects.jira_mode`:
+
+- **`import`** (the default) imports the active issues of the project's
+  `jira_project` as items and mirrors their status, fields, comments and
+  sub-tasks.
+- **`links`** imports nothing. It mirrors only the issues its items link with
+  `todo jira link`, from any Jira project, and needs no `jira_project`.
+
+In both modes, each issue an item links is appended once to that item's request
+as a `## KEY · <summary>` block with the description and images, and its
+comments mirror onto every item linking it. Appending follows the request-version
+rules: a frozen request gets a new version, which returns the item to
+`requested`. A linked issue's status is shown next to its key and never moves
+the item.
+
+**Put a project in links mode** and poll it, read-only:
+
+```bash
+DATABASE_URL=... npm run project:add -- web "Web app"
+DATABASE_URL=... npm run jira:mode -- web links          # or: import
+DATABASE_URL=... JIRA_BASE_URL=... JIRA_EMAIL=... JIRA_API_TOKEN=... npm run jira:sync -- --all
+```
+
+`jira:sync -- --all` runs one pass over every links-mode project and exits
+non-zero if any failed; run it from a timer every few minutes. `jira:sync --
+<project>` polls one project in either mode, and `--every SECONDS` keeps
+polling. Polling always runs with `JIRA_READ_ONLY=1`.
+
+For import mode:
+
 - **Map a project:** in SQL, set `projects.jira_project` to the Jira project key,
   and `jira_status_map` to `{"<todo status>": "<Jira status name>", ...}`.
 - **Register a webhook** in Jira (System → Webhooks) for issue created, issue

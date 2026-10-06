@@ -170,6 +170,7 @@ todo request <query> --text "<text>" [--url U]   # post a new request version
 todo set <query> app|section <value|none>
 todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
 todo relate|unrelate <query> <other>      # related work, shown on both items
+todo jira link|unlink <query> <KEY...>    # Jira tickets this item covers
 todo reject <query> <text...>             # QA → qa-rejected with a required comment
 todo list --mine                          # where I'm developer or QA
 todo login <url> <token> | whoami | sync | inbox   # team server
@@ -242,6 +243,23 @@ A request is a series of versions. The current one freezes when the item leaves
 item back to `requested` for triage. `todo get` shows the current version and
 marks it `(untriaged)` when work began without triaging it.
 
+### Jira tickets
+
+```bash
+todo jira link safari CNS-123 CNS-456    # this item covers both tickets
+todo jira unlink safari CNS-456
+```
+
+The keys live in the item's `jira:` list, which syncs like any other field. An
+item can hold several keys, and one key can sit on items in several projects.
+On a server whose project polls Jira (see
+[server/README.md](server/README.md#jira-bridge)), each newly linked ticket's
+summary and description are appended once to the item's request, as a
+`## CNS-123 · <summary>` block between `---` separators, and the ticket's
+comments arrive as comment notes. The append follows the request-version rules:
+a frozen request gets a new version, which sends the item back to `requested`.
+Jira's status never moves a linked item; `todo get` shows it next to each key.
+
 ## Syncing with a team server
 
 The server in [`server/`](server/README.md) is the source of truth, and each
@@ -311,6 +329,7 @@ uid: 01K...               # stable identity for sync
 creator: pat              # people fields
 developer: dana
 qa_assignee: quinn
+jira: [CNS-123]           # linked Jira tickets (`todo jira link`)
 ```
 
 A `TASKS.yaml` holds one flow map per task; the phase comes from the directory:
