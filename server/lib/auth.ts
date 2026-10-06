@@ -11,7 +11,7 @@ export function hashToken(token: string): string {
 }
 
 export function newToken(): string {
-  return crypto.randomBytes(24).toString("base64url");
+  return crypto.randomBytes(24).toString("hex");
 }
 
 export async function userForToken(db: Db, token: string | null | undefined): Promise<User | null> {
