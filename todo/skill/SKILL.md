@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.9.0
+version: 0.9.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -92,6 +92,8 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 - **Ask instead of guessing.** When intent is unclear, raise a clarification
   with `todo ask`. It stays open until a person answers it with `todo answer`.
   Check `todo get` for open questions before you build.
+- **Record where the work lives** when you start it: `todo set <q> repo <owner/repo>`
+  and `todo set <q> branch <branch>`.
 - **Attach what you produce:** `todo url <q> <url> --type pr|preview|qa-handoff`.
   Other types: `external-ticket`, `bug-ticket`, `documentation`, `design`.
 - **Name your phases** with `todo phase <q> <N> "<title>"` when you stage work,
@@ -200,6 +202,7 @@ todo add "<title>" --request "<text>" [--url U] [--app A] [--section S]
 todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
 todo set <query> type <type>
+todo set <query> repo|branch <value|none>   # where the work lives
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items
 todo list --mine                 # items where I'm developer or QA

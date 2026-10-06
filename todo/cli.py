@@ -954,9 +954,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", choices=store.ITEM_TYPES, default=None, help="item type (default: feature)")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("set", parents=[common], help="set an item's title, type, app or section (none clears app/section)")
+    p = sub.add_parser("set", parents=[common], help="set an item's title, type, app, section, repo or branch "
+                            "(none clears all but title and type)")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("field", choices=["title", "type", "app", "section"])
+    p.add_argument("field", choices=["title", "type", "app", "section", "repo", "branch"])
     p.add_argument("value", nargs="+", help="the value, or none")
     p.set_defaults(func=cmd_set)
 

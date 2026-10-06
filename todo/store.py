@@ -239,6 +239,8 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "qa_assignee": to_str(meta.get("qa_assignee")) or None,
         "app": to_str(meta.get("app")) or None,
         "section": to_str(meta.get("section")) or None,
+        "repo": to_str(meta.get("repo")) or None,
+        "branch": to_str(meta.get("branch")) or None,
         "jira": jira_keys(meta.get("jira")),
         "jira_status": {to_str(k): to_str(v) for k, v in (meta.get("jira_status") or {}).items()}
                        if isinstance(meta.get("jira_status"), dict) else {},
@@ -368,7 +370,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     for key in ("priority", "type", "title"):
         if isinstance(patch.get(key), str):
             meta[key] = patch[key]
-    for key in PEOPLE + ("app", "section"):
+    for key in PEOPLE + ("app", "section", "repo", "branch"):
         if key in patch:
             meta[key] = patch[key] or None
     if "jira" in patch:

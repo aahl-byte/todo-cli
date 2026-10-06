@@ -48,6 +48,8 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
         <div className="kv">
           <span className="k">app</span>
           <AppValue data={data} ctx={ctx} />
+          <span className="k">branch</span>
+          <BranchValue data={data} ctx={ctx} />
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
                 options={ITEM_TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />
@@ -98,6 +100,38 @@ function AppValue({ data, ctx }: { data: Data; ctx: Ctx }) {
         <Popup title="App and section" onClose={() => setOpen(false)}>
           <form className="row" action={(fd) => void save(fd)}>
             <AppFields apps={data.choices} app={app} section={section} />
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
+              <button className="btn primary">Save</button>
+            </div>
+          </form>
+        </Popup>
+      )}
+    </>
+  );
+}
+
+function BranchValue({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const [open, setOpen] = useState(false);
+  const pinned = useRef(it.versions);
+  const repo = it.extra?.repo ?? "", branch = it.extra?.branch ?? "";
+  const save = async (fd: FormData) => {
+    const v = (k: string) => String(fd.get(k) ?? "").trim() || null;
+    const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
+                                   data: { "extra.repo": v("repo"), "extra.branch": v("branch") } });
+    if (report(r)) setOpen(false);
+  };
+  return (
+    <>
+      <button type="button" className="edit-text" onClick={() => { pinned.current = it.versions; setOpen(true); }}>
+        {repo || branch ? <>{repo && <span className="faint">{repo} · </span>}{branch || "—"}</> : <span className="faint">—</span>}
+      </button>
+      {open && (
+        <Popup title="Repo and branch" onClose={() => setOpen(false)}>
+          <form className="row" action={(fd) => void save(fd)}>
+            <input name="repo" defaultValue={repo} aria-label="repo" placeholder="repo" autoComplete="off" />
+            <input name="branch" defaultValue={branch} aria-label="branch" placeholder="branch" autoComplete="off" />
             <div className="actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
               <button className="btn primary">Save</button>

@@ -267,3 +267,15 @@ def test_list_filters_by_app_and_type(root, capsys):
     run_cli(root, ["list", "--app", "web", "--type", "debt"])
     out = capsys.readouterr().out
     assert "web-debt" in out and "web-idea" not in out and "api-debt" not in out
+
+
+def test_repo_and_branch_set_show_and_clear(root, capsys):
+    run_cli(root, ["set", "beta", "repo", "aahl-byte/todo-cli"])
+    run_cli(root, ["set", "beta", "branch", "feat/branch-field"])
+    it = store.resolve_item(root, "beta")
+    assert (it["repo"], it["branch"]) == ("aahl-byte/todo-cli", "feat/branch-field")
+    capsys.readouterr()
+    run_cli(root, ["get", "beta"])
+    assert "branch:    aahl-byte/todo-cli · feat/branch-field" in capsys.readouterr().out
+    run_cli(root, ["set", "beta", "repo", "none"])
+    assert store.resolve_item(root, "beta")["repo"] is None

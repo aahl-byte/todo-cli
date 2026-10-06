@@ -84,6 +84,8 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
     print(f'priority:  {it["priority"] or "—"}')
     if it.get("app") or it.get("section"):
         print(f'app:       {it.get("app") or "—"}' + (f' · {it["section"]}' if it.get("section") else ""))
+    if it.get("repo") or it.get("branch"):
+        print(f'branch:    {it.get("repo") or "—"}' + (f' · {it["branch"]}' if it.get("branch") else ""))
     if it.get("jira"):
         status = it.get("jira_status") or {}
         print("jira:      " + ", ".join(f"{k} ({status[k]})" if status.get(k) else k for k in it["jira"]))
