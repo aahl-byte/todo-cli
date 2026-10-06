@@ -968,3 +968,20 @@ def test_a_pulled_note_delete_waits_for_an_unreadable_note_file(pair, server):
     rnd(a, server, "alice")
     assert item(a)["notes"] == []
     assert [r for r in server.rows.values() if r["_entity"] == "note"] == []
+
+
+def test_command_exits_distinctly_when_its_push_is_rejected(pair, server, monkeypatch):
+    from todo import cli
+
+    a, b = pair
+    monkeypatch.setattr(remote, "remote_for", lambda root: server.client("alice"))
+    assert cli.run_synced(a, cli.build_parser().parse_args(["note", "login-bug", "fine"])) == 0
+    run_cli(a, ["start", "login-bug"])
+
+    monkeypatch.setenv("TODO_USER", "bob")
+    run_cli(b, ["--human", "ready-qa", "login-bug"])
+    assert rnd(b, server, "bob").error is None
+
+    monkeypatch.setenv("TODO_USER", "alice")
+    code = cli.run_synced(a, cli.build_parser().parse_args(["note", "login-bug", "again"]))
+    assert code == cli.EXIT_SYNC_REJECTED

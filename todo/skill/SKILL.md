@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.8.2
+version: 0.8.3
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -102,7 +102,8 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   need: a migration, a new env var, a branch that must land first. `todo deploy`
   refuses while pre-deploy checks are pending.
 - **Sync rejections show up in the dev log.** A line starting `sync:` means the
-  server kept a newer value from someone else. Read it, don't fight it.
+  server kept a newer value from someone else. Read it, don't fight it. The
+  command exits 4 when this happens, even though it otherwise ran.
 
 ## Child tasks
 

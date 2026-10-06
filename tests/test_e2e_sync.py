@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from todo import store
+from todo.cli import EXIT_SYNC_REJECTED
 
 SERVER = Path(__file__).resolve().parent.parent / "server"
 
@@ -78,14 +79,14 @@ def _stop(proc):
         pass
 
 
-def cli(home: Path, cwd: Path, *argv, offline=False):
+def cli(home: Path, cwd: Path, *argv, offline=False, code=0):
     env = {k: v for k, v in os.environ.items() if k not in ("TODO_USER", "CLAUDECODE")}
     env.update(HOME=str(home), TODO_VIA="human")
     if offline:
         env["TODO_OFFLINE"] = "1"
     out = subprocess.run([sys.executable, "-c", "from todo.cli import main; main()", *argv],
                          cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
-    assert out.returncode == 0, f"todo {' '.join(argv)}\n{out.stdout}\n{out.stderr}"
+    assert out.returncode == code, f"todo {' '.join(argv)}\n{out.stdout}\n{out.stderr}"
     return out
 
 
@@ -114,7 +115,7 @@ def test_offline_dev_and_qa_converge(server, tmp_path):
 
     cli(ha, ra, "start", "login-bug", offline=True)
     cli(ha, ra, "note", "login-bug", "offline: found the cookie bug", offline=True)
-    out = cli(ha, ra, "sync")
+    out = cli(ha, ra, "sync", code=EXIT_SYNC_REJECTED)
     assert "1 rejected" in out.stdout
 
     it = store.resolve_item((ra / ".TODO").resolve(), "login-bug")
@@ -172,7 +173,7 @@ def test_request_versions_freeze_and_send_the_item_back(server, tmp_path):
     # A frozen version refuses edits; the log says how to post a new one.
     f = next((root / "OPEN" / "safari-login" / "notes").iterdir())
     f.write_text(f.read_text().replace("first words", "edited words"))
-    cli(home, repo, "sync")
+    cli(home, repo, "sync", code=EXIT_SYNC_REJECTED)
     it = store.resolve_item(root, "safari-login")
     assert any("request-frozen" in e["text"] and "todo request" in e["text"] for e in it["log"])
 
@@ -229,7 +230,7 @@ def test_offline_new_version_beats_a_stale_move_into_triage(server, tmp_path):
     cli(home, repo, "reopen", "safari-login")
     cli(home, repo, "request", "safari-login", "--text", "second", offline=True)
     cli(home, repo, "triage", "safari-login", offline=True)
-    cli(home, repo, "sync")
+    cli(home, repo, "sync", code=EXIT_SYNC_REJECTED)
     cli(home, repo, "sync")
     it = store.resolve_item((repo / ".TODO").resolve(), "safari-login")
     assert it["status"] == "requested"

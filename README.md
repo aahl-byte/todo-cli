@@ -261,6 +261,7 @@ rejected; the CLI takes the server's value and records it in the dev log
 - `todo sync` runs a round now and lists anything still unpushed.
 - `todo inbox` shows your mentions, rejections, questions and hand-offs.
 - `TODO_OFFLINE=1` skips syncing for a command.
+- A command whose changes the server turned down exits 4 after running.
 
 ### Typical flow
 

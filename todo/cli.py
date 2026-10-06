@@ -37,6 +37,8 @@ ITEM_ONLY = {"deploy"}
 
 # Commands that manage sync themselves.
 NO_AUTO_SYNC = {"sync", "whoami", "inbox", "migrate"}
+# The command ran, but the server turned down at least one of its changes.
+EXIT_SYNC_REJECTED = 4
 
 # Where QA can send work back from.
 REJECTABLE = ["ready-for-qa", "in-qa", "ready-to-deploy"]
@@ -582,6 +584,8 @@ def cmd_sync(root: Path, args) -> None:
         for op in left:
             fields = ", ".join(sorted((op.get("data") or {}).keys())) if op["op"] == "set" else ""
             print(f'  {op["op"]} {op["entity"]} {op["uid"]}' + (f"  ({fields})" if fields else ""))
+    if report.rejected:
+        sys.exit(EXIT_SYNC_REJECTED)
 
 
 def cmd_login(root: Path, args) -> None:
@@ -1016,12 +1020,22 @@ def main():
         migrate.convert_note_meta(root)
     if root is not None and args.command not in NO_AUTO_SYNC and sync.enabled(root) \
             and not getattr(args, "all_projects", False):
-        with sync.locked(root):
-            sync.quiet_round(root)
-            args.func(root, args)
-            sync.quiet_round(root, push_only=True)
+        code = run_synced(root, args)
+        if code:
+            sys.exit(code)
         return
     args.func(root, args)
+
+
+def run_synced(root: Path, args) -> int:
+    """Run a command between two sync rounds; EXIT_SYNC_REJECTED if either
+    round had a change of ours turned down by the server."""
+    with sync.locked(root):
+        before = sync.quiet_round(root)
+        args.func(root, args)
+        after = sync.quiet_round(root, push_only=True)
+    rejected = any(r is not None and r.rejected for r in (before, after))
+    return EXIT_SYNC_REJECTED if rejected else 0
 
 
 def _resolve_root(raw: str) -> Path:
