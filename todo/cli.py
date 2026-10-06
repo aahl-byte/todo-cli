@@ -283,6 +283,37 @@ def cmd_unrelate(root: Path, args) -> None:
     print(f'{it["id"]}: no longer related to {other["id"]}')
 
 
+def _jira_args(keys) -> list:
+    out = []
+    for raw in keys:
+        k = raw.strip().upper()
+        if not store.JIRA_KEY.match(k):
+            die(f"Not a Jira key: {raw!r} (expected e.g. CNS-123)", 2)
+        if k not in out:
+            out.append(k)
+    return out
+
+
+def cmd_jira_link(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    keys = _jira_args(args.keys)
+    added = [k for k in keys if k not in it["jira"]]
+    store.update_todo(root, it["id"], {"jira": it["jira"] + added})
+    print(f'{it["id"]}: jira {", ".join(it["jira"] + added)}'
+          + (f'  (linked {", ".join(added)})' if added else "  (already linked)"))
+
+
+def cmd_jira_unlink(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    keys = _jira_args(args.keys)
+    missing = [k for k in keys if k not in it["jira"]]
+    if len(missing) == len(keys):
+        die(f'{it["id"]} isn\'t linked to {", ".join(missing)}.', 1)
+    left = [k for k in it["jira"] if k not in keys]
+    store.update_todo(root, it["id"], {"jira": left})
+    print(f'{it["id"]}: jira {", ".join(left) or "—"}')
+
+
 def cmd_ask(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     new_id = store.add_note(root, it["id"], _text(args, "question"), now(), kind="clarification")
@@ -945,6 +976,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("other", help="the related item")
     p.set_defaults(func=cmd_unrelate)
 
+    jp = sub.add_parser("jira", parents=[common], help="link an item to Jira tickets")
+    jsub = jp.add_subparsers(dest="jiracmd", metavar="<jiracmd>")
+    for name, func, helptext in (("link", cmd_jira_link, "link Jira tickets to an item"),
+                                 ("unlink", cmd_jira_unlink, "remove Jira tickets from an item")):
+        jl = jsub.add_parser(name, parents=[common], help=helptext)
+        jl.add_argument("query", help="id or part of a title")
+        jl.add_argument("keys", nargs="+", metavar="KEY", help="Jira issue key, e.g. CNS-123")
+        jl.set_defaults(func=func)
+
     p = sub.add_parser("archive", parents=[common], help="move done items to .TODO/ARCHIVED/")
     p.set_defaults(func=cmd_archive)
 
@@ -1016,7 +1056,7 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    if args.command in ("task", "check") and not getattr(args, "func", None):
+    if args.command in ("task", "check", "jira") and not getattr(args, "func", None):
         parser.parse_args([args.command, "--help"])
         sys.exit(0)
     if getattr(args, "via", None):

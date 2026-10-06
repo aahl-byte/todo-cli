@@ -204,6 +204,19 @@ def _read_checks(item_dir: Path) -> list:
     ]
 
 
+JIRA_KEY = re.compile(r"^[A-Z][A-Z0-9_]*-[1-9][0-9]*$")
+
+
+def jira_keys(raw) -> list:
+    """The item's linked Jira keys, in order, without duplicates or malformed entries."""
+    out = []
+    for k in raw if isinstance(raw, list) else []:
+        k = to_str(k).strip().upper()
+        if JIRA_KEY.match(k) and k not in out:
+            out.append(k)
+    return out
+
+
 def _load_meta(item_dir: Path):
     return yamlio.load(item_dir / ITEM_FILE)
 
@@ -226,6 +239,9 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "qa_assignee": to_str(meta.get("qa_assignee")) or None,
         "app": to_str(meta.get("app")) or None,
         "section": to_str(meta.get("section")) or None,
+        "jira": jira_keys(meta.get("jira")),
+        "jira_status": {to_str(k): to_str(v) for k, v in (meta.get("jira_status") or {}).items()}
+                       if isinstance(meta.get("jira_status"), dict) else {},
         "phases": phase_titles(meta.get("phases")),
         "notes": [_note(e) for e in _read_entries(item_dir / NOTES_DIR)] if full else [],
         "log": [_log(e) for e in _read_entries(item_dir / LOG_DIR)] if full else [],
@@ -355,6 +371,11 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     for key in PEOPLE + ("app", "section"):
         if key in patch:
             meta[key] = patch[key] or None
+    if "jira" in patch:
+        if patch["jira"]:
+            meta["jira"] = list(patch["jira"])
+        else:
+            meta.pop("jira", None)
     yamlio.save(y, item_dir / ITEM_FILE, meta)
     if moved:
         _write_history(item_dir, moved[0], moved[1], now_iso, forced)
