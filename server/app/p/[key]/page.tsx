@@ -8,7 +8,7 @@ import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
 import { deriveCalcStatus, PAST_TRIAGE } from "@/lib/model";
 import { requireUser } from "@/lib/session";
-import { board, project, users, type BoardFilters as F, type Card } from "@/lib/views";
+import { board, choices, project, users, type BoardFilters as F, type Card } from "@/lib/views";
 
 type Search = Record<string, string | undefined>;
 
@@ -47,11 +47,11 @@ export default async function Board({ params, searchParams }: { params: Promise<
   const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
   if (restored) redirect(`/p/${key}?${restored}`);
   const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs",
-                 tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, parked: q.parked === "1" };
+                 tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app, parked: q.parked === "1" };
   const { columns, counts } = await board(d, p, f, user.handle);
   return (
     <>
-      <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} review />
+      <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={counts} review />
       <div className="board">
         {columns.map((col) => (
           <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>
@@ -67,7 +67,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
                   <div className="meta">
                     {who && <span className="av" data-tip={[c.developer && `dev ${c.developer}`, c.qa_assignee && `qa ${c.qa_assignee}`].filter(Boolean).join(" · ")}>{initials(who)}</span>}
                     {c.jira_key && <span className="tag key">{c.jira_key}</span>}
-                    {c.type === "bug" && <span className="tag bug">bug</span>}
+                    {c.type !== "feature" && <span className={`tag type ${c.type}`}>{c.type}</span>}
                     {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
                     {c.open_questions > 0 && <span className="tag hot" data-tip="open questions">?{c.open_questions}</span>}
                     {untriaged(c) && <span className="tag hot" data-tip="the request being worked on never went through triage">v{c.request_meta!.version} untriaged</span>}

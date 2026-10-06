@@ -76,6 +76,7 @@ export interface BoardFilters {
   view?: "merged" | "tabs";
   tab?: number;
   type?: string;
+  app?: string;
   parked?: boolean;
 }
 
@@ -91,11 +92,12 @@ export const COLUMNS = [
 
 const SHIPPED_DAYS = 14;
 
-/** Cards past the type and review filters, before the role entries. */
+/** Cards past the type, app and review filters, before the role entries. */
 function baseFilter<T extends Card>(all: T[], f: BoardFilters, me: string): T[] {
   return all.filter((c) =>
     (!f.review || (c.status === "review" && c.last_to === "review" && c.last_via === "agent" && c.developer === me))
-    && (!f.type || c.type === f.type));
+    && (!f.type || c.type === f.type)
+    && (!f.app || c.extra?.app === f.app));
 }
 
 export function filterCards<T extends Card>(all: T[], f: BoardFilters, me: string): T[] {

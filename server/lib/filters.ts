@@ -53,8 +53,8 @@ export function legacyQuery(q: Record<string, string | undefined>, me: string): 
 }
 
 /** URL params that make up a work-queue filter, remembered per project. */
-export const FILTER_KEYS = ["f", "view", "tab", "type", "review", "parked"];
-export const SHARED_KEYS = ["f", "view", "tab", "type"];
+export const FILTER_KEYS = ["f", "view", "tab", "type", "app", "review", "parked"];
+export const SHARED_KEYS = ["f", "view", "tab", "type", "app"];
 export const filterCookie = (project: string) => `todo_filter_${project.replace(/[^\w-]/g, "_")}`;
 
 /** The query string a filter cookie holds, decoded once if it is still encoded. */

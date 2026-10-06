@@ -567,6 +567,16 @@ describe("role filters", () => {
     expect(r.counts).toEqual([1, 1]);
     expect(r.columns.flatMap((c) => c.items.map((i) => i.id))).toEqual(["f2"]);
   });
+  it("narrows the board by app and type", async () => {
+    await w.one("alice", item("A1", { status: "todo", type: "debt", extra: { app: "web" } }));
+    await w.one("alice", item("A2", { status: "todo", type: "idea", extra: { app: "web" } }));
+    await w.one("alice", item("A3", { status: "todo", type: "debt", extra: { app: "api" } }));
+    const p = (await project(w.d, "p"))!;
+    const ids = async (f: object) => (await board(w.d, p, f, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
+    expect(await ids({ app: "web" })).toEqual(["a1", "a2"]);
+    expect(await ids({ app: "web", type: "debt" })).toEqual(["a1"]);
+    expect(await ids({ type: "debt" })).toEqual(["a1", "a3"]);
+  });
 });
 
 describe("notices", () => {

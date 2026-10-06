@@ -3,7 +3,7 @@
 // values are click-to-pick; adds open a popup.
 import { useRef, useState } from "react";
 import * as act from "@/app/item-actions";
-import { CHECK_KINDS, LINK_TYPES } from "@/lib/model";
+import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import { safeUrl } from "@/lib/url";
 import { Ago, Led, Menu, Popup } from "../ui";
@@ -14,7 +14,6 @@ import { AppFields } from "../AppFields";
 
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
-const TYPES = ["feature", "bug", "refactor", "question"];
 const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA" };
 
 
@@ -51,7 +50,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
           <AppValue data={data} ctx={ctx} />
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
-                options={TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />
+                options={ITEM_TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />
           <span className="k">priority</span>
           <Menu label="priority" current={it.priority} onOpen={() => { pinned.current = it.versions; }}
                 trigger={<span className={it.priority === "high" || it.priority === "urgent" ? "hot" : ""}>{it.priority ?? "—"}</span>}

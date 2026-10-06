@@ -20,6 +20,7 @@ export const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in
 
 export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
+export const ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion", "performance", "decoration", "spin-off"];
 export const LINK_TYPES = ["pr", "preview", "qa-handoff", "external-ticket", "bug-ticket", "documentation", "design", "other"];
 
 export type Entity = "item" | "task" | "note" | "log" | "check";

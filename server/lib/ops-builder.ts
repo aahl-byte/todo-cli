@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { moves, nowIso, STATUSES } from "./model";
+import { ITEM_TYPES, moves, nowIso, STATUSES } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -74,7 +74,7 @@ export function requestOps(form: { title: string; type: string; priority: string
   const url = requestUrl(form.url);
   const extra = Object.fromEntries((["app", "section"] as const).map((k) => [k, form[k]?.trim()]).filter(([, v]) => v));
   const item = createOp("item", "", {
-    title, type: form.type || "feature", priority: form.priority || "medium", status: "requested",
+    title, type: ITEM_TYPES.includes(form.type ?? "") ? form.type : "feature", priority: form.priority || "medium", status: "requested",
     creator: me, developer: form.developer || null, qa_assignee: form.qa_assignee || null, created: nowIso(),
     ...(Object.keys(extra).length ? { extra } : {}),
   });

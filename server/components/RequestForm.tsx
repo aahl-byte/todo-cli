@@ -3,6 +3,7 @@ import { useActionState } from "react";
 import { requestAction } from "@/app/actions";
 import { AppFields, type Apps } from "./AppFields";
 import { Composer } from "./Composer";
+import { ITEM_TYPES } from "@/lib/model";
 
 export function RequestForm({ project, users, uploads, apps }: {
   project: string; users: string[]; uploads: { project: string; scope: string } | null; apps: Apps;
@@ -13,7 +14,7 @@ export function RequestForm({ project, users, uploads, apps }: {
       <input type="hidden" name="project" value={project} />
       <div className="row title-row">
         <input name="title" required aria-label="title" placeholder="What should change?" className="big" autoFocus />
-        <select name="type" defaultValue="feature" aria-label="type"><option>feature</option><option>bug</option></select>
+        <select name="type" defaultValue="feature" aria-label="type">{ITEM_TYPES.map((t) => <option key={t}>{t}</option>)}</select>
         <select name="priority" defaultValue="medium" aria-label="priority">{["low", "medium", "high", "urgent"].map((p) => <option key={p}>{p}</option>)}</select>
       </div>
       <div className="row">

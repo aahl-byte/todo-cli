@@ -9,7 +9,7 @@ import { db } from "@/lib/db";
 import { later } from "@/lib/http";
 import { flushJira } from "@/lib/jira/flush";
 import { markSeen } from "@/lib/inbox";
-import { LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
+import { ITEM_TYPES, LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
 import type { Db } from "@/lib/db";
@@ -66,6 +66,7 @@ export async function editItem(a: { project: string; uid: string; versions: Vers
   const user = await requireUser();
   const data = Object.fromEntries(Object.entries(a.data).filter(([k]) => ITEM_FIELDS.includes(k)));
   if (typeof data.title === "string" && !data.title.trim()) return fail("A title can't be empty.");
+  if ("type" in data && !ITEM_TYPES.includes(data.type as string)) return fail(`Unknown type: ${data.type}`);
   return apply(a.project, [build.setOp("item", { uid: a.uid, versions: a.versions }, data)], user.handle);
 }
 

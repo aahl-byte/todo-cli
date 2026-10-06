@@ -8,7 +8,7 @@ import { safeUrl } from "@/lib/url";
 import { Ago } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import { project, qaQueue, users } from "@/lib/views";
+import { choices, project, qaQueue, users } from "@/lib/views";
 
 
 export default async function QaQueue({ params, searchParams }: {
@@ -25,8 +25,8 @@ export default async function QaQueue({ params, searchParams }: {
   const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
   if (restored) redirect(`/p/${key}/qa?${restored}`);
   const { ready, inQa, awaitingFix, counts } = await qaQueue(d, key, user.handle, {
-    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type });
-  const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} me={user.handle} counts={counts} />;
+    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app });
+  const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={counts} />;
   const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);
     return (

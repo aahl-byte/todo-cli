@@ -1,11 +1,12 @@
 "use client";
 // Board and QA-queue filters: role + person entries shown merged or as tabs,
-// plus type and parked. Every change applies at once through the URL.
+// plus type, app and parked. Every change applies at once through the URL.
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
+import { ITEM_TYPES } from "@/lib/model";
 import { cookieQuery, filterCookie, filterPart, formatEntries, parseEntries, roleLabel, FILTER_KEYS, ROLES, SHARED_KEYS, type Entry, type Role } from "@/lib/filters";
 
-export function RoleFilter({ users, me, counts, review }: { users: string[]; me: string; counts: number[]; review?: boolean }) {
+export function RoleFilter({ users, apps, me, counts, review }: { users: string[]; apps: string[]; me: string; counts: number[]; review?: boolean }) {
   const router = useRouter();
   const path = usePathname();
   const q = useSearchParams();
@@ -77,9 +78,16 @@ export function RoleFilter({ users, me, counts, review }: { users: string[]; me:
             </button>
             <label className="k">type
               <select value={q.get("type") ?? ""} onChange={(e) => go({ type: e.target.value || null })}>
-                <option value="">any</option><option value="feature">feature</option><option value="bug">bug</option>
+                <option value="">any</option>{ITEM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </label>
+            {apps.length > 0 && (
+              <label className="k">app
+                <select value={q.get("app") ?? ""} onChange={(e) => go({ app: e.target.value || null })}>
+                  <option value="">any</option>{apps.map((a) => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </label>
+            )}
             {review && <label className="check"><input type="checkbox" checked={q.get("parked") === "1"} onChange={() => go({ parked: q.get("parked") === "1" ? null : "1" })} /> show parked</label>}
           </div>
         </details>
@@ -93,6 +101,7 @@ export function RoleFilter({ users, me, counts, review }: { users: string[]; me:
           <span key={i} className="chip">{label(e)}<button type="button" className="x" aria-label={`clear ${label(e)}`} onClick={() => setEntries(entries.filter((_, j) => j !== i))}>×</button></span>
         ))}
         {q.get("type") && <span className="chip">{q.get("type")}<button type="button" className="x" aria-label="clear type" onClick={() => go({ type: null })}>×</button></span>}
+        {q.get("app") && <span className="chip">app {q.get("app")}<button type="button" className="x" aria-label="clear app" onClick={() => go({ app: null })}>×</button></span>}
       </div>
       {view === "tabs" && entries.length > 1 && (
         <div className="tabs role-tabs" role="tablist">
