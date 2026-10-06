@@ -243,3 +243,27 @@ def test_set_title_renames_and_refuses_empty(root):
     assert store.resolve_item(root, "beta")["title"] == "Beta merged"
     with pytest.raises(SystemExit):
         run_cli(root, ["set", "beta", "title", "none"])
+
+
+def test_type_set_on_add_and_by_set_and_refuses_unknown(root):
+    run_cli(root, ["add", "Old cache layer", "--type", "debt"])
+    assert store.resolve_item(root, "old-cache-layer")["type"] == "debt"
+    run_cli(root, ["set", "old-cache-layer", "type", "spin-off"])
+    assert store.resolve_item(root, "old-cache-layer")["type"] == "spin-off"
+    with pytest.raises(SystemExit):
+        run_cli(root, ["set", "old-cache-layer", "type", "nonsense"])
+    with pytest.raises(SystemExit):
+        run_cli(root, ["set", "old-cache-layer", "type", "none"])
+
+
+def test_list_filters_by_app_and_type(root, capsys):
+    run_cli(root, ["add", "Web debt", "--app", "web", "--type", "debt"])
+    run_cli(root, ["add", "Web idea", "--app", "web", "--type", "idea"])
+    run_cli(root, ["add", "Api debt", "--app", "api", "--type", "debt"])
+    capsys.readouterr()
+    run_cli(root, ["list", "--app", "web"])
+    out = capsys.readouterr().out
+    assert "web-debt" in out and "web-idea" in out and "api-debt" not in out
+    run_cli(root, ["list", "--app", "web", "--type", "debt"])
+    out = capsys.readouterr().out
+    assert "web-debt" in out and "web-idea" not in out and "api-debt" not in out

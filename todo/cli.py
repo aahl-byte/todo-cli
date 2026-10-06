@@ -76,9 +76,14 @@ def _check_transition(it, status: str, force: bool) -> None:
 
 
 def _filter_list(items, args, *, default_active: bool):
-    """Apply --status / --all / default filtering to a list of items. The
-    default (no flags) hides the terminal statuses locally, but narrows to the
-    active set across projects."""
+    """Apply --app / --type, then --status / --all / default filtering to a list
+    of items. The default (no flags) hides the terminal statuses locally, but
+    narrows to the active set across projects."""
+    app, kind = getattr(args, "app", None), getattr(args, "type", None)
+    if app:
+        items = [it for it in items if it["app"] == app]
+    if kind:
+        items = [it for it in items if it["type"] == kind]
     if args.status:
         return [it for it in items if it["status"] == args.status]
     if args.all:
@@ -231,8 +236,10 @@ def cmd_set(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     value = " ".join(args.value).strip()
     value = None if value.lower() in ("", "none", "-") else value
-    if args.field == "title" and not value:
-        die("A title can't be cleared.", 2)
+    if args.field in ("title", "type") and not value:
+        die(f"A {args.field} can't be cleared.", 2)
+    if args.field == "type" and value not in store.ITEM_TYPES:
+        die(f"Unknown type {value!r}; one of: {', '.join(store.ITEM_TYPES)}", 2)
     store.update_todo(root, it["id"], {args.field: value})
     print(f'{it["id"]}: {args.field} = {value or "—"}')
 
@@ -502,8 +509,9 @@ def cmd_add(root: Path, args) -> None:
     it = store.add_todo(root, title, now(), status="requested" if request else "todo")
     if not it:
         die("Could not add (empty title?).", 1)
-    if args.app or args.section:
-        store.update_todo(root, it["id"], {"app": args.app, "section": args.section})
+    if args.app or args.section or args.type:
+        store.update_todo(root, it["id"], {"app": args.app, "section": args.section,
+                                          **({"type": args.type} if args.type else {})})
     if request:
         store.add_note(root, it["id"], request, now(), kind="ticket-request", extra={"url": url} if url else None)
     print(f'added {it["id"]}: {it["title"]}' + ("  (requested)" if request else ""))
@@ -722,6 +730,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "(grouped by project; defaults to the active statuses)")
     p.add_argument("--mine", action="store_true",
                    help="only items where I am the developer or QA assignee")
+    p.add_argument("--app", metavar="A", help="only items for this app")
+    p.add_argument("--type", choices=store.ITEM_TYPES, help="only items of this type")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("get", parents=[common], aliases=["show"], help="show one item in full")
@@ -910,11 +920,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--url", default=None, help="with --request: where it happens")
     p.add_argument("--app", default=None, help="the app it's about")
     p.add_argument("--section", default=None, help="the section of that app")
+    p.add_argument("--type", choices=store.ITEM_TYPES, default=None, help="item type (default: feature)")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("set", parents=[common], help="set an item's title, app or section (none clears app/section)")
+    p = sub.add_parser("set", parents=[common], help="set an item's title, type, app or section (none clears app/section)")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("field", choices=["title", "app", "section"])
+    p.add_argument("field", choices=["title", "type", "app", "section"])
     p.add_argument("value", nargs="+", help="the value, or none")
     p.set_defaults(func=cmd_set)
 

@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.8.3
+version: 0.9.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -169,6 +169,7 @@ query lists the candidates.
 
 ```
 todo list [--status S] [--all]   # list (hides done/cancelled; --all includes them)
+todo list [--app A] [--type T]   # only one app's items, or one type's
 todo list -g                     # active items across all linked projects (grouped)
 todo get <query> [--log]         # show one item in full (--log: the whole dev log)
 todo triage <query>              # → in-triage  (planning)
@@ -198,6 +199,7 @@ todo request <query> --text "<text>" [--url U]   # post a new request version (b
 todo add "<title>" --request "<text>" [--url U] [--app A] [--section S]
 todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
+todo set <query> type <type>
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items
 todo list --mine                 # items where I'm developer or QA
@@ -215,7 +217,7 @@ todo task status <query> <id> <S> # set a task's status explicitly
 todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order within a phase
 todo task rm <query> <id>        # remove task by id
-todo add    "<title>"            # add a new item
+todo add    "<title>" [--type T] # add a new item (type defaults to feature)
 todo archive                     # move done items to .TODO/ARCHIVED/
 todo migrate [-g]                # rewrite files the fast YAML loader rejects
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
@@ -223,6 +225,20 @@ todo unlink                      # move the global store back into ./.TODO
 todo projects                    # list all global-stored projects
 todo init                        # install this skill on a fresh machine
 ```
+
+Item types:
+
+- `feature`, `bug`, `refactor`, `question`
+- `debt` — code debt, or something intended but put off for later
+- `idea` — the user's own, not requested by product management
+- `suggestion` — an AI-generated ticket for non-critical work
+- `performance` — performance tweaks
+- `decoration` — a user-generated nice-to-have
+- `spin-off` — broken off from another item; `todo relate` it to the original
+
+**Anything you file on your own initiative, unasked and non-critical, is a
+`suggestion`.** When splitting work out of an item, add it as a `spin-off` and
+relate the two.
 
 ### Global store (opt-in)
 
