@@ -236,10 +236,12 @@ def cmd_set(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     value = " ".join(args.value).strip()
     value = None if value.lower() in ("", "none", "-") else value
-    if args.field in ("title", "type") and not value:
+    if args.field in ("title", "type", "priority") and not value:
         die(f"A {args.field} can't be cleared.", 2)
     if args.field == "type" and value not in store.ITEM_TYPES:
         die(f"Unknown type {value!r}; one of: {', '.join(store.ITEM_TYPES)}", 2)
+    if args.field == "priority" and value not in store.PRIORITIES:
+        die(f"Unknown priority {value!r}; one of: {', '.join(store.PRIORITIES)}", 2)
     store.update_todo(root, it["id"], {args.field: value})
     print(f'{it["id"]}: {args.field} = {value or "—"}')
 
@@ -405,6 +407,16 @@ def cmd_deploy_plan(root: Path, args) -> None:
     render.print_deploy_plan(ready, after, complete, {it["id"] for it in everything})
 
 
+def cmd_renote(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _note_id(it, args.id)
+    text = " ".join(args.text).strip()
+    if not text:
+        die("Missing note text.", 2)
+    store.edit_note(root, it["id"], args.id, text)
+    print(f'{it["id"]}: rewrote note [{args.id}]')
+
+
 def cmd_unnote(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _note_id(it, args.id)
@@ -520,6 +532,16 @@ def cmd_task_status(root: Path, args) -> None:
 
 def cmd_task_shortcut(root: Path, args) -> None:
     _set_task_status(root, args.query, args.id, SHORTCUTS[args.taskcmd])
+
+
+def cmd_task_title(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _task_id(it, args.id)
+    title = " ".join(args.title).strip()
+    if not title:
+        die("Missing task title.", 2)
+    store.set_task_title(root, it["id"], args.id, title)
+    print(f'{it["id"]}: task [{args.id}] · {title}')
 
 
 def cmd_task_rm(root: Path, args) -> None:
@@ -873,6 +895,12 @@ def build_parser() -> argparse.ArgumentParser:
                        help="every check the next deploy needs, across ready-to-deploy items")
     p.set_defaults(func=cmd_deploy_plan)
 
+    p = sub.add_parser("renote", parents=[common], help="replace a note's text, keeping its id")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("id", type=int, help="note id (see `todo notes`)")
+    p.add_argument("text", nargs="+", help="the new text")
+    p.set_defaults(func=cmd_renote)
+
     p = sub.add_parser("unnote", parents=[common], help="remove note by id")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("id", type=int, help="note id (see `todo notes`)")
@@ -931,6 +959,12 @@ def build_parser() -> argparse.ArgumentParser:
     tst.add_argument("status", choices=STATUSES, help="new status")
     tst.set_defaults(func=cmd_task_status)
 
+    tt = tsub.add_parser("title", parents=[common], help="retitle a task")
+    tt.add_argument("query", help="id or part of a title")
+    tt.add_argument("id", type=int, help="task id (see `todo tasks`)")
+    tt.add_argument("title", nargs="+", help="the new title")
+    tt.set_defaults(func=cmd_task_title)
+
     trm = tsub.add_parser("rm", parents=[common], help="remove a task")
     trm.add_argument("query", help="id or part of a title")
     trm.add_argument("id", type=int, help="task id (see `todo tasks`)")
@@ -954,10 +988,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", choices=store.ITEM_TYPES, default=None, help="item type (default: feature)")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("set", parents=[common], help="set an item's title, type, app, section, repo or branch "
-                            "(none clears all but title and type)")
+    p = sub.add_parser("set", parents=[common], help="set an item's title, type, priority, app, section, repo or branch "
+                            "(none clears all but title, type and priority)")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("field", choices=["title", "type", "app", "section", "repo", "branch"])
+    p.add_argument("field", choices=["title", "type", "priority", "app", "section", "repo", "branch"])
     p.add_argument("value", nargs="+", help="the value, or none")
     p.set_defaults(func=cmd_set)
 

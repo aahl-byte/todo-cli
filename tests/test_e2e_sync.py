@@ -176,6 +176,8 @@ def test_request_versions_freeze_and_send_the_item_back(server, tmp_path):
     cli(home, repo, "sync", code=EXIT_SYNC_REJECTED)
     it = store.resolve_item(root, "safari-login")
     assert any("request-frozen" in e["text"] and "todo request" in e["text"] for e in it["log"])
+    note_id = next(n["id"] for n in it["notes"] if n["kind"] == "ticket-request")
+    cli(home, repo, "renote", "safari-login", str(note_id), "renoted words", code=EXIT_SYNC_REJECTED)
 
     out = cli(home, repo, "request", "safari-login", "--text", "second words")
     assert "moves it back to requested" in out.stdout

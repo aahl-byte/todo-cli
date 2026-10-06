@@ -90,3 +90,10 @@ def test_status_name_as_legacy_command(root):
                    "blocked", "deferred", "done"]:
         run(root, [status, "beta"])
         assert store.resolve_item(root, "beta")["status"] == status
+
+
+def test_task_title_retitles_in_place(root):
+    run(root, ["task", "add", "beta", "first", "--phase", "1"])
+    run(root, ["task", "title", "beta", "1", "renamed", "task"])
+    assert bare(store.resolve_item(root, "beta")["tasks"]) == \
+        [{"id": 1, "title": "renamed task", "status": "todo", "phase": 1}]

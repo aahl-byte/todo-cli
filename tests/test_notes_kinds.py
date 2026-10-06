@@ -279,3 +279,22 @@ def test_repo_and_branch_set_show_and_clear(root, capsys):
     assert "branch:    aahl-byte/todo-cli · feat/branch-field" in capsys.readouterr().out
     run_cli(root, ["set", "beta", "repo", "none"])
     assert store.resolve_item(root, "beta")["repo"] is None
+
+
+def test_renote_replaces_text_and_keeps_id_and_meta(root):
+    run_cli(root, ["comment", "beta", "hi @quinn"])
+    before = notes(root)[0]
+    run_cli(root, ["renote", "beta", str(before["id"]), "hello", "@quinn"])
+    after = notes(root)[0]
+    assert after["text"] == "hello @quinn"
+    assert {k: after[k] for k in ("id", "uid", "kind", "author", "ts")} == \
+        {k: before[k] for k in ("id", "uid", "kind", "author", "ts")}
+
+
+def test_set_priority_checks_the_value(root):
+    run_cli(root, ["set", "beta", "priority", "urgent"])
+    assert store.resolve_item(root, "beta")["priority"] == "urgent"
+    with pytest.raises(SystemExit):
+        run_cli(root, ["set", "beta", "priority", "someday"])
+    with pytest.raises(SystemExit):
+        run_cli(root, ["set", "beta", "priority", "none"])

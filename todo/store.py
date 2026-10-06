@@ -36,6 +36,7 @@ UNPHASED_DIR = "unphased"
 PEOPLE = ("creator", "developer", "qa_assignee")
 NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
               "clarification", "relation"]
+PRIORITIES = ["low", "medium", "high", "urgent", "critical"]
 ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion",
               "performance", "decoration", "spin-off"]
 LINK_TYPES = ["pr", "preview", "qa-handoff", "external-ticket", "bug-ticket",
@@ -485,6 +486,18 @@ def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: st
     return False
 
 
+def edit_note(root: Path, item_id: str, note_id: int, text: str) -> bool:
+    """Replace a note's text, keeping its file, id and metadata."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return False
+    for e in _read_entries(item_dir / NOTES_DIR):
+        if e["id"] == note_id:
+            yamlio.write_atomic(e["file"], frontmatter.join(dict(e["meta"]), text + "\n"))
+            return True
+    return False
+
+
 def remove_note(root: Path, item_id: str, note_id: int) -> bool:
     return _remove_entry(root, item_id, NOTES_DIR, note_id)
 
@@ -583,6 +596,15 @@ def set_task_status(root: Path, item_id: str, task_id: int, status: str) -> bool
         for t in tasks:
             if t["id"] == task_id:
                 t["status"] = status
+        return True
+    return _mutate_tasks(root, item_id, _set) is True
+
+
+def set_task_title(root: Path, item_id: str, task_id: int, title: str) -> bool:
+    def _set(tasks):
+        for t in tasks:
+            if t["id"] == task_id:
+                t["title"] = title
         return True
     return _mutate_tasks(root, item_id, _set) is True
 

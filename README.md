@@ -145,6 +145,7 @@ todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note
 todo notes  <query>              # list notes with their [id]s
+todo renote <query> <id> <text...> # replace a note's text, keeping its id
 todo unnote <query> <id>         # remove note by id
 todo log    <query> <text...>    # append a dated dev-log entry
 todo logs   <query> [-n N]       # show the dev log, oldest first
@@ -155,6 +156,7 @@ todo task start  <query> <id>    # task → in-progress (triage/review/block/def
 todo task status <query> <id> <S> # set a task's status explicitly
 todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # reorder within a phase
+todo task title <query> <id> <title...>  # retitle a task
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>" [--request TEXT [--url U]] [--app A] [--section S]   # add an item
 todo comment|ask <query> <text...>        # comment (@mentions) | clarification question
@@ -167,6 +169,7 @@ todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
 todo request|ready-qa|qa|approve|deploy <query>   # team statuses
 todo request <query> --text "<text>" [--url U]   # post a new request version
+todo set <query> priority low|medium|high|urgent|critical
 todo set <query> app|section <value|none>
 todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
 todo relate|unrelate <query> <other>      # related work, shown on both items

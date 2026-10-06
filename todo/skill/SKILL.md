@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.10.0
+version: 0.10.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -210,6 +210,7 @@ todo add "<title>" --request "<text>" [--url U] [--app A] [--section S]
 todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
 todo set <query> type <type>
+todo set <query> priority low|medium|high|urgent|critical
 todo set <query> repo|branch <value|none>   # where the work lives
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items
@@ -218,6 +219,7 @@ todo list --mine                 # items where I'm developer or QA
 todo sync | todo inbox | todo whoami | todo login <url> <token>
 todo link --remote <url> [--project KEY]   # sync this store with a team server
 todo notes  <query>              # list notes with their [id]s
+todo renote <query> <id> <text...> # replace a note's text, keeping its id
 todo unnote <query> <id>         # remove note by id
 todo log    <query> <text...>    # append a dated dev-log entry
 todo logs   <query> [-n N]       # show the dev log, oldest first
@@ -228,6 +230,7 @@ todo task start  <query> <id>    # task → in-progress (triage/review/block/def
 todo task status <query> <id> <S> # set a task's status explicitly
 todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order within a phase
+todo task title <query> <id> <title...>  # retitle a task
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>" [--type T] # add a new item (type defaults to feature)
 todo archive                     # move done items to .TODO/ARCHIVED/
