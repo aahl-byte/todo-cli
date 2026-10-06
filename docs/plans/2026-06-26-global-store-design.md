@@ -86,7 +86,7 @@ comment + a `meta:` block into the store:
 # list and nothing is committed. Managed by `todo`; run `todo unlink` to inline
 # back. Do not hand-edit.
 meta:
-  linked_from: /home/mrleaf/git/todo   # originating repo
+  linked_from: /mnt/rain/git/todo   # originating repo
   key: todo
   linked_at: 2026-06-27
 todos:

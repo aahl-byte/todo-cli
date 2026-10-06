@@ -24,7 +24,7 @@ pip install git+https://github.com/aahl-byte/todo-cli.git
 Or for local development, an editable install from a clone:
 
 ```bash
-pip install -e ~/git/todo   # `pyenv rehash` if using pyenv
+pip install -e /mnt/rain/git/todo   # `pyenv rehash` if using pyenv
 ```
 
 Either way puts a `todo` command on your PATH. Then install the companion agent

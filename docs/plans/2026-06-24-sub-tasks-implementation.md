@@ -14,7 +14,7 @@
 
 ## Conventions for the implementer
 
-- Run all commands from the repo root `~/git/todo`.
+- Run all commands from the repo root `/mnt/rain/git/todo`.
 - The package is installed editable (`pip install -e .`), so `from todo import …`
   works and the `todo` CLI reflects source changes immediately.
 - Existing helpers you'll reuse: `util.now()` (ISO-Z timestamp), `util.to_str()`
@@ -935,7 +935,7 @@ git commit -m "docs: document child tasks + calc-status (skill + README)"
 **Step 1: Drive the real CLI against a scratch file.**
 
 ```bash
-cd ~/git/todo
+cd /mnt/rain/git/todo
 cp TODO.yaml /tmp/todo-smoke.yaml
 todo --file /tmp/todo-smoke.yaml task add sub-tasks "verify e2e"
 todo --file /tmp/todo-smoke.yaml task start sub-tasks 0
