@@ -170,25 +170,59 @@ create table if not exists applied_ops (
   primary key (project, op_id)
 );
 
+-- An item may link many Jira issues, and an issue may link items in several
+-- projects. source 'import' is the link the bridge made when it imported the
+-- issue (status and fields mirror); 'field' follows the item's extra.jira list
+-- (request backfill and comments only).
 create table if not exists jira_links (
   project          text not null,
   item_uid         text not null,
-  jira_key         text not null unique,
+  jira_key         text not null,
   last_event_at    bigint,
   last_assignee_at bigint,
-  primary key (project, item_uid),
+  primary key (project, item_uid, jira_key),
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
+alter table jira_links drop constraint if exists jira_links_jira_key_key;
+do $$
+begin
+  if not exists (select 1 from information_schema.key_column_usage
+                  where table_schema = current_schema() and table_name = 'jira_links'
+                    and constraint_name = 'jira_links_pkey' and column_name = 'jira_key') then
+    alter table jira_links drop constraint jira_links_pkey;
+    alter table jira_links add primary key (project, item_uid, jira_key);
+  end if;
+end $$;
+create index if not exists jira_links_key on jira_links (jira_key);
+alter table jira_links add column if not exists source text not null default 'import';
+alter table jira_links add column if not exists linked_at timestamptz not null default now();
+alter table jira_links add column if not exists backfilled_at timestamptz;
+alter table jira_links add column if not exists jira_status text;
 
+-- One row per attachment per project: projects keep their own copies.
 create table if not exists jira_files (
   project       text not null,
-  attachment_id text primary key,
+  attachment_id text not null,
   issue_key     text not null,
   media_id      text,
   filename      text not null,
   mime          text,
-  file_key      text
+  file_key      text,
+  primary key (project, attachment_id)
 );
+do $$
+begin
+  if not exists (select 1 from information_schema.key_column_usage
+                  where table_schema = current_schema() and table_name = 'jira_files'
+                    and constraint_name = 'jira_files_pkey' and column_name = 'project') then
+    alter table jira_files drop constraint jira_files_pkey;
+    alter table jira_files add primary key (project, attachment_id);
+  end if;
+end $$;
+create index if not exists jira_files_issue on jira_files (project, issue_key);
+-- 'import' mirrors the project's jira_project; 'links' mirrors only the issues
+-- its items link, from any Jira project.
+alter table projects add column if not exists jira_mode text not null default 'import';
 alter table projects add column if not exists jira_synced_at timestamptz;
 alter table jira_files add column if not exists size bigint;
 alter table projects add column if not exists jira_inbound jsonb;

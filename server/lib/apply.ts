@@ -9,6 +9,7 @@ import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
 import { jiraReadOnly } from "./jira/config";
 import { inboundRules, jiraStatusFor } from "./jira/rules";
+import { syncFieldLinks, validJiraKeys } from "./jira/field";
 
 export interface Op {
   op_id: string;
@@ -302,6 +303,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 
   }
   if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? { ...data[jsonCol] } : {};
+  if (entity === "item" && row.extra.jira != null && !validJiraKeys(row.extra.jira)) return reject(op, "invalid-jira");
   if (entity === "note") {
     const bad = await badNoteMeta(ctx, itemUid, row.kind, row.meta);
     if (bad) return reject(op, bad);
@@ -326,6 +328,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   result.versions = versions;
 
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
+  if (entity === "item" && row.extra.jira) await syncFieldLinks(ctx.t, ctx.project, itemUid, row.extra.jira);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
   if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
@@ -369,8 +372,8 @@ async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, 
   const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if (!item || item.status === "requested") return { bounce: false };
   // Mirroring a read-only Jira, the item stays where Jira has it, and Jira's
-  // workflow is the triage.
-  if (ctx.actor.bridge && jiraReadOnly()) {
+  // workflow is the triage. Items that only link issues follow the usual rules.
+  if (ctx.actor.bridge && jiraReadOnly() && !await onlyLinksJira(ctx, itemUid)) {
     Object.assign(row.meta, { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: "jira",
                               triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle });
     return { bounce: false };
@@ -467,10 +470,19 @@ export async function backfillRequestVersions(d: Db): Promise<number> {
   return count;
 }
 
+/** Whether the item links Jira issues by field without mirroring an imported one. */
+async function onlyLinksJira(ctx: Ctx, itemUid: string): Promise<boolean> {
+  const [r] = await ctx.t.query(
+    `select bool_or(source = 'field') and not bool_or(source = 'import') as only from jira_links where project = $1 and item_uid = $2`,
+    [ctx.project, itemUid]);
+  return !!r?.only;
+}
+
 /** Whether a move on a Jira-linked item would need a different Jira status. */
 async function changesJiraStatus(ctx: Ctx, itemUid: string, from: string, to: string): Promise<boolean> {
   const [link] = await ctx.t.query(
-    `select p.jira_inbound from jira_links l join projects p on p.key = l.project where l.project = $1 and l.item_uid = $2`,
+    `select p.jira_inbound from jira_links l join projects p on p.key = l.project
+      where l.project = $1 and l.item_uid = $2 and l.source = 'import'`,
     [ctx.project, itemUid]);
   if (!link) return false;
   const rules = inboundRules(link.jira_inbound);
@@ -499,7 +511,7 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       rejected.push({ field, reason: "not-settable", server_value: current ?? null, version });
       continue;
     }
-    if (value !== null && invalid(entity, field, value)) {
+    if (value !== null && (invalid(entity, field, value) || (entity === "item" && field === "extra.jira" && !validJiraKeys(value)))) {
       rejected.push({ field, reason: "invalid", server_value: current ?? null, version });
       continue;
     }
@@ -565,6 +577,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       `update ${TABLE[entity]} set ${names.map((c, i) => `${c} = $${i + 2}${jsonCols.has(c) ? "::jsonb" : ""}`).join(", ")} where uid = $1 and project = $${names.length + 2}`,
       [op.uid, ...names.map((c) => (jsonCols.has(c) ? JSON.stringify(cols[c]) : cols[c])), ctx.project]);
 
+    if (entity === "item" && accepted.some(([f]) => f === "extra.jira")) {
+      await syncFieldLinks(ctx.t, ctx.project, itemUid, json?.jira ?? []);
+    }
     if (statusChange) await statusChanged(ctx, op, row, statusChange);
     if (entity === "task") await recalc(ctx, itemUid);
     if (entity === "note" && json && json.state === "answered" && (row.meta ?? {}).state !== "answered") {

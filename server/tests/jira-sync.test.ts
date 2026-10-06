@@ -66,7 +66,7 @@ const sync = (impl: typeof fetch) => syncJira(w.d, "p", { createUsers: true, fet
 describe("jira sync", () => {
   it("imports an issue as it stands, with people, epic, comments and sub-tasks", async () => {
     const jira = fakeJira();
-    expect(await sync(jira.impl)).toEqual({ imported: 1, events: 0, comments: 1, tasks: 1, users: 2, files: 0 });
+    expect(await sync(jira.impl)).toEqual({ imported: 1, events: 0, comments: 1, tasks: 1, users: 2, files: 0, backfilled: 0 });
     const [it] = await w.d.query("select * from items");
     expect(it).toMatchObject({ id: "web-1", title: "Totals wrong", status: "in-progress", type: "bug", priority: "urgent",
                                developer: "bob", creator: "pat-pm", extra: { epic: "Checkout revamp" } });
@@ -95,7 +95,7 @@ describe("jira sync", () => {
       { id: "102", author: pat, created: "2026-10-02T10:05:00.000+0000",
         items: [{ field: "description" }, { field: "summary" }, { field: "priority", toString: "Low" }] });
     jira.state.subtask.fields.status = { name: "In Progress" };
-    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 2, comments: 1, tasks: 1, users: 0, files: 0 });
+    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 2, comments: 1, tasks: 1, users: 0, files: 0, backfilled: 0 });
     const [it] = await w.d.query("select * from items");
     expect(it).toMatchObject({ status: "in-qa", title: "Totals wrong after refresh", priority: "low" });
     const requests = await w.d.query("select meta from notes where kind = 'ticket-request' order by n");
@@ -103,7 +103,7 @@ describe("jira sync", () => {
     expect(await w.d.query("select status from tasks")).toEqual([{ status: "in-progress" }]);
 
     const before = (await w.d.query("select seq from projects where key = 'p'"))[0].seq;
-    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0 });
+    expect(await sync(jira.impl)).toEqual({ imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0, backfilled: 0 });
     expect((await w.d.query("select seq from projects where key = 'p'"))[0].seq).toBe(before);
     expect((await w.d.query("select count(*)::int as n from jira_outbox where done_at is null"))[0].n).toBe(0);
   });

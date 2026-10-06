@@ -55,14 +55,14 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
   const issue = payload?.issue;
   if (!issue?.key) return { handled: false, reason: "no issue" };
   const [link] = await db.query(
-    `select l.item_uid, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map, p.jira_inbound from jira_links l
+    `select l.item_uid, l.jira_key, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map, p.jira_inbound from jira_links l
        join items i on i.uid = l.item_uid and i.project = l.project join projects p on p.key = l.project
-      where l.jira_key = $1`, [issue.key]);
+      where l.jira_key = $1 and l.source = 'import'`, [issue.key]);
 
   if (event === "jira:issue_created") {
     if (link) return { handled: false, reason: "already linked" };
     const jiraProject = issue.fields?.project?.key;
-    const [project] = await db.query("select key from projects where jira_project = $1", [jiraProject ?? null]);
+    const [project] = await db.query("select key from projects where jira_project = $1 and jira_mode = 'import'", [jiraProject ?? null]);
     if (!project) return { handled: false, reason: `no project mapped to ${jiraProject}` };
     return created(db, project.key, issue);
   }
@@ -87,7 +87,7 @@ export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: s
     }
     return updated(db, link, issue, payload, opts.deliveryId);
   }
-  if (event === "comment_created" || event === "comment_updated") return commented(db, link, payload.comment, own, issue.key);
+  if (event === "comment_created" || event === "comment_updated") return commented(db, link as any, payload.comment, own, issue.key);
   return { handled: false, reason: `ignored ${event}` };
 }
 
@@ -189,10 +189,12 @@ async function stamp(db: Db, link: any, payload: any): Promise<void> {
   if (at === null) return;
   const items: any[] = payload.changelog?.items ?? [];
   if (items.some((x) => ["status", "description", "summary"].includes(x.field))) {
-    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1 and project = $3", [link.item_uid, at, link.project]);
+    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1 and project = $3 and jira_key = $4",
+      [link.item_uid, at, link.project, link.jira_key]);
   }
   if (items.some((x) => x.field === "assignee")) {
-    await db.query("update jira_links set last_assignee_at = greatest(coalesce(last_assignee_at, 0), $2) where item_uid = $1 and project = $3", [link.item_uid, at, link.project]);
+    await db.query("update jira_links set last_assignee_at = greatest(coalesce(last_assignee_at, 0), $2) where item_uid = $1 and project = $3 and jira_key = $4",
+      [link.item_uid, at, link.project, link.jira_key]);
   }
 }
 
@@ -208,15 +210,21 @@ async function gated(db: Db, link: any, key: string, to: string, reason: string,
     { key, author: "todo", label: "comment", text: `Not moved to ${to} in todo: ${why}.` });
 }
 
-async function commented(db: Db, link: any, comment: any, own: string | null, issueKey: string): Promise<InboundResult> {
+/** Mirror a Jira comment as a comment note on `link`'s item. A `scope` goes
+ * into the note's uid and op ids, so one issue can feed several items. */
+export async function commented(db: Db, link: { project: string; item_uid: string }, comment: any, own: string | null,
+                                issueKey: string, scope?: string): Promise<InboundResult> {
   if (!comment?.id) return { handled: false, reason: "no comment" };
   if ((own && comment.author?.accountId === own) || adfToText(comment.body).includes(COMMENT_MARK)) {
     return { handled: false, reason: "own comment" };
   }
   const ours = await db.query("select 1 from jira_outbox where result->>'comment_id' = $1", [String(comment.id)]);
   if (ours.length) return { handled: false, reason: "own comment" };
-  const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, link.item_uid, issueKey, jiraConfig()?.baseUrl));
-  const uid = jiraUid("comment", String(comment.id));
+  // Linked issues keep their files per issue, not per item.
+  const filesFor = scope ? jiraUid("item", issueKey) : link.item_uid;
+  const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, filesFor, issueKey, jiraConfig()?.baseUrl));
+  const uid = scope ? jiraUid("comment", scope, String(comment.id)) : jiraUid("comment", String(comment.id));
+  const opId = scope ? `jira:comment:${scope}:${comment.id}` : `jira:comment:${comment.id}`;
   const updated = comment.updated ? new Date(comment.updated).toISOString() : null;
   const [note] = await db.query("select meta, text from notes where project = $1 and uid = $2", [link.project, uid]);
   const actor = await bridgeActor(db, comment.updateAuthor ?? comment.author);
@@ -224,11 +232,11 @@ async function commented(db: Db, link: any, comment: any, own: string | null, is
     // An edit in Jira: newer than the copy we hold, and actually different.
     const held = note.meta?.jira_updated ?? null;
     if (!updated || (held && Date.parse(held) >= Date.parse(updated))) return { handled: false, reason: "comment unchanged" };
-    const op: Op = { op_id: `jira:comment:${comment.id}:${updated}`, op: "set", entity: "note", uid, item_uid: link.item_uid,
+    const op: Op = { op_id: `${opId}:${updated}`, op: "set", entity: "note", uid, item_uid: link.item_uid,
                      data: { ...(note.text !== text ? { text, "meta.edited_at": updated } : {}), "meta.jira_updated": updated } };
     return { handled: true, results: await applyOps(db, link.project, [op], actor) };
   }
-  const op: Op = { op_id: `jira:comment:${comment.id}`, op: "create", entity: "note", uid, item_uid: link.item_uid,
+  const op: Op = { op_id: opId, op: "create", entity: "note", uid, item_uid: link.item_uid,
                    data: { kind: "comment", text, source: "jira",
                            meta: { jira_comment_id: String(comment.id), ...(updated ? { jira_updated: updated } : {}),
                                    ...(updated && comment.created && Date.parse(updated) - Date.parse(comment.created) > 60_000 ? { edited_at: updated } : {}) },

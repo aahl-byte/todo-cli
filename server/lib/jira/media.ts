@@ -26,13 +26,15 @@ export async function mirrorAttachments(db: Db, jira: JiraClient, project: strin
   let copied = 0;
   const current: any[] = issue.fields?.attachment ?? [];
   // Attachments removed in Jira leave the Files list.
-  await db.query("delete from jira_files where issue_key = $1 and not (attachment_id = any($2::text[]))",
-    [issue.key, current.map((a) => String(a.id))]);
+  await db.query("delete from jira_files where project = $1 and issue_key = $2 and not (attachment_id = any($3::text[]))",
+    [project, issue.key, current.map((a) => String(a.id))]);
   for (const a of current) {
     const id = String(a.id);
-    const [row] = await db.query("select * from jira_files where attachment_id = $1", [id]);
+    const [row] = await db.query("select * from jira_files where project = $1 and attachment_id = $2", [project, id]);
     const image = !!MIME_EXT[a.mimeType] && Number(a.size ?? 0) <= MAX_BYTES;
-    if (row && row.size == null) await db.query("update jira_files set size = $2 where attachment_id = $1", [id, a.size ?? null]);
+    if (row && row.size == null) {
+      await db.query("update jira_files set size = $3 where project = $1 and attachment_id = $2", [project, id, a.size ?? null]);
+    }
     if (row && (!image || (row.file_key && await hasObject(row.file_key)))) continue;
     try {
       const path = `/rest/api/3/attachment/content/${encodeURIComponent(id)}`;
@@ -45,7 +47,7 @@ export async function mirrorAttachments(db: Db, jira: JiraClient, project: strin
       }
       await db.query(
         `insert into jira_files (project, attachment_id, issue_key, media_id, filename, mime, file_key, size) values ($1, $2, $3, $4, $5, $6, $7, $8)
-         on conflict (attachment_id) do update set media_id = excluded.media_id, file_key = excluded.file_key,
+         on conflict (project, attachment_id) do update set media_id = excluded.media_id, file_key = excluded.file_key,
            filename = excluded.filename, size = excluded.size`,
         [project, id, issue.key, mediaId, String(a.filename ?? ""), a.mimeType ?? null, key, a.size ?? null]);
     } catch (e) {
@@ -57,7 +59,7 @@ export async function mirrorAttachments(db: Db, jira: JiraClient, project: strin
 
 /** How the issue's media render in a note: by media id, then by file name. */
 export async function mediaRef(db: Db, project: string, itemUid: string, issueKey: string, jiraBase?: string): Promise<MediaRef> {
-  const rows = await db.query("select * from jira_files where issue_key = $1", [issueKey]);
+  const rows = await db.query("select * from jira_files where project = $1 and issue_key = $2", [project, issueKey]);
   return (attrs) => {
     const row = rows.find((r) => attrs.id && r.media_id === attrs.id) ?? rows.find((r) => attrs.alt && r.filename === attrs.alt);
     if (row?.file_key) return { image: `/api/files/${row.file_key}` };

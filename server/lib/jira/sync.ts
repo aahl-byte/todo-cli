@@ -1,7 +1,9 @@
 // Polling half of the Jira bridge, for when Jira can't reach us with webhooks.
-// One pass imports active issues not seen before, replays the changelog and
-// comments of linked ones through the webhook handler, and mirrors sub-tasks
-// as tasks. Every op id derives from Jira ids, so a repeated pass is a no-op.
+// In `import` mode, one pass imports active issues not seen before, replays the
+// changelog and comments of imported ones through the webhook handler, and
+// mirrors sub-tasks as tasks. Every op id derives from Jira ids, so a repeated
+// pass is a no-op. In either mode it then mirrors the issues items link through
+// their `jira` field (links.ts); a `links` project does only that.
 import type { Db } from "../db";
 import { applyOps, type Op } from "../apply";
 import { addUser } from "../auth";
@@ -11,10 +13,14 @@ import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
 import { handleFor, handleWebhook, jiraPriority, jiraUid } from "./inbound";
 import { inboundRules, inboundStatus, statusSet, type InboundRules } from "./rules";
+import { syncLinked } from "./links";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
-export interface SyncResult { imported: number; events: number; comments: number; tasks: number; users: number; files: number }
+export interface SyncResult { imported: number; events: number; comments: number; tasks: number; users: number; files: number;
+                             backfilled: number }
+
+export const JIRA_MODES = ["import", "links"];
 
 const FIELDS = ["summary", "description", "status", "assignee", "reporter", "issuetype", "priority", "parent",
                 "created", "updated", "comment", "attachment"];
@@ -99,14 +105,33 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   const cfg = jiraConfig();
   if (!cfg) throw new Error("Jira is not configured: set JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN.");
   const [p] = await db.query("select * from projects where key = $1", [projectKey]);
-  if (!p?.jira_project) throw new Error(`Project ${projectKey} has no jira_project.`);
+  if (!p) throw new Error(`No project ${projectKey}.`);
+  const mode = p.jira_mode ?? "import";
+  if (!JIRA_MODES.includes(mode)) throw new Error(`Project ${projectKey} has an unknown jira_mode ${mode}.`);
+  if (mode === "import" && !p.jira_project) throw new Error(`Project ${projectKey} has no jira_project.`);
   const jira = new JiraClient(cfg, opts.fetchImpl);
-  const map: Record<string, string> = p.jira_status_map ?? {};
   const startedAt = new Date();
   const since = p.jira_synced_at ? new Date(p.jira_synced_at) : null;
   const window = since ? ` AND updated >= -${Math.ceil((startedAt.getTime() - since.getTime()) / 60_000) + OVERLAP_MINUTES}m` : "";
-  const out: SyncResult = { imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0 };
+  const out: SyncResult = { imported: 0, events: 0, comments: 0, tasks: 0, users: 0, files: 0, backfilled: 0 };
   const meet = async (who: Person) => { if (opts.createUsers && await ensureUser(db, who)) out.users++; };
+
+  if (mode === "import") await syncImported(db, jira, p, window, meet, out, opts.fetchImpl);
+  const linked = await syncLinked(db, jira, projectKey, {
+    since: since ? new Date(since.getTime() - OVERLAP_MINUTES * 60_000) : null, fields: FIELDS,
+    search: (jql) => search(jira, jql, FIELDS), comments: (issue) => allComments(jira, issue), meet });
+  out.backfilled += linked.backfilled;
+  out.comments += linked.comments;
+  out.files += linked.files;
+  await db.query("update projects set jira_synced_at = $2 where key = $1", [projectKey, startedAt.toISOString()]);
+  return out;
+}
+
+/** Import mode: the project's own Jira project, issue by issue. */
+async function syncImported(db: Db, jira: JiraClient, p: any, window: string, meet: (p: Person) => Promise<void>,
+                            out: SyncResult, fetchImpl?: Fetch): Promise<void> {
+  const projectKey: string = p.key;
+  const map: Record<string, string> = p.jira_status_map ?? {};
 
   const imported: string[] = [];
   const rules = inboundRules(p.jira_inbound);
@@ -118,8 +143,11 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
     : `${active} ORDER BY updated ASC`, FIELDS);
   for (const issue of issues) {
     const f = issue.fields ?? {};
-    const [link] = await db.query("select * from jira_links where jira_key = $1", [issue.key]);
-    if (!link && !inScope(f, map, rules)) continue;
+    const [link] = await db.query("select * from jira_links where jira_key = $1 and project = $2 and source = 'import'",
+      [issue.key, projectKey]);
+    // An issue an item already links by field is mirrored as a link, not imported.
+    const [field] = link ? [] : await db.query("select 1 from jira_links where jira_key = $1 and project = $2", [issue.key, projectKey]);
+    if (!link && (field || !inScope(f, map, rules))) continue;
     for (const who of [f.reporter, f.assignee]) await meet(who);
     // Files first, so the request and comments can point at them.
     out.files += await mirrorAttachments(db, jira, projectKey, link?.item_uid ?? jiraUid("item", issue.key), issue);
@@ -133,20 +161,20 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
         await meet(e.author);
         const at = Date.parse(e.created);
         await handleWebhook(db, { webhookEvent: "jira:issue_updated", timestamp: at, user: e.author, issue,
-                                  changelog: { id: `cl-${e.id}`, items: e.items ?? [] } }, { fetchImpl: opts.fetchImpl });
-        await db.query("update jira_links set replayed_through = greatest(coalesce(replayed_through, 0), $2) where jira_key = $1", [issue.key, at]);
+                                  changelog: { id: `cl-${e.id}`, items: e.items ?? [] } }, { fetchImpl });
+        await db.query(
+          "update jira_links set replayed_through = greatest(coalesce(replayed_through, 0), $2) where jira_key = $1 and project = $3 and source = 'import'",
+          [issue.key, at, projectKey]);
         out.events++;
       }
     }
     for (const c of await allComments(jira, issue)) {
       await meet(c.author);
-      const r = await handleWebhook(db, { webhookEvent: "comment_created", issue, comment: c }, { fetchImpl: opts.fetchImpl });
+      const r = await handleWebhook(db, { webhookEvent: "comment_created", issue, comment: c }, { fetchImpl });
       if (r.handled && (r.results as any[])?.some((x) => x.status === "applied" && !x.duplicate)) out.comments++;
     }
   }
   out.tasks = await syncSubtasks(db, jira, projectKey, p.jira_project, map, rules, window, imported, meet);
-  await db.query("update projects set jira_synced_at = $2 where key = $1", [projectKey, startedAt.toISOString()]);
-  return out;
 }
 
 /** Create the item, its request and its link, as the issue stands now. */
@@ -182,7 +210,7 @@ async function importIssue(db: Db, project: string, map: Record<string, string>,
 /** Sub-tasks of linked issues, as tasks on the parent item. */
 async function syncSubtasks(db: Db, jira: JiraClient, project: string, jiraProject: string, map: Record<string, string>, rules: InboundRules | null,
                             window: string, imported: string[], meet: (p: Person) => Promise<void>): Promise<number> {
-  const links = await db.query("select jira_key, item_uid from jira_links where project = $1", [project]);
+  const links = await db.query("select jira_key, item_uid from jira_links where project = $1 and source = 'import'", [project]);
   const parentOf = new Map<string, string>(links.map((l) => [l.jira_key, l.item_uid]));
   const fields = ["summary", "status", "parent", "assignee"];
   const subs: any[] = [];
@@ -213,4 +241,9 @@ async function syncSubtasks(db: Db, jira: JiraClient, project: string, jiraProje
     if (r.status === "applied" && !r.duplicate) n++;
   }
   return n;
+}
+
+/** Projects in `links` mode, for a poll that covers them all. */
+export async function linkedProjects(db: Db): Promise<string[]> {
+  return (await db.query("select key from projects where jira_mode = 'links' order by key")).map((r) => r.key);
 }

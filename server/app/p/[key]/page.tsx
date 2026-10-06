@@ -66,7 +66,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
                     : c.extra?.epic && <div className="where" data-tip="epic">{c.extra.epic}</div>}
                   <div className="meta">
                     {who && <span className="av" data-tip={[c.developer && `dev ${c.developer}`, c.qa_assignee && `qa ${c.qa_assignee}`].filter(Boolean).join(" · ")}>{initials(who)}</span>}
-                    {c.jira_key && <span className="tag key">{c.jira_key}</span>}
+                    {c.jira.map((j) => <span key={j.key} className="tag key" data-tip={j.status ?? undefined}>{j.key}</span>)}
                     {c.type !== "feature" && <span className={`tag type ${c.type}`}>{c.type}</span>}
                     {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
                     {c.open_questions > 0 && <span className="tag hot" data-tip="open questions">?{c.open_questions}</span>}

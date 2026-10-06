@@ -44,7 +44,8 @@ export interface Card extends Row {
   open_questions: number;
   pending_pre: number;
   pending_post: number;
-  jira_key: string | null;
+  /** Linked Jira issues, with the status the bridge last saw. */
+  jira: { key: string; status: string | null }[];
   last_via: string | null;
   last_to: string | null;
   request_meta: { version: number; triaged: boolean } | null;
@@ -53,7 +54,9 @@ export interface Card extends Row {
 
 async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
   const rows = await d.query(
-    `select i.*, l.jira_key,
+    `select i.*,
+       coalesce((select jsonb_agg(jsonb_build_object('key', l.jira_key, 'status', l.jira_status) order by l.linked_at, l.jira_key)
+                   from jira_links l where l.item_uid = i.uid and l.project = i.project), '[]'::jsonb) as jira,
        coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_statuses,
        coalesce((select array_agg(coalesce(t.phase, -1) order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_phases,
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,
@@ -64,7 +67,7 @@ async function cards(d: Db, key: string, where = "", params: unknown[] = []): Pr
           from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'ticket-request'
           order by coalesce((n.meta->>'version')::int, 1) desc, n.n desc limit 1) as request_meta,
        (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to
-     from items i left join jira_links l on l.item_uid = i.uid and l.project = i.project
+     from items i
      where i.project = $1 ${where}
      order by i.created, i.id`, [key, ...params]);
   return rows as Card[];
@@ -161,8 +164,9 @@ export async function item(d: Db, key: string, id: string) {
     history,
     bounces: bounceCount(history),
     related: await related(d, key, it.uid),
-    files: it.jira_key ? await d.query(
-      "select attachment_id, filename, mime, size, file_key from jira_files where issue_key = $1 order by filename", [it.jira_key]) : [],
+    files: it.jira.length ? await d.query(
+      "select attachment_id, filename, mime, size, file_key from jira_files where project = $1 and issue_key = any($2::text[]) order by filename",
+      [key, it.jira.map((j) => j.key)]) : [],
     phaseTitles: phaseTitles(it.extra),
     choices: await choices(d, key),
   };

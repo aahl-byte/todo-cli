@@ -61,12 +61,20 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
           <span className="k">id</span>
           <button type="button" className="edit-text mono-id" data-tip="copy"
                   onClick={() => void navigator.clipboard?.writeText(it.id)}>{it.id}</button>
-          {it.jira_key && (
+          {it.jira.length > 0 && (
             <>
               <span className="k">jira</span>
-              {ctx.jiraBase
-                ? <a href={`${ctx.jiraBase}/browse/${it.jira_key}`} target="_blank" rel="noreferrer">{it.jira_key} ↗</a>
-                : <span>{it.jira_key}</span>}
+              <span>
+                {it.jira.map((j: { key: string; status: string | null }, i: number) => (
+                  <span key={j.key}>
+                    {i > 0 && ", "}
+                    {ctx.jiraBase
+                      ? <a href={`${ctx.jiraBase}/browse/${j.key}`} target="_blank" rel="noreferrer">{j.key} ↗</a>
+                      : j.key}
+                    {j.status && <span className="faint"> {j.status}</span>}
+                  </span>
+                ))}
+              </span>
             </>
           )}
         </div>

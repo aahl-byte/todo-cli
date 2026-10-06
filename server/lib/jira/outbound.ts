@@ -19,7 +19,7 @@ export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<
   if (actor.bridge) return;
   const [link] = await t.query(
     `select l.jira_key, p.jira_status_map, p.jira_outbound from jira_links l join projects p on p.key = l.project
-      where l.project = $1 and l.item_uid = $2`, [event.project, event.itemUid]);
+      where l.project = $1 and l.item_uid = $2 and l.source = 'import'`, [event.project, event.itemUid]);
   if (!link) return;
   const rules = outboundRules(link.jira_outbound);
   if (event.kind === "status") {

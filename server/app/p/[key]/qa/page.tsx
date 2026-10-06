@@ -35,7 +35,7 @@ export default async function QaQueue({ params, searchParams }: {
         {c.extra?.app ? <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>
           : c.extra?.epic && <div className="where" data-tip="epic">{c.extra.epic}</div>}
         <div className="meta">
-          {c.jira_key && <span className="tag key">{c.jira_key}</span>}
+          {c.jira.map((j: any) => <span key={j.key} className="tag key" data-tip={j.status ?? undefined}>{j.key}</span>)}
           <span className="faint">{c.developer ?? "—"} · <Ago ts={c.entered} /></span>
           {c.bounces > 0 && <span className="tag hot" data-tip="sent back by QA before">returned ×{c.bounces}</span>}
           {c.request_meta && !c.request_meta.triaged && <span className="tag hot" data-tip="the request being tested never went through triage">v{c.request_meta.version} untriaged</span>}
