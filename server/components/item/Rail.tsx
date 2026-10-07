@@ -16,6 +16,7 @@ import { AppFields } from "../AppFields";
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA" };
+const TIMING: Record<string, string> = { "pre-deploy": "before deploy", "post-deploy": "after deploy" };
 const CHECKS_TIP: Record<ChecksState, string> = { pass: "passing", fail: "failing", pending: "running" };
 
 
@@ -66,10 +67,9 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
           {it.jira.length > 0 && (
             <>
               <span className="k">jira</span>
-              <span>
-                {it.jira.map((j: { key: string; status: string | null }, i: number) => (
+              <span className="jira-keys">
+                {it.jira.map((j: { key: string; status: string | null }) => (
                   <span key={j.key}>
-                    {i > 0 && ", "}
                     {ctx.jiraBase
                       ? <a href={`${ctx.jiraBase}/browse/${j.key}`} target="_blank" rel="noreferrer">{j.key} ↗</a>
                       : j.key}
@@ -286,7 +286,7 @@ function Checks({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
   const row = (c: Row) => (
     <div key={c.uid} className="rrow" data-uid={c.uid}>
       <CheckBox check={{ ...c, item_uid: ctx.itemUid }} project={ctx.project} />
-      <span className="grow" data-tip={[c.kind, c.payload].filter(Boolean).join(" · ")}>{c.title}</span>
+      <span className="grow wrap" data-tip={[c.title, [c.kind, TIMING[c.timing], c.status].filter(Boolean).join(" · "), c.payload].filter(Boolean).join("\n")}>{c.title}</span>
       {c.timing === "post-deploy" && <span className="tag">post</span>}
       <Remove onConfirm={() => act.removeChild({ project: ctx.project, itemUid: ctx.itemUid, entity: "check", uid: c.uid, versions: c.versions })} />
     </div>
