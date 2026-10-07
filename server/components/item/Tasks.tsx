@@ -17,7 +17,7 @@ const TASK_STATUSES = ["todo", "in-triage", "in-progress", "review", "blocked", 
 export function Tasks({ tasks, ctx, focus, titles = {}, item }: {
   tasks: Row[]; ctx: Ctx; focus: string | null; titles?: Record<string, string>; item?: Row;
 }) {
-  const [showDone, setShowDone] = useState(false);
+  const [showDone, setShowDone] = useState(true);
   const [pinnedPhase, setPinnedPhase] = useState<Record<string, boolean>>({});
   const groups: { phase: number | null; rows: Row[] }[] = [];
   for (const t of tasks) {

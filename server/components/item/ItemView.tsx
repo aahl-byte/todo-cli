@@ -438,7 +438,8 @@ function firstLine(text: string): string {
 
 function Entries({ kind, rows, ctx, focus }: { kind: "context" | "log"; rows: Row[]; ctx: Ctx; focus: string | null }) {
   const prefix = kind === "log" ? "l" : "n";
-  const [open, setOpen] = useState<Record<string, boolean>>(() => (focus ? { [focus]: true } : {}));
+  const latest = rows.length ? `${prefix}-${rows[rows.length - 1].n}` : null;
+  const [open, setOpen] = useState<Record<string, boolean>>(() => Object.fromEntries([latest, focus].filter(Boolean).map((k) => [k, true])));
   useEffect(() => { if (focus) setOpen((o) => ({ ...o, [focus]: true })); }, [focus]);
   const allOpen = rows.length > 0 && rows.every((r) => open[`${prefix}-${r.n}`]);
   return (
