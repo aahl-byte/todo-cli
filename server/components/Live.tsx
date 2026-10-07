@@ -5,6 +5,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { withBase } from "@/lib/base";
 
 const EVERY_MS = 3000;
 
@@ -19,10 +20,10 @@ export function Live({ project, cursor }: { project?: string; cursor?: number })
     const tick = async () => {
       if (document.hidden) return;
       try {
-        const box = await fetch("/api/inbox", { cache: "no-store" });
+        const box = await fetch(withBase("/api/inbox"), { cache: "no-store" });
         if (box.ok) setUnread((await box.json()).unread ?? 0);
         if (project) {
-          const res = await fetch(`/api/projects/${encodeURIComponent(project)}/changes?since=${at.current}&limit=200`, { cache: "no-store" });
+          const res = await fetch(withBase(`/api/projects/${encodeURIComponent(project)}/changes?since=${at.current}&limit=200`), { cache: "no-store" });
           if (!res.ok) throw new Error(String(res.status));
           const body = await res.json();
           if (body.changes?.length) {

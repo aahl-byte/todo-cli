@@ -1,7 +1,9 @@
 // Browser side of image uploads: ask the server where, send the file there,
 // and return the Markdown that shows it.
+import { withBase } from "@/lib/base";
+
 export async function uploadImage(file: File, project: string, scope: string): Promise<string> {
-  const res = await fetch("/api/files", {
+  const res = await fetch(withBase("/api/files"), {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ project, scope, type: file.type, size: file.size }),
   });

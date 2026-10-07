@@ -1,6 +1,7 @@
 import { bearer, userForToken } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
+import { withBase } from "@/lib/base";
 
 // Open a notification: mark it read and go to the note or item it points at.
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -21,5 +22,5 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
 // A relative Location: req.url carries the server's own host (localhost behind
 // a proxy), which would send the browser somewhere else.
 function go(path: string): Response {
-  return new Response(null, { status: 307, headers: { location: path } });
+  return new Response(null, { status: 307, headers: { location: withBase(path) } });
 }

@@ -5,6 +5,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ulid } from "./ulid";
+import { withBase } from "@/lib/base";
 
 export const MAX_BYTES = 10 * 1024 * 1024;
 const TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
@@ -39,7 +40,7 @@ async function client(browser = false) {
 /** Where and how the browser sends the file: a multipart POST of `fields`
  * plus the file as `file`, last. */
 export async function uploadTarget(key: string, contentType: string): Promise<{ url: string; fields: Record<string, string> }> {
-  if (viaApp()) return { url: `/api/files/${key}`, fields: {} };
+  if (viaApp()) return { url: withBase(`/api/files/${key}`), fields: {} };
   const { createPresignedPost } = await import("@aws-sdk/s3-presigned-post");
   return createPresignedPost(await client(true), {
     Bucket: process.env.S3_BUCKET!,

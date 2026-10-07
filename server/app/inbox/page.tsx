@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { groupInbox, inbox, type InboxGroup } from "@/lib/inbox";
 import { requireUser } from "@/lib/session";
 import { projects } from "@/lib/views";
+import { withBase } from "@/lib/base";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ function Group({ g, multi }: { g: InboxGroup; multi: boolean }) {
   const row = (n: Record<string, any>) => {
     const k = KIND[n.kind] ?? { icon: "•", verb: n.kind, tone: "" };
     return (
-      <a key={n.id} href={`/inbox/open/${n.id}`} className={`notice ${n.read_at ? "read" : "unread"} ${n.settled ? "settled" : ""}`}>
+      <a key={n.id} href={withBase(`/inbox/open/${n.id}`)} className={`notice ${n.read_at ? "read" : "unread"} ${n.settled ? "settled" : ""}`}>
         <span className={`kind ${k.tone}`} aria-hidden="true">{k.icon}</span>
         <span className="what">
           <span className="who">{n.actor ?? n.note_author ?? "someone"}</span> {k.verb}

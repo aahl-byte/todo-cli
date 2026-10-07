@@ -12,6 +12,7 @@ import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { Glance } from "./Glance";
 import { AppFields } from "../AppFields";
+import { withBase } from "@/lib/base";
 
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
@@ -162,8 +163,8 @@ function Files({ rows, jiraBase }: { rows: Row[]; jiraBase: string | null }) {
       <div className="label">Files<span>{rows.length}</span></div>
       <div className="thumbs">
         {rows.filter((f) => f.file_key).map((f) => (
-          <a key={f.attachment_id} href={`/api/files/${f.file_key}`} target="_blank" rel="noreferrer" data-tip={f.filename}>
-            <img src={`/api/files/${f.file_key}`} alt={f.filename} loading="lazy" />
+          <a key={f.attachment_id} href={withBase(`/api/files/${f.file_key}`)} target="_blank" rel="noreferrer" data-tip={f.filename}>
+            <img src={withBase(`/api/files/${f.file_key}`)} alt={f.filename} loading="lazy" />
           </a>
         ))}
       </div>
@@ -202,7 +203,7 @@ function Related({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
       {rows.map((r) => (
         <div key={r.uid} className="rrow" data-uid={r.uid}>
           <Led status={r.status} />
-          <a className="grow" href={`/p/${ctx.project}/i/${r.id}`}>{r.title}</a>
+          <a className="grow" href={withBase(`/p/${ctx.project}/i/${r.id}`)}>{r.title}</a>
           {r.developer && <span className="faint">{r.developer}</span>}
           <Remove onConfirm={() => act.unrelate({ project: ctx.project, notes: r.notes })} />
         </div>

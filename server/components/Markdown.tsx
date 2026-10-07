@@ -3,6 +3,7 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { withBase } from "@/lib/base";
 
 const FILE_SRC = /^\/api\/files\/[\w-]+\/[\w-]+\/[0-9A-Z]{26}\.(?:png|jpe?g|gif|webp)$/;
 const INLINE = ["a", "code", "em", "strong", "del", "img", "br"];
@@ -16,7 +17,7 @@ const components: Components = {
   a: ({ node: _node, href, children, ...rest }) => href
     ? <a {...rest} href={href} target="_blank" rel="noreferrer">{children}</a>
     : <>{children}</>,
-  img: ({ node: _node, src, alt }) => (src ? <img src={String(src)} alt={alt ?? ""} /> : <>{alt}</>),
+  img: ({ node: _node, src, alt }) => (src ? <img src={FILE_SRC.test(String(src)) ? withBase(String(src)) : String(src)} alt={alt ?? ""} /> : <>{alt}</>),
   table: ({ node: _node, children }) => <div className="md-table"><table>{children}</table></div>,
 };
 
