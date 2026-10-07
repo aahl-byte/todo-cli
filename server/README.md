@@ -20,6 +20,7 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `JIRA_ACCOUNT_ID` | optional; the integration's own account, else fetched from `/myself` |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
    | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses) |
+   | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
 
 4. **Create the schema, then users and projects**, from your machine with the
    same `DATABASE_URL`:
