@@ -359,7 +359,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
   const isNew = useIsNew();
   const open = data.questions.filter((q) => q.meta?.state !== "answered");
   const answered = data.questions.filter((q) => q.meta?.state === "answered");
-  const [showAnswered, setShowAnswered] = useState(() => answered.some((q) => focus === `n-${q.n}`));
+  const [showAnswered, setShowAnswered] = useState(true);
   const newAnswer = answered.some((q) => isNew(q.meta?.answered_at, q.meta?.answered_by));
   useEffect(() => { if (newAnswer) setShowAnswered(true); }, [newAnswer]);
   useEffect(() => {
@@ -383,8 +383,8 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
               {answered.map((q) => (
                 <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""} ${isNew(q.meta?.answered_at, q.meta?.answered_by) ? "is-new" : ""}`} data-uid={q.uid}>
                   <div className="body">
-                    <div className="dim"><Markdown text={q.text} /></div>
-                    <Markdown text={q.meta?.answer ?? ""} />
+                    <div className="qa-q"><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
+                    <div className="qa-a"><span className="qa-tag">A</span><div><Markdown text={q.meta?.answer ?? ""} /></div></div>
                     <div className="who">{isNew(q.meta?.answered_at, q.meta?.answered_by) && <NewTag />}{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /> <Seen row={q} entity="note" ctx={ctx} /></div>
                   </div>
                 </li>
@@ -413,7 +413,7 @@ function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | nul
     <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""} ${fresh ? "is-new" : ""}`} data-uid={q.uid}>
       <div className="body">
         <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /> <Seen row={q} entity="note" ctx={ctx} /></div>
-        <Markdown text={q.text} />
+        <div className="qa-q open"><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
         {answering ? (
           <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
             <textarea rows={2} autoFocus value={draft} aria-label="answer" placeholder="Answer" onChange={(e) => setDraft(e.target.value)} />

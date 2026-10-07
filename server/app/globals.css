@@ -148,6 +148,14 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 .tip-rows dd.ok { color: var(--cyan); }
 .tip-code { margin: 0; padding: 6px 8px; background: var(--ink); border: 1px solid var(--line); border-radius: 4px;
   font: 10.5px/1.5 var(--mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.qa-q, .qa-a { display: flex; gap: 8px; align-items: baseline; }
+.qa-q > div, .qa-a > div { flex: 1; min-width: 0; }
+.qa-tag { flex: none; font: 700 9px/1.6 var(--disp); letter-spacing: .08em; padding: 0 5px; border-radius: 3px; border: 1px solid; }
+.qa-q { color: var(--md-em); }
+.qa-q.open { color: var(--text); }
+.qa-q .qa-tag { color: var(--s-review); border-color: var(--s-review); }
+.qa-a { margin: 6px 0 2px; padding: 6px 9px; background: var(--panel-2); border-left: 2px solid var(--cyan); border-radius: 0 5px 5px 0; }
+.qa-a .qa-tag { color: var(--cyan); border-color: var(--cyan-dim); }
 .toasts { position: fixed; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); right: 14px; left: 14px; z-index: 80;
   display: grid; gap: 6px; justify-items: end; pointer-events: none; }
 .toast { pointer-events: auto; max-width: 520px; background: var(--panel-2); border: 1px solid var(--danger-dim);
