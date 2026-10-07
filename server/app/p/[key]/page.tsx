@@ -66,7 +66,8 @@ export default async function Board({ params, searchParams }: { params: Promise<
             {col.items.map((c) => {
               const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (c.status === "requested" ? c.creator : null);
               return (
-                <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card s-${c.status}`} data-uid={c.uid}>
+                <Link key={c.uid} href={`/p/${key}/i/${c.id}`} className={`card s-${c.status} ${c.open_questions > 0 ? "asking" : ""}`} data-uid={c.uid}>
+                  {c.open_questions > 0 && <span className="asks" data-tip={`${c.open_questions} open question${c.open_questions > 1 ? "s" : ""}`}>?</span>}
                   {col.statuses.length > 1 && <Led status={c.status} label />}
                   <div className="title">{c.title}</div>
                   {c.extra?.app ? <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>
@@ -76,7 +77,6 @@ export default async function Board({ params, searchParams }: { params: Promise<
                     {c.jira.map((j) => <span key={j.key} className="tag key" data-tip={j.status ?? undefined}>{j.key}</span>)}
                     {c.type !== "feature" && <span className={`tag type ${c.type}`}>{c.type}</span>}
                     {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
-                    {c.open_questions > 0 && <span className="tag hot" data-tip="open questions">?{c.open_questions}</span>}
                     {untriaged(c) && <span className="tag hot" data-tip="the request being worked on never went through triage">v{c.request_meta!.version} untriaged</span>}
                     {c.pending_pre > 0 && <span className="tag" data-tip="pending pre-deploy checks">checks {c.pending_pre}</span>}
                     {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}

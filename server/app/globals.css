@@ -179,6 +179,8 @@ h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercas
 .card:hover { border-color: var(--line-2); color: inherit; }
 .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--s-todo)); }
 .card .title { font-size: 12.5px; font-weight: 500; color: var(--text); margin: 4px 0 6px; word-break: break-word; }
+.card .asks { position: absolute; top: 2px; right: 8px; font: 800 26px/1 var(--disp); color: var(--s-review); }
+.card.asking > .title, .card.asking > .stat { margin-right: 22px; }
 .card .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-height: 18px; }
 .flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { box-shadow: inset 0 0 0 1px var(--amber); } to { box-shadow: none; } }
