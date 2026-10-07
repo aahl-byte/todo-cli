@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { ITEM_TYPES, moves, nowIso, STATUSES } from "./model";
+import { ITEM_TYPES, moves, nowIso, SEEN, STATUSES } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -102,6 +102,11 @@ export function answerOps(note: Ref, text: string, me: string): Op[] {
   if (!text.trim()) throw new Error("Write an answer first.");
   return [setOp("note", note, { "meta.state": "answered", "meta.answer": text.trim(),
                                 "meta.answered_by": me, "meta.answered_at": nowIso() })];
+}
+
+/** Adds `me` to who has seen each entry; the server merges it with anyone else's. */
+export function ackOps(entries: { entity: "note" | "log"; ref: Ref }[], me: string): Op[] {
+  return entries.map(({ entity, ref }) => setOp(entity, ref, { [`meta.${SEEN}`]: [me] }));
 }
 
 export function noteOps(itemUid: string, kind: string, text: string, meta: Record<string, unknown> = {}): Op[] {

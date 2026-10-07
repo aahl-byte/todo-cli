@@ -79,7 +79,7 @@ def test_url_attaches_a_typed_link(root):
     run_cli(root, ["url", "beta", "https://x/pr/1", "--type", "pr", "--label", "PR 1"])
     n = notes(root)[0]
     assert n["kind"] == "link"
-    assert n["meta"] == {"url": "https://x/pr/1", "label": "PR 1", "type": "pr"}
+    assert n["meta"] == {"url": "https://x/pr/1", "label": "PR 1", "type": "pr", "seen_by": ["tester"]}
 
 
 def test_ask_then_answer_closes_the_clarification(root, capsys):

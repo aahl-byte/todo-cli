@@ -114,6 +114,45 @@ describe("field writes", () => {
   });
 });
 
+describe("acknowledgements", () => {
+  const seen = async (table: string, uid: string) => (await row(table, uid)).meta.seen_by;
+  const note = (uid: string) => child("note", uid, "I1", { n: 1, kind: "comment", text: "hi", ts: "t" });
+
+  it("counts the author, or the author's agent, as having seen a new entry", async () => {
+    await w.one("alice", item("I1"));
+    await w.one("alice", note("N1"));
+    await w.one("alice", { ...child("log", "L1", "I1", { n: 1, text: "did it", ts: "t" }), via: "agent" });
+    expect(await seen("notes", "N1")).toEqual(["alice"]);
+    expect(await seen("logs", "L1")).toEqual(["alice/agent"]);
+  });
+
+  it("merges acknowledgements from several parties without a version check", async () => {
+    await w.one("alice", item("I1"));
+    await w.one("alice", note("N1"));
+    const stale = { "meta.seen_by": 0 };
+    expect((await w.one("bob", set("note", "N1", "I1", { "meta.seen_by": ["bob"] }, stale))).status).toBe("applied");
+    expect((await w.one("alice", { ...set("note", "N1", "I1", { "meta.seen_by": ["alice", "alice/agent"] }, stale), via: "agent" })).status).toBe("applied");
+    expect(await seen("notes", "N1")).toEqual(["alice", "bob", "alice/agent"]);
+  });
+
+  it("resets to the writer when the text changes or a question is answered", async () => {
+    await w.one("alice", item("I1"));
+    await w.one("alice", { ...child("note", "Q1", "I1", { n: 1, kind: "clarification", text: "which?", ts: "t", meta: { state: "open" } }), via: "agent" });
+    await w.one("bob", set("note", "Q1", "I1", { "meta.seen_by": ["bob"] }));
+    await w.one("bob", set("note", "Q1", "I1", { "meta.state": "answered", "meta.answer": "this one" }, (await row("notes", "Q1")).versions));
+    expect(await seen("notes", "Q1")).toEqual(["bob"]);
+    await w.one("alice", set("note", "Q1", "I1", { text: "which one?" }, (await row("notes", "Q1")).versions));
+    expect(await seen("notes", "Q1")).toEqual(["alice"]);
+  });
+
+  it("refuses other meta on log entries", async () => {
+    await w.one("alice", item("I1"));
+    await w.one("alice", child("log", "L1", "I1", { n: 1, text: "x", ts: "t" }));
+    expect(await w.one("alice", set("log", "L1", "I1", { "meta.other": 1 })))
+      .toMatchObject({ status: "rejected", rejected: [{ field: "meta.other", reason: "not-settable" }] });
+  });
+});
+
 describe("status rules", () => {
   it("gates deployed on pending pre-deploy checks unless forced, and records forced history", async () => {
     const v = (await w.one("alice", item("I1", { status: "ready-to-deploy" }))).versions!;

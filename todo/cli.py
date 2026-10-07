@@ -129,6 +129,9 @@ def cmd_get(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     cfg = remote.sync_config(root) or {}
     render.print_item(it, full_log=args.log, related=related_items(root, it), server=cfg.get("url"))
+    waiting = store.unseen(it, identity.party())
+    if waiting:
+        print(f'updates:   {len(waiting)} not yet acknowledged by {identity.party()} (todo updates {it["id"]})')
 
 
 def related_items(root: Path, it: dict) -> list:
@@ -330,6 +333,40 @@ def cmd_answer(root: Path, args) -> None:
         die(f"Note [{args.id}] is a {note['kind']} note, not a clarification.", 2)
     store.answer_note(root, it["id"], args.id, _text(args, "answer"), now())
     print(f'{it["id"]}: answered [{args.id}]')
+
+
+def cmd_updates(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    party = identity.party()
+    rows = store.unseen(it, party)
+    if not rows:
+        print(f'{it["id"]}: nothing new for {party}')
+        return
+    print(f'{it["id"]}: {len(rows)} not yet acknowledged by {party}')
+    for line in render.update_lines(rows):
+        print(line)
+    refs = [f"{kind}{e['id']}" for kind, e in rows]
+    if args.ack:
+        store.acknowledge(root, it["id"], [(kind, e["id"]) for kind, e in rows], party)
+        print(f"acknowledged {' '.join(refs)}")
+    else:
+        print(f'once handled: todo ack {it["id"]} {" ".join(refs)}')
+
+
+def _entry_ref(raw: str) -> tuple:
+    m = re.fullmatch(r"([nl]?)(\d+)", raw.strip().lower())
+    if not m:
+        die(f"'{raw}' isn't an entry: use n<id> for a note or question, l<id> for a log entry.", 2)
+    return m.group(1) or "n", int(m.group(2))
+
+
+def cmd_ack(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    refs = [_entry_ref(r) for r in args.refs]
+    missing = store.acknowledge(root, it["id"], refs, identity.party())
+    if missing:
+        die(f'{it["id"]} has no {", ".join(f"{k}{i}" for k, i in missing)}.', 1)
+    print(f'{it["id"]}: acknowledged {" ".join(f"{k}{i}" for k, i in refs)} as {identity.party()}')
 
 
 def cmd_notes(root: Path, args) -> None:
@@ -851,6 +888,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", type=int, help="the clarification's note id")
     p.add_argument("text", nargs="+", help="the answer")
     p.set_defaults(func=cmd_answer)
+
+    p = sub.add_parser("updates", parents=[common],
+                       help="list the notes, answers and log entries you haven't acknowledged")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("--ack", action="store_true", help="acknowledge everything listed")
+    p.set_defaults(func=cmd_updates)
+
+    p = sub.add_parser("ack", parents=[common], help="acknowledge notes (n<id>) or log entries (l<id>)")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("refs", nargs="+", help="n<id> for a note or question, l<id> for a log entry")
+    p.set_defaults(func=cmd_ack)
 
     p = sub.add_parser("notes", parents=[common], help="list an item's notes with indices")
     p.add_argument("query", help="id or part of a title")

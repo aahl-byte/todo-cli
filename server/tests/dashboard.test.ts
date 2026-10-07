@@ -263,7 +263,7 @@ describe("request versions", () => {
   it("numbers versions itself and refuses server-owned meta", async () => {
     await requested();
     await post("V2", "again", { version: 9, frozen: true, triaged: true, area: "x" });
-    expect(await meta("V2")).toEqual({ version: 2, area: "x" });
+    expect(await meta("V2")).toEqual({ version: 2, area: "x", seen_by: ["alice"] });
     const r = await w.one("alice", set("note", "V2", "R1", { "meta.triaged": true }, await nv("V2")));
     expect(r.rejected?.[0]).toMatchObject({ field: "meta.triaged" });
   });

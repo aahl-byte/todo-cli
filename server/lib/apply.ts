@@ -3,7 +3,7 @@
 import type { Db, Row } from "./db";
 import {
   CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE,
-  deriveCalcStatus, isSettable, mentions, nowIso, type Entity,
+  SEEN, deriveCalcStatus, isSettable, mentions, nowIso, party, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
@@ -303,6 +303,11 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 
   }
   if (jsonCol) row[jsonCol] = data[jsonCol] && typeof data[jsonCol] === "object" ? { ...data[jsonCol] } : {};
+  if (entity === "note" || entity === "log") {
+    const given = parties(row.meta[SEEN]) ?? [];
+    if (entity === "log") row.meta = {};
+    row.meta[SEEN] = [...new Set([...given, party(row.author, row.via)])];
+  }
   if (entity === "item" && row.extra.jira != null && !validJiraKeys(row.extra.jira)) return reject(op, "invalid-jira");
   if (entity === "note") {
     const bad = await badNoteMeta(ctx, itemUid, row.kind, row.meta);
@@ -334,6 +339,11 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
   if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", project: ctx.project, itemUid, note: row });
   return result;
+}
+
+/** A list of acknowledging parties, or null when `value` isn't one. */
+function parties(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((p) => typeof p === "string" && p) ? value : null;
 }
 
 /** A request's URL must be http(s); a relation must name another item here. */
@@ -500,7 +510,14 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
   const accepted: [string, unknown][] = [];
   const out: Record<string, number> = {};
 
+  const seenField = `meta.${SEEN}`;
+  let seenAsked: string[] | null | undefined;
   for (const [field, value] of Object.entries(op.data ?? {})) {
+    if ((entity === "note" || entity === "log") && field === seenField) {
+      seenAsked = parties(value);
+      if (seenAsked === null) rejected.push({ field, reason: "invalid", server_value: row.meta?.[SEEN] ?? null, version: versions[field] });
+      continue;
+    }
     const current = jsonCol && field.startsWith(jsonCol + ".")
       ? (row[jsonCol] ?? {})[field.slice(jsonCol.length + 1)]
       : row[field];
@@ -544,6 +561,16 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       }
     }
     accepted.push([field, value]);
+  }
+
+  // Acknowledging adds to `seen_by` without a version check; new content resets it to its writer.
+  if (entity === "note" || entity === "log") {
+    const before = parties(row.meta?.[SEEN]);
+    const rewritten = accepted.some(([f]) => f === "text" || f === "meta.answer");
+    const after = rewritten ? [party(ctx.actor.handle, op.via ?? "human")]
+      : seenAsked ? [...new Set([...(before ?? []), ...seenAsked])] : before;
+    if (after && !same(after, before)) accepted.push([seenField, after]);
+    else if (seenAsked) out[seenField] = versions[seenField] ?? 0;
   }
 
   // Reopening an archived item brings it back out of the archive.

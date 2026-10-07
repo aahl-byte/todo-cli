@@ -163,6 +163,8 @@ todo task rm <query> <id>        # remove task by id
 todo add    "<title>" [--request TEXT [--url U]] [--app A] [--section S]   # add an item
 todo comment|ask <query> <text...>        # comment (@mentions) | clarification question
 todo answer <query> <id> <text...>        # answer a clarification
+todo updates <query> [--ack]              # notes, answers and log entries you haven't acknowledged
+todo ack <query> n<id>|l<id>...           # acknowledge notes and questions (n) or log entries (l)
 todo url    <query> <url> [--type T] [--label L]   # attach a PR/preview/QA-handoff link
 todo assign <query> [--dev H] [--qa H]    # people fields ("none" clears)
 todo history <query>                      # status transitions
@@ -281,6 +283,9 @@ or by hand sync too. A write that lost to a newer change from someone else is
 rejected; the CLI takes the server's value and records it in the dev log
 (`sync: offline status → review not applied; quinn set in-qa at 14:02`).
 
+- `todo updates <query>` lists what you haven't acknowledged on one item. You and your
+  agent (`--agent`) acknowledge separately, and the dashboard marks entries no
+  agent has seen.
 - `todo sync` runs a round now and lists anything still unpushed.
 - `todo inbox` shows your mentions, rejections, questions and hand-offs.
 - `TODO_OFFLINE=1` skips syncing for a command.

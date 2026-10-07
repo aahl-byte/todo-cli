@@ -5,7 +5,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
 import type { ActionState } from "@/lib/action-helpers";
-import { COMPLETE, moves, PARKED, STATUSES, type Move } from "@/lib/model";
+import { COMPLETE, isAgentParty, moves, PARKED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import { Markdown } from "../Markdown";
 import { Composer } from "../Composer";
@@ -54,6 +54,19 @@ type IsNew = (ts: string | null | undefined, by: string | null | undefined) => b
 const Fresh = createContext<IsNew>(() => false);
 export const useIsNew = () => useContext(Fresh);
 const NewTag = () => <span className="tag new">new</span>;
+
+/** Who hasn't acknowledged an entry's latest content: any agent, and you. */
+function Seen({ row, entity, ctx }: { row: Row; entity: "note" | "log"; ctx: Ctx }) {
+  const seen = row.meta?.[SEEN];
+  if (!Array.isArray(seen)) return null;
+  const ack = async () => report(await act.acknowledge({ project: ctx.project, itemUid: ctx.itemUid, entries: [{ entity, uid: row.uid }] }));
+  return (
+    <>
+      {!seen.some(isAgentParty) && <span className="tag unseen" data-tip="No agent has acknowledged this yet">AI unseen</span>}
+      {!seen.includes(ctx.me) && <button type="button" className="ack" onClick={() => void ack()}>mark seen</button>}
+    </>
+  );
+}
 
 function defaultTab(openQuestions: number): Tab {
   return openQuestions ? "questions" : "comments";
@@ -329,6 +342,7 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
                 {c.via === "agent" && <span className="ai">AI</span>}
                 {c.source === "jira" && <span className="faint"> · jira</span>} <Ago ts={c.ts} />
                 {c.meta?.edited_at && <span className="faint" data-tip={`edited ${new Date(c.meta.edited_at).toLocaleString()}`}> · edited</span>}
+                <Seen row={c} entity="note" ctx={ctx} />
               </div>
               <Markdown text={c.text} />
             </div>
@@ -371,7 +385,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
                   <div className="body">
                     <div className="dim"><Markdown text={q.text} /></div>
                     <Markdown text={q.meta?.answer ?? ""} />
-                    <div className="who">{isNew(q.meta?.answered_at, q.meta?.answered_by) && <NewTag />}{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /></div>
+                    <div className="who">{isNew(q.meta?.answered_at, q.meta?.answered_by) && <NewTag />}{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /> <Seen row={q} entity="note" ctx={ctx} /></div>
                   </div>
                 </li>
               ))}
@@ -398,7 +412,7 @@ function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | nul
   return (
     <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""} ${fresh ? "is-new" : ""}`} data-uid={q.uid}>
       <div className="body">
-        <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /></div>
+        <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /> <Seen row={q} entity="note" ctx={ctx} /></div>
         <Markdown text={q.text} />
         {answering ? (
           <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
@@ -479,6 +493,7 @@ function Entry({ row, kind, ctx, id, open, focus, toggle }: {
       </div>
       {!editing && (
         <span className="acts">
+          <Seen row={row} entity={kind === "log" ? "log" : "note"} ctx={ctx} />
           {kind === "context" && <button type="button" className="x" aria-label="edit" onClick={() => { pinned.current = row.versions; setDraft(row.text); setEditing(true); }}>✎</button>}
           <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: kind === "log" ? "log" : "note", uid: row.uid, versions: row.versions })} />
         </span>

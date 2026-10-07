@@ -186,9 +186,9 @@ def _note_tag(n) -> str:
     return "(" + " · ".join(parts) + ") "
 
 
-def note_lines(notes, indent: str = "  ") -> list:
-    """`[id] (kind · author) text` per note; a link adds its URL, an answered
-    clarification its answer."""
+def note_lines(notes, indent: str = "  ", prefix: str = "") -> list:
+    """`[id] (kind · author) text` per note, the id after `prefix`; a link adds
+    its URL, an answered clarification its answer."""
     pad = indent + "    "
     out = []
     for n in notes:
@@ -196,11 +196,23 @@ def note_lines(notes, indent: str = "  ") -> list:
         text = str(n["text"])
         if n.get("kind") == "link" and meta.get("url") and meta["url"] != text:
             text += f'  <{meta["url"]}>'
-        line = f'{indent}[{n["id"]}] {_note_tag(n)}' + text.replace("\n", "\n" + pad)
+        line = f'{indent}[{prefix}{n["id"]}] {_note_tag(n)}' + text.replace("\n", "\n" + pad)
         if n.get("kind") == "clarification" and meta.get("answer"):
             who = f' ({meta["answered_by"]})' if meta.get("answered_by") else ""
             line += f"\n{pad}→{who} " + str(meta["answer"]).replace("\n", "\n" + pad)
         out.append(line)
+    return out
+
+
+def update_lines(rows) -> list:
+    """Unacknowledged notes (`n<id>`) and log entries (`l<id>`), as `todo updates` lists them."""
+    out = []
+    for kind, e in rows:
+        if kind == "n":
+            out += note_lines([e], prefix="n")
+        else:
+            who = f'({e["author"]}{" · AI" if e.get("via") == "agent" else ""}) ' if e.get("author") else ""
+            out.append(f'  [l{e["id"]}] log {_stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
     return out
 
 

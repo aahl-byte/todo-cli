@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.10.2
+version: 0.11.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -21,6 +21,8 @@ moment you change what you're doing, and leave a note when you learn something.
 ## When to use
 
 - The user points you at a TODO item (e.g. "todo > FOO", "work on the BAR item").
+  Run `todo updates <q>` first: it lists what people added since you last
+  acknowledged anything — answers, comments, notes, review notes in the log.
 - You start planning, start coding, or finish a tracked task → update its status.
 - You want to look up what an item actually asks for → `get` it.
 - You learn something worth recording → add a note.
@@ -92,6 +94,13 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 - **Ask instead of guessing.** When intent is unclear, raise a clarification
   with `todo ask`. It stays open until a person answers it with `todo answer`.
   Check `todo get` for open questions before you build.
+- **Acknowledge what you've acted on.** `todo updates <q>` lists every note,
+  answer and log entry you haven't acknowledged; each person and each person's
+  agent acknowledge separately, and what you write counts as seen. After you
+  act on an entry, `todo ack <q> n<id>` (notes and questions) or `l<id>` (log
+  entries), or `todo updates <q> --ack` once you've handled the whole list.
+  Acknowledge on acting, not on reading: an unacknowledged answer is how the
+  next session learns it still has to act on it.
 - **Record where the work lives** when you start it: `todo set <q> repo <owner/repo>`
   and `todo set <q> branch <branch>`.
 - **Attach what you produce:** `todo url <q> <url> --type pr|preview|qa-handoff`.
@@ -195,6 +204,8 @@ todo note   <query> <text...>    # append a note (write it as legible Markdown);
 todo comment <query> <text...>   # a comment; @handle notifies that person
 todo ask    <query> <text...>    # raise a clarification question (stays open)
 todo answer <query> <id> <text>  # answer one
+todo updates <query> [--ack]     # notes, answers, log entries you haven't acknowledged
+todo ack <query> n<id>|l<id>...  # acknowledge notes/questions (n) or log entries (l)
 todo url    <query> <url> [--type pr|preview|qa-handoff|other] [--label L]
 todo assign <query> [--dev H] [--qa H]   # people ("none" clears)
 todo history <query>             # status transitions: who, when, via
@@ -279,6 +290,7 @@ to every item including `done`.
 ## Typical flow
 
 ```
+todo updates skill-todo                   # anything new since you last acknowledged?
 todo get skill-todo                       # read what it asks for
 todo triage skill-todo                    # I'm writing the plan
 todo note skill-todo "plan in docs/plans/2026-06-23-foo.md"

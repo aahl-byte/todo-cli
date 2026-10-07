@@ -420,6 +420,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 /* what arrived since your last visit */
 .entry.is-new { box-shadow: inset 2px 0 0 var(--cyan); padding-left: 8px; background: linear-gradient(90deg, rgba(90, 209, 196, .06), transparent 60%); }
 .tag.new { color: var(--cyan); border-color: var(--cyan-dim); margin-right: 6px; }
+.tag.unseen { color: var(--s-review); border-color: var(--s-review); margin-left: 6px; opacity: .85; }
+.ack { border: 0; background: none; padding: 0 2px; margin-left: 6px; color: var(--faint); font: 600 9px var(--disp); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+.ack:hover { color: var(--text); }
 .new-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); margin-right: 5px; vertical-align: 1px; }
 
 /* inbox */

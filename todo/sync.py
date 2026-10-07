@@ -37,7 +37,7 @@ SETTABLE = {
     "log": ["text"],
     "check": ["kind", "title", "payload", "timing", "status"],
 }
-JSON_FIELD = {"item": "extra", "note": "meta"}
+JSON_FIELD = {"item": "extra", "note": "meta", "log": "meta"}
 CREATE_ONLY = {"item": ["id", "created"], "task": ["n"], "note": ["n", "ts"],
                "log": ["n", "ts"], "check": ["n"]}
 CHILDREN = ["task", "note", "log", "check"]
@@ -286,8 +286,11 @@ def scan(root: Path) -> Local:
                     local.via[m["uid"]] = m["via"]
             for e in store._read_entries(d / store.LOG_DIR):
                 if e["meta"].get("uid"):
-                    local.entities[e["meta"]["uid"]] = {"entity": "log", "item_uid": uid, "data": {
-                        "n": e["id"], "ts": e["ts"], "text": e["text"]}}
+                    flat = {"n": e["id"], "ts": e["ts"], "text": e["text"]}
+                    for k, v in e["meta"].items():
+                        if k not in ("uid", "author", "via"):
+                            flat[f"meta.{k}"] = _plain(v)
+                    local.entities[e["meta"]["uid"]] = {"entity": "log", "item_uid": uid, "data": flat}
                     local.files[e["meta"]["uid"]] = e["file"]
                     if e["meta"].get("via"):
                         local.via[e["meta"]["uid"]] = e["meta"]["via"]
@@ -889,13 +892,11 @@ def server_flat(entity: str, row: dict) -> dict:
         return flat
     if entity == "task":
         return {k: row.get(k) for k in ("n", "title", "status", "phase", "position")}
-    if entity == "note":
-        flat = {k: row.get(k) for k in ("n", "ts", "kind", "text")}
+    if entity in ("note", "log"):
+        flat = {k: row.get(k) for k in (("n", "ts", "kind", "text") if entity == "note" else ("n", "ts", "text"))}
         for k, v in (row.get("meta") or {}).items():
             flat[f"meta.{k}"] = v
         return flat
-    if entity == "log":
-        return {k: row.get(k) for k in ("n", "ts", "text")}
     if entity == "check":
         return {k: row.get(k) for k in ("n", "kind", "title", "payload", "timing", "status")}
     return {}
@@ -1037,10 +1038,9 @@ def _write_entity(root, now: Local, entity, uid, item_uid, flat, row) -> bool:
             meta["kind"] = flat.get("kind") or "context"
         meta["author"] = row.get("author")
         meta["via"] = row.get("via")
-        if entity == "note":
-            for k, v in flat.items():
-                if k.startswith("meta.") and v is not None:
-                    meta[k[5:]] = v
+        for k, v in flat.items():
+            if k.startswith("meta.") and v is not None:
+                meta[k[5:]] = v
         d = item_dir / sub
         d.mkdir(exist_ok=True)
         target = d / f"{store.ts_to_name(flat['ts'])}-{flat['n']}.md"

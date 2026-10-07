@@ -62,3 +62,9 @@ def via() -> str:
     if env in ("agent", "human"):
         return env
     return "agent" if os.environ.get("CLAUDECODE") else "human"
+
+
+def party(handle: str | None = None, via_: str | None = None) -> str:
+    """Who acknowledges an entry: a person's handle, or `handle/agent` for their agent."""
+    handle = handle or user()
+    return f"{handle}/agent" if (via_ or via()) == "agent" else handle

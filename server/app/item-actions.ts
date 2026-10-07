@@ -161,6 +161,11 @@ export async function answerQuestion(a: { project: string; itemUid: string; uid:
   return apply(a.project, () => build.answerOps({ uid: a.uid, item_uid: a.itemUid, versions: a.versions }, a.text, user.handle), user.handle);
 }
 
+export async function acknowledge(a: { project: string; itemUid: string; entries: { entity: "note" | "log"; uid: string }[] }) {
+  const user = await requireUser();
+  return apply(a.project, () => build.ackOps(a.entries.map((e) => ({ entity: e.entity, ref: { uid: e.uid, item_uid: a.itemUid, versions: {} } })), user.handle), user.handle);
+}
+
 export async function addTask(a: { project: string; itemUid: string; title: string; phase: number | null }) {
   const user = await requireUser();
   return apply(a.project, () => build.taskOps(a.itemUid, a.title, a.phase), user.handle);

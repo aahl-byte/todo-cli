@@ -32,6 +32,7 @@ HISTORY_DIR = "history"
 CHECKS_DIR = "checks"
 CHECKS_FILE = "CHECKS.yaml"
 UNPHASED_DIR = "unphased"
+SEEN = "seen_by"
 
 PEOPLE = ("creator", "developer", "qa_assignee")
 NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
@@ -158,7 +159,8 @@ def _note(e) -> dict:
 def _log(e) -> dict:
     meta = e["meta"]
     return {"id": e["id"], "ts": e["ts"], "text": e["text"], "uid": meta.get("uid"),
-            "author": meta.get("author"), "via": meta.get("via")}
+            "author": meta.get("author"), "via": meta.get("via"),
+            "meta": {k: v for k, v in meta.items() if k not in ("uid", "author", "via")}}
 
 
 def _history(e) -> dict:
@@ -435,7 +437,8 @@ def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dic
     d.mkdir(exist_ok=True)
     ids = [e["id"] for e in _read_entries(d)]
     new_id = max(ids) + 1 if ids else 1
-    full = {"uid": ulid.new(), **meta, "author": identity.user(), "via": identity.via()}
+    full = {"uid": ulid.new(), **meta, "author": identity.user(), "via": identity.via(),
+            SEEN: [identity.party()]}
     yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.md",
                         frontmatter.join(full, text + "\n"))
     return new_id
@@ -487,7 +490,7 @@ def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: st
         if e["id"] == note_id:
             meta = dict(e["meta"]) or {"uid": None, "kind": "context"}
             meta.update(state="answered", answer=answer, answered_by=identity.user(),
-                        answered_at=now_iso)
+                        answered_at=now_iso, **{SEEN: [identity.party()]})
             yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
             return True
     return False
@@ -500,7 +503,8 @@ def edit_note(root: Path, item_id: str, note_id: int, text: str) -> bool:
         return False
     for e in _read_entries(item_dir / NOTES_DIR):
         if e["id"] == note_id:
-            yamlio.write_atomic(e["file"], frontmatter.join(dict(e["meta"]), text + "\n"))
+            meta = {**e["meta"], SEEN: [identity.party()]}
+            yamlio.write_atomic(e["file"], frontmatter.join(meta, text + "\n"))
             return True
     return False
 
@@ -517,6 +521,45 @@ def add_log(root: Path, item_id: str, text: str, now_iso: str):
 
 def remove_log(root: Path, item_id: str, log_id: int) -> bool:
     return _remove_entry(root, item_id, LOG_DIR, log_id)
+
+
+# ── acknowledgements ──────────────────────────────────────────────────────────
+# A note or log entry lists who has seen its latest content in `seen_by`. Its
+# author has; answering or editing it resets the list to whoever did that.
+# Entries written before tracking began have no list and count as seen.
+
+def unseen(it: dict, party: str) -> list:
+    """`(kind, entry)` for each note ("n") and log entry ("l") `party` hasn't
+    acknowledged, oldest first."""
+    out = [("n", n) for n in it.get("notes") or [] if _unseen_by(n, party)]
+    out += [("l", e) for e in it.get("log") or [] if _unseen_by(e, party)]
+    return sorted(out, key=lambda x: (x[1].get("meta") or {}).get("answered_at") or x[1]["ts"])
+
+
+def _unseen_by(entry: dict, party: str) -> bool:
+    seen = (entry.get("meta") or {}).get(SEEN)
+    return isinstance(seen, list) and party not in seen
+
+
+def acknowledge(root: Path, item_id: str, refs: list, party: str) -> list:
+    """Add `party` to the `seen_by` of each `(kind, id)` in `refs`. Returns the
+    refs that don't exist."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return list(refs)
+    missing = []
+    for kind, entry_id in refs:
+        sub = NOTES_DIR if kind == "n" else LOG_DIR
+        e = next((e for e in _read_entries(item_dir / sub) if e["id"] == entry_id), None)
+        if e is None:
+            missing.append((kind, entry_id))
+            continue
+        seen = e["meta"].get(SEEN)
+        if isinstance(seen, list) and party in seen:
+            continue
+        meta = {**e["meta"], SEEN: [*(seen if isinstance(seen, list) else []), party]}
+        yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
+    return missing
 
 
 # ── child tasks ───────────────────────────────────────────────────────────────

@@ -38,7 +38,17 @@ export const SETTABLE: Record<Entity, string[]> = {
   log: ["text"],
   check: ["kind", "title", "payload", "timing", "status"],
 };
-export const JSON_FIELD: Partial<Record<Entity, string>> = { item: "extra", note: "meta" };
+export const JSON_FIELD: Partial<Record<Entity, string>> = { item: "extra", note: "meta", log: "meta" };
+
+/** The meta key listing who has seen a note's or log entry's latest content. */
+export const SEEN = "seen_by";
+
+/** Who acknowledges an entry: a person's handle, or `handle/agent` for their agent. */
+export function party(handle: string, via: string | null | undefined): string {
+  return via === "agent" ? `${handle}/agent` : handle;
+}
+
+export const isAgentParty = (p: string) => p.endsWith("/agent");
 
 /** Fields a `create` stores, beyond uid/item_uid. */
 export const CREATE_FIELDS: Record<Entity, string[]> = {
@@ -60,6 +70,7 @@ export const DEFAULTS: Record<Entity, Record<string, unknown>> = {
 
 export function isSettable(entity: Entity, field: string): boolean {
   const json = JSON_FIELD[entity];
+  if (entity === "log") return field === "text" || field === `meta.${SEEN}`;
   if (json && field.startsWith(json + ".") && field.length > json.length + 1) return true;
   return SETTABLE[entity].includes(field);
 }

@@ -262,3 +262,28 @@ def test_qa_rejected_round_trips(server, tmp_path):
     cli(ha, ra, "start", "cart-totals")
     cli(hb, rb, "sync")
     assert store.resolve_item((rb / ".TODO").resolve(), "cart-totals")["status"] == "in-progress"
+
+
+def test_acknowledgements_from_both_sides_merge(server, tmp_path):
+    url, tokens = server
+    users = {}
+    for who in ("alice", "bob"):
+        home, repo = tmp_path / who / "home", tmp_path / who / "repo"
+        home.mkdir(parents=True)
+        (repo / ".TODO").mkdir(parents=True)
+        cli(home, repo, "login", url, tokens[who])
+        users[who] = (home, repo)
+    (ha, ra), (hb, rb) = users["alice"], users["bob"]
+    cli(ha, ra, "add", "Cart totals")
+    cli(ha, ra, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "comment", "cart-totals", "rounding is off")
+    cli(ha, ra, "sync")
+
+    cli(ha, ra, "--agent", "ack", "cart-totals", "n1", offline=True)
+    cli(ha, ra, "ack", "cart-totals", "n1")
+    cli(ha, ra, "sync")
+    cli(hb, rb, "sync")
+    seen = store.resolve_item((rb / ".TODO").resolve(), "cart-totals")["notes"][0]["meta"]["seen_by"]
+    assert sorted(seen) == ["alice", "alice/agent", "bob"]
+    assert "nothing new" in cli(ha, ra, "--agent", "updates", "cart-totals").stdout

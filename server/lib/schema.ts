@@ -232,6 +232,7 @@ alter table projects add column if not exists jira_settings_by text;
 alter table projects add column if not exists jira_settings_at timestamptz;
 alter table status_history add column if not exists override boolean not null default false;
 alter table status_history add column if not exists note text;
+alter table logs add column if not exists meta jsonb not null default '{}'::jsonb;
 
 create table if not exists jira_outbox (
   id              bigserial primary key,
