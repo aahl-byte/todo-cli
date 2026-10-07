@@ -480,3 +480,13 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .problems .warning { color: var(--amber); }
 .save-row { display: flex; gap: 10px; align-items: center; }
 .dry-runs { display: grid; gap: 4px; }
+
+.tag.pr-draft { color: var(--dim); border-color: var(--line-2); }
+.tag.pr-open { color: var(--s-ready-to-deploy); border-color: color-mix(in srgb, var(--s-ready-to-deploy) 45%, transparent); }
+.tag.pr-merged { color: var(--s-review); border-color: color-mix(in srgb, var(--s-review) 45%, transparent); }
+.tag.pr-closed { color: var(--danger); border-color: var(--danger-dim); }
+.checks { display: inline-flex; align-items: center; padding: 0 2px; }
+.checks .led { width: 6px; height: 6px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
+.ck-pass { --c: var(--s-ready-to-deploy); }
+.ck-fail { --c: var(--danger); }
+.ck-pending { --c: var(--amber); }

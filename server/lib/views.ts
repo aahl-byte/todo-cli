@@ -3,6 +3,7 @@
 import type { Db, Row } from "./db";
 import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus } from "./model";
 import { matchEntries, matches, type Entry } from "./filters";
+import type { PrStatus } from "./github";
 
 export interface Project {
   key: string;
@@ -217,7 +218,8 @@ export async function choices(d: Db, key: string) {
   return apps;
 }
 
-export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>>;
+/** The page adds live PR statuses, keyed by link uid. */
+export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus> };
 
 const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
 

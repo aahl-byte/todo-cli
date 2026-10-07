@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import * as act from "@/app/item-actions";
 import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
+import type { ChecksState, PrStatus } from "@/lib/github";
 import { safeUrl } from "@/lib/url";
 import { Ago, Led, Menu, Popup } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
@@ -15,6 +16,7 @@ import { AppFields } from "../AppFields";
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA" };
+const CHECKS_TIP: Record<ChecksState, string> = { pass: "passing", fail: "failing", pending: "running" };
 
 
 export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: () => void }) {
@@ -80,7 +82,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
         </div>
       </section>
       <Related rows={data.related} ctx={ctx} />
-      <Links rows={data.links} ctx={ctx} />
+      <Links rows={data.links} prs={data.prs ?? {}} ctx={ctx} />
       {data.files?.length > 0 && <Files rows={data.files} jiraBase={ctx.jiraBase} />}
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
       <History rows={data.history} current={it.status} created={it.created} />
@@ -222,7 +224,7 @@ function Related({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
   );
 }
 
-function Links({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
+function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>; ctx: Ctx }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ url: "", label: "", type: "pr" });
   const save = async () => {
@@ -237,11 +239,13 @@ function Links({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
       {rows.map((l) => {
         const url = safeUrl(l.meta?.url);
         const tag = LINK_TAG[l.meta?.type] ?? (l.meta?.type && l.meta.type !== "other" ? l.meta.type : null);
+        const pr = prs[l.uid];
         return (
           <div key={l.uid} className="rrow" data-uid={l.uid}>
-            {tag && <span className="tag">{tag}</span>}
+            {pr ? <span className={`tag pr-${pr.state}`}>{tag ?? "PR"} · {pr.state}</span> : tag && <span className="tag">{tag}</span>}
             {url ? <a className="grow" href={url} target="_blank" rel="noreferrer" data-tip={url}>{l.meta?.label || l.text}</a>
                  : <span className="grow">{l.meta?.label || l.text}</span>}
+            {pr?.checks && <span className={`checks ck-${pr.checks}`} data-tip={`checks ${CHECKS_TIP[pr.checks]}`}><span className="led" /></span>}
             <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: "note", uid: l.uid, versions: l.versions })} />
           </div>
         );

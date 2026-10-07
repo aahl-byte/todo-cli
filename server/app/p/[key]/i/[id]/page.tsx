@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { ItemView } from "@/components/item/ItemView";
 import { db } from "@/lib/db";
 import { filesEnabled } from "@/lib/files";
+import { linkPrStatuses } from "@/lib/github";
 import { requireUser } from "@/lib/session";
 import { item as loadItem, project, users } from "@/lib/views";
 
@@ -21,5 +22,6 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
     jiraBase: process.env.JIRA_BASE_URL?.replace(/\/+$/, "") ?? null,
     itemUid: data.item.uid,
   };
-  return <ItemView data={JSON.parse(JSON.stringify(data))} ctx={ctx} />;
+  const prs = await linkPrStatuses(data.links);
+  return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs }))} ctx={ctx} />;
 }
