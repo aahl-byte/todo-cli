@@ -7,7 +7,7 @@ import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { ChecksState, PrStatus } from "@/lib/github";
 import { safeUrl } from "@/lib/url";
-import { Ago, Led, Menu, Popup } from "../ui";
+import { Ago, Led, Menu, Popup, richTip } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { Glance } from "./Glance";
@@ -285,9 +285,13 @@ function Checks({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
     }
   };
   const row = (c: Row) => (
-    <div key={c.uid} className="rrow" data-uid={c.uid}>
+    <div key={c.uid} className="rrow check" data-uid={c.uid}>
       <CheckBox check={{ ...c, item_uid: ctx.itemUid }} project={ctx.project} />
-      <span className="grow wrap" data-tip={[c.title, [c.kind, TIMING[c.timing], c.status].filter(Boolean).join(" · "), c.payload].filter(Boolean).join("\n")}>{c.title}</span>
+      <span className="grow wrap" data-tip-rich={richTip({
+        title: c.title,
+        rows: [["kind", c.kind], ["when", TIMING[c.timing] ?? c.timing], ["status", c.status, c.status === "done" ? "ok" : "pending"]],
+        code: c.payload || undefined,
+      })}>{c.title}</span>
       {c.timing === "post-deploy" && <span className="tag">post</span>}
       <Remove onConfirm={() => act.removeChild({ project: ctx.project, itemUid: ctx.itemUid, entity: "check", uid: c.uid, versions: c.versions })} />
     </div>

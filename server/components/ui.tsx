@@ -144,16 +144,31 @@ export function Popup({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
-/** Instant tooltips for any element carrying `data-tip`. Mounted once. */
+/** A structured tooltip: a title, labelled values (a tone colors one), and a code block. */
+export interface RichTip { title?: string; rows?: [label: string, value: string, tone?: string][]; code?: string }
+
+/** `data-tip-rich` for an element whose tooltip is a RichTip. */
+export const richTip = (tip: RichTip) => JSON.stringify(tip);
+
+const TIP_SELECTOR = "[data-tip], [data-tip-rich]";
+
+function readRich(raw: string | undefined): RichTip | null {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+/** Instant tooltips for any element carrying `data-tip` or `data-tip-rich`. Mounted once. */
 export function Tooltips() {
-  const [tip, setTip] = useState<{ text: string; x: number; y: number; up: boolean } | null>(null);
+  const [tip, setTip] = useState<{ text?: string; rich?: RichTip; x: number; y: number; up: boolean } | null>(null);
   useEffect(() => {
     const show = (target: EventTarget | null) => {
-      const el = (target as HTMLElement)?.closest?.("[data-tip]") as HTMLElement | null;
-      if (!el || !el.dataset.tip) { setTip(null); return false; }
+      const el = (target as HTMLElement)?.closest?.(TIP_SELECTOR) as HTMLElement | null;
+      const rich = readRich(el?.dataset.tipRich);
+      if (!el || (!el.dataset.tip && !rich)) { setTip(null); return false; }
       const r = el.getBoundingClientRect();
-      const up = r.bottom + 40 > window.innerHeight;
-      setTip({ text: el.dataset.tip, x: Math.max(8, Math.min(r.left, window.innerWidth - 268)), y: up ? r.top - 6 : r.bottom + 6, up });
+      const width = rich ? 348 : 268;
+      const up = r.bottom + (rich ? 160 : 40) > window.innerHeight;
+      setTip({ text: el.dataset.tip, rich: rich ?? undefined, x: Math.max(8, Math.min(r.left, window.innerWidth - width)), y: up ? r.top - 6 : r.bottom + 6, up });
       return true;
     };
     let touch = false;
@@ -167,7 +182,7 @@ export function Tooltips() {
     const down = (e: PointerEvent) => {
       touch = e.pointerType === "touch";
       if (!touch) { setTip(null); return; }
-      const el = (e.target as HTMLElement)?.closest?.("[data-tip]") ?? null;
+      const el = (e.target as HTMLElement)?.closest?.(TIP_SELECTOR) ?? null;
       tappedAt = Date.now();
       if (el && el === tapped) { tapped = null; setTip(null); return; }
       tapped = el;
@@ -189,8 +204,18 @@ export function Tooltips() {
   }, []);
   if (!tip) return null;
   return (
-    <div className="tip" role="tooltip" style={{ left: tip.x, ...(tip.up ? { bottom: window.innerHeight - tip.y } : { top: tip.y }) }}>
-      {tip.text}
+    <div className={`tip ${tip.rich ? "rich" : ""}`} role="tooltip" style={{ left: tip.x, ...(tip.up ? { bottom: window.innerHeight - tip.y } : { top: tip.y }) }}>
+      {tip.rich ? (
+        <>
+          {tip.rich.title && <div className="tip-title">{tip.rich.title}</div>}
+          {!!tip.rich.rows?.length && (
+            <dl className="tip-rows">
+              {tip.rich.rows.map(([k, v, tone]) => <div key={k}><dt>{k}</dt><dd className={tone}>{v}</dd></div>)}
+            </dl>
+          )}
+          {tip.rich.code && <pre className="tip-code">{tip.rich.code}</pre>}
+        </>
+      ) : tip.text}
     </div>
   );
 }

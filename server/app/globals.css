@@ -138,6 +138,16 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
   position: fixed; z-index: 70; max-width: 260px; pointer-events: none; background: var(--raise); border: 1px solid var(--line-2);
   color: var(--text); font-size: 11px; padding: 3px 7px; border-radius: 5px; white-space: pre-line; overflow-wrap: anywhere;
 }
+.tip.rich { max-width: 340px; padding: 8px 10px; white-space: normal; display: grid; gap: 8px; }
+.tip-title { color: var(--md-strong); font-weight: 600; font-size: 12px; line-height: 1.35; }
+.tip-rows { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; }
+.tip-rows > div { display: contents; }
+.tip-rows dt { color: var(--faint); font: 600 9px var(--disp); letter-spacing: .12em; text-transform: uppercase; align-self: center; }
+.tip-rows dd { margin: 0; color: var(--dim); }
+.tip-rows dd.pending { color: var(--amber); }
+.tip-rows dd.ok { color: var(--cyan); }
+.tip-code { margin: 0; padding: 6px 8px; background: var(--ink); border: 1px solid var(--line); border-radius: 4px;
+  font: 10.5px/1.5 var(--mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .toasts { position: fixed; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); right: 14px; left: 14px; z-index: 80;
   display: grid; gap: 6px; justify-items: end; pointer-events: none; }
 .toast { pointer-events: auto; max-width: 520px; background: var(--panel-2); border: 1px solid var(--danger-dim);
@@ -194,7 +204,7 @@ h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercas
 .glance .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--c, var(--s-todo)); }
 
 /* ---- item page ------------------------------------------------------------ */
-.item { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 28px; align-items: start; }
+.item { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 28px; align-items: start; }
 @media (max-width: 900px) { .item { grid-template-columns: 1fr; } .board { grid-auto-columns: minmax(78vw, 1fr); } }
 .head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .head .title { font-size: 17px; font-weight: 500; color: var(--md-strong); flex: 1; min-width: 200px; }
@@ -272,6 +282,8 @@ h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercas
 .rrow { display: flex; gap: 7px; align-items: center; font-size: 12px; min-width: 0; }
 .rrow .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rrow .grow.wrap { white-space: normal; overflow-wrap: anywhere; }
+.rrow.check + .rrow.check { margin-top: 6px; }
+.rrow.check .grow { font-size: 11px; line-height: 1.45; color: var(--dim); }
 .jira-keys { display: grid; gap: 2px; }
 .kv .k:has(+ .jira-keys) { align-self: start; padding-top: 4px; }
 .rrow:has(> .grow.wrap) { align-items: flex-start; }
