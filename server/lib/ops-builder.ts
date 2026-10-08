@@ -63,7 +63,7 @@ export function pickUpOps(item: Ref & { qa_assignee?: string | null }, me: strin
 }
 
 export function approveOps(item: Ref, deployStep: boolean): Op[] {
-  return statusOps(item, deployStep ? "ready-to-deploy" : "done");
+  return statusOps(item, deployStep ? "qa-approved" : "done");
 }
 
 export function requestOps(form: { title: string; type: string; priority: string; description: string;

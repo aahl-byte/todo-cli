@@ -27,6 +27,7 @@
   --s-review: #b083f0;
   --s-ready-for-qa: #ff8c42;
   --s-in-qa: #e668b3;
+  --s-qa-approved: #c3d86a;
   --s-ready-to-deploy: #7fd88f;
   --s-deployed: #5ad1c4;
   --s-done: #5ad1c4;
@@ -99,6 +100,7 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 .s-review { --c: var(--s-review); }
 .s-ready-for-qa { --c: var(--s-ready-for-qa); }
 .s-in-qa { --c: var(--s-in-qa); }
+.s-qa-approved { --c: var(--s-qa-approved); }
 .s-ready-to-deploy { --c: var(--s-ready-to-deploy); }
 .s-deployed { --c: var(--s-deployed); }
 .s-done { --c: var(--s-done); }
@@ -108,7 +110,7 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 .s-deferred .led { background: var(--s-deferred); }
 .s-cancelled { --c: var(--s-cancelled); }
 .s-in-triage .led, .s-in-progress .led, .s-review .led, .s-ready-for-qa .led, .s-in-qa .led,
-.s-ready-to-deploy .led, .s-deployed .led, .s-done .led, .s-blocked .led, .s-qa-rejected .led { box-shadow: 0 0 7px var(--c); }
+.s-qa-approved .led, .s-ready-to-deploy .led, .s-deployed .led, .s-done .led, .s-blocked .led, .s-qa-rejected .led { box-shadow: 0 0 7px var(--c); }
 
 /* ---- menu, popup, tooltip ------------------------------------------------- */
 .menu-btn { border: 0; background: none; padding: 2px 4px; margin: -2px -4px; border-radius: 5px; color: inherit; text-align: left; }
@@ -393,7 +395,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .glance-block .cap { width: 18px; height: 4.5px; border-radius: 3px; background: var(--c, var(--s-todo)); }
 .glance-block .dot, .glance .dot { background: var(--c, var(--s-todo)); }
 .glance-block .dot { width: 6px; height: 6px; border-radius: 50%; }
-.glance-block :is(.cap, .dot):is(.s-in-triage, .s-in-progress, .s-review, .s-blocked, .s-done, .s-deployed, .s-in-qa, .s-ready-for-qa, .s-ready-to-deploy, .s-qa-rejected) { box-shadow: 0 0 7px var(--c); }
+.glance-block :is(.cap, .dot):is(.s-in-triage, .s-in-progress, .s-review, .s-blocked, .s-done, .s-deployed, .s-in-qa, .s-ready-for-qa, .s-qa-approved, .s-ready-to-deploy, .s-qa-rejected) { box-shadow: 0 0 7px var(--c); }
 .cap.s-deferred, .dot.s-deferred { --c: var(--s-deferred); }
 .ticket { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; background: var(--panel); display: grid; gap: 4px; }
 .ticket-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-bottom: 4px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }

@@ -89,7 +89,7 @@ export const COLUMNS = [
   { key: "ready", label: "Ready", statuses: ["review", "todo"] },
   { key: "progress", label: "In progress", statuses: ["in-progress"] },
   { key: "qa", label: "QA", statuses: ["in-qa", "ready-for-qa"] },
-  { key: "deploy", label: "Ready to deploy", statuses: ["ready-to-deploy"] },
+  { key: "deploy", label: "Deploy", statuses: ["qa-approved", "ready-to-deploy"] },
   { key: "shipped", label: "Shipped", statuses: ["deployed", "done"] },
   { key: "parked", label: "Parked", statuses: PARKED },
 ];
@@ -268,8 +268,10 @@ export async function qaQueue(d: Db, key: string, me: string, f: BoardFilters = 
 
 export async function deployPlan(d: Db, key: string, me = "", f: BoardFilters = {}) {
   const allReady = await cards(d, key, "and i.status = 'ready-to-deploy'");
+  const allPrepping = await cards(d, key, "and i.status = 'qa-approved'");
   const allDeployed = await cards(d, key, "and i.status = 'deployed'");
   const ready = filterCards(allReady, f, me);
+  const prepping = filterCards(allPrepping, f, me);
   const deployed = filterCards(allDeployed, f, me);
   const all = await d.query("select id, status from items where project = $1", [key]);
   const complete = new Set(all.filter((r) => COMPLETE.includes(r.status)).map((r) => r.id));
@@ -277,7 +279,7 @@ export async function deployPlan(d: Db, key: string, me = "", f: BoardFilters = 
   const checksFor = async (uids: string[]): Promise<Row[]> => uids.length
     ? d.query("select c.*, i.id as item_id, i.title as item_title from checks c join items i on i.uid = c.item_uid and i.project = c.project where c.project = $2 and c.item_uid = any($1::text[]) order by i.created, i.id, c.n", [uids, key])
     : [];
-  const readyChecks = await checksFor(ready.map((r) => r.uid));
+  const readyChecks = await checksFor([...ready, ...prepping].map((r) => r.uid));
   const allAfter = (await checksFor(allDeployed.map((r) => r.uid))).filter((c) => c.timing === "post-deploy" && c.status !== "done");
   const stillToDo = allDeployed.filter((it) => allAfter.some((c) => c.item_uid === it.uid));
   const after = allAfter.filter((c) => deployed.some((it) => it.uid === c.item_uid));
@@ -286,14 +288,16 @@ export async function deployPlan(d: Db, key: string, me = "", f: BoardFilters = 
   });
   const kindOrder = (c: Row) => CHECK_KINDS.indexOf(c.kind as (typeof CHECK_KINDS)[number]);
   // Each ticket's checks: pre before post, then in the order a deploy runs them.
-  const byTicket = ready.map((it) => ({
+  const ticketOf = (it: Card) => ({
     item: it,
     checks: readyChecks.filter((c) => c.item_uid === it.uid).map(warn)
       .sort((a, b) => Number(a.timing !== "pre-deploy") - Number(b.timing !== "pre-deploy") || kindOrder(a) - kindOrder(b) || a.n - b.n),
-  }));
+  });
   const afterByTicket = deployed
     .map((it) => ({ item: it, checks: after.filter((c) => c.item_uid === it.uid) }))
     .filter((t) => t.checks.length);
-  const counts = tabCounts([...allReady, ...stillToDo], f, me);
-  return { ready, afterDeploy: after, byTicket, afterByTicket, counts };
+  const byTicket = ready.map(ticketOf);
+  const prepByTicket = prepping.map(ticketOf);
+  const counts = tabCounts([...allReady, ...allPrepping, ...stillToDo], f, me);
+  return { ready, afterDeploy: after, byTicket, prepByTicket, afterByTicket, counts };
 }

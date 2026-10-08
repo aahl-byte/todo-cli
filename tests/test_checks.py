@@ -65,7 +65,7 @@ def test_post_deploy_checks_do_not_gate(root):
 def test_deploy_plan_groups_orders_and_warns(root, capsys):
     run_cli(root, ["add", "prereq thing"])
     for q in ("alpha", "beta"):
-        run_cli(root, ["approve", q])
+        run_cli(root, ["stage", q])
     run_cli(root, ["check", "add", "beta", "env-var", "B_ENV"])
     run_cli(root, ["check", "add", "alpha", "db-script", "A_SQL"])
     run_cli(root, ["check", "add", "beta", "db-script", "B_SQL"])

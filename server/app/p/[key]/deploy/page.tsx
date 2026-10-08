@@ -26,7 +26,7 @@ export default async function Deploy({ params, searchParams }: {
   const plan = JSON.parse(JSON.stringify(await deployPlan(d, key, user.handle, {
     entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app })));
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={plan.counts} />;
-  if (!plan.byTicket.length && !plan.afterByTicket.length) return <>{filters}<p className="empty">Empty.</p></>;
+  if (!plan.byTicket.length && !plan.prepByTicket.length && !plan.afterByTicket.length) return <>{filters}<p className="empty">Empty.</p></>;
 
   const check = (c: Row) => (
     <div key={c.uid} className="rrow check-row" data-uid={c.uid}>
@@ -37,13 +37,13 @@ export default async function Deploy({ params, searchParams }: {
       {c.warning && <span className="hot">{c.warning}</span>}
     </div>
   );
-  const ticket = (t: { item: Row; checks: Row[] }, actions: boolean) => (
+  const ticket = (t: { item: Row; checks: Row[] }, action?: { status: string; label: string }) => (
     <section key={t.item.uid} className="ticket" data-uid={t.item.uid}>
       <header className="ticket-head">
         <Led status={t.item.status} />
         <Link href={`/p/${key}/i/${t.item.id}`} className="grow">{t.item.title}</Link>
         {t.item.developer && <span className="faint">{t.item.developer}</span>}
-        {actions && <MoveButtons item={t.item} project={key} to={[{ status: "deployed", label: "Mark deployed", primary: true }]} />}
+        {action && <MoveButtons item={t.item} project={key} to={[{ ...action, primary: true }]} />}
       </header>
       {t.checks.filter((c) => c.status !== "done").map(check)}
       {t.checks.some((c) => c.status === "done") && <div className="faint done-n">{t.checks.filter((c) => c.status === "done").length} done</div>}
@@ -53,11 +53,17 @@ export default async function Deploy({ params, searchParams }: {
   return (
     <div className="rows">
       {filters}
-      {plan.byTicket.map((t: any) => ticket(t, true))}
+      {plan.byTicket.map((t: any) => ticket(t, { status: "deployed", label: "Mark deployed" }))}
+      {plan.prepByTicket.length > 0 && (
+        <>
+          <div className="label section">QA approved · deploy being prepared</div>
+          {plan.prepByTicket.map((t: any) => ticket(t, { status: "ready-to-deploy", label: "Ready to deploy" }))}
+        </>
+      )}
       {plan.afterByTicket.length > 0 && (
         <>
           <div className="label section">Deployed · still to do</div>
-          {plan.afterByTicket.map((t: any) => ticket(t, false))}
+          {plan.afterByTicket.map((t: any) => ticket(t))}
         </>
       )}
     </div>

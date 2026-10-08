@@ -28,7 +28,7 @@ const FIELDS = ["summary", "description", "status", "assignee", "reporter", "iss
 const OVERLAP_MINUTES = 2;
 const TASK_STATUS: Record<string, string> = { requested: "todo", todo: "todo", "in-triage": "todo", "in-progress": "in-progress",
   blocked: "blocked", review: "review", "ready-for-qa": "review", "in-qa": "review", "qa-rejected": "in-progress",
-  "ready-to-deploy": "review", deployed: "done", done: "done" };
+  "qa-approved": "review", "ready-to-deploy": "review", deployed: "done", done: "done" };
 
 const isBug = (f: any) => ["bug", "defect"].includes(String(f?.issuetype?.name ?? "").toLowerCase());
 

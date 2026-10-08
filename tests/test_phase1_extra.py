@@ -36,7 +36,7 @@ def test_deploy_plan_orders_items_by_created(root, capsys):
     f = root / "OPEN" / "alpha" / "TODO.yaml"
     f.write_text(f.read_text().replace("2026-06-24T10:00:00.000Z", "2026-06-24T12:00:00.000Z"))
     for q in ("alpha", "beta"):
-        run_cli(root, ["approve", q])
+        run_cli(root, ["stage", q])
         run_cli(root, ["check", "add", q, "db-script", f"SQL_{q}"])
     capsys.readouterr()
     run_cli(root, ["deploy-plan"])

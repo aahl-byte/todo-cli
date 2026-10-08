@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.11.2
+version: 0.11.3
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -76,7 +76,8 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 | `ready-for-qa`    | handed to QA                           | **a person, never you** |
 | `in-qa`           | QA is testing it                       | QA                 |
 | `qa-rejected`     | QA sent it back; waiting on its developer | QA (`todo reject`) |
-| `ready-to-deploy` | QA approved; waiting for a deploy      | QA                 |
+| `qa-approved`     | QA approved; deploy not yet prepared   | QA (`todo approve`) |
+| `ready-to-deploy` | PRs merged, deploy checks recorded     | the developer (`todo stage`) |
 | `deployed`        | shipped (stamps `completed`)           | the deployer       |
 
 - **Pick up `qa-rejected` work first.** Read the `qa-rejection` note, then
@@ -120,6 +121,9 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   its Jira comments arrive as comment notes. If the request was frozen, that
   append is a new version and **the item goes back to `requested`** for triage.
   Jira's status never moves the item; `todo get` shows it next to each key.
+- **Prepare a `qa-approved` item's deploy, then `todo stage` it.** Make sure
+  its PRs are merged to staging and every migration, env var and prerequisite
+  branch is a deployment check; `stage` moves it to `ready-to-deploy`.
 - **Record what a deploy needs** as deployment checks the moment you create the
   need: a migration, a new env var, a branch that must land first. `todo deploy`
   refuses while pre-deploy checks are pending.
@@ -216,7 +220,7 @@ todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment ch
 todo check done|reopen|rm <query> <id>
 todo checks <query>
 todo deploy-plan                 # every check the next deploy needs
-todo request|ready-qa|qa|approve|deploy <query>   # team statuses (deploy: --force past checks)
+todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (deploy: --force past checks)
 todo reject <query> <text...>    # QA → qa-rejected with a required comment
 todo add "<title>" --request "<text>"   # file a requested item with its ticket request
 todo request <query> --text "<text>" [--url U]   # post a new request version (back to requested)

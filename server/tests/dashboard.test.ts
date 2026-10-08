@@ -44,7 +44,7 @@ describe("ops builder", () => {
   });
 
   it("approves to done when the project has no deploy step", () => {
-    expect(build.approveOps(it1, true)[0].data).toEqual({ status: "ready-to-deploy" });
+    expect(build.approveOps(it1, true)[0].data).toEqual({ status: "qa-approved" });
     expect(build.approveOps(it1, false)[0].data).toEqual({ status: "done" });
   });
 
@@ -178,6 +178,15 @@ describe("views", () => {
     expect(eve.byTicket.map((t) => t.item.id)).toEqual(["d2"]);
     expect(eve.afterByTicket.map((t) => t.item.id)).toEqual(["d3"]);
   });
+
+  it("lists qa-approved tickets apart, with their checks", async () => {
+    await w.one("alice", item("D1", { status: "ready-to-deploy" }));
+    await w.one("alice", item("A1", { status: "qa-approved" }));
+    await w.one("alice", child("check", "C1", "A1", { n: 1, kind: "db-script", title: "migrate" }));
+    const plan = await deployPlan(w.d, "p");
+    expect(plan.byTicket.map((t) => t.item.id)).toEqual(["d1"]);
+    expect(plan.prepByTicket.map((t) => [t.item.id, t.checks.map((c) => c.title)])).toEqual([["a1", ["migrate"]]]);
+  });
 });
 
 describe("transitions", () => {
@@ -196,6 +205,12 @@ describe("transitions", () => {
       ["done", "ready-for-qa", "qa-rejected", "blocked", "cancelled"]);
     expect(moves("blocked", { deployStep: false }).map((m: any) => m.status)).not.toContain("deployed");
   });
+  it("routes QA approval through qa-approved before ready-to-deploy", () => {
+    expect(moves("in-qa", {})[0]).toMatchObject({ status: "qa-approved", group: "next" });
+    expect(moves("qa-approved", {}).map((m: any) => [m.status, m.group])).toEqual([
+      ["ready-to-deploy", "next"], ["in-qa", "back"], ["qa-rejected", "back"], ["blocked", "park"], ["cancelled", "park"]]);
+    expect(moves("blocked", { deployStep: false, previous: "qa-approved" })[0]).toMatchObject({ status: "done" });
+  });
   it("offers unblock to the previous status first", () => {
     expect(moves("blocked", { previous: "in-qa" })[0]).toMatchObject({ status: "in-qa", group: "next" });
   });
@@ -209,7 +224,7 @@ describe("transitions", () => {
     expect(m("todo", "in-progress")).toMatchObject({ comment: null });
   });
   it("lets every active status be cancelled and requested items only reach triage", () => {
-    for (const s of ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "blocked", "deferred"]) {
+    for (const s of ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "ready-to-deploy", "blocked", "deferred"]) {
       expect(NEXT_STATUSES[s]).toContain("cancelled");
     }
     expect(NEXT_STATUSES.requested).not.toContain("todo");

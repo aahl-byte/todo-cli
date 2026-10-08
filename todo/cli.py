@@ -42,7 +42,7 @@ NO_AUTO_SYNC = {"sync", "whoami", "inbox", "migrate"}
 EXIT_SYNC_REJECTED = 4
 
 # Where QA can send work back from.
-REJECTABLE = ["ready-for-qa", "in-qa", "ready-to-deploy"]
+REJECTABLE = ["ready-for-qa", "in-qa", "qa-approved", "ready-to-deploy"]
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ def cmd_status(root: Path, args) -> None:
 def cmd_shortcut(root: Path, args) -> None:
     status = SHORTCUTS[args.command]
     cfg = remote.sync_config(root) or {}
-    if status == "ready-to-deploy" and cfg.get("deploy_step") is False:
+    if status in ("qa-approved", "ready-to-deploy") and cfg.get("deploy_step") is False:
         status = "done"             # a project with no deploy step finishes at QA approval
     _set_status(root, args.query, status, getattr(args, "force", False))
 
@@ -447,11 +447,12 @@ def cmd_deploy_plan(root: Path, args) -> None:
     everything = store.list_todos(root)
     ready = [store.get_item(root, it["id"]) for it in everything
              if it["status"] == "ready-to-deploy" and it["folder"] == store.OPEN]
+    prepping = [it for it in everything if it["status"] == "qa-approved"]
     after = [store.get_item(root, it["id"]) for it in everything if it["status"] == "deployed"]
     after = [it for it in after
              if any(c["timing"] == "post-deploy" and c["status"] != "done" for c in it["checks"])]
     complete = {it["id"] for it in everything if it["status"] in COMPLETE}
-    render.print_deploy_plan(ready, after, complete, {it["id"] for it in everything})
+    render.print_deploy_plan(ready, after, complete, {it["id"] for it in everything}, prepping)
 
 
 def cmd_renote(root: Path, args) -> None:
@@ -776,7 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="lifecycle:\n"
                "  todo → in-triage (planning) → in-progress (developing) → done\n"
                "  team: requested → in-triage → todo → in-progress ⇄ review\n"
-               "        → ready-for-qa → in-qa → ready-to-deploy → deployed\n"
+               "        → ready-for-qa → in-qa → qa-approved → ready-to-deploy → deployed\n"
                "  `review` awaits user review, `blocked` can't proceed,\n"
                "  `deferred` parks an item off the main path,\n"
                "  `cancelled` means it will never happen.\n\n"

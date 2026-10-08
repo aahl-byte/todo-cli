@@ -16,7 +16,7 @@ SETTABLE = {
 JSON = {"item": "extra", "note": "meta"}
 COMPLETE = ("done", "deployed")
 VALID_STATUSES = ("requested", "todo", "in-triage", "in-progress", "review", "ready-for-qa", "in-qa",
-                  "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done")
+                  "qa-approved", "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done")
 
 
 class FakeServer:

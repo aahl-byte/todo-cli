@@ -51,7 +51,7 @@ export default async function QaQueue({ params, searchParams }: {
       {filters}
       {inQa.length > 0 && <div className="label">In QA<span>{inQa.length}</span></div>}
       <div className="cards">{inQa.map((c) => card(c, [
-        { status: p.deploy_step ? "ready-to-deploy" : "done", label: "Approve", primary: true },
+        { status: p.deploy_step ? "qa-approved" : "done", label: "Approve", primary: true },
         { status: "qa-rejected", label: "Reject" },
       ]))}</div>
       {ready.length > 0 && <div className="label">Ready for QA<span>{ready.length}</span></div>}

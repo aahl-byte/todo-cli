@@ -88,7 +88,7 @@ await child(banner, "dev", "note", { kind: "link", text: "Preview", meta: { url:
 await child(banner, "dev", "note", { kind: "link", text: "PR #42", meta: { url: "https://example.com/pr/42", label: "PR #42", type: "pr" } });
 
 const tz = await item("web", "Store times in UTC", { ...W, priority: "medium" }, "Times shift by an hour after DST.");
-for (const s of ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy"]) await status(tz, s === "in-qa" || s === "ready-to-deploy" ? "qa" : "dev", s);
+for (const s of ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "ready-to-deploy"]) await status(tz, s === "in-qa" || s === "qa-approved" ? "qa" : "dev", s);
 await child(tz, "dev", "check", { kind: "db-script", title: "convert timestamps", payload: "db/2026-10-02-utc.sql" });
 await child(tz, "dev", "check", { kind: "env-var", title: "set TZ", payload: "TZ=UTC" });
 await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check reports", timing: "post-deploy" });
@@ -128,11 +128,11 @@ const WORK: [string, "feature" | "bug" | "refactor"][] = [
 
 // Shipped is the largest pile; the rest spread over the lifecycle.
 const TARGETS: [string, number][] = [
-  ["deployed", 16], ["ready-to-deploy", 4], ["in-qa", 5], ["qa-rejected", 3], ["ready-for-qa", 4], ["review", 5], ["in-progress", 9],
+  ["deployed", 16], ["ready-to-deploy", 3], ["qa-approved", 2], ["in-qa", 5], ["qa-rejected", 3], ["ready-for-qa", 4], ["review", 5], ["in-progress", 9],
   ["todo", 6], ["in-triage", 3], ["requested", 5], ["blocked", 3], ["deferred", 2], ["cancelled", 2],
 ];
-const PATH = ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "ready-to-deploy", "deployed"];
-const mover = (it: Seeded, to: string) => (["in-qa", "ready-to-deploy"].includes(to) ? it.qa : to === "deployed" ? it.dev : it.dev);
+const PATH = ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "ready-to-deploy", "deployed"];
+const mover = (it: Seeded, to: string) => (["in-qa", "qa-approved"].includes(to) ? it.qa : it.dev);
 
 const TASKS = ["schema change", "API endpoint", "UI", "tests", "copy review", "feature flag", "analytics events", "docs", "migration", "edge cases"];
 const COMMENTS = [
@@ -211,7 +211,7 @@ for (const [to, count] of TARGETS) {
                                           extra: { app, section: area } },
       `${type === "bug" ? "Broken" : "Wanted"} in ${area}: ${title.toLowerCase()}.\n\n${type === "bug" ? "Steps:\n\n- open " + area + "\n- try it\n- see it fail" : "Why: customers keep asking in support tickets."}`);
     k++;
-    const bounce = ["deployed", "ready-to-deploy", "in-qa"].includes(to) && k % 4 === 0;
+    const bounce = ["deployed", "ready-to-deploy", "qa-approved", "in-qa"].includes(to) && k % 4 === 0;
     if (to === "blocked") { await walk(it, "in-progress"); await flesh(it, "in-progress"); await status(it, it.dev, "blocked"); await child(it, it.dev, "note", { kind: "comment", text: `Blocked on the ${pick(["payments vendor", "design review", "infra ticket"])}. @${it.creator}` }); continue; }
     if (to === "qa-rejected") {
       await walk(it, "in-qa");
@@ -226,13 +226,13 @@ for (const [to, count] of TARGETS) {
     }
     if (to === "deferred") { await walk(it, "todo"); await status(it, it.creator, "deferred"); continue; }
     if (to === "cancelled") { await walk(it, "in-triage"); await status(it, it.creator, "cancelled"); continue; }
-    if (to === "ready-to-deploy" || to === "deployed") {
+    if (["qa-approved", "ready-to-deploy", "deployed"].includes(to)) {
       await walk(it, "in-progress");
       await flesh(it, to);
       if (chance(0.7)) await child(it, it.dev, "check", { kind: "db-script", title: "run migration", payload: `db/2026-09-${10 + (w % 20)}-${area.replace(/\s/g, "-")}.sql` });
       if (chance(0.5)) await child(it, it.dev, "check", { kind: "env-var", title: "set flag", payload: `${area.toUpperCase().replace(/\s/g, "_")}_V2=1` });
       if (chance(0.4)) await child(it, it.dev, "check", { kind: "manual-step", title: "announce in #releases", timing: "post-deploy" });
-      for (const s of PATH.slice(PATH.indexOf("review"), PATH.indexOf("ready-to-deploy") + 1)) {
+      for (const s of PATH.slice(PATH.indexOf("review"), PATH.indexOf(to === "deployed" ? "ready-to-deploy" : to) + 1)) {
         await status(it, mover(it, s), s);
         if (s === "in-qa" && bounce) {
           await reject(it, `Totals are wrong for multi-currency carts. @${it.dev}`);

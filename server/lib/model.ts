@@ -3,7 +3,7 @@
 
 export const STATUSES = [
   "requested", "todo", "in-triage", "in-progress", "review", "ready-for-qa",
-  "in-qa", "qa-rejected", "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done",
+  "in-qa", "qa-approved", "qa-rejected", "ready-to-deploy", "deployed", "blocked", "deferred", "cancelled", "done",
 ] as const;
 export type Status = (typeof STATUSES)[number];
 
@@ -11,12 +11,12 @@ export const COMPLETE = ["done", "deployed"];
 export const TERMINAL = [...COMPLETE, "cancelled"];
 export const PARKED = ["deferred", "cancelled"];
 const CALC_PRECEDENCE = [
-  "qa-rejected", "in-progress", "blocked", "in-qa", "ready-for-qa", "review", "ready-to-deploy",
+  "qa-rejected", "in-progress", "blocked", "in-qa", "ready-for-qa", "review", "qa-approved", "ready-to-deploy",
   "in-triage", "requested", "todo",
 ];
 
 /** Statuses that mean triage is done: work runs on the request from here on. */
-export const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-rejected", "ready-to-deploy", "deployed", "done"];
+export const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "qa-rejected", "ready-to-deploy", "deployed", "done"];
 
 export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
@@ -107,19 +107,22 @@ export const NEXT_STATUSES: Record<string, string[]> = {
   "in-progress": ["review", "todo", "blocked", "deferred", "cancelled"],
   review: ["ready-for-qa", "done", "in-progress", "blocked", "deferred", "cancelled"],
   "ready-for-qa": ["in-qa", "in-progress", "blocked", "cancelled"],
-  "in-qa": ["ready-to-deploy", "ready-for-qa", "qa-rejected", "blocked", "cancelled"],
+  "in-qa": ["qa-approved", "ready-for-qa", "qa-rejected", "blocked", "cancelled"],
+  "qa-approved": ["ready-to-deploy", "in-qa", "qa-rejected", "blocked", "cancelled"],
   "qa-rejected": ["in-progress", "in-triage", "blocked", "cancelled"],
-  "ready-to-deploy": ["deployed", "in-qa", "qa-rejected", "blocked", "cancelled"],
+  "ready-to-deploy": ["deployed", "qa-approved", "in-qa", "qa-rejected", "blocked", "cancelled"],
   deployed: ["in-progress"],
   done: ["in-progress", "todo"],
-  blocked: ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-rejected", "ready-to-deploy", "deferred", "cancelled"],
+  blocked: ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "qa-rejected", "ready-to-deploy", "deferred", "cancelled"],
   deferred: ["requested", "in-triage", "todo", "cancelled"],
   cancelled: ["requested", "in-triage"],
 };
 
 const LIFECYCLE = ["requested", "in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa",
-  "ready-to-deploy", "deployed", "done"];
+  "qa-approved", "ready-to-deploy", "deployed", "done"];
 const PARKING = ["blocked", "deferred", "cancelled"];
+/** Between QA approval and a deploy; a project with no deploy step finishes at approval instead. */
+const DEPLOY_PREP = ["qa-approved", "ready-to-deploy"];
 
 export interface Move {
   status: string;
@@ -149,12 +152,12 @@ export function moves(from: string, ctx: MoveContext = {}): Move[] {
   const deployStep = ctx.deployStep !== false;
   let next = [...(NEXT_STATUSES[from] ?? STATUSES.filter((s) => s !== from))];
   if (!deployStep) {
-    next = next.map((s) => (s === "ready-to-deploy" ? "done" : s)).filter((s) => s !== "deployed");
+    next = next.map((s) => (DEPLOY_PREP.includes(s) ? "done" : s)).filter((s) => s !== "deployed");
     if (from === "in-qa") next = next.filter((s, i) => next.indexOf(s) === i);
   }
   if (from === "review" && ctx.hasQa) next = next.filter((s) => s !== "done");
   if (from === "blocked" && ctx.previous && ctx.previous !== "blocked") {
-    const prev = !deployStep && ctx.previous === "ready-to-deploy" ? "done" : ctx.previous;
+    const prev = !deployStep && DEPLOY_PREP.includes(ctx.previous) ? "done" : ctx.previous;
     next = [prev, ...next.filter((s) => s !== prev)];
   }
   next = [...new Set(next)];

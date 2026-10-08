@@ -255,12 +255,13 @@ def print_checks(it) -> None:
         print(line)
 
 
-def print_deploy_plan(ready, after, complete_ids, all_ids) -> None:
+def print_deploy_plan(ready, after, complete_ids, all_ids, prepping=()) -> None:
     """Pre-deploy then post-deploy checks across the ready items, grouped by
-    kind; then deployed items with post-deploy checks still open."""
+    kind; then deployed items with post-deploy checks still open, and the
+    approved items whose deploy is still being prepared."""
     from .store import CHECK_KINDS
 
-    if not ready and not after:
+    if not ready and not after and not prepping:
         print("(nothing ready to deploy)")
         return
     if ready:
@@ -287,6 +288,8 @@ def print_deploy_plan(ready, after, complete_ids, all_ids) -> None:
             for c in it["checks"]:
                 if c["timing"] == "post-deploy" and c["status"] != "done":
                     print("  " + _check_lines([c], it["id"])[0])
+    if prepping:
+        print("\nqa-approved, not yet staged: " + ", ".join(it["id"] for it in prepping))
 
 
 def _task_lines(tasks, color, titles=None) -> list:

@@ -171,7 +171,7 @@ todo history <query>                      # status transitions
 todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment check
 todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
-todo request|ready-qa|qa|approve|deploy <query>   # team statuses
+todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses
 todo request <query> --text "<text>" [--url U]   # post a new request version
 todo set <query> priority low|medium|high|urgent|critical
 todo set <query> app|section <value|none>
@@ -219,8 +219,12 @@ follows the full ticket lifecycle:
 
 ```
 requested → in-triage → todo → in-progress ⇄ review → ready-for-qa → in-qa
-          → ready-to-deploy → deployed
+          → qa-approved → ready-to-deploy → deployed
 ```
+
+QA approval (`todo approve`) parks an item in `qa-approved` while its deploy is
+prepared: PRs merged to staging, migrations and env vars recorded as deployment
+checks. `todo stage` then marks it `ready-to-deploy`.
 
 QA sends work back with `todo reject <q> "<what failed>"`, which needs the
 comment and parks the item in `qa-rejected`. Its developer takes it back with
@@ -236,7 +240,8 @@ todo answer safari 2 "Only 16"
 todo url safari https://github.com/x/y/pull/9 --type pr
 todo check add safari db-script "add sessions index" --payload db/0042.sql
 todo check add safari env-var "SESSION_TTL" --post
-todo ready-qa safari && todo qa safari && todo approve safari
+todo ready-qa safari && todo qa safari && todo approve safari   # → qa-approved
+todo stage safari                                 # PRs merged, checks recorded → ready-to-deploy
 todo deploy-plan                                  # what the next deploy needs
 todo deploy safari                                # refused while pre-deploy checks are pending
 ```

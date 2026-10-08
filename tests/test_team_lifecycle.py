@@ -19,7 +19,7 @@ def folder(root, item_id):
 
 @pytest.mark.parametrize("cmd,want", [
     ("request", "requested"), ("ready-qa", "ready-for-qa"), ("qa", "in-qa"),
-    ("approve", "ready-to-deploy"), ("deploy", "deployed"),
+    ("approve", "qa-approved"), ("stage", "ready-to-deploy"), ("deploy", "deployed"),
 ])
 def test_shortcuts_set_their_status(root, cmd, want):
     run_cli(root, [cmd, "beta"])
@@ -115,4 +115,22 @@ def test_task_shortcuts_skip_deploy(root):
     with pytest.raises(SystemExit):
         run_cli(root, ["task", "deploy", "beta", "1"])
     run_cli(root, ["task", "approve", "beta", "1"])
+    assert store.resolve_item(root, "beta")["tasks"][0]["status"] == "qa-approved"
+    run_cli(root, ["task", "stage", "beta", "1"])
     assert store.resolve_item(root, "beta")["tasks"][0]["status"] == "ready-to-deploy"
+
+
+def test_deploy_plan_lists_approved_items_not_yet_staged(root, capsys):
+    run_cli(root, ["approve", "beta"])
+    run_cli(root, ["stage", "alpha"])
+    capsys.readouterr()
+    run_cli(root, ["deploy-plan"])
+    out = capsys.readouterr().out
+    assert "ready to deploy: alpha" in out
+    assert "qa-approved, not yet staged: beta" in out
+
+
+def test_qa_can_reject_an_approved_item(root):
+    run_cli(root, ["approve", "beta"])
+    run_cli(root, ["reject", "beta", "missed", "a", "case"])
+    assert status(root) == "qa-rejected"

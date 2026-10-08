@@ -14,7 +14,9 @@ will never be done.
 
 Team lifecycle (docs/plans/2026-10-02-team-store-design.md):
     requested → in-triage → todo → in-progress ⇄ review → ready-for-qa → in-qa
-    → ready-to-deploy → deployed
+    → qa-approved → ready-to-deploy → deployed
+QA approval parks an item in qa-approved while its deploy is prepared (PRs
+merged, migrations recorded as checks); `stage` marks it ready-to-deploy.
 QA rejection parks an item in qa-rejected until its developer picks it up
 again (in-progress) or sends it back to triage.
 """
@@ -23,7 +25,7 @@ again (in-progress) or sends it back to triage.
 # an item enters on demand rather than flowing through, but they're first-class
 # valid statuses everywhere.
 STATUSES = ["requested", "todo", "in-triage", "in-progress", "review", "ready-for-qa",
-            "in-qa", "qa-rejected", "ready-to-deploy", "deployed", "blocked", "deferred",
+            "in-qa", "qa-approved", "qa-rejected", "ready-to-deploy", "deployed", "blocked", "deferred",
             "cancelled", "done"]
 
 # Finished with, one way or the other: hidden from the everyday `todo list` and
@@ -39,8 +41,8 @@ COMPLETE = ["done", "deployed"]
 ACTIVE = ["in-progress", "blocked", "review", "ready-for-qa", "in-qa", "qa-rejected"]
 
 # Statuses that mean triage is done: work runs on the request from here on.
-PAST_TRIAGE = {"todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-rejected",
-               "ready-to-deploy", "deployed", "done"}
+PAST_TRIAGE = {"todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved",
+               "qa-rejected", "ready-to-deploy", "deployed", "done"}
 
 # Shortcut subcommand → status it sets.
 SHORTCUTS = {
@@ -55,7 +57,8 @@ SHORTCUTS = {
     "reopen": "todo",
     "ready-qa": "ready-for-qa",
     "qa": "in-qa",
-    "approve": "ready-to-deploy",
+    "approve": "qa-approved",
+    "stage": "ready-to-deploy",
     "deploy": "deployed",
 }
 
@@ -72,7 +75,8 @@ SHORTCUT_HELP = {
     "reopen": "→ todo",
     "ready-qa": "→ ready-for-qa (hand to QA)",
     "qa": "→ in-qa (QA picks it up)",
-    "approve": "→ ready-to-deploy (QA approved)",
+    "approve": "→ qa-approved (QA approved; deploy not yet prepared)",
+    "stage": "→ ready-to-deploy (PRs merged, deploy checks recorded)",
     "deploy": "→ deployed (blocked by pending pre-deploy checks)",
 }
 
@@ -91,6 +95,7 @@ _COLORS = {
     "done": "32",          # green
     "ready-for-qa": "38;5;208",     # orange
     "in-qa": "38;5;214",            # amber
+    "qa-approved": "38;5;37",       # light teal
     "ready-to-deploy": "38;5;30",   # teal
     "deployed": "1;32",             # bold green
 }
@@ -109,7 +114,7 @@ def colorize(status: str, text: str, enabled: bool) -> str:
 # `done` (all live tasks done) and the all-parked cases are handled separately;
 # this list ranks the in-flight states.
 CALC_PRECEDENCE = ["qa-rejected", "in-progress", "blocked", "in-qa", "ready-for-qa", "review",
-                   "ready-to-deploy", "in-triage", "requested", "todo"]
+                   "qa-approved", "ready-to-deploy", "in-triage", "requested", "todo"]
 
 # Parked children — excluded from the completion math, since work nobody intends
 # to do shouldn't hold the parent short of `done`.
