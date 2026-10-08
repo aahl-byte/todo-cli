@@ -1,8 +1,7 @@
 # Environments and derived deploy checks
 
-**Decision asked for:** how an environment is defined, and whether reaching
-production moves an item to `deployed` on its own. The questions at the end
-block the build; everything above them is the proposal.
+**Status:** a draft for the auto-derivation spin-off. The settled answers are
+at the end; the deploy signal is still open.
 
 ## What it gives you
 
@@ -19,6 +18,7 @@ deploys from:
 
 ```yaml
 environments:
+  - { name: dev,        branch: dev }
   - { name: staging,    branch: staging }
   - { name: production, branch: main }
 ```
@@ -54,16 +54,13 @@ jsonb column, like notes and logs have.
 Derived checks are written through `applyOps` as a bridge actor, like the Jira
 bridge, so they sync to every CLI.
 
-## Questions
+## Settled
 
-1. **Environments:** what are yours, and which branch does each deploy from?
-   Is it one repo per project, or can an item's PRs span repos with different
-   branch names?
-2. **Reaching production:** should it move the item to `deployed`, or only
-   show the chip and leave the move to the deployer?
-3. **Is branch containment the right signal?** If a deploy can lag its branch
-   (a manual promote, a failed pipeline), the honest signal is a deploy event
-   from CI or the host instead, posted to the server.
-4. **Migrations and env vars:** which path globs hold your migrations, and which
-   file lists env vars (`.env.example`)? Or should these be per-project
-   settings with no defaults?
+- Environments are dev, staging and production, shown as D, S and P. Items
+  carry them as manual markers; see the `fixes` item.
+- An item's PRs can span repos, so each PR link's own repo decides where to
+  look.
+- Reaching production never moves the item to `deployed`. Any automatic
+  trigger is set explicitly on the settings page.
+- Branch containment is an unreliable deploy signal. What should mark an
+  environment as reached automatically is still open.
