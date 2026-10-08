@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.11.1
+version: 0.11.2
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -101,8 +101,11 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   entries), or `todo updates <q> --ack` once you've handled the whole list.
   Acknowledge on acting, not on reading: an unacknowledged answer is how the
   next session learns it still has to act on it.
-- **Record where the work lives** when you start it: `todo set <q> repo <owner/repo>`
-  and `todo set <q> branch <branch>`.
+- **Fill in the item's fields while you triage it**, before any code:
+  `todo set <q> app <app>`, `section <section>`, `repo <owner/repo>` and
+  `branch <branch>`. Match the app and section names other items already use
+  (`todo list --all`). `todo start` makes you the developer if nobody is, and
+  `start` and `review` warn about whichever of the four fields are still empty.
 - **Attach what you produce:** `todo url <q> <url> --type pr|preview|qa-handoff`.
   Other types: `external-ticket`, `bug-ticket`, `documentation`, `design`.
 - **Name your phases** with `todo phase <q> <N> "<title>"` when you stage work,

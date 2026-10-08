@@ -58,8 +58,23 @@ def _set_status(root: Path, query: str, status: str, force: bool = False) -> Non
     _check_transition(it, status, force)
     forced = (status == "deployed" and it["status"] != status
               and bool(store.pending_pre_deploy(it)))
-    store.update_todo(root, it["id"], {"status": status}, now(), forced=forced)
+    patch = {"status": status}
+    if status == "in-progress" and not it["developer"]:
+        patch["developer"] = identity.user()
+    store.update_todo(root, it["id"], patch, now(), forced=forced)
     print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else ""))
+    if status in ("in-progress", "review") and sync.enabled(root):
+        _warn_empty_fields(it)
+
+
+TRACKED_FIELDS = ("app", "section", "repo", "branch")
+
+
+def _warn_empty_fields(it) -> None:
+    empty = [f for f in TRACKED_FIELDS if not it[f]]
+    if empty:
+        print(f'warning: {it["id"]} has no {", ".join(empty)}. '
+              f'Set each with `todo set {it["id"]} <field> <value>`.', file=sys.stderr)
 
 
 def _check_transition(it, status: str, force: bool) -> None:

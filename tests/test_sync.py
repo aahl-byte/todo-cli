@@ -108,7 +108,7 @@ def test_offline_edit_chain_is_one_write(pair, server):
     report = rnd(a, server, "alice")
     assert report.rejected == 0
     sets = [op for op in server.pushes[-1] if op["op"] == "set"]
-    assert [op["data"] for op in sets] == [{"status": "in-progress"}]
+    assert [op["data"] for op in sets] == [{"status": "in-progress", "developer": "alice"}]
 
 
 def test_push_only_round_advances_the_snapshot(pair, server):
