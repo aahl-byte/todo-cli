@@ -2,7 +2,7 @@
 // all send ops here; see docs/plans/2026-10-02-team-store-implementation.md §2.3.
 import type { Db, Row } from "./db";
 import {
-  CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE,
+  CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE, TERMINAL,
   SEEN, deriveCalcStatus, isSettable, mentions, nowIso, party, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
@@ -574,7 +574,7 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
   }
 
   // Reopening an archived item brings it back out of the archive.
-  const reopened = accepted.find(([f, v]) => f === "status" && !COMPLETE.includes(String(v)));
+  const reopened = accepted.find(([f, v]) => f === "status" && !TERMINAL.includes(String(v)));
   if (entity === "item" && reopened && row.extra?.archived && !accepted.some(([f]) => f === "extra.archived")) {
     accepted.push(["extra.archived", null]);
   }

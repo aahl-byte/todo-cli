@@ -60,7 +60,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
               {col.key === "shipped" && col.items.length > 0 && (
                 <form action={clearShippedAction} className="clear-col">
                   <input type="hidden" name="project" value={key} />
-                  <button type="submit" className="plus" data-tip="archive every shipped item">clear</button>
+                  <button type="submit" className="plus" data-tip="archive every shipped and cancelled item">clear</button>
                 </form>)}
             </div>
             {col.items.map((c) => {

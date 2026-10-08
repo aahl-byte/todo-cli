@@ -9,7 +9,7 @@ import { describe, safeNext, type ActionState } from "@/lib/action-helpers";
 import { userForToken } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
-import { COMPLETE } from "@/lib/model";
+import { TERMINAL } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { COOKIE, requireUser } from "@/lib/session";
 
@@ -42,14 +42,14 @@ export async function requestAction(_prev: ActionState, fd: FormData): Promise<A
   redirect(`/p/${project}/i/${row.id}`);
 }
 
-/** Archive every complete item in the project, which clears the Shipped column. */
+/** Archive every complete or cancelled item in the project, clearing them off the board. */
 export async function clearShippedAction(fd: FormData): Promise<void> {
   const project = str(fd, "project");
   const user = await requireUser();
   const d = await db();
   const rows = await d.query(
     `select uid, versions from items where project = $1 and status = any($2)
-       and coalesce((extra->>'archived')::boolean, false) = false`, [project, COMPLETE]);
+       and coalesce((extra->>'archived')::boolean, false) = false`, [project, TERMINAL]);
   if (rows.length) {
     await applyOps(d, project, rows.map((r) => build.setOp("item", { uid: r.uid, versions: r.versions ?? {} }, { "extra.archived": true })),
                    { handle: user.handle });

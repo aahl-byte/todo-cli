@@ -114,13 +114,13 @@ export function tabCounts(all: Card[], f: BoardFilters, me: string): number[] {
   return (f.entries ?? []).map((e) => base.filter((c) => matches(c, e)).length);
 }
 
-/** Still on the Shipped column: not archived, and completed within the window. */
+/** Still on the Shipped column: completed within the window. */
 function shipped(c: Card, cutoff: number): boolean {
-  return !c.extra?.archived && (!c.completed || Date.parse(c.completed) >= cutoff);
+  return (!c.completed || Date.parse(c.completed) >= cutoff);
 }
 
 export async function board(d: Db, p: Project, f: BoardFilters, me: string, now = Date.now()) {
-  const every = await cards(d, p.key);
+  const every = (await cards(d, p.key)).filter((c) => !c.extra?.archived);
   const cutoff = now - SHIPPED_DAYS * 864e5;
   const visible = every.filter((c) => (f.parked || !PARKED.includes(c.status))
     && (!["deployed", "done"].includes(c.status) || shipped(c, cutoff)));

@@ -596,6 +596,18 @@ describe("archiving shipped items", () => {
     const [after] = await w.d.query("select extra from items where uid = 'S2'");
     expect(after.extra?.archived).toBeUndefined();
   });
+
+  it("leaves archived cancelled items off the parked column", async () => {
+    await w.one("alice", item("C1", { status: "cancelled" }));
+    await w.one("alice", item("C2", { status: "cancelled" }));
+    const p = (await project(w.d, "p"))!;
+    const parked = async () => (await board(w.d, p, { parked: true }, "bob")).columns.find((c) => c.key === "parked")!.items.map((i) => i.id);
+    expect(await parked()).toEqual(["c1", "c2"]);
+
+    const [row] = await w.d.query("select versions from items where uid = 'C2'");
+    await w.one("alice", set("item", "C2", "C2", { "extra.archived": true }, row.versions));
+    expect(await parked()).toEqual(["c1"]);
+  });
 });
 
 describe("notices", () => {
