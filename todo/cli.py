@@ -139,12 +139,7 @@ def related_items(root: Path, it: dict) -> list:
     items = store.list_todos(root)
     by_uid = {x["uid"]: x for x in items if x.get("uid")}
     uids = [(n.get("meta") or {}).get("item") for n in it["notes"] if n["kind"] == "relation"]
-    for other in items:
-        if other["uid"] == it["uid"]:
-            continue
-        full = store.get_item(root, other["id"])
-        if any(n["kind"] == "relation" and (n.get("meta") or {}).get("item") == it["uid"] for n in full["notes"]):
-            uids.append(other["uid"])
+    uids += store.relating_to(root, it["uid"]) if it["uid"] else []
     return [by_uid[u] for u in dict.fromkeys(uids) if u in by_uid]
 
 
@@ -668,7 +663,7 @@ def cmd_sync(root: Path, args) -> None:
     rem = remote.remote_for(root, timeout=30)
     if rem is None:
         die("This store isn't synced. Run `todo link --remote <url>` first.", 2)
-    report = sync.rounds(root, lambda: sync.run_round(root, rem), wait=True)
+    report = sync.rounds(root, lambda: sync.run_round(root, rem, sweep=True), wait=True)
     left = sync.pending(root)
     for m in report.messages:
         print(f"sync: {m}")
@@ -1150,7 +1145,8 @@ def main():
         root = _resolve_root(args.dir)
     if root is not None and root.is_dir():
         filecache.load(root)
-        migrate.convert_note_meta(root)
+        if migrate.convert_note_meta(root) and sync.enabled(root):
+            sync.request_sweep(root)
     try:
         if root is not None and args.command not in NO_AUTO_SYNC and sync.enabled(root) \
                 and not getattr(args, "all_projects", False):
@@ -1170,22 +1166,47 @@ def run_synced(root: Path, args) -> int:
     running elsewhere stands in for the first and pushes for the second, so
     its rejections are reported there."""
     before = sync.rounds(root, lambda: sync.quiet_round(root))
-    with sync.locked(root, _named_items(root, args)):
-        args.func(root, args)
+    named = _named_items(root, args)
+    existing = {d.name for d in store._item_dirs(root)}
+    try:
+        with sync.locked(root, _lock_keys(args, named)):
+            args.func(root, args)
+    finally:
+        _mark_changes(root, named, existing)
     sync.flag_changes(root)
     after = sync.rounds(root)
     rejected = any(r is not None and r.rejected for r in (before, after))
     return EXIT_SYNC_REJECTED if rejected else 0
 
 
+def _mark_changes(root: Path, named, existing: set) -> None:
+    """Mark what a command may have changed for the next round: the items it
+    named and any it created, or everything when it acted on the whole store."""
+    if named is None:
+        sync.request_sweep(root)
+        return
+    for it in named:
+        sync.mark_changed(root, it["id"])
+    for d in store._item_dirs(root):
+        if d.name not in existing:
+            sync.mark_changed(root, d.name)
+
+
 READ_ONLY = {"list", "ls", "deploy-plan"}
 
 
+def _lock_keys(args, named) -> list | None:
+    if named is None:
+        return None
+    return [it["uid"] or it["id"] for it in named] + ([sync.NEW_ITEMS] if args.command == "add" else [])
+
+
 def _named_items(root: Path, args) -> list | None:
-    """The uids of the items a command names, for the lock it runs under; None
-    when it acts on the store as a whole or names an item that doesn't resolve."""
+    """The items a command names, for the lock it runs under and the changes
+    it marks; None when it acts on the store as a whole or names an item that
+    doesn't resolve."""
     if args.command == "add":
-        return [sync.NEW_ITEMS]
+        return []
     queries = [q for q in (getattr(args, "query", None), getattr(args, "other", None)) if q]
     if not queries:
         return [] if args.command in READ_ONLY else None
@@ -1194,7 +1215,7 @@ def _named_items(root: Path, args) -> list | None:
             items = [store.resolve_item(root, q) for q in queries]
     except SystemExit:
         return None
-    return [it["uid"] or it["id"] for it in items]
+    return items
 
 
 def _resolve_root(raw: str) -> Path:

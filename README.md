@@ -278,15 +278,17 @@ todo link --remote https://todo.example.com --project web
 ```
 
 After that, every command syncs before it runs and pushes after. A round
-compares the files with the last-synced snapshot, so edits from the web drawer
-or by hand sync too. A write that lost to a newer change from someone else is
+compares the items a command touched with the last-synced snapshot, and every
+item at most every five minutes, so edits made outside the CLI sync too; `todo
+sync` checks every item at once. Commands lock only the items they name, and
+one round at a time runs for the store. A write that lost to a newer change from someone else is
 rejected; the CLI takes the server's value and records it in the dev log
 (`sync: offline status → review not applied; quinn set in-qa at 14:02`).
 
 - `todo updates <query>` lists what you haven't acknowledged on one item. You and your
   agent (`--agent`) acknowledge separately, and the dashboard marks entries no
   agent has seen.
-- `todo sync` runs a round now and lists anything still unpushed.
+- `todo sync` runs a round over every item now and lists anything still unpushed.
 - `todo inbox` shows your mentions, rejections, questions and hand-offs.
 - `TODO_OFFLINE=1` skips syncing for a command.
 - A command whose changes the server turned down exits 4 after running.

@@ -391,6 +391,74 @@ def test_a_push_flagged_during_another_round_is_pushed_by_its_runner(pair, serve
     assert "queued" in [r.get("text") for r in server.rows.values()]
 
 
+@pytest.fixture
+def marked_only(pair, server, monkeypatch):
+    """A and B swept once; rounds after this diff only marked items."""
+    a, b = pair
+    rnd(a, server, "alice")
+    rnd(b, server, "bob")
+    monkeypatch.setattr(sync, "SWEEP_EVERY", 3600)
+    return a, b
+
+
+def test_a_round_pushes_only_marked_items(marked_only, server):
+    a, _ = marked_only
+    run_cli(a, ["note", "login-bug", "unmarked"])
+    rnd(a, server, "alice")
+    assert "unmarked" not in [r.get("text") for r in server.rows.values()]
+    sync.mark_changed(a, "login-bug")
+    rnd(a, server, "alice")
+    assert "unmarked" in [r.get("text") for r in server.rows.values()]
+
+
+def test_a_command_marks_the_items_it_names_and_creates(marked_only, server, monkeypatch):
+    from todo import cli
+
+    a, _ = marked_only
+    monkeypatch.setattr(remote, "remote_for", lambda root: server.client("alice"))
+    cli.run_synced(a, cli.build_parser().parse_args(["note", "login-bug", "named"]))
+    cli.run_synced(a, cli.build_parser().parse_args(["add", "Brand new"]))
+    texts = [r.get("text") or r.get("title") for r in server.rows.values()]
+    assert "named" in texts and "Brand new" in texts
+
+
+def test_a_store_wide_command_asks_for_a_sweep(marked_only, server, monkeypatch):
+    from todo import cli
+
+    a, _ = marked_only
+    monkeypatch.setattr(remote, "remote_for", lambda root: server.client("alice"))
+    run_cli(a, ["note", "login-bug", "by hand"])
+    cli.run_synced(a, cli.build_parser().parse_args(["archive"]))
+    assert "by hand" in [r.get("text") for r in server.rows.values()]
+
+
+def test_a_failed_round_keeps_its_marks(marked_only, server):
+    a, _ = marked_only
+    run_cli(a, ["note", "login-bug", "later"])
+    sync.mark_changed(a, "login-bug")
+    server.offline = True
+    assert rnd(a, server, "alice").error
+    server.offline = False
+    rnd(a, server, "alice")
+    assert "later" in [r.get("text") for r in server.rows.values()]
+
+
+def test_a_pull_keeps_an_unmarked_local_edit(marked_only, server, monkeypatch):
+    a, b = marked_only
+    f = next((a / "OPEN" / "login-bug" / "notes").iterdir())
+    f.write_text(f.read_text().replace("why it breaks", "edited by hand"))
+    monkeypatch.setenv("TODO_USER", "bob")
+    run_cli(b, ["ack", "login-bug", "n1"])
+    sync.mark_changed(b, "login-bug")
+    rnd(b, server, "bob")
+    assert any("bob" in (r.get("meta") or {}).get("seen_by", []) for r in server.rows.values())
+    rnd(a, server, "alice")
+    assert "edited by hand" in [n["text"] for n in item(a)["notes"]]
+    sync.request_sweep(a)
+    rnd(a, server, "alice")
+    assert "edited by hand" in [r.get("text") for r in server.rows.values()]
+
+
 def test_offline_env_skips_the_round(pair, monkeypatch):
     a, _ = pair
     monkeypatch.setenv("TODO_OFFLINE", "1")

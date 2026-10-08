@@ -788,6 +788,18 @@ def _matches(items, q):
     return id_exact or title_exact or substr
 
 
+def relating_to(root: Path, uid: str) -> list:
+    """The uids of items holding a relation note that points at `uid`."""
+    out = []
+    for d in _item_dirs(root):
+        if any(e["meta"].get("kind") == "relation" and (e["meta"].get("item") == uid)
+               for e in _read_entries(d / NOTES_DIR)):
+            meta = yamlio.read(d / ITEM_FILE)
+            if isinstance(meta, dict) and meta.get("uid") and meta["uid"] != uid:
+                out.append(to_str(meta["uid"]))
+    return out
+
+
 def resolve_item(root: Path, query: str) -> dict:
     """Find one item by id or title. An exact id matches in any folder; title and
     substring matches prefer OPEN items before searching the parked and finished

@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,9 @@ LOCK_FILE = "lock"
 ROUND_LOCK_FILE = "round"
 PUSH_FLAG_FILE = "push"
 ITEM_LOCK_DIR = "locks"
+CHANGED_DIR = "changed"       # one empty file per item id whose files changed since its last diff
+SWEPT_FILE = "swept"          # touched by each full scan
+SWEEP_EVERY = 300             # seconds between full scans, for edits nothing marked
 NEW_ITEMS = "+new"           # the item lock `add` takes for the item it creates
 BATCH = 200
 
@@ -109,6 +113,36 @@ def flag_changes(root: Path) -> None:
     """Ask for a push round, from this process or whichever one is running rounds."""
     sync_dir(root).mkdir(exist_ok=True)
     (sync_dir(root) / PUSH_FLAG_FILE).touch()
+
+
+def mark_changed(root: Path, item_id: str) -> None:
+    """Tell the next round to diff this item. Mark after writing, never before."""
+    d = sync_dir(root) / CHANGED_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    (d / item_id).touch()
+
+
+def request_sweep(root: Path) -> None:
+    """Have the next round scan every item, for changes nothing marked."""
+    (sync_dir(root) / SWEPT_FILE).unlink(missing_ok=True)
+
+
+def _sweep_due(root: Path) -> bool:
+    try:
+        return time.time() - (sync_dir(root) / SWEPT_FILE).stat().st_mtime > SWEEP_EVERY
+    except FileNotFoundError:
+        return True
+
+
+def _take_marks(root: Path) -> set:
+    d = sync_dir(root) / CHANGED_DIR
+    try:
+        names = os.listdir(d)
+    except FileNotFoundError:
+        return set()
+    for n in names:
+        (d / n).unlink(missing_ok=True)
+    return set(names)
 
 
 def _take_flag(root: Path) -> bool:
@@ -211,10 +245,12 @@ def _plain(value):
     return json.loads(json.dumps(value, default=str))
 
 
-def ensure_uids(root: Path, project: str) -> None:
-    """Give every entity a uid and write it into its file. Never recomputes one
-    that exists."""
+def ensure_uids(root: Path, project: str, ids=None) -> None:
+    """Give every entity (of the items in `ids`, if given) a uid and write it
+    into its file. Never recomputes one that exists."""
     for d in store._item_dirs(root):
+        if ids is not None and d.name not in ids:
+            continue
         try:
             meta = yamlio.read(d / store.ITEM_FILE)
         except Exception:  # noqa: BLE001 — unreadable item file: scan skips it too
@@ -290,6 +326,7 @@ class Local:
     history: dict = field(default_factory=dict)     # item uid → provisional entries
     via: dict = field(default_factory=dict)         # note/log uid → who wrote it (human/agent)
     busy: set = field(default_factory=set)          # item uids a command held: left for the next round
+    scanned: set = field(default_factory=set)       # item uids whose files were read; the rest only located
 
 
 def _follow(root: Path, local: Local, item_uid: str) -> None:
@@ -376,11 +413,15 @@ def _item_uid(d: Path) -> str | None:
     return to_str(meta.get("uid")) if isinstance(meta, dict) else None
 
 
-def scan(root: Path) -> Local:
+def scan(root: Path, ids=None) -> Local:
+    """Every item's files, or with `ids` only those items'; the others are
+    just located."""
     local = Local()
     for d in store._item_dirs(root):
         uid = _item_uid(d)
-        if uid:
+        if uid and ids is not None and d.name not in ids:
+            local.item_dirs[uid] = d
+        elif uid:
             with _hold(root, uid, wait=False) as free:
                 if not free:
                     local.item_dirs[uid] = d
@@ -397,6 +438,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
     except Exception:  # noqa: BLE001 — unreadable item: leave it out
         return
     local.item_dirs[uid] = d
+    local.scanned.add(uid)
     try:
         local.entities[uid] = {"entity": "item", "item_uid": uid, "data": _item_flat(d, meta)}
     except Exception:  # noqa: BLE001 — e.g. a non-numeric super-phase: sync nothing of it
@@ -513,7 +555,7 @@ def diff(local: Local, snap: dict) -> list:
     for uid, s in ents.items():
         if s["entity"] in ("item", "history") or uid in local.entities:
             continue
-        if s["item_uid"] in local.incomplete | local.busy or s["item_uid"] not in local.item_dirs:
+        if s["item_uid"] in local.incomplete or s["item_uid"] not in local.scanned:
             continue
         fp = _fingerprint({"remove": s.get("versions", {})})
         if stuck.get(uid) == fp:
@@ -569,18 +611,28 @@ class Report:
     error: str | None = None
 
 
-def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: bool = False) -> Report:
-    """One push + pull. Commands may run alongside: each item's files are read
-    and written under that item's lock. A network failure stops the round
-    where it is; nothing local is lost, the diff just runs again."""
+def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: bool = False,
+              sweep: bool = False) -> Report:
+    """One push + pull. The push diffs the items marked changed, or every item
+    when a sweep is asked for or due. Commands may run alongside: each item's
+    files are read and written under that item's lock. A network failure
+    stops the round where it is; nothing local is lost, the diff just runs
+    again."""
     cfg = sync_config(root) or {}
     project = cfg.get("project")
     report = Report()
-    ensure_uids(root, project)
+    full = sweep or adopt or _sweep_due(root)
+    marks = _take_marks(root)
+    if push_only and not full and not marks and not load_outbox(root):
+        return report               # nothing to push
     snap = load_snapshot(root)
+    full = full or not snap["entities"]
+    ids = None if full else marks
+    pushed = False
     rejected_fields: set = set()
     pushed_status: set = set()
     try:
+        ensure_uids(root, project, ids)
         if adopt and not snap["entities"]:
             # First link: the server's state wins over the clone, and every
             # field it replaces is reported.
@@ -592,17 +644,30 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             _push(root, remote, project, replay, local, snap, report, rejected_fields, pushed_status,
                   replay=True)
             _drop_provisional_history(root, local, pushed_status)
-        local = scan(root)
+        local = scan(root, ids)
+        if full:
+            sync_dir(root).mkdir(exist_ok=True)
+            (sync_dir(root) / SWEPT_FILE).touch()
+        for uid in local.busy:
+            mark_changed(root, local.item_dirs[uid].name)
         ops = diff(local, snap)
-        save_snapshot(root, snap)
+        if ops:
+            save_snapshot(root, snap)
         _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status)
+        pushed = True
         _drop_provisional_history(root, local, pushed_status)
         if not push_only:
             _pull(root, remote, project, snap, report, local, rejected_fields)
+        deferred = bool(snap.get("deferred"))
         _retry_deferred(root, snap, local, rejected_fields)
-        save_snapshot(root, snap)
+        if ops or replay or deferred or full:
+            save_snapshot(root, snap)
     except RemoteError as e:
         report.error = str(e)
+    finally:
+        if not pushed:
+            for item_id in marks:
+                mark_changed(root, item_id)
     return report
 
 
@@ -688,7 +753,7 @@ def _park(root, op, local, snap, report, why: str) -> None:
         text = f'{op["op"]} {op["entity"]} not applied ({why})'
         report.messages.append(f"{item_id}: {text}")
         if item_id:
-            store.add_log(root, item_id, "sync: " + text, _now())
+            _sync_log(root, item_id, text)
 
 
 def _still_local(local: Local, op: dict) -> bool:
@@ -855,7 +920,7 @@ def _log_rejection(root, op, x, local, report) -> None:
         text = f'{label}{x["field"]} → {value} not applied ({x.get("reason")})'
     report.messages.append(f"{item_id}: {text}")
     if item_id:
-        store.add_log(root, item_id, "sync: " + text, _now())
+        _sync_log(root, item_id, text)
 
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
@@ -863,7 +928,12 @@ FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-han
          "bad-relation", "already-related", "jira-read-only"}
 
 
-def _reissue(local: Local, entity: str, old: str, item_uid: str) -> None:
+def _sync_log(root: Path, item_id: str, text: str) -> None:
+    store.add_log(root, item_id, "sync: " + text, _now())
+    mark_changed(root, item_id)
+
+
+def _reissue(root: Path, local: Local, entity: str, old: str, item_uid: str) -> None:
     """Give one local entity a fresh uid, so it is created next round."""
     d = local.item_dirs.get(item_uid)
     if d is None:
@@ -871,7 +941,8 @@ def _reissue(local: Local, entity: str, old: str, item_uid: str) -> None:
     try:
         _rewrite_uids(d, {old: ulid.new()}, entities={entity})
     except Exception:  # noqa: BLE001 — a malformed file: it keeps its uid until fixed
-        pass
+        return
+    mark_changed(root, d.name)
 
 
 def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "check")) -> None:
@@ -921,7 +992,7 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         # This store already saw that uid removed (it pushed or pulled the
         # removal), so the local entity is a re-added one with a backfilled uid
         # derived from the same content: a new entity, so it gets a new uid.
-        _reissue(local, entity, uid, op["item_uid"])
+        _reissue(root, local, entity, uid, op["item_uid"])
         return
     if reason == "removed" and op["op"] == "create":
         snap["entities"].pop(uid, None)
@@ -929,7 +1000,7 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         text = f"{what} not applied; {r.get('by') or 'someone'} removed it"
         report.messages.append(f"{item_id}: {text}")
         if item_id:
-            store.add_log(root, item_id, "sync: " + text, _now())
+            _sync_log(root, item_id, text)
         return
     if reason == "removed" and op["op"] == "set":
         snap["entities"].pop(uid, None)
@@ -937,7 +1008,7 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         text = f"{what} not applied; {r.get('by') or 'someone'} removed it"
         report.messages.append(f"{item_id}: {text}")
         if item_id:
-            store.add_log(root, item_id, "sync: " + text, _now())
+            _sync_log(root, item_id, text)
         return
     if reason in FINAL or reason.startswith("invalid"):
         if op.get("_fp"):
@@ -947,7 +1018,7 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
             text += f"; post a new version with `todo request {item_id} --text \"…\"`"
         report.messages.append(f"{item_id}: {text}")
         if item_id:
-            store.add_log(root, item_id, "sync: " + text, _now())
+            _sync_log(root, item_id, text)
         return
     if reason == "group-rolled-back" and entity == "note":
         text = (f"{data.get('kind')} note not applied with its status change; "
@@ -963,7 +1034,7 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         text = f"{what} not applied ({reason})"
     report.messages.append(f"{item_id}: {text}")
     if item_id:
-        store.add_log(root, item_id, "sync: " + text, _now())
+        _sync_log(root, item_id, text)
 
 
 def _now() -> str:
@@ -1016,7 +1087,7 @@ def _pull(root, remote, project, snap, report, before: Local, rejected_fields, a
     """Fetch every change after the cursor and write it locally. A field whose
     local value moved since the diff read it (a drawer or hand edit) keeps its
     local value and its old snapshot entry, unless the server rejected it."""
-    now = scan(root)
+    now = scan(root, ())
     while True:
         page = remote.changes(project, snap["cursor"])
         if "deploy_step" in page:
@@ -1029,9 +1100,12 @@ def _pull(root, remote, project, snap, report, before: Local, rejected_fields, a
             if not _apply_change(root, ch, snap, before, now, rejected_fields, adopt, report.messages):
                 _defer(snap, ch)
             report.pulled += 1
+        moved = bool(page.get("changes") or snap.get("deferred"))
         _retry_deferred(root, snap, now, rejected_fields)
+        moved = moved or page.get("cursor", snap["cursor"]) != snap["cursor"]
         snap["cursor"] = page.get("cursor", snap["cursor"])
-        save_snapshot(root, snap)
+        if moved:
+            save_snapshot(root, snap)
         if not page.get("more"):
             break
 
@@ -1071,7 +1145,7 @@ def _retry_deferred(root, snap: dict, local: Local, rejected_fields) -> None:
     pending = snap.get("deferred", [])
     if not pending:
         return
-    now = scan(root)
+    now = scan(root, ())
     snap["deferred"] = []
     left = []
     for ch in pending:
@@ -1120,8 +1194,11 @@ def _write_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
         cur = _fresh(now, entity, uid)
     except Exception:  # noqa: BLE001 — an unreadable item file: retry once it's fixed
         return False
-    read = before.entities.get(uid, {}).get("data")
     old = ents.get(uid)
+    if item_uid in before.scanned:
+        read = before.entities.get(uid, {}).get("data")
+    else:
+        read = (old or {}).get("data")     # not diffed this round: anything unpushed differs from the snapshot
     keep = set()
     if read is not None and cur is not None:
         for k in set(SETTABLE[entity]) | {k for k in list(cur) + list(read) if "." in k}:

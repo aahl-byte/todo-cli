@@ -51,6 +51,15 @@ def bare(rows, keys=("id", "title", "status", "phase")):
 
 
 @pytest.fixture(autouse=True)
+def _sweep_every_round(monkeypatch):
+    """Rounds scan every item, so tests can edit files without marking them;
+    tests of marked-only rounds raise SWEEP_EVERY again."""
+    from todo import sync
+
+    monkeypatch.setattr(sync, "SWEEP_EVERY", -1)
+
+
+@pytest.fixture(autouse=True)
 def _identity(monkeypatch):
     """Every test acts as human `tester` unless it says otherwise."""
     from todo import identity
