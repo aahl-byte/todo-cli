@@ -3,7 +3,7 @@
 // values are click-to-pick; adds open a popup.
 import { useRef, useState } from "react";
 import * as act from "@/app/item-actions";
-import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
+import { CHECK_KINDS, ENVIRONMENTS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { ChecksState, PrStatus } from "@/lib/github";
 import { safeUrl } from "@/lib/url";
@@ -55,6 +55,18 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
           <AppValue data={data} ctx={ctx} />
           <span className="k">branch</span>
           <BranchValue data={data} ctx={ctx} />
+          <span className="k">envs</span>
+          <span className="env-toggles">
+            {Object.entries(ENVIRONMENTS).map(([env, label]) => {
+              const on = Array.isArray(it.extra?.envs) && it.extra.envs.includes(env);
+              return (
+                <button key={env} type="button" className={on ? "on" : ""} aria-pressed={on} data-tip={`${on ? "in" : "not in"} ${env}`}
+                        onClick={() => void act.setEnv({ project: ctx.project, uid: it.uid, versions: it.versions, extra: it.extra, env, on: !on }).then(report)}>
+                  {label}
+                </button>
+              );
+            })}
+          </span>
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
                 options={ITEM_TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />

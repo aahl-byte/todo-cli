@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { ITEM_TYPES, moves, nowIso, SEEN, STATUSES } from "./model";
+import { ENVIRONMENTS, ITEM_TYPES, moves, nowIso, SEEN, STATUSES } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -60,6 +60,19 @@ export function pickUpOps(item: Ref & { qa_assignee?: string | null }, me: strin
   const data: Record<string, unknown> = { status: "in-qa" };
   if (!item.qa_assignee) data.qa_assignee = me;
   return [setOp("item", item, data)];
+}
+
+/** Mark or clear the environments an item's work is in, with a dev-log line like the CLI's. */
+export function envOps(item: Ref & { extra?: Record<string, any> | null }, env: string, on: boolean): Op[] {
+  if (!(env in ENVIRONMENTS)) throw new Error(`Unknown environment: ${env}`);
+  const was: string[] = Array.isArray(item.extra?.envs) ? item.extra!.envs : [];
+  if (was.includes(env) === on) return [];
+  const now = Object.keys(ENVIRONMENTS).filter((e) => (e === env ? on : was.includes(e)));
+  const group = ulid();
+  return [
+    setOp("item", item, { "extra.envs": now.length ? now : null }, { group }),
+    createOp("log", item.uid, { text: `${on ? "in" : "no longer in"} ${env}`, ts: nowIso() }, { group }),
+  ];
 }
 
 export function approveOps(item: Ref, deployStep: boolean): Op[] {

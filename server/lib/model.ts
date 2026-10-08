@@ -18,6 +18,9 @@ const CALC_PRECEDENCE = [
 /** Statuses that mean triage is done: work runs on the request from here on. */
 export const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "qa-rejected", "ready-to-deploy", "deployed", "done"];
 
+/** Deploy environments in lifecycle order, with their one-letter labels. Mirrors store.ENVIRONMENTS. */
+export const ENVIRONMENTS: Record<string, string> = { dev: "D", staging: "S", production: "P" };
+
 export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
 export const ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion", "performance", "decoration", "spin-off"];

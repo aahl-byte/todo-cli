@@ -670,3 +670,17 @@ describe("round-4 validation fixes", () => {
     expect((await w.d.query("select meta from notes where uid = 'TR'"))[0].meta).toMatchObject({ triaged: true });
   });
 });
+
+describe("environment markers", () => {
+  const ref = { uid: "I1", versions: { "extra.envs": 1 } };
+  it("adds an environment in lifecycle order and logs it with the same group", () => {
+    const [s, l] = build.envOps({ ...ref, extra: { envs: ["production"] } }, "dev", true);
+    expect(s.data).toEqual({ "extra.envs": ["dev", "production"] });
+    expect(l).toMatchObject({ entity: "log", data: { text: "in dev" }, group: s.group });
+  });
+  it("clears the field with the last environment, and does nothing when already so", () => {
+    expect(build.envOps({ ...ref, extra: { envs: ["staging"] } }, "staging", false)[0].data).toEqual({ "extra.envs": null });
+    expect(build.envOps({ ...ref, extra: null }, "staging", false)).toEqual([]);
+    expect(() => build.envOps({ ...ref, extra: null }, "qa", true)).toThrow(/Unknown environment/);
+  });
+});

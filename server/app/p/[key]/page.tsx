@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { EnvMarks } from "@/components/EnvMarks";
 import { notFound } from "next/navigation";
 import { redirect } from "next/navigation";
 import { RoleFilter } from "@/components/RoleFilter";
@@ -78,6 +79,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
                     {c.type !== "feature" && <span className={`tag type ${c.type}`}>{c.type}</span>}
                     {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
                     {untriaged(c) && <span className="tag hot" data-tip="the request being worked on never went through triage">v{c.request_meta!.version} untriaged</span>}
+                    <EnvMarks envs={c.extra?.envs} />
                     {c.pending_pre > 0 && <span className="tag" data-tip="pending pre-deploy checks">checks {c.pending_pre}</span>}
                     {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
                     <Glance c={c} />

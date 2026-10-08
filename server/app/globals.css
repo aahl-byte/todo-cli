@@ -530,3 +530,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .actions-settings .rule-row .grow { flex: 1 1 16em; }
 .actions-settings textarea { font: 12px var(--mono); }
 .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.envs { display: inline-flex; gap: 1px; font: 600 9px var(--mono); letter-spacing: .04em; }
+.envs span { color: var(--faint); opacity: .5; }
+.envs span.on { color: var(--s-deployed); opacity: 1; }
+.env-toggles { display: inline-flex; gap: 4px; }
+.env-toggles button { border: 1px solid var(--line-2); background: none; color: var(--faint); border-radius: 4px; padding: 0 6px; font: 600 11px var(--mono); cursor: pointer; }
+.env-toggles button.on { color: var(--s-deployed); border-color: color-mix(in srgb, var(--s-deployed) 50%, transparent); }
