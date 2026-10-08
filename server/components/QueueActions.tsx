@@ -62,7 +62,7 @@ export function CheckBox({ check, project }: { check: Row; project: string }) {
   return (
     <span className="env-checks">
       {Object.entries(ENVIRONMENTS).map(([env, label]) => (
-        <label key={env} data-tip={env}>
+        <label key={env} className={`env-box env-${env}`} data-tip={env}>
           <input type="checkbox" checked={on.includes(env)} aria-label={`${check.title} done in ${env}`}
                  onChange={() => {
                    const next = !on.includes(env);
@@ -71,7 +71,7 @@ export function CheckBox({ check, project }: { check: Row; project: string }) {
                                        envs: on.join(",") || null, status: on.includes("production") ? "done" : "pending", env, on: next })
                      .then((r) => { if (!report(r)) setShown(null); });
                  }} />
-          {label}
+          <span aria-hidden>{label}</span>
         </label>
       ))}
     </span>

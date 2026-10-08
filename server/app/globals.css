@@ -554,5 +554,14 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .actions-settings .rule-row .grow { flex: 1 1 16em; }
 .actions-settings textarea { font: 12px var(--mono); }
 .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
-.env-checks { display: inline-flex; gap: 6px; font: 600 10px var(--mono); color: var(--faint); }
-.env-checks label { display: inline-flex; gap: 2px; align-items: center; cursor: pointer; }
+.env-checks { display: inline-flex; gap: 3px; }
+.env-dev { --env: #7b97bd; }
+.env-staging { --env: #c2a36b; }
+.env-production { --env: #7fae88; }
+.env-box { position: relative; display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--line-2);
+  border-radius: 3px; font: 600 10px var(--mono); color: color-mix(in srgb, var(--env) 40%, var(--faint)); cursor: pointer; }
+.env-box input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.env-box:hover { border-color: color-mix(in srgb, var(--env) 45%, var(--line-2)); }
+.env-box:has(input:checked) { color: #0b0e12; background: color-mix(in srgb, var(--env) 80%, transparent);
+  border-color: var(--env); }
+.env-box:has(input:focus-visible) { outline: 1px solid var(--env); outline-offset: 1px; }
