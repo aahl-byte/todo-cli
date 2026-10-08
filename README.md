@@ -272,6 +272,22 @@ comments arrive as comment notes. The append follows the request-version rules:
 a frozen request gets a new version, which sends the item back to `requested`.
 Jira's status never moves a linked item; `todo get` shows it next to each key.
 
+### Actions
+
+An Action calls a URL for an item: a REST endpoint, or Watchtower to start (or
+reuse) a Claude session in the item's repo. Define them on the project's
+settings page; each fires by hand or on the status moves it lists.
+
+```bash
+todo actions                 # the project's Actions
+todo action safari agent     # run one on an item
+```
+
+A `server` Action is sent by the team server, whoever made the move. A `cli`
+Action is sent by the `todo` process that made the move, so use it for an
+endpoint only your machine can reach. Each run leaves a line in the item's dev
+log. Design: [docs/plans/2026-10-08-actions-design.md](docs/plans/2026-10-08-actions-design.md).
+
 ## Syncing with a team server
 
 The server in [`server/`](server/README.md) is the source of truth, and each

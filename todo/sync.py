@@ -1083,6 +1083,9 @@ def _rename(root: Path, op: dict, new, local: Local, report: Report) -> None:
 
 
 # ── pull ──────────────────────────────────────────────────────────────────────
+# Project settings each changes page carries, kept in the store's sync config.
+PROJECT_SETTINGS = ("deploy_step", "actions")
+
 def _pull(root, remote, project, snap, report, before: Local, rejected_fields, adopt=False):
     """Fetch every change after the cursor and write it locally. A field whose
     local value moved since the diff read it (a drawer or hand edit) keeps its
@@ -1090,12 +1093,11 @@ def _pull(root, remote, project, snap, report, before: Local, rejected_fields, a
     now = scan(root, ())
     while True:
         page = remote.changes(project, snap["cursor"])
-        if "deploy_step" in page:
-            cfg = sync_config(root) or {}
-            if cfg.get("deploy_step") != page["deploy_step"]:
-                cfg["deploy_step"] = page["deploy_step"]
-                from .remote import save_sync_config
-                save_sync_config(root, cfg)
+        cfg = sync_config(root) or {}
+        settings = {k: page[k] for k in PROJECT_SETTINGS if k in page and cfg.get(k) != page[k]}
+        if settings:
+            from .remote import save_sync_config
+            save_sync_config(root, {**cfg, **settings})
         for ch in page.get("changes") or []:
             if not _apply_change(root, ch, snap, before, now, rejected_fields, adopt, report.messages):
                 _defer(snap, ch)

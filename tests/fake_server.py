@@ -23,6 +23,7 @@ class FakeServer:
     def __init__(self, project="p", deploy_step=True):
         self.project = project
         self.deploy_step = deploy_step
+        self.actions = []
         self.rows = {}           # uid → row (with "_entity")
         self.tombs = {}          # uid → (seq, author)
         self.changes_log = []    # (seq, entity, uid, item_uid, deleted)
@@ -248,6 +249,7 @@ class FakeServer:
                     out.append({"seq": seq, "entity": e, "uid": uid, "item_uid": item_uid,
                                 "deleted": row is None, "data": data})
                 return {"changes": out, "cursor": rows[-1][0] if rows else since,
-                        "more": len(rows) == limit, "deploy_step": server.deploy_step}
+                        "more": len(rows) == limit, "deploy_step": server.deploy_step,
+                        "actions": server.actions}
 
         return Client()

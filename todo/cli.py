@@ -25,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import actions as actions_mod
 from . import identity
 from . import init as init_mod
 from . import link as link_mod
@@ -65,6 +66,10 @@ def _set_status(root: Path, query: str, status: str, force: bool = False) -> Non
     print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else ""))
     if status in ("in-progress", "review") and sync.enabled(root):
         _warn_empty_fields(it)
+    if status != it["status"]:
+        for action in _project_actions(root):
+            if action.get("runner") == "cli" and actions_mod.fires_on(action, it["status"], status):
+                _run_cli_action(root, store.resolve_item(root, it["id"]), action, it["status"], f'{it["status"]} → {status}')
 
 
 TRACKED_FIELDS = ("app", "section", "repo", "branch")
@@ -89,6 +94,25 @@ def _check_transition(it, status: str, force: bool) -> None:
             lines = "\n".join(f'  [{c["id"]}] {c["kind"]}  {c["title"]}' for c in pending)
             die(f'{it["id"]} has {len(pending)} pending pre-deploy check(s):\n{lines}\n'
                 "Finish them (`todo check done`) or pass --force.", 2)
+
+
+def _project_actions(root: Path) -> list:
+    return (remote.sync_config(root) or {}).get("actions") or []
+
+
+def _run_cli_action(root: Path, it, action: dict, frm: str, trigger: str) -> bool:
+    """Send a CLI Action for `it` and log the outcome on the item."""
+    cfg = remote.sync_config(root) or {}
+    req = actions_mod.render(action, actions_mod.item_vars(cfg.get("project", ""), it, frm, identity.user(),
+                                                          cfg.get("url", "")))
+    try:
+        line, ok = actions_mod.deliver(req), True
+    except actions_mod.ActionError as e:
+        line, ok = f"failed: {e}", False
+    text = f'action {action["name"]} ({trigger}): {line}'
+    store.add_log(root, it["id"], text, now())
+    print(f'{it["id"]}: {text}', file=sys.stdout if ok else sys.stderr)
+    return ok
 
 
 def _filter_list(items, args, *, default_active: bool):
@@ -713,6 +737,40 @@ def cmd_whoami(root: Path, args) -> None:
         print(f'synced: {cfg["url"]} project {cfg["project"]} ({has})')
 
 
+def cmd_actions(root: Path, args) -> None:
+    if not sync.enabled(root):
+        die("Actions live on the team server; this store isn't linked with `--remote`.", 2)
+    defs = _project_actions(root)
+    if not defs:
+        print("(no actions; add them on the project's settings page)")
+        return
+    for a in defs:
+        auto = ", ".join(f'{r["from"]} → {r["to"]}' for r in a.get("auto") or []) or "by hand only"
+        print(f'{a["id"]:<16} {a["name"]}  [{a["kind"]}, sent by {a["runner"]}]  {auto}')
+
+
+def cmd_action(root: Path, args) -> None:
+    if not sync.enabled(root):
+        die("Actions live on the team server; this store isn't linked with `--remote`.", 2)
+    it = store.resolve_item(root, args.query)
+    action = next((a for a in _project_actions(root) if a["id"] == args.action), None)
+    if action is None:
+        ids = ", ".join(a["id"] for a in _project_actions(root)) or "none"
+        die(f"No action {args.action} (have: {ids}).", 2)
+    if action["runner"] == "cli":
+        if not _run_cli_action(root, it, action, "", "manual"):
+            sys.exit(1)
+        return
+    rem = remote.remote_for(root, timeout=120)
+    try:
+        state = rem.run_action(remote.sync_config(root)["project"], it["uid"] or it["id"], action["id"])
+    except remote.RemoteError as e:
+        die(str(e), 1)
+    print(f'{it["id"]}: action {action["name"]}: {state.get("message")}')
+    if state.get("done") and not state.get("ok"):
+        sys.exit(1)
+
+
 def cmd_inbox(root: Path, args) -> None:
     rem = remote.remote_for(root, timeout=15) if root is not None and root.is_dir() else None
     if rem is None:
@@ -1100,6 +1158,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("whoami", parents=[common], help="show your identity and sync setup")
     p.set_defaults(func=cmd_whoami)
+
+    p = sub.add_parser("actions", parents=[common], help="list the project's Actions")
+    p.set_defaults(func=cmd_actions)
+
+    p = sub.add_parser("action", parents=[common], help="run one of the project's Actions on an item")
+    p.add_argument("query", help="id or part of a title")
+    p.add_argument("action", help="the Action's id (see `todo actions`)")
+    p.set_defaults(func=cmd_action)
 
     p = sub.add_parser("inbox", parents=[common], help="mentions, rejections and hand-offs for you")
     p.add_argument("--all", action="store_true", help="include read notifications")
