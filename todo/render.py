@@ -8,6 +8,11 @@ import sys
 from .status import COMPLETE, PAST_TRIAGE, colorize
 
 
+def lilac(text: str, enabled: bool) -> str:
+    """Open questions: a bright lilac, apart from the purple review/QA family."""
+    return f"\033[38;5;183m{text}\033[0m" if enabled else text
+
+
 def _use_color() -> bool:
     return sys.stdout.isatty()
 
@@ -112,7 +117,7 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
             print(f'  {colorize(r["status"], r["status"].ljust(12), color)} {r["id"]}  {r["title"]}')
     open_qs = [n for n in notes if _is_open_question(n)]
     if open_qs:
-        print("open questions:")
+        print(lilac("open questions:", color))
         for line in note_lines(open_qs):
             print(line)
     rest = [n for n in notes if not _is_open_question(n)]

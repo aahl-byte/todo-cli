@@ -25,6 +25,7 @@
   --s-in-triage: #4d8df6;
   --s-in-progress: #ffb454;
   --s-review: #b083f0;
+  --lilac: #dcc4ff;
   --s-ready-for-qa: #ff8c42;
   --s-in-qa: #e668b3;
   --s-qa-approved: #c3d86a;
@@ -223,7 +224,7 @@ body:has(.pins) main { padding-left: max(56px, env(safe-area-inset-left)); }
 .card:hover { border-color: var(--line-2); color: inherit; }
 .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--s-todo)); }
 .card .title { font-size: 12.5px; font-weight: 500; color: var(--text); margin: 4px 0 6px; word-break: break-word; }
-.card .asks { position: absolute; top: 2px; right: 8px; font: 800 26px/1 var(--disp); color: var(--s-review); }
+.card .asks { position: absolute; top: 2px; right: 8px; font: 800 26px/1 var(--disp); color: var(--lilac); }
 .card.asking > .title, .card.asking > .stat { margin-right: 22px; }
 .card .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-height: 18px; }
 .flash { animation: flash 1.2s ease-out; }
@@ -343,6 +344,7 @@ body:has(.pins) main { padding-left: max(56px, env(safe-area-inset-left)); }
 .add { border: 0; background: none; padding: 4px 0; color: var(--faint); font: 600 9px var(--disp); letter-spacing: .14em; text-transform: uppercase; }
 .add:hover { color: var(--amber); }
 .hot, .hot-n { color: var(--amber) !important; }
+.q-n { color: var(--lilac) !important; }
 .request-acts { display: flex; gap: 14px; margin-top: 4px; }
 .entry.focus, .trow.focus { background: var(--panel-2); border-radius: 5px; }
 .entry.question .body { border-left: 2px solid var(--amber-dim); padding-left: 8px; }

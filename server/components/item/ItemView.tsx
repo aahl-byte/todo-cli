@@ -121,7 +121,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   const dot = <span className="new-dot" aria-label="new" />;
   const tabs: { key: Tab; label: string; n?: ReactNode }[] = [
     { key: "comments", label: "Comments", n: data.comments.length ? <>{newComments && dot}{data.comments.length}</> : null },
-    { key: "questions", label: "Questions", n: openQs.length || newQuestions ? <>{newQuestions && dot}{openQs.length ? <span className="hot-n">{openQs.length}</span> : null}</> : null },
+    { key: "questions", label: "Questions", n: openQs.length || newQuestions ? <>{newQuestions && dot}{openQs.length ? <span className="q-n">{openQs.length}</span> : null}</> : null },
     { key: "tasks", label: "Tasks", n: data.tasks.length ? `${tasksDone}/${data.tasks.length}` : null },
     { key: "notes", label: "Notes", n: data.notes.length || null },
     { key: "log", label: "Log", n: data.logs.length || null },
