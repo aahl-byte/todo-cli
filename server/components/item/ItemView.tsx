@@ -24,6 +24,7 @@ export interface Ctx {
   uploads: boolean;
   jiraBase: string | null;
   itemUid: string;
+  pinned: boolean;
   actions: { id: string; name: string; runner: string }[];
 }
 
@@ -195,6 +196,11 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
                         return ok;
                       }} />
       </h1>
+      <button type="button" className={`btn ${ctx.pinned ? "on" : ""}`} aria-pressed={ctx.pinned}
+              data-tip={ctx.pinned ? "unpin from the left bar" : "pin to the left bar"}
+              onClick={() => void act.pin({ project: ctx.project, itemUid: it.uid, on: !ctx.pinned })}>
+        {ctx.pinned ? "pinned" : "pin"}
+      </button>
       {override && (
         <OverridePopup from={it.status} offered={options.map((m) => m.status)} onClose={() => setOverride(null)}
                        onSubmit={async (to, reason) => {

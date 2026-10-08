@@ -508,6 +508,23 @@ describe("qa-rejected", () => {
   });
 });
 
+describe("pins", () => {
+  it("keeps each user's pins in pin order, once each, and drops them with the item", async () => {
+    const { pins, setPinned } = await import("@/lib/pins");
+    await w.one("alice", item("P1", { title: "First" }));
+    await w.one("alice", item("P2", { title: "Second" }));
+    await setPinned(w.d, "bob", "p", "P2", true);
+    await setPinned(w.d, "bob", "p", "P1", true);
+    await setPinned(w.d, "bob", "p", "P2", true);
+    await setPinned(w.d, "carol", "p", "P1", true);
+    expect((await pins(w.d, "bob", "p")).map((x) => x.uid)).toEqual(["P2", "P1"]);
+    await setPinned(w.d, "bob", "p", "P2", false);
+    expect(await pins(w.d, "bob", "p")).toEqual([{ uid: "P1", id: "p1", title: "First", status: "todo" }]);
+    await w.d.query("delete from items where uid = 'P1'");
+    expect(await pins(w.d, "carol", "p")).toEqual([]);
+  });
+});
+
 describe("seen", () => {
   it("reads only my notices for that item, and returns the previous visit", async () => {
     const { markSeen } = await import("@/lib/inbox");

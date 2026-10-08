@@ -292,4 +292,13 @@ create table if not exists item_seen (
   seen_at  timestamptz not null,
   primary key (handle, project, item_uid)
 );
+
+create table if not exists item_pins (
+  handle    text not null,
+  project   text not null,
+  item_uid  text not null,
+  pinned_at timestamptz not null default now(),
+  primary key (handle, project, item_uid),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
+);
 `;

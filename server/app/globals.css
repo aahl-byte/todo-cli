@@ -185,6 +185,30 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 main { padding: 16px max(16px, env(safe-area-inset-left)); max-width: 1440px; margin: 0 auto; }
 h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercase; color: var(--dim); margin: 2px 0 14px; }
 
+/* ---- pinned bar ----------------------------------------------------------- */
+.pins {
+  position: fixed; z-index: 15; top: 40px; bottom: 0; left: 0; width: 40px; overflow: hidden auto;
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 5px;
+  background: var(--panel); border-right: 1px solid var(--line); transition: width .14s;
+}
+.pins:hover, .pins:focus-within { width: 280px; box-shadow: 8px 0 24px rgba(0, 0, 0, .45); }
+.pin { position: relative; display: flex; align-items: center; flex: 0 0 auto; }
+.pin a { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; padding: 2px; border-radius: 6px; }
+.pin a:hover, .pin a[aria-current="page"] { background: var(--raise); }
+.pin .mark {
+  display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; border-radius: 5px;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-left: 3px solid var(--c, var(--s-todo));
+  font: 600 9px var(--disp); letter-spacing: .04em; color: var(--dim);
+}
+.pin a[aria-current="page"] .mark { color: var(--amber); border-color: var(--amber-dim); border-left-color: var(--c, var(--s-todo)); }
+.pin .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
+.pin .pid { color: var(--faint); margin-right: 6px; }
+.pin .unpin { flex: 0 0 auto; border: 0; background: none; color: var(--faint); padding: 0 6px; font-size: 14px; }
+.pin .unpin:hover { color: var(--danger); }
+.pins:not(:hover):not(:focus-within) :is(.name, .unpin) { display: none; }
+body:has(.pins) main { padding-left: max(56px, env(safe-area-inset-left)); }
+@media (max-width: 600px) { .pins { display: none; } body:has(.pins) main { padding-left: max(16px, env(safe-area-inset-left)); } }
+
 /* ---- board ---------------------------------------------------------------- */
 .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .chip { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; color: var(--dim); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 4px 1px 8px; }

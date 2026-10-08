@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { later } from "@/lib/http";
 import { flushOutboxes } from "@/lib/outbox";
 import { markSeen } from "@/lib/inbox";
+import { setPinned } from "@/lib/pins";
 import { ITEM_TYPES, LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
@@ -214,6 +215,13 @@ export async function setCheck(a: { project: string; itemUid: string; uid: strin
 export async function seen(a: { project: string; itemUid: string }) {
   const user = await requireUser();
   return markSeen(await db(), user.handle, a.project, a.itemUid);
+}
+
+/** Pin an item to, or unpin it from, the user's left bar. */
+export async function pin(a: { project: string; itemUid: string; on: boolean }) {
+  const user = await requireUser();
+  await setPinned(await db(), user.handle, a.project, a.itemUid, a.on);
+  revalidatePath(`/p/${a.project}`, "layout");
 }
 
 export async function markAllRead(): Promise<ActionState & { ids: number[]; readAt: string | null }> {

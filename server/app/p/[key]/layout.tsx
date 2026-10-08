@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import { notFound } from "next/navigation";
+import { Pins } from "@/components/Pins";
 import { TopBar } from "@/components/TopBar";
 import { db } from "@/lib/db";
+import { pins } from "@/lib/pins";
 import { requireUser } from "@/lib/session";
 import { project, projects } from "@/lib/views";
 
@@ -16,6 +18,7 @@ export default async function ProjectLayout({ children, params }: { children: Re
   return (
     <>
       <TopBar handle={user.handle} project={p} all={await projects(d)} />
+      <Pins project={p.key} pins={await pins(d, user.handle, p.key)} />
       <main>{children}</main>
     </>
   );
