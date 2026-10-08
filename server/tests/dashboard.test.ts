@@ -193,8 +193,11 @@ describe("transitions", () => {
 
   it("orders the menu: next step, forward, back, parking", () => {
     expect(moves("review", {}).map((m: any) => [m.status, m.group])).toEqual([
-      ["ready-for-qa", "next"], ["done", "forward"], ["in-progress", "back"],
+      ["ready-for-qa", "next"], ["done", "forward"], ["in-progress", "back"], ["qa-rejected", "back"],
       ["blocked", "park"], ["deferred", "park"], ["cancelled", "park"]]);
+  });
+  it("lets review send work back as a QA rejection, with a comment", () => {
+    expect(moves("review", {}).find((m: any) => m.status === "qa-rejected")).toMatchObject({ comment: "required", rejection: true });
   });
   it("hides review → done once QA is assigned", () => {
     expect(allowedMove("review", "done", { hasQa: true })).toBe(false);

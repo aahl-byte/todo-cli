@@ -122,7 +122,7 @@ export const NEXT_STATUSES: Record<string, string[]> = {
   "in-triage": ["todo", "requested", "blocked", "deferred", "cancelled"],
   todo: ["in-progress", "in-triage", "requested", "blocked", "deferred", "cancelled"],
   "in-progress": ["review", "todo", "blocked", "deferred", "cancelled"],
-  review: ["ready-for-qa", "done", "in-progress", "blocked", "deferred", "cancelled"],
+  review: ["ready-for-qa", "done", "in-progress", "qa-rejected", "blocked", "deferred", "cancelled"],
   "ready-for-qa": ["in-qa", "in-progress", "blocked", "cancelled"],
   "in-qa": ["qa-approved", "ready-for-qa", "qa-rejected", "blocked", "cancelled"],
   "qa-approved": ["ready-to-deploy", "in-qa", "qa-rejected", "blocked", "cancelled"],
