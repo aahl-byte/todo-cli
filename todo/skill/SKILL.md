@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.11.6
+version: 0.11.7
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -124,6 +124,8 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 - **Prepare a `qa-approved` item's deploy, then `todo stage` it.** Make sure
   its PRs are merged to staging and every migration, env var and prerequisite
   branch is a deployment check; `stage` moves it to `ready-to-deploy`.
+- **Tick a check per environment as it happens there:** `todo check done <q> <id> S`
+  once the migration ran on staging. A check is done once production is ticked.
 - **Record what a deploy needs** as deployment checks the moment you create the
   need: a migration, a new env var, a branch that must land first. `todo deploy`
   refuses while pre-deploy checks are pending.
@@ -217,7 +219,8 @@ todo url    <query> <url> [--type pr|preview|qa-handoff|other] [--label L]
 todo assign <query> [--dev H] [--qa H]   # people ("none" clears)
 todo history <query>             # status transitions: who, when, via
 todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment check
-todo check done|reopen|rm <query> <id>
+todo check done|reopen <query> <id> [D|S|P...]   # per environment; all when none named
+todo check rm <query> <id>
 todo checks <query>
 todo deploy-plan                 # every check the next deploy needs
 todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (deploy: --force past checks)

@@ -169,7 +169,8 @@ todo url    <query> <url> [--type T] [--label L]   # attach a PR/preview/QA-hand
 todo assign <query> [--dev H] [--qa H]    # people fields ("none" clears)
 todo history <query>                      # status transitions
 todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment check
-todo check done|reopen|rm <query> <id>    # and `todo checks <query>` to list
+todo check done|reopen <query> <id> [D|S|P...]   # tick/untick per environment (all when none named)
+todo check rm <query> <id>                 # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
 todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses
 todo request <query> --text "<text>" [--url U]   # post a new request version
