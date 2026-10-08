@@ -519,7 +519,8 @@ describe("pins", () => {
     await setPinned(w.d, "carol", "p", "P1", true);
     expect((await pins(w.d, "bob", "p")).map((x) => x.uid)).toEqual(["P2", "P1"]);
     await setPinned(w.d, "bob", "p", "P2", false);
-    expect(await pins(w.d, "bob", "p")).toEqual([{ uid: "P1", id: "p1", title: "First", status: "todo" }]);
+    expect((await pins(w.d, "bob", "p")).map(({ uid, id, title, status }) => ({ uid, id, title, status })))
+      .toEqual([{ uid: "P1", id: "p1", title: "First", status: "todo" }]);
     await w.d.query("delete from items where uid = 'P1'");
     expect(await pins(w.d, "carol", "p")).toEqual([]);
   });

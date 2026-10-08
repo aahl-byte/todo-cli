@@ -53,7 +53,7 @@ export interface Card extends Row {
   extra: Record<string, any> | null;
 }
 
-async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
+export async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
   const rows = await d.query(
     `select i.*,
        coalesce((select jsonb_agg(jsonb_build_object('key', l.jira_key, 'status', l.jira_status) order by l.linked_at, l.jira_key)

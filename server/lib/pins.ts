@@ -1,20 +1,21 @@
 // Pinned items are per-user, outside the synced op model.
 import type { Db } from "./db";
+import { cards, type Card } from "./views";
 
-export interface Pin {
-  uid: string;
-  id: string;
-  title: string;
-  status: string;
+/** The user's pinned items in a project as board cards, in pin order. */
+export async function pins(db: Db, handle: string, project: string): Promise<Card[]> {
+  const order = (await db.query(
+    "select item_uid from item_pins where handle = $1 and project = $2 order by pinned_at, item_uid",
+    [handle, project])).map((r) => r.item_uid as string);
+  if (!order.length) return [];
+  const rows = await cards(db, project, "and i.uid = any($2)", [order]);
+  return rows.sort((a, b) => order.indexOf(a.uid) - order.indexOf(b.uid));
 }
 
-/** The user's pins in a project, oldest first. */
-export async function pins(db: Db, handle: string, project: string): Promise<Pin[]> {
-  return db.query(
-    `select i.uid, i.id, i.title, i.status from item_pins p
-       join items i on i.project = p.project and i.uid = p.item_uid
-      where p.handle = $1 and p.project = $2
-      order by p.pinned_at, i.id`, [handle, project]) as Promise<Pin[]>;
+export async function isPinned(db: Db, handle: string, project: string, itemUid: string): Promise<boolean> {
+  const rows = await db.query(
+    "select 1 from item_pins where handle = $1 and project = $2 and item_uid = $3", [handle, project, itemUid]);
+  return rows.length > 0;
 }
 
 export async function setPinned(db: Db, handle: string, project: string, itemUid: string, on: boolean): Promise<void> {

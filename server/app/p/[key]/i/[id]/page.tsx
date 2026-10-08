@@ -4,7 +4,7 @@ import { projectActions } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { filesEnabled } from "@/lib/files";
 import { linkPrStatuses } from "@/lib/github";
-import { pins } from "@/lib/pins";
+import { isPinned } from "@/lib/pins";
 import { requireUser } from "@/lib/session";
 import { item as loadItem, project, users } from "@/lib/views";
 
@@ -23,7 +23,7 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
     uploads: filesEnabled(),
     jiraBase: process.env.JIRA_BASE_URL?.replace(/\/+$/, "") ?? null,
     itemUid: data.item.uid,
-    pinned: (await pins(d, user.handle, key)).some((x) => x.uid === data.item.uid),
+    pinned: await isPinned(d, user.handle, key, data.item.uid),
     actions: (await projectActions(d, key)).map(({ id, name, runner }) => ({ id, name, runner })),
   };
   const prs = await linkPrStatuses(data.links);

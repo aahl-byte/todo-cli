@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { Pins } from "@/components/Pins";
 import { TopBar } from "@/components/TopBar";
 import { db } from "@/lib/db";
+import { PINS_COOKIE } from "@/lib/filters";
 import { pins } from "@/lib/pins";
 import { requireUser } from "@/lib/session";
 import { project, projects } from "@/lib/views";
@@ -18,7 +20,7 @@ export default async function ProjectLayout({ children, params }: { children: Re
   return (
     <>
       <TopBar handle={user.handle} project={p} all={await projects(d)} />
-      <Pins project={p.key} pins={await pins(d, user.handle, p.key)} />
+      <Pins project={p.key} pins={await pins(d, user.handle, p.key)} thin={(await cookies()).get(PINS_COOKIE)?.value === "thin"} />
       <main>{children}</main>
     </>
   );

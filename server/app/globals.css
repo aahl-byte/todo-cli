@@ -1,11 +1,13 @@
 /* The watchtower console look: dark only, mono body, tiny display-font labels. */
 :root {
   --ink: #0a0c10;
-  --panel: #11151b;
-  --panel-2: #171c24;
-  --raise: #1c222b;
-  --line: #232a33;
-  --line-2: #2d3742;
+  --bg: #11151b;
+  --tray: #0d1015;
+  --panel: #171c24;
+  --panel-2: #1c222b;
+  --raise: #232a33;
+  --line: #29313b;
+  --line-2: #343e4a;
   --text: #d2d9e2;
   --dim: #858f9c;
   --faint: #5d6772;
@@ -39,7 +41,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
-html, body { background: var(--ink); }
+html, body { background: var(--bg); }
 body { margin: 0; color: var(--text); font: 13px/1.45 var(--mono); }
 a { color: var(--text); text-decoration: none; }
 a:hover { color: var(--md-strong); }
@@ -186,28 +188,54 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 main { padding: 16px max(16px, env(safe-area-inset-left)); max-width: 1440px; margin: 0 auto; }
 h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercase; color: var(--dim); margin: 2px 0 14px; }
 
-/* ---- pinned bar ----------------------------------------------------------- */
+/* ---- pinned sidebar -------------------------------------------------------- */
 .pins {
-  position: fixed; z-index: 15; top: 40px; bottom: 0; left: 0; width: 40px; overflow: hidden auto;
-  display: flex; flex-direction: column; gap: 4px; padding: 8px 5px;
-  background: var(--panel); border-right: 1px solid var(--line); transition: width .14s;
+  position: fixed; z-index: 15; top: 40px; bottom: 0; left: 0; width: 264px; overflow: hidden auto;
+  padding: 8px 10px; background: var(--tray); border-right: 1px solid var(--line);
 }
-.pins:hover, .pins:focus-within { width: 280px; box-shadow: 8px 0 24px rgba(0, 0, 0, .45); }
-.pin { position: relative; display: flex; align-items: center; flex: 0 0 auto; }
-.pin a { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; padding: 2px; border-radius: 6px; }
-.pin a:hover, .pin a[aria-current="page"] { background: var(--raise); }
+.pins-head { display: flex; align-items: center; justify-content: space-between; height: 22px; margin: 0 2px 6px; }
+.pins .fold { border: 0; background: none; color: var(--faint); font-size: 14px; padding: 0 4px; }
+.pins .fold:hover { color: var(--text); }
+.pin { position: relative; }
+.pin .card[aria-current="page"] { border-color: var(--amber-dim); }
+.pin .tile { display: none; }
+.pin .unpin {
+  position: absolute; top: 4px; right: 4px; z-index: 1; display: none; border: 0; border-radius: 4px;
+  background: var(--raise); color: var(--dim); padding: 0 6px; font-size: 13px;
+}
+.pin:hover .unpin, .pin .unpin:focus-visible { display: block; }
+.pin .unpin:hover { color: var(--danger); }
+body:has(.pins) main { padding-left: max(280px, env(safe-area-inset-left)); }
+
+/* Collapsed, or squeezed by a narrow window: a strip of tiles that widens on hover. */
+.pins.thin { width: 40px; padding: 8px 5px; transition: width .14s; }
+.pins.thin:hover, .pins.thin:focus-within { width: 280px; box-shadow: 8px 0 24px rgba(0, 0, 0, .45); }
+.pins.thin .pins-head { justify-content: flex-start; margin: 0 0 6px; }
+.pins.thin .pins-head .label { display: none; }
+.pins.thin .card { display: none; }
+.pins.thin .pin { display: flex; align-items: center; margin-bottom: 4px; }
+.pins.thin .tile { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; padding: 2px; border-radius: 6px; }
+.pins.thin .tile:hover, .pins.thin .tile[aria-current="page"] { background: var(--raise); }
+.pins.thin .unpin { position: static; background: none; }
+.pins.thin:not(:hover):not(:focus-within) :is(.name, .unpin) { display: none; }
 .pin .mark {
   display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; border-radius: 5px;
   background: var(--panel-2); border: 1px solid var(--line-2); border-left: 3px solid var(--c, var(--s-todo));
   font: 600 9px var(--disp); letter-spacing: .04em; color: var(--dim);
 }
-.pin a[aria-current="page"] .mark { color: var(--amber); border-color: var(--amber-dim); border-left-color: var(--c, var(--s-todo)); }
+.pin .tile[aria-current="page"] .mark { color: var(--amber); border-color: var(--amber-dim); border-left-color: var(--c, var(--s-todo)); }
 .pin .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
 .pin .pid { color: var(--faint); margin-right: 6px; }
-.pin .unpin { flex: 0 0 auto; border: 0; background: none; color: var(--faint); padding: 0 6px; font-size: 14px; }
-.pin .unpin:hover { color: var(--danger); }
-.pins:not(:hover):not(:focus-within) :is(.name, .unpin) { display: none; }
-body:has(.pins) main { padding-left: max(56px, env(safe-area-inset-left)); }
+body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); }
+@media (max-width: 1100px) {
+  .pins.full { width: 40px; padding: 8px 5px; }
+  .pins.full .pins-head { display: none; }
+  .pins.full .card { display: none; }
+  .pins.full .pin { display: flex; align-items: center; margin-bottom: 4px; }
+  .pins.full .tile { display: flex; align-items: center; flex: 1; padding: 2px; border-radius: 6px; }
+  .pins.full .name, .pins.full .unpin { display: none; }
+  body:has(.pins) main { padding-left: max(56px, env(safe-area-inset-left)); }
+}
 @media (max-width: 600px) { .pins { display: none; } body:has(.pins) main { padding-left: max(16px, env(safe-area-inset-left)); } }
 
 /* ---- board ---------------------------------------------------------------- */
