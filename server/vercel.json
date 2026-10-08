@@ -1,3 +1,6 @@
 {
-  "crons": [{ "path": "/api/jira/flush", "schedule": "0 3 * * *" }]
+  "crons": [
+    { "path": "/api/jira/flush", "schedule": "0 3 * * *" },
+    { "path": "/api/actions/flush", "schedule": "10 3 * * *" }
+  ]
 }

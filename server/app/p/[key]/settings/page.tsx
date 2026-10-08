@@ -1,5 +1,8 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ActionsSettingsForm } from "@/components/ActionsSettingsForm";
 import { JiraSettingsForm } from "@/components/JiraSettingsForm";
+import { projectActions, recentRuns } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { dryRuns, loadJiraSettings } from "@/lib/jira/settings";
 import { STATUSES } from "@/lib/model";
@@ -13,12 +16,21 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
   const d = await db();
   const s = await loadJiraSettings(d, key);
   if (!s) notFound();
-  if (!s.jiraProject) return <><div className="label section">Jira</div><p className="empty">This project isn't linked to Jira.</p></>;
+  const actions = (
+    <>
+      <div className="label section">Actions</div>
+      <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} />
+      <div className="label section">Recent runs</div>
+      <RecentRuns runs={await recentRuns(d, key)} projectKey={key} />
+    </>
+  );
+  if (!s.jiraProject) return <div className="settings">{actions}<div className="label section">Jira</div><p className="empty">This project isn't linked to Jira.</p></div>;
   const state = s.serverReadOnly ? "Writes off: this server is read-only (JIRA_READ_ONLY)."
     : s.outbound.writes ? "Writes on." : "Writes off for this project.";
   const runs = await dryRuns(d, key);
   return (
     <div className="settings">
+      {actions}
       <div className="label section">Jira</div>
       <p className="settings-head">
         {s.jiraUrl ? <a href={s.jiraUrl} target="_blank" rel="noreferrer">{s.jiraProject} ↗</a> : s.jiraProject}
@@ -40,6 +52,22 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function RecentRuns({ runs, projectKey }: { runs: Awaited<ReturnType<typeof recentRuns>>; projectKey: string }) {
+  if (!runs.length) return <p className="empty">No Action has run yet.</p>;
+  return (
+    <div className="dry-runs">
+      {runs.map((r) => (
+        <div className="rrow" key={r.id}>
+          <span className="hint">{when(r.at)}</span>
+          <span className={`tag${r.state === "failed" || r.state === "gave up" ? " hot" : ""}`}>{r.state}</span>
+          <span className="grow">{r.name} · <Link href={`/p/${projectKey}/i/${r.itemId}`}>{r.itemId}</Link> <span className="hint">{r.trigger}, by {r.by}</span>
+            {r.message && <span className="hint"> · {r.message}</span>}</span>
+        </div>
+      ))}
     </div>
   );
 }

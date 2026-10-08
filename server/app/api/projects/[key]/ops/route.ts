@@ -1,6 +1,6 @@
 import { applyOps, ProjectNotFound, type Op } from "@/lib/apply";
 import { authed, json, later } from "@/lib/http";
-import { flushJira } from "@/lib/jira/flush";
+import { flushOutboxes } from "@/lib/outbox";
 
 export async function POST(req: Request, ctx: { params: Promise<{ key: string }> }) {
   const a = await authed(req);
@@ -13,7 +13,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ key: string }>
   }
   try {
     const results = await applyOps(a.d, key, ops, { handle: a.user.handle });
-    later(() => flushJira(a.d));
+    later(() => flushOutboxes(a.d));
     return json({ results });
   } catch (e) {
     if (e instanceof ProjectNotFound) return json({ error: "no such project" }, 404);

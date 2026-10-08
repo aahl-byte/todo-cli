@@ -24,6 +24,7 @@ export interface Ctx {
   uploads: boolean;
   jiraBase: string | null;
   itemUid: string;
+  actions: { id: string; name: string; runner: string }[];
 }
 
 /** Report a refused write in a toast, with the winning change's time local. */

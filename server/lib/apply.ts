@@ -7,6 +7,7 @@ import {
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
+import { queueAutoActions } from "./actions/runs";
 import { jiraReadOnly } from "./jira/config";
 import { inboundRules, jiraStatusFor } from "./jira/rules";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
@@ -657,6 +658,7 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
   await queueJira(ctx.t, ctx.actor, { kind: "status", project: ctx.project, itemUid: item.uid, from: item.status, status: to });
+  await queueAutoActions(ctx.t, ctx.project, item.uid, item.status, to, ctx.actor.handle);
 }
 
 /** Status history an item gathered before it was ever synced. */

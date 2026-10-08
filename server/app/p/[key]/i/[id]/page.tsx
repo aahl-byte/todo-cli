@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { ItemView } from "@/components/item/ItemView";
+import { projectActions } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { filesEnabled } from "@/lib/files";
 import { linkPrStatuses } from "@/lib/github";
@@ -21,6 +22,7 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
     uploads: filesEnabled(),
     jiraBase: process.env.JIRA_BASE_URL?.replace(/\/+$/, "") ?? null,
     itemUid: data.item.uid,
+    actions: (await projectActions(d, key)).map(({ id, name, runner }) => ({ id, name, runner })),
   };
   const prs = await linkPrStatuses(data.links);
   return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs }))} ctx={ctx} />;

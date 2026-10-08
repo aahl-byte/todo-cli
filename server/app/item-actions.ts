@@ -5,9 +5,10 @@
 import { revalidatePath } from "next/cache";
 import { applyOps, ProjectNotFound, type Op, type Result } from "@/lib/apply";
 import { describe, POSTABLE_KINDS, type ActionState } from "@/lib/action-helpers";
+import { flushActions, projectActions, queueManualAction, runState } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { later } from "@/lib/http";
-import { flushJira } from "@/lib/jira/flush";
+import { flushOutboxes } from "@/lib/outbox";
 import { markSeen } from "@/lib/inbox";
 import { ITEM_TYPES, LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
@@ -33,7 +34,7 @@ async function apply(project: string, ops: Op[] | (() => Op[]), handle: string, 
     if (e instanceof ProjectNotFound) return fail("No such project.");
     throw e;
   }
-  later(() => flushJira(conn));
+  later(() => flushOutboxes(conn));
   const state = describe(results);
   if (state.ok) revalidatePath(`/p/${project}`, "layout");
   return state;
@@ -242,4 +243,18 @@ export async function readItem(a: { project: string; itemUid: string }): Promise
                 [user.handle, a.project, a.itemUid]);
   revalidatePath("/inbox");
   return { ok: true, at: Date.now() };
+}
+
+/** Run a server Action on the item now; answers with how its first attempt went. */
+export async function runAction(a: { project: string; itemUid: string; action: string }): Promise<ActionState> {
+  const user = await requireUser();
+  const d = await db();
+  const action = (await projectActions(d, a.project)).find((x) => x.id === a.action);
+  if (!action || action.runner !== "server") return fail("That Action doesn't run from here.");
+  const id = await queueManualAction(d, a.project, a.itemUid, action, user.handle);
+  if (id === null) return fail("No such item.");
+  await flushActions(d);
+  const state = await runState(d, id);
+  revalidatePath(`/p/${a.project}`, "layout");
+  return { ok: state.ok || !state.done, message: `${action.name}: ${state.message}`, at: Date.now() };
 }

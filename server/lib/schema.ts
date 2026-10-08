@@ -249,6 +249,29 @@ create table if not exists jira_outbox (
   created         timestamptz not null default now()
 );
 
+alter table projects add column if not exists actions jsonb not null default '[]'::jsonb;
+alter table projects add column if not exists actions_by text;
+alter table projects add column if not exists actions_at timestamptz;
+
+create table if not exists action_runs (
+  id              bigserial primary key,
+  project         text not null,
+  item_uid        text not null,
+  action_id       text not null,
+  name            text not null,
+  trigger         text not null,
+  by              text not null,
+  request         jsonb not null,
+  attempts        integer not null default 0,
+  error           text,
+  result          jsonb,
+  claimed_at      timestamptz,
+  next_attempt_at timestamptz,
+  done_at         timestamptz,
+  created         timestamptz not null default now()
+);
+create index if not exists action_runs_due on action_runs (id) where done_at is null;
+
 create table if not exists notifications (
   id       bigserial primary key,
   handle   text not null,

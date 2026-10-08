@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { db } from "@/lib/db";
 import { json, later } from "@/lib/http";
 import { jiraConfig } from "@/lib/jira/config";
-import { flushJira } from "@/lib/jira/flush";
+import { flushOutboxes } from "@/lib/outbox";
 import { handleWebhook } from "@/lib/jira/inbound";
 
 function matches(a: string, b: string): boolean {
@@ -21,6 +21,6 @@ export async function POST(req: Request) {
   const result = await handleWebhook(d, payload, {
     deliveryId: req.headers.get("x-atlassian-webhook-identifier") ?? undefined,
   });
-  later(() => flushJira(d));
+  later(() => flushOutboxes(d));
   return json(result, result.retry ? 503 : 200);
 }
