@@ -18,6 +18,7 @@ TIMEOUT = 15
 IDLE_WAIT = 90
 IDLE_POLL = 2
 SNIPPET = 300
+INPUT_RETRY = (1, 2, 3, 3, 3, 3)  # waits while Watchtower can't see the session's input box
 
 PLACEHOLDER = re.compile(r"\{\{\s*([\w.]+)\s*(?:\|\s*(\w+)\s*)?\}\}")
 
@@ -93,6 +94,17 @@ def _json(method: str, url: str, body=None, opener=urllib.request.urlopen) -> di
         raise ActionError(f"{method} {url} didn't answer with JSON") from None
 
 
+def _send_message(base: str, session: str, text: str, opener, sleep) -> dict:
+    """Watchtower refuses (and sends nothing) until the input box is on screen."""
+    for wait in (*INPUT_RETRY, None):
+        try:
+            return _json("POST", f"{base}/api/sessions/{session}/message", {"text": text, "from": "todo"}, opener)
+        except ActionError as e:
+            if wait is None or "input isn't visible" not in str(e):
+                raise
+            sleep(wait)
+
+
 def _fits_initial_prompt(prompt: str) -> bool:
     return len(prompt) <= INITIAL_PROMPT_MAX and not any(ord(ch) < 32 for ch in prompt)
 
@@ -107,8 +119,7 @@ def deliver(req: dict, opener=urllib.request.urlopen, sleep=time.sleep) -> str:
     live = next((s for s in sessions if s.get("name") == req["name"] and s.get("state") == "active"
                  and s.get("managed")), None)
     if live:
-        sent = _json("POST", f'{base}/api/sessions/{live["id"]}/message',
-                     {"text": req["prompt"], "from": "todo"}, opener)
+        sent = _send_message(base, live["id"], req["prompt"], opener, sleep)
         return f'sent to Watchtower session {req["name"]} ({sent.get("delivered", "sent")}): {live.get("url")}'
     inline = _fits_initial_prompt(req["prompt"])
     body = {"dir": req["dir"], "name": req["name"]}
@@ -129,5 +140,5 @@ def deliver(req: dict, opener=urllib.request.urlopen, sleep=time.sleep) -> str:
             if time.monotonic() > deadline:
                 raise ActionError(f'session {started["id"]} never went idle: {started.get("url")}')
             sleep(IDLE_POLL)
-        _json("POST", f'{base}/api/sessions/{started["id"]}/message', {"text": req["prompt"], "from": "todo"}, opener)
+        _send_message(base, started["id"], req["prompt"], opener, sleep)
     return f'started Watchtower session {req["name"]} in {req["dir"]}: {started.get("url")}'

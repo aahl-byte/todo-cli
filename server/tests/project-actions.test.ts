@@ -95,6 +95,23 @@ describe("watchtower delivery", () => {
     await deliver(req, f);
     expect(calls[1]).toMatchObject({ method: "POST", url: "http://wt/api/sessions/s9/message", body: { text: "/todo x", from: "todo" } });
   });
+  it("retries the send while Watchtower can't see the session's input box", async () => {
+    let refusals = 2;
+    const { f, calls } = fakeFetch((c) => {
+      if (c.url.endsWith("/roster")) return { json: { sessions: [{ id: "s9", name: "todo: x", state: "active", managed: true, url: "u9" }] } };
+      return refusals-- > 0 ? { status: 409, json: { ok: false, error: "the prompt input isn't visible" } } : { json: { delivered: "now" } };
+    });
+    const out = await deliver(req, f, async () => undefined);
+    expect(calls.filter((c) => c.url.endsWith("/message"))).toHaveLength(3);
+    expect(out.summary).toContain("(now)");
+  });
+  it("doesn't retry other refusals", async () => {
+    const { f, calls } = fakeFetch((c) => (c.url.endsWith("/roster")
+      ? { json: { sessions: [{ id: "s9", name: "todo: x", state: "active", managed: true, url: "u9" }] } }
+      : { status: 409, json: { ok: false, error: "the user is typing in this session" } }));
+    await expect(deliver(req, f, async () => undefined)).rejects.toThrow("typing");
+    expect(calls).toHaveLength(2);
+  });
   it("sends a long prompt once the session is idle", async () => {
     const statuses = ["busy", "idle"];
     const { f, calls } = fakeFetch((c) => {

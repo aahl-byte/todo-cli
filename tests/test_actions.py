@@ -93,6 +93,32 @@ def test_watchtower_reuses_the_items_live_session():
     assert "u9" in line
 
 
+LIVE = {"sessions": [{"id": "s9", "name": "todo: x", "state": "active", "managed": True, "url": "u9"}]}
+
+
+def test_watchtower_retries_while_the_input_box_is_hidden():
+    refusals = [1, 1]
+
+    def answer(c):
+        if c["url"].endswith("/roster"):
+            return 200, LIVE
+        return (409, {"ok": False, "error": "the prompt input isn't visible"}) if refusals and refusals.pop() else (200, {"delivered": "now"})
+    http = FakeHttp(answer)
+    line = actions.deliver({"kind": "watchtower", "base": "http://wt", "dir": "/r", "name": "todo: x", "prompt": "/todo x"},
+                           http, sleep=lambda s: None)
+    assert len([c for c in http.calls if c["url"].endswith("/message")]) == 3
+    assert "(now)" in line
+
+
+def test_watchtower_doesnt_retry_other_refusals():
+    http = FakeHttp(lambda c: (200, LIVE) if c["url"].endswith("/roster")
+                    else (409, {"ok": False, "error": "the user is typing in this session"}))
+    with pytest.raises(actions.ActionError, match="typing"):
+        actions.deliver({"kind": "watchtower", "base": "http://wt", "dir": "/r", "name": "todo: x", "prompt": "/todo x"},
+                        http, sleep=lambda s: None)
+    assert len(http.calls) == 2
+
+
 def test_watchtower_sends_a_long_prompt_once_idle():
     states = ["busy", "idle"]
 
