@@ -44,7 +44,7 @@ SETTABLE = {
     "task": ["title", "status", "phase", "position"],
     "note": ["kind", "text"],
     "log": ["text"],
-    "check": ["kind", "title", "payload", "timing", "status"],
+    "check": ["kind", "title", "payload", "timing", "status", "envs"],
 }
 JSON_FIELD = {"item": "extra", "note": "meta", "log": "meta"}
 CREATE_ONLY = {"item": ["id", "created"], "task": ["n"], "note": ["n", "ts"],
@@ -480,7 +480,8 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
             if c.get("uid"):
                 local.entities[c["uid"]] = {"entity": "check", "item_uid": uid, "data": {
                     "n": c["id"], "kind": c["kind"], "title": c["title"],
-                    "payload": c["payload"], "timing": c["timing"], "status": c["status"]}}
+                    "payload": c["payload"], "timing": c["timing"], "status": c["status"],
+                    "envs": store.env_text(c["envs"])}}
         for e in store._read_entries(d / store.HISTORY_DIR):
             if e["meta"].get("uid"):
                 local.files[e["meta"]["uid"]] = e["file"]
@@ -1127,7 +1128,7 @@ def server_flat(entity: str, row: dict) -> dict:
             flat[f"meta.{k}"] = v
         return flat
     if entity == "check":
-        return {k: row.get(k) for k in ("n", "kind", "title", "payload", "timing", "status")}
+        return {k: row.get(k) for k in ("n", "kind", "title", "payload", "timing", "status", "envs")}
     return {}
 
 
@@ -1297,7 +1298,7 @@ def _write_entity(root, now: Local, entity, uid, item_uid, flat, row) -> bool:
         checks = [c for c in store._read_checks(item_dir) if c.get("uid") != uid]
         checks.append({"id": flat["n"], "uid": uid, "kind": flat["kind"], "title": flat["title"],
                        "payload": flat.get("payload"), "timing": flat["timing"],
-                       "status": flat["status"]})
+                       "status": flat["status"], "envs": store.env_list(flat.get("envs"))})
         checks.sort(key=lambda c: c["id"])
         _write_checks(item_dir, checks)
         return True

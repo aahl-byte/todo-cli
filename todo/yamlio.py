@@ -168,6 +168,7 @@ def tasks_doc(tasks) -> CommentedMap:
 def checks_doc(checks) -> CommentedMap:
     """Build a CHECKS.yaml document — `checks:` with one flow map per
     deployment check."""
+    checks = [{**c, "envs": ",".join(c.get("envs") or []) or None} for c in checks]
     return _flow_doc("checks", checks, [
         ("id", "plain"), ("uid", "optional"), ("kind", "plain"), ("title", "text"),
-        ("payload", "nullable"), ("timing", "plain"), ("status", "plain")])
+        ("payload", "nullable"), ("timing", "plain"), ("status", "plain"), ("envs", "optional")])

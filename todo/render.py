@@ -219,7 +219,10 @@ def update_lines(rows) -> list:
 def _check_lines(checks, item_id: str | None = None) -> list:
     lines = []
     for c in checks:
-        box = "[x]" if c["status"] == "done" else "[ ]"
+        from . import store
+
+        on = store.ticked(c)
+        box = "[" + " ".join(label if env in on else "·" for env, label in store.ENVIRONMENTS.items()) + "]"
         where = f"{item_id} " if item_id else ""
         timing = "" if item_id else f'{c["timing"]:<11} '
         payload = f'  `{c["payload"]}`' if c.get("payload") else ""

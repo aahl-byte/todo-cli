@@ -451,12 +451,24 @@ def cmd_check_add(root: Path, args) -> None:
     print(f'{it["id"]}: added {timing} check [{new_id}] {args.kind}  {title}')
 
 
+ENV_NAMES = {**{e: e for e in store.ENVIRONMENTS}, **{l.lower(): e for e, l in store.ENVIRONMENTS.items()},
+             "prod": "production"}
+
+
 def cmd_check_status(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _check_id(it, args.id)
-    status = "done" if args.checkcmd == "done" else "pending"
-    store.set_check_status(root, it["id"], args.id, status)
-    print(f'{it["id"]}: check [{args.id}] → {status}')
+    unknown = [n for n in args.envs if n.lower() not in ENV_NAMES]
+    if unknown:
+        known = ", ".join(f"{e} ({l})" for e, l in store.ENVIRONMENTS.items())
+        die(f'Unknown environment {", ".join(unknown)}; one of: {known}', 2)
+    named = {ENV_NAMES[n.lower()] for n in args.envs} or set(store.ENVIRONMENTS)
+    c = next(c for c in it["checks"] if c["id"] == args.id)
+    now_on = set(store.ticked(c)) | named if args.checkcmd == "done" else set(store.ticked(c)) - named
+    store.set_check_envs(root, it["id"], args.id, now_on)
+    marks = " ".join(l if e in now_on else "·" for e, l in store.ENVIRONMENTS.items())
+    status = "done" if store.DONE_ENV in now_on else "pending"
+    print(f'{it["id"]}: check [{args.id}] → [{marks}] {status}')
 
 
 def cmd_check_rm(root: Path, args) -> None:
@@ -996,10 +1008,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="script path, variable, branch or item id")
     ca.add_argument("--post", action="store_true", help="due after the deploy (default: before)")
     ca.set_defaults(func=cmd_check_add)
-    for name, helptext in (("done", "mark a check done"), ("reopen", "mark a check pending")):
+    for name, helptext in (("done", "tick a check for environments (all when none named)"),
+                           ("reopen", "untick a check for environments (all when none named)")):
         cs = csub.add_parser(name, parents=[common], help=helptext)
         cs.add_argument("query", help="id or part of a title")
         cs.add_argument("id", type=int, help="check id (see `todo checks`)")
+        cs.add_argument("envs", nargs="*", metavar="ENV", help="dev|staging|production, or D|S|P")
         cs.set_defaults(func=cmd_check_status)
     cr = csub.add_parser("rm", parents=[common], help="remove a check")
     cr.add_argument("query", help="id or part of a title")

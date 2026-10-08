@@ -35,6 +35,28 @@ UNPHASED_DIR = "unphased"
 SEEN = "seen_by"
 
 PEOPLE = ("creator", "developer", "qa_assignee")
+# Deploy environments in lifecycle order, with their one-letter labels. A check
+# is ticked per environment and counts as done once production is ticked.
+ENVIRONMENTS = {"dev": "D", "staging": "S", "production": "P"}
+DONE_ENV = "production"
+
+
+def env_list(raw) -> list:
+    """Environments from a stored `dev,staging` string or a list, in lifecycle order."""
+    names = raw.split(",") if isinstance(raw, str) else (raw or [])
+    names = {str(n).strip() for n in names}
+    return [e for e in ENVIRONMENTS if e in names]
+
+
+def env_text(envs) -> str | None:
+    return ",".join(env_list(envs)) or None
+
+
+def ticked(check: dict) -> list:
+    """The environments a check is ticked for; a done check with none recorded predates them and counts everywhere."""
+    if not check.get("envs") and check.get("status") == "done":
+        return list(ENVIRONMENTS)
+    return env_list(check.get("envs"))
 NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
               "clarification", "relation"]
 PRIORITIES = ["low", "medium", "high", "urgent", "critical"]
@@ -205,7 +227,8 @@ def _read_checks(item_dir: Path) -> list:
          "title": to_str(c.get("title")),
          "payload": to_str(c.get("payload")) if c.get("payload") is not None else None,
          "timing": to_str(c.get("timing")) or "pre-deploy",
-         "status": to_str(c.get("status")) or "pending"}
+         "status": to_str(c.get("status")) or "pending",
+         "envs": env_list(to_str(c.get("envs")))}
         for c in (raw or []) if isinstance(c, dict) and c.get("id") is not None
     ]
 
@@ -759,6 +782,19 @@ def set_check_status(root: Path, item_id: str, check_id: int, status: str) -> bo
         for c in checks:
             if c["id"] == check_id:
                 c["status"] = status
+                return True
+        return False
+    return _mutate_checks(root, item_id, _set) is True
+
+
+def set_check_envs(root: Path, item_id: str, check_id: int, envs) -> bool:
+    """Tick exactly `envs` on a check; it is done once production is among them."""
+    envs = env_list(envs)
+    def _set(checks):
+        for c in checks:
+            if c["id"] == check_id:
+                c["envs"] = envs
+                c["status"] = "done" if DONE_ENV in envs else "pending"
                 return True
         return False
     return _mutate_checks(root, item_id, _set) is True
