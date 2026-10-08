@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.11.0
+version: 0.11.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -60,7 +60,7 @@ continue.
 
 `done` and `cancelled` are the terminal pair: both hide from `todo list`.
 `cancelled` items move to `.TODO/CANCELLED/` at once; `done` items move to
-`.TODO/ARCHIVED/` when `todo archive` runs. Reach for `cancelled` when the work is abandoned — superseded, no longer
+`.TODO/ARCHIVED/` when `todo archive` runs, which also flags cancelled items archived. Reach for `cancelled` when the work is abandoned — superseded, no longer
 wanted, or answered by something else — and `deferred` when you still intend to
 come back to it.
 
@@ -244,7 +244,7 @@ todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order w
 todo task title <query> <id> <title...>  # retitle a task
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>" [--type T] # add a new item (type defaults to feature)
-todo archive                     # archive done items (synced; clears Shipped)
+todo archive                     # archive done and cancelled items (synced; clears Shipped)
 todo migrate [-g]                # rewrite files the fast YAML loader rejects
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
 todo unlink                      # move the global store back into ./.TODO

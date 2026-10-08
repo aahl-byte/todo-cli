@@ -606,7 +606,7 @@ def cmd_archive(root: Path, args) -> None:
     _require_root(root)
     count, path = store.archive_todos(root)
     if count == 0:
-        print("Nothing to archive (no done items).")
+        print("Nothing to archive (no done or cancelled items).")
     else:
         try:
             shown = path.relative_to(Path.cwd())
@@ -777,7 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
                '  todo log skill-todo "swapped the regex for a parser"\n'
                "  todo done skill-todo            # finished + verified\n"
                '  todo add "NEW THING TO DO"\n'
-               "  todo archive                    # move done items to .TODO/ARCHIVED/\n"
+               "  todo archive                    # archive done and cancelled items\n"
                "  todo init                       # install the todo skill on this machine\n\n"
                "Defaults to ./.TODO; pass --dir to point elsewhere. A legacy\n"
                "TODO.yaml is converted to .TODO/ on first use.",
@@ -1061,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
         jl.add_argument("keys", nargs="+", metavar="KEY", help="Jira issue key, e.g. CNS-123")
         jl.set_defaults(func=func)
 
-    p = sub.add_parser("archive", parents=[common], help="move done items to .TODO/ARCHIVED/")
+    p = sub.add_parser("archive", parents=[common], help="archive done and cancelled items")
     p.set_defaults(func=cmd_archive)
 
     p = sub.add_parser("link", parents=[common],

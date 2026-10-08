@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 
 from . import filecache, frontmatter, identity, ulid, yamlio
-from .status import COMPLETE, derive_calc_status
+from .status import COMPLETE, TERMINAL, derive_calc_status
 from .util import die, to_str
 
 ROOT_NAME = ".TODO"
@@ -371,6 +371,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
             meta["completed"] = now_iso
         elif new not in COMPLETE and was in COMPLETE:
             meta["completed"] = None
+        if new not in TERMINAL:
             meta.pop("archived", None)
         if new != was:
             moved = (was, new)
@@ -411,14 +412,15 @@ def _now() -> str:
 
 
 def archive_todos(root: Path):
-    """Flag every complete item `archived` and move it from OPEN into ARCHIVED.
-    Returns (count moved, archive_dir)."""
-    moved = 0
-    for d in _item_dirs(root, [OPEN, ARCHIVED]):
+    """Flag every complete or cancelled item `archived`, moving complete ones
+    from OPEN into ARCHIVED. Returns (count archived, archive_dir)."""
+    archived = 0
+    for d in _item_dirs(root, [OPEN, CANCELLED, ARCHIVED]):
         y, meta = _load_meta(d)
-        if to_str(meta.get("status")) not in COMPLETE:
+        if to_str(meta.get("status")) not in TERMINAL:
             continue
-        if not meta.get("archived"):
+        changed = not meta.get("archived")
+        if changed:
             meta["archived"] = True
             yamlio.save(y, d / ITEM_FILE, meta)
         if d.parent.name == OPEN:
@@ -427,8 +429,9 @@ def archive_todos(root: Path):
                 die(f"Can't archive {d.name}: {dest} already exists.", 1)
             dest.parent.mkdir(exist_ok=True)
             os.rename(d, dest)
-            moved += 1
-    return moved, root / ARCHIVED
+            changed = True
+        archived += changed
+    return archived, root / ARCHIVED
 
 
 # ── notes and dev log (one file per entry) ────────────────────────────────────
