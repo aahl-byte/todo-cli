@@ -4,7 +4,6 @@ import { RoleFilter } from "@/components/RoleFilter";
 import { cookies } from "next/headers";
 import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/filters";
 import { CheckBox, MoveButtons } from "@/components/QueueActions";
-import { EnvMarks } from "@/components/EnvMarks";
 import { Led } from "@/components/ui";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
@@ -43,7 +42,6 @@ export default async function Deploy({ params, searchParams }: {
       <header className="ticket-head">
         <Led status={t.item.status} />
         <Link href={`/p/${key}/i/${t.item.id}`} className="grow">{t.item.title}</Link>
-        <EnvMarks envs={t.item.extra?.envs} />
         {t.item.developer && <span className="faint">{t.item.developer}</span>}
         {action && <MoveButtons item={t.item} project={key} to={[{ ...action, primary: true }]} />}
       </header>

@@ -175,7 +175,6 @@ todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses
 todo request <query> --text "<text>" [--url U]   # post a new request version
 todo set <query> priority low|medium|high|urgent|critical
 todo set <query> app|section <value|none>
-todo env <query> D|S|P... [--off]          # which of dev, staging, production the work is in
 todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
 todo relate|unrelate <query> <other>      # related work, shown on both items
 todo jira link|unlink <query> <KEY...>    # Jira tickets this item covers

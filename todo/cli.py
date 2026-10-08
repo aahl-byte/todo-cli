@@ -283,24 +283,6 @@ def cmd_set(root: Path, args) -> None:
     print(f'{it["id"]}: {args.field} = {value or "—"}')
 
 
-ENV_NAMES = {**{e: e for e in store.ENVIRONMENTS}, **{l.lower(): e for e, l in store.ENVIRONMENTS.items()}, "prod": "production"}
-
-
-def cmd_env(root: Path, args) -> None:
-    it = store.resolve_item(root, args.query)
-    unknown = [n for n in args.envs if n.lower() not in ENV_NAMES]
-    if unknown:
-        known = ", ".join(f"{e} ({l})" for e, l in store.ENVIRONMENTS.items())
-        die(f'Unknown environment {", ".join(unknown)}; one of: {known}', 2)
-    named = {ENV_NAMES[n.lower()] for n in args.envs}
-    now_in = set(it["envs"]) - named if args.off else set(it["envs"]) | named
-    changed = [e for e in store.ENVIRONMENTS if e in (set(it["envs"]) ^ now_in)]
-    if changed:
-        store.update_todo(root, it["id"], {"envs": sorted(now_in)})
-        store.add_log(root, it["id"], ("no longer in " if args.off else "in ") + ", ".join(changed), now())
-    print(f'{it["id"]}: envs {render.env_marks({"envs": now_in})}')
-
-
 def cmd_phase(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     title = " ".join(args.title).strip()
@@ -1176,12 +1158,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("whoami", parents=[common], help="show your identity and sync setup")
     p.set_defaults(func=cmd_whoami)
-
-    p = sub.add_parser("env", parents=[common], help="mark which environments an item's work is in")
-    p.add_argument("query", help="id or part of a title")
-    p.add_argument("envs", nargs="+", metavar="ENV", help="dev|staging|production, or D|S|P")
-    p.add_argument("--off", action="store_true", help="it's no longer there")
-    p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("actions", parents=[common], help="list the project's Actions")
     p.set_defaults(func=cmd_actions)

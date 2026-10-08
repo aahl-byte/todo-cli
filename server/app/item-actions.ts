@@ -266,8 +266,3 @@ export async function runAction(a: { project: string; itemUid: string; action: s
   revalidatePath(`/p/${a.project}`, "layout");
   return { ok: state.ok || !state.done, message: `${action.name}: ${state.message}`, at: Date.now() };
 }
-
-export async function setEnv(a: { project: string; uid: string; versions: Versions; extra: Record<string, any> | null; env: string; on: boolean }) {
-  const user = await requireUser();
-  return apply(a.project, () => build.envOps({ uid: a.uid, versions: a.versions, extra: a.extra }, a.env, a.on), user.handle);
-}

@@ -35,8 +35,6 @@ UNPHASED_DIR = "unphased"
 SEEN = "seen_by"
 
 PEOPLE = ("creator", "developer", "qa_assignee")
-# Deploy environments in lifecycle order, with the one-letter labels the UI shows.
-ENVIRONMENTS = {"dev": "D", "staging": "S", "production": "P"}
 NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
               "clarification", "relation"]
 PRIORITIES = ["low", "medium", "high", "urgent", "critical"]
@@ -249,7 +247,6 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "section": to_str(meta.get("section")) or None,
         "repo": to_str(meta.get("repo")) or None,
         "branch": to_str(meta.get("branch")) or None,
-        "envs": [e for e in ENVIRONMENTS if e in (meta.get("envs") or [])],
         "jira": jira_keys(meta.get("jira")),
         "jira_status": {to_str(k): to_str(v) for k, v in (meta.get("jira_status") or {}).items()}
                        if isinstance(meta.get("jira_status"), dict) else {},
@@ -384,11 +381,6 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     for key in PEOPLE + ("app", "section", "repo", "branch"):
         if key in patch:
             meta[key] = patch[key] or None
-    if "envs" in patch:
-        if patch["envs"]:
-            meta["envs"] = [e for e in ENVIRONMENTS if e in patch["envs"]]
-        else:
-            meta.pop("envs", None)
     if "jira" in patch:
         if patch["jira"]:
             meta["jira"] = list(patch["jira"])
