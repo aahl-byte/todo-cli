@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.11.4
+version: 0.11.5
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -124,6 +124,8 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 - **Prepare a `qa-approved` item's deploy, then `todo stage` it.** Make sure
   its PRs are merged to staging and every migration, env var and prerequisite
   branch is a deployment check; `stage` moves it to `ready-to-deploy`.
+- **Mark environments by hand as the work reaches them:** `todo env <q> S` once
+  it is on staging, `--off` if it is rolled back. Nothing sets them for you.
 - **Record what a deploy needs** as deployment checks the moment you create the
   need: a migration, a new env var, a branch that must land first. `todo deploy`
   refuses while pre-deploy checks are pending.
@@ -230,6 +232,7 @@ todo set <query> app|section <value|none>
 todo set <query> type <type>
 todo set <query> priority low|medium|high|urgent|critical
 todo set <query> repo|branch <value|none>   # where the work lives
+todo env <query> D|S|P... [--off]          # mark the environments the work is in
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items
 todo jira link|unlink <query> <KEY...>   # Jira tickets this item covers
