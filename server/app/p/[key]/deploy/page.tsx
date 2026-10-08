@@ -24,7 +24,7 @@ export default async function Deploy({ params, searchParams }: {
   const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
   if (restored) redirect(`/p/${key}/deploy?${restored}`);
   const plan = JSON.parse(JSON.stringify(await deployPlan(d, key, user.handle, {
-    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app })));
+    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app, search: q.search })));
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={plan.counts} />;
   if (!plan.byTicket.length && !plan.prepByTicket.length && !plan.afterByTicket.length) return <>{filters}<p className="empty">Empty.</p></>;
 

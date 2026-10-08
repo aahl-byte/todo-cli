@@ -25,7 +25,7 @@ export default async function QaQueue({ params, searchParams }: {
   const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
   if (restored) redirect(`/p/${key}/qa?${restored}`);
   const { ready, inQa, awaitingFix, counts } = await qaQueue(d, key, user.handle, {
-    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app });
+    entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs", tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app, search: q.search });
   const filters = <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={counts} />;
   const card = (c: any, to: { status: string; label: string; primary?: boolean }[]) => {
     const link = c.links.map((l: any) => ({ url: safeUrl(l.meta?.url), label: l.meta?.label || l.text })).find((l: any) => l.url);

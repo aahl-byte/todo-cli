@@ -240,6 +240,13 @@ body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); 
 
 /* ---- board ---------------------------------------------------------------- */
 .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.filters .search { position: relative; margin-left: auto; }
+.filters .search input { width: 260px; padding: 4px 26px 4px 9px; font-size: 12px; }
+.filters .search input::-webkit-search-cancel-button { display: none; }
+.filters .search kbd { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); font-size: 10px; color: var(--faint);
+  border: 1px solid var(--line-2); border-radius: 4px; padding: 0 4px; pointer-events: none; }
+.filters .search input:focus + kbd, .filters .search input:not(:placeholder-shown) + kbd { display: none; }
+@media (max-width: 600px) { .filters .search { margin-left: 0; flex: 1; } .filters .search input { width: 100%; } }
 .chip { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; color: var(--dim); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 4px 1px 8px; }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
 .column > .label { display: flex; gap: 6px; margin: 0 2px 8px; }

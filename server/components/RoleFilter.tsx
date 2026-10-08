@@ -2,7 +2,7 @@
 // Board and QA-queue filters: role + person entries shown merged or as tabs,
 // plus type, app and parked. Every change applies at once through the URL.
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ITEM_TYPES } from "@/lib/model";
 import { cookieQuery, filterCookie, filterPart, formatEntries, parseEntries, roleLabel, FILTER_KEYS, ROLES, SHARED_KEYS, type Entry, type Role } from "@/lib/filters";
 
@@ -102,6 +102,7 @@ export function RoleFilter({ users, apps, me, counts, review }: { users: string[
         ))}
         {q.get("type") && <span className="chip">{q.get("type")}<button type="button" className="x" aria-label="clear type" onClick={() => go({ type: null })}>×</button></span>}
         {q.get("app") && <span className="chip">app {q.get("app")}<button type="button" className="x" aria-label="clear app" onClick={() => go({ app: null })}>×</button></span>}
+        <Search value={q.get("search") ?? ""} onChange={(v) => go({ search: v || null })} />
       </div>
       {view === "tabs" && entries.length > 1 && (
         <div className="tabs role-tabs" role="tablist">
@@ -113,5 +114,35 @@ export function RoleFilter({ users, apps, me, counts, review }: { users: string[
         </div>
       )}
     </>
+  );
+}
+
+/** Title, id, branch or Jira key; applied as you type, "/" focuses it. */
+function Search({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [text, setText] = useState(value);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (document.activeElement !== input.current) setText(value); }, [value]);
+  useEffect(() => {
+    if (text.trim() === value) return;
+    const t = setTimeout(() => onChange(text.trim()), 200);
+    return () => clearTimeout(t);
+  }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const slash = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || el.closest("input, textarea, select, [contenteditable]")) return;
+      e.preventDefault();
+      input.current?.focus();
+    };
+    document.addEventListener("keydown", slash);
+    return () => document.removeEventListener("keydown", slash);
+  }, []);
+  return (
+    <span className="search">
+      <input ref={input} type="search" value={text} placeholder="search title, branch, jira" aria-label="search"
+             autoComplete="off" spellCheck={false} onChange={(e) => setText(e.target.value)}
+             onKeyDown={(e) => { if (e.key === "Escape") { setText(""); onChange(""); input.current?.blur(); } }} />
+      <kbd aria-hidden="true">/</kbd>
+    </span>
   );
 }

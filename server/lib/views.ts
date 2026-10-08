@@ -82,6 +82,15 @@ export interface BoardFilters {
   type?: string;
   app?: string;
   parked?: boolean;
+  /** Text in the title, id, branch or a linked Jira key. */
+  search?: string;
+}
+
+export function searchMatches(c: Card, search: string): boolean {
+  const s = search.trim().toLowerCase();
+  if (!s) return true;
+  return [c.title, c.id, c.extra?.branch, ...c.jira.map((j) => j.key)]
+    .some((v) => typeof v === "string" && v.toLowerCase().includes(s));
 }
 
 export const COLUMNS = [
@@ -101,7 +110,8 @@ function baseFilter<T extends Card>(all: T[], f: BoardFilters, me: string): T[] 
   return all.filter((c) =>
     (!f.review || (c.status === "review" && c.last_to === "review" && c.last_via === "agent" && c.developer === me))
     && (!f.type || c.type === f.type)
-    && (!f.app || c.extra?.app === f.app));
+    && (!f.app || c.extra?.app === f.app)
+    && (!f.search || searchMatches(c, f.search)));
 }
 
 export function filterCards<T extends Card>(all: T[], f: BoardFilters, me: string): T[] {

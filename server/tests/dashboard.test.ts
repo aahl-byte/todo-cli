@@ -610,6 +610,18 @@ describe("role filters", () => {
     expect(await ids({ app: "web", type: "debt" })).toEqual(["a1"]);
     expect(await ids({ type: "debt" })).toEqual(["a1", "a3"]);
   });
+  it("searches the title, id, branch and linked Jira keys", async () => {
+    await w.one("alice", item("S1", { status: "todo", title: "Fix the Login form" }));
+    await w.one("alice", item("S2", { status: "todo", extra: { branch: "feat/login-sso" } }));
+    await w.one("alice", item("S3", { status: "todo" }));
+    await w.d.query("insert into jira_links (project, item_uid, jira_key) values ('p', 'S3', 'OPS-412')");
+    const p = (await project(w.d, "p"))!;
+    const ids = async (search: string) => (await board(w.d, p, { search }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
+    expect(await ids("login")).toEqual(["s1", "s2"]);
+    expect(await ids("ops-41")).toEqual(["s3"]);
+    expect(await ids("s2")).toEqual(["s2"]);
+    expect(await ids("  ")).toEqual(["s1", "s2", "s3"]);
+  });
 });
 
 describe("archiving shipped items", () => {
