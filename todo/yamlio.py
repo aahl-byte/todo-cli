@@ -22,6 +22,8 @@ from ruamel.yaml.error import YAMLError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import SingleQuotedScalarString
 
+from . import filecache
+
 
 def yaml() -> YAML:
     y = YAML()
@@ -66,6 +68,10 @@ def read(file: Path):
     """Parse for reading only — plain dicts/lists via the C loader, several times
     faster than the round-trip parser. Timestamps stay strings, as in `yaml()`.
     Flow maps the C loader (YAML 1.1) rejects fall back to the pure loader."""
+    return filecache.parsed(file, _read)
+
+
+def _read(file: Path):
     text = file.read_text()
     try:
         return _reader(False).load(text)

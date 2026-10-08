@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +26,10 @@ from .util import to_str
 SNAPSHOT_FILE = "snapshot.json"
 OUTBOX_FILE = "outbox.json"
 LOCK_FILE = "lock"
+ROUND_LOCK_FILE = "round"
+PUSH_FLAG_FILE = "push"
+ITEM_LOCK_DIR = "locks"
+NEW_ITEMS = "+new"           # the item lock `add` takes for the item it creates
 BATCH = 200
 
 ITEM_KEYS = {"id", "uid", "title", "type", "status", "priority", "super-phase", "created",
@@ -47,23 +52,102 @@ def enabled(root: Path) -> bool:
     return sync_config(root) is not None
 
 
+try:
+    import fcntl
+except ImportError:              # Windows: no flock; commands and rounds may interleave
+    fcntl = None
+
+
+def _lock_file(root: Path, *parts: str):
+    f = sync_dir(root).joinpath(*parts)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    return open(f, "a+")
+
+
 @contextlib.contextmanager
-def locked(root: Path):
-    """Hold the store's sync lock for the duration — every command in a synced
-    store runs under it, so commands and rounds never interleave."""
-    try:
-        import fcntl
-    except ImportError:          # Windows: no flock; commands may interleave
+def locked(root: Path, items=None):
+    """Hold the store for a command. With `items` (item uids, possibly none)
+    the store is shared and only those items are held, so commands on other
+    items and sync rounds run alongside; with None, the whole store is held."""
+    if fcntl is None:
         yield
         return
-    d = sync_dir(root)
-    d.mkdir(exist_ok=True)
-    with open(d / LOCK_FILE, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    with contextlib.ExitStack() as stack:
+        fh = stack.enter_context(_lock_file(root, LOCK_FILE))
+        fcntl.flock(fh, fcntl.LOCK_EX if items is None else fcntl.LOCK_SH)
+        for key in sorted(set(items or ())):
+            fcntl.flock(stack.enter_context(_lock_file(root, ITEM_LOCK_DIR, key)), fcntl.LOCK_EX)
+        yield
+
+
+_held = threading.local()
+
+
+@contextlib.contextmanager
+def _hold(root: Path, key, wait: bool = True):
+    """A round's hold on one item while it reads or writes that item's files;
+    yields False when the item is busy and `wait` is off. Re-entrant, since
+    writing a log entry can happen inside another write."""
+    held = _held.__dict__.setdefault("keys", {})
+    if fcntl is None or not key or key in held:
+        yield True
+        return
+    with _lock_file(root, ITEM_LOCK_DIR, key) as fh:
         try:
-            yield
+            fcntl.flock(fh, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        held[key] = fh
+        try:
+            yield True
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            del held[key]
+
+
+def flag_changes(root: Path) -> None:
+    """Ask for a push round, from this process or whichever one is running rounds."""
+    sync_dir(root).mkdir(exist_ok=True)
+    (sync_dir(root) / PUSH_FLAG_FILE).touch()
+
+
+def _take_flag(root: Path) -> bool:
+    try:
+        (sync_dir(root) / PUSH_FLAG_FILE).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def rounds(root: Path, first=None, *, wait: bool = False) -> Report | None:
+    """Run `first()`, then a push round per `flag_changes`, as the store's only
+    round runner. When another process is running rounds this returns None at
+    once (after it, with `wait`), and that process pushes the flagged changes.
+    The reports of the rounds run here, summed."""
+    total = None
+    while True:
+        with _lock_file(root, ROUND_LOCK_FILE) as runner:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(runner, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+                except BlockingIOError:
+                    return total
+            with locked(root, []):
+                if first is not None:
+                    total = _sum(total, first())
+                    first = None
+                while _take_flag(root):
+                    total = _sum(total, quiet_round(root, push_only=True))
+        if not (sync_dir(root) / PUSH_FLAG_FILE).exists():
+            return total
+        wait = False
+
+
+def _sum(a: Report | None, b: Report | None) -> Report | None:
+    if a is None or b is None:
+        return a or b
+    return Report(a.pushed + b.pushed, a.rejected + b.rejected, a.pulled + b.pulled,
+                  a.messages + b.messages, b.error or a.error)
 
 
 # ── snapshot ──────────────────────────────────────────────────────────────────
@@ -132,20 +216,23 @@ def ensure_uids(root: Path, project: str) -> None:
     that exists."""
     for d in store._item_dirs(root):
         try:
-            y, meta = store._load_meta(d)
+            meta = yamlio.read(d / store.ITEM_FILE)
         except Exception:  # noqa: BLE001 — unreadable item file: scan skips it too
             continue
         if not isinstance(meta, dict):
             continue
-        uid = to_str(meta.get("uid"))
-        if not uid:
-            uid = _hash_uid(project, d.name, to_str(meta.get("created")))
-            meta["uid"] = uid
-            yamlio.save(y, d / store.ITEM_FILE, meta)
-        try:
-            _backfill_children(d, uid)
-        except Exception:  # noqa: BLE001 — a malformed child file: scan marks the item incomplete
-            continue
+        uid = to_str(meta.get("uid")) or _hash_uid(project, d.name, to_str(meta.get("created")))
+        with _hold(root, uid, wait=False) as free:
+            if not free or not (d / store.ITEM_FILE).is_file():
+                continue                    # a command has it; the next round does
+            if not meta.get("uid"):
+                y, meta = store._load_meta(d)
+                meta["uid"] = uid
+                yamlio.save(y, d / store.ITEM_FILE, meta)
+            try:
+                _backfill_children(d, uid)
+            except Exception:  # noqa: BLE001 — a malformed child file: scan marks the item incomplete
+                continue
 
 
 def _backfill_children(d: Path, uid: str) -> None:
@@ -202,6 +289,42 @@ class Local:
     incomplete: set = field(default_factory=set)    # item uids not fully read
     history: dict = field(default_factory=dict)     # item uid → provisional entries
     via: dict = field(default_factory=dict)         # note/log uid → who wrote it (human/agent)
+    busy: set = field(default_factory=set)          # item uids a command held: left for the next round
+
+
+def _follow(root: Path, local: Local, item_uid: str) -> None:
+    """Point `local` at the item's directory as it is now: a command may have
+    moved it to another folder since the scan."""
+    old = local.item_dirs.get(item_uid)
+    if old is None or old.exists():
+        return
+    new = store._find_dir(root, old.name)
+    if new is None:
+        return
+    local.item_dirs[item_uid] = new
+    for k, f in list(local.files.items()):
+        if f.is_relative_to(old):
+            local.files[k] = new / f.relative_to(old)
+    for e in local.history.get(item_uid, []):
+        e["file"] = new / e["file"].relative_to(old)
+
+
+def _reload(root: Path, local: Local, item_uid: str) -> None:
+    """Re-read one item into `local`, for its current values."""
+    _follow(root, local, item_uid)
+    d = local.item_dirs.get(item_uid)
+    if d is None or not d.exists():
+        return
+    mine = [u for u, e in local.entities.items() if e["item_uid"] == item_uid]
+    for u in mine:
+        local.entities.pop(u, None)
+        local.files.pop(u, None)
+        local.via.pop(u, None)
+    for e in local.history.pop(item_uid, []):
+        local.files.pop(e["meta"].get("uid"), None)
+    local.incomplete.discard(item_uid)
+    local.busy.discard(item_uid)
+    _scan_item(local, d, item_uid)
 
 
 def _flatten(entity: str, data: dict) -> dict:
@@ -245,68 +368,84 @@ def _item_flat(d: Path, meta: dict) -> dict:
     return flat
 
 
+def _item_uid(d: Path) -> str | None:
+    try:
+        meta = yamlio.read(d / store.ITEM_FILE)
+    except Exception:  # noqa: BLE001 — unreadable item: leave it out
+        return None
+    return to_str(meta.get("uid")) if isinstance(meta, dict) else None
+
+
 def scan(root: Path) -> Local:
     local = Local()
     for d in store._item_dirs(root):
-        try:
-            meta = yamlio.read(d / store.ITEM_FILE)
-            meta = meta if isinstance(meta, dict) else {}
-            uid = to_str(meta.get("uid"))
-        except Exception:  # noqa: BLE001 — unreadable item: leave it out
-            continue
-        if not uid:
-            continue
-        local.item_dirs[uid] = d
-        try:
-            local.entities[uid] = {"entity": "item", "item_uid": uid, "data": _item_flat(d, meta)}
-        except Exception:  # noqa: BLE001 — e.g. a non-numeric super-phase: sync nothing of it
-            local.incomplete.add(uid)
-            continue
-        try:
-            positions: dict = {}
-            for t in store._read_tasks(d):
-                pos = positions.get(t["phase"], 0)
-                positions[t["phase"]] = pos + 1
-                if t.get("uid"):
-                    local.entities[t["uid"]] = {"entity": "task", "item_uid": uid, "data": {
-                        "n": t["id"], "title": t["title"], "status": t["status"],
-                        "phase": t["phase"], "position": pos}}
-            for e in store._read_entries(d / store.NOTES_DIR):
-                m = e["meta"]
-                if not m.get("uid"):
-                    continue
-                flat = {"n": e["id"], "ts": e["ts"], "kind": m.get("kind") or "context",
-                        "text": e["text"]}
-                for k, v in m.items():
-                    if k not in ("uid", "kind", "author", "via"):
-                        flat[f"meta.{k}"] = _plain(v)
-                local.entities[m["uid"]] = {"entity": "note", "item_uid": uid, "data": flat}
-                local.files[m["uid"]] = e["file"]
-                if m.get("via"):
-                    local.via[m["uid"]] = m["via"]
-            for e in store._read_entries(d / store.LOG_DIR):
-                if e["meta"].get("uid"):
-                    flat = {"n": e["id"], "ts": e["ts"], "text": e["text"]}
-                    for k, v in e["meta"].items():
-                        if k not in ("uid", "author", "via"):
-                            flat[f"meta.{k}"] = _plain(v)
-                    local.entities[e["meta"]["uid"]] = {"entity": "log", "item_uid": uid, "data": flat}
-                    local.files[e["meta"]["uid"]] = e["file"]
-                    if e["meta"].get("via"):
-                        local.via[e["meta"]["uid"]] = e["meta"]["via"]
-            for c in store._read_checks(d):
-                if c.get("uid"):
-                    local.entities[c["uid"]] = {"entity": "check", "item_uid": uid, "data": {
-                        "n": c["id"], "kind": c["kind"], "title": c["title"],
-                        "payload": c["payload"], "timing": c["timing"], "status": c["status"]}}
-            for e in store._read_entries(d / store.HISTORY_DIR):
-                if e["meta"].get("uid"):
-                    local.files[e["meta"]["uid"]] = e["file"]
-                if not e["meta"].get("server"):
-                    local.history.setdefault(uid, []).append(e)
-        except Exception:  # noqa: BLE001 — partly read: never infer removes from it
-            local.incomplete.add(uid)
+        uid = _item_uid(d)
+        if uid:
+            with _hold(root, uid, wait=False) as free:
+                if not free:
+                    local.item_dirs[uid] = d
+                    local.busy.add(uid)
+                elif (d / store.ITEM_FILE).is_file():
+                    _scan_item(local, d, uid)
     return local
+
+
+def _scan_item(local: Local, d: Path, uid: str) -> None:
+    try:
+        meta = yamlio.read(d / store.ITEM_FILE)
+        meta = meta if isinstance(meta, dict) else {}
+    except Exception:  # noqa: BLE001 — unreadable item: leave it out
+        return
+    local.item_dirs[uid] = d
+    try:
+        local.entities[uid] = {"entity": "item", "item_uid": uid, "data": _item_flat(d, meta)}
+    except Exception:  # noqa: BLE001 — e.g. a non-numeric super-phase: sync nothing of it
+        local.incomplete.add(uid)
+        return
+    try:
+        positions: dict = {}
+        for t in store._read_tasks(d):
+            pos = positions.get(t["phase"], 0)
+            positions[t["phase"]] = pos + 1
+            if t.get("uid"):
+                local.entities[t["uid"]] = {"entity": "task", "item_uid": uid, "data": {
+                    "n": t["id"], "title": t["title"], "status": t["status"],
+                    "phase": t["phase"], "position": pos}}
+        for e in store._read_entries(d / store.NOTES_DIR):
+            m = e["meta"]
+            if not m.get("uid"):
+                continue
+            flat = {"n": e["id"], "ts": e["ts"], "kind": m.get("kind") or "context",
+                    "text": e["text"]}
+            for k, v in m.items():
+                if k not in ("uid", "kind", "author", "via"):
+                    flat[f"meta.{k}"] = _plain(v)
+            local.entities[m["uid"]] = {"entity": "note", "item_uid": uid, "data": flat}
+            local.files[m["uid"]] = e["file"]
+            if m.get("via"):
+                local.via[m["uid"]] = m["via"]
+        for e in store._read_entries(d / store.LOG_DIR):
+            if e["meta"].get("uid"):
+                flat = {"n": e["id"], "ts": e["ts"], "text": e["text"]}
+                for k, v in e["meta"].items():
+                    if k not in ("uid", "author", "via"):
+                        flat[f"meta.{k}"] = _plain(v)
+                local.entities[e["meta"]["uid"]] = {"entity": "log", "item_uid": uid, "data": flat}
+                local.files[e["meta"]["uid"]] = e["file"]
+                if e["meta"].get("via"):
+                    local.via[e["meta"]["uid"]] = e["meta"]["via"]
+        for c in store._read_checks(d):
+            if c.get("uid"):
+                local.entities[c["uid"]] = {"entity": "check", "item_uid": uid, "data": {
+                    "n": c["id"], "kind": c["kind"], "title": c["title"],
+                    "payload": c["payload"], "timing": c["timing"], "status": c["status"]}}
+        for e in store._read_entries(d / store.HISTORY_DIR):
+            if e["meta"].get("uid"):
+                local.files[e["meta"]["uid"]] = e["file"]
+            if not e["meta"].get("server"):
+                local.history.setdefault(uid, []).append(e)
+    except Exception:  # noqa: BLE001 — partly read: never infer removes from it
+        local.incomplete.add(uid)
 
 
 # ── diff ──────────────────────────────────────────────────────────────────────
@@ -339,7 +478,7 @@ def diff(local: Local, snap: dict) -> list:
     buckets = {k: [] for k in ("item-create", "child-create", "child-set", "item-set", "request-set", "remove")}
     for uid, e in local.entities.items():
         entity, data = e["entity"], e["data"]
-        if e["item_uid"] in local.incomplete:
+        if e["item_uid"] in local.incomplete or e["item_uid"] in local.busy:
             continue
         if uid in stuck:
             if stuck[uid] == _fingerprint(data):
@@ -374,7 +513,7 @@ def diff(local: Local, snap: dict) -> list:
     for uid, s in ents.items():
         if s["entity"] in ("item", "history") or uid in local.entities:
             continue
-        if s["item_uid"] in local.incomplete or s["item_uid"] not in local.item_dirs:
+        if s["item_uid"] in local.incomplete | local.busy or s["item_uid"] not in local.item_dirs:
             continue
         fp = _fingerprint({"remove": s.get("versions", {})})
         if stuck.get(uid) == fp:
@@ -431,8 +570,9 @@ class Report:
 
 
 def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: bool = False) -> Report:
-    """One push + pull. Caller holds the lock. A network failure stops the
-    round where it is; nothing local is lost, the diff just runs again."""
+    """One push + pull. Commands may run alongside: each item's files are read
+    and written under that item's lock. A network failure stops the round
+    where it is; nothing local is lost, the diff just runs again."""
     cfg = sync_config(root) or {}
     project = cfg.get("project")
     report = Report()
@@ -451,12 +591,12 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             local = scan(root)
             _push(root, remote, project, replay, local, snap, report, rejected_fields, pushed_status,
                   replay=True)
-            _drop_provisional_history(local, pushed_status)
+            _drop_provisional_history(root, local, pushed_status)
         local = scan(root)
         ops = diff(local, snap)
         save_snapshot(root, snap)
         _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status)
-        _drop_provisional_history(local, pushed_status)
+        _drop_provisional_history(root, local, pushed_status)
         if not push_only:
             _pull(root, remote, project, snap, report, local, rejected_fields)
         _retry_deferred(root, snap, local, rejected_fields)
@@ -542,11 +682,13 @@ def _push(root, remote, project, ops, local, snap, report, rejected_fields, push
 def _park(root, op, local, snap, report, why: str) -> None:
     if op.get("_fp"):
         snap.setdefault("stuck", {})[op["uid"]] = op["_fp"]
-    item_id = _item_id(local, op["item_uid"])
-    text = f'{op["op"]} {op["entity"]} not applied ({why})'
-    report.messages.append(f"{item_id}: {text}")
-    if item_id:
-        store.add_log(root, item_id, "sync: " + text, _now())
+    with _hold(root, op["item_uid"]):
+        _follow(root, local, op["item_uid"])
+        item_id = _item_id(local, op["item_uid"])
+        text = f'{op["op"]} {op["entity"]} not applied ({why})'
+        report.messages.append(f"{item_id}: {text}")
+        if item_id:
+            store.add_log(root, item_id, "sync: " + text, _now())
 
 
 def _still_local(local: Local, op: dict) -> bool:
@@ -565,72 +707,81 @@ def _still_local(local: Local, op: dict) -> bool:
 
 def _handle_results(root, ops, results, local, snap, report, rejected_fields, pushed_status,
                     replay: bool = False):
-    ents = snap["entities"]
     by_id = {r.get("op_id"): r for r in results if isinstance(r, dict)}
     renames = []
     for op in ops:
         r = by_id.get(op["op_id"])
         if r is None:
             continue
-        uid, entity = op["uid"], op["entity"]
-        report.pushed += 1
-        current = not replay or _still_local(local, op)
-        # A replay that a newer local edit superseded must leave that edit's
-        # provisional history alone; its own push clears it.
-        if entity == "item" and op["op"] == "set" and current and "status" in (r.get("versions") or {}):
-            pushed_status.add(uid)
-        if entity == "item" and op["op"] == "set" and current and any(
-                x["field"] == "status" and "server_value" in x for x in r.get("rejected") or []):
-            pushed_status.add(uid)          # the server's status was adopted; the local trail never happened
-        if entity == "item" and op["op"] == "create" and r.get("status") == "applied" \
-                and (op.get("data") or {}).get("history"):
-            pushed_status.add(uid)
-        if r.get("status") == "rejected" and not r.get("rejected"):
-            report.rejected += 1
-            if op["op"] == "set" and r.get("reason") == "group-rolled-back":
-                for k in op["data"]:
-                    rejected_fields.add(("held", uid, k))
-            if current:
-                _whole_op_rejected(root, op, r, local, snap, report)
-            continue
-        versions = r.get("versions") or {}
-        bad = {x["field"] for x in r.get("rejected") or []}
-        if op["op"] == "set":
-            for k in op["data"]:
-                if k not in versions and k not in bad:
-                    rejected_fields.add(("held", uid, k))   # not applied: keep it local through the pull
-        for x in r.get("rejected") or []:
-            report.rejected += 1
-            if not current:
-                continue                    # a newer local edit replaced this one
-            rejected_fields.add((uid, x["field"]))
-            _log_rejection(root, op, x, local, report)
-            if op["op"] == "set" and "server_value" in x:
-                _adopt_server_value(root, op, x, local, ents)
-        if op["op"] == "create":
-            data = _flatten(entity, {k: v for k, v in op["data"].items() if k != "history"})
-            ents[uid] = {"entity": entity, "item_uid": op["item_uid"], "data": data, "versions": versions}
-            if r.get("assigned_n") is not None:
-                renames.append((op, r["assigned_n"]))
-                ents[uid]["data"]["n"] = r["assigned_n"]
-            if r.get("assigned_id"):
-                renames.append((op, r["assigned_id"]))
-                ents[uid]["data"]["id"] = r["assigned_id"]
-        elif op["op"] == "set":
-            s = ents.get(uid)
-            if s is not None:
-                for k, v in op["data"].items():
-                    if k in bad or k not in versions:
-                        continue
-                    s["data"][k] = v
-                    s["versions"][k] = versions[k]
-        elif op["op"] == "remove":
-            ents.pop(uid, None)
-            removed = snap.setdefault("removed", [])
-            if uid not in removed:
-                removed.append(uid)
+        with _hold(root, op["item_uid"]):
+            _follow(root, local, op["item_uid"])
+            _handle_result(root, op, r, local, snap, report, rejected_fields, pushed_status, replay,
+                           renames)
     for op, new in renames:
-        _rename(root, op, new, local, report)
+        with _hold(root, op["item_uid"]):
+            _follow(root, local, op["item_uid"])
+            _rename(root, op, new, local, report)
+
+
+def _handle_result(root, op, r, local, snap, report, rejected_fields, pushed_status, replay, renames):
+    ents = snap["entities"]
+    uid, entity = op["uid"], op["entity"]
+    report.pushed += 1
+    current = not replay or _still_local(local, op)
+    # A replay that a newer local edit superseded must leave that edit's
+    # provisional history alone; its own push clears it.
+    if entity == "item" and op["op"] == "set" and current and "status" in (r.get("versions") or {}):
+        pushed_status.add(uid)
+    if entity == "item" and op["op"] == "set" and current and any(
+            x["field"] == "status" and "server_value" in x for x in r.get("rejected") or []):
+        pushed_status.add(uid)          # the server's status was adopted; the local trail never happened
+    if entity == "item" and op["op"] == "create" and r.get("status") == "applied" \
+            and (op.get("data") or {}).get("history"):
+        pushed_status.add(uid)
+    if r.get("status") == "rejected" and not r.get("rejected"):
+        report.rejected += 1
+        if op["op"] == "set" and r.get("reason") == "group-rolled-back":
+            for k in op["data"]:
+                rejected_fields.add(("held", uid, k))
+        if current:
+            _whole_op_rejected(root, op, r, local, snap, report)
+        return
+    versions = r.get("versions") or {}
+    bad = {x["field"] for x in r.get("rejected") or []}
+    if op["op"] == "set":
+        for k in op["data"]:
+            if k not in versions and k not in bad:
+                rejected_fields.add(("held", uid, k))   # not applied: keep it local through the pull
+    for x in r.get("rejected") or []:
+        report.rejected += 1
+        if not current:
+            continue                    # a newer local edit replaced this one
+        rejected_fields.add((uid, x["field"]))
+        _log_rejection(root, op, x, local, report)
+        if op["op"] == "set" and "server_value" in x:
+            _adopt_server_value(root, op, x, local, ents)
+    if op["op"] == "create":
+        data = _flatten(entity, {k: v for k, v in op["data"].items() if k != "history"})
+        ents[uid] = {"entity": entity, "item_uid": op["item_uid"], "data": data, "versions": versions}
+        if r.get("assigned_n") is not None:
+            renames.append((op, r["assigned_n"]))
+            ents[uid]["data"]["n"] = r["assigned_n"]
+        if r.get("assigned_id"):
+            renames.append((op, r["assigned_id"]))
+            ents[uid]["data"]["id"] = r["assigned_id"]
+    elif op["op"] == "set":
+        s = ents.get(uid)
+        if s is not None:
+            for k, v in op["data"].items():
+                if k in bad or k not in versions:
+                    continue
+                s["data"][k] = v
+                s["versions"][k] = versions[k]
+    elif op["op"] == "remove":
+        ents.pop(uid, None)
+        removed = snap.setdefault("removed", [])
+        if uid not in removed:
+            removed.append(uid)
 
 
 def _adopt_server_value(root, op, x, local: Local, ents) -> None:
@@ -675,13 +826,15 @@ def _local_row(local: Local, entity: str, uid: str, flat: dict) -> dict:
     return {}
 
 
-def _drop_provisional_history(local: Local, pushed_status: set) -> None:
+def _drop_provisional_history(root, local: Local, pushed_status: set) -> None:
     """Server history replaces the provisional entries of every item whose
     status change was pushed (applied or rejected)."""
     for item_uid in pushed_status:
-        for e in local.history.get(item_uid, []):
-            with contextlib.suppress(FileNotFoundError):
-                e["file"].unlink()
+        with _hold(root, item_uid):
+            _follow(root, local, item_uid)
+            for e in local.history.get(item_uid, []):
+                with contextlib.suppress(FileNotFoundError):
+                    e["file"].unlink()
 
 
 def _item_id(local: Local, item_uid: str) -> str | None:
@@ -928,7 +1081,18 @@ def _retry_deferred(root, snap: dict, local: Local, rejected_fields) -> None:
 
 
 def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, adopt, messages=None) -> bool:
-    """Write one pulled change locally. False when it can't be written yet."""
+    """Write one pulled change locally, holding its item and starting from the
+    item as it is now. False when it can't be written yet."""
+    if ch["item_uid"] in before.busy:
+        return False                # its local edits aren't diffed yet; the next round has both
+    with _hold(root, ch["item_uid"], wait=False) as free:
+        if not free:
+            return False
+        _reload(root, now, ch["item_uid"])
+        return _write_change(root, ch, snap, before, now, rejected_fields, adopt, messages)
+
+
+def _write_change(root, ch, snap, before: Local, now: Local, rejected_fields, adopt, messages) -> bool:
     entity, uid, item_uid = ch["entity"], ch["uid"], ch["item_uid"]
     ents = snap["entities"]
     if entity == "history":

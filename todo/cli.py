@@ -19,6 +19,7 @@ shape changes.
 
 import argparse
 import contextlib
+import io
 import re
 import subprocess
 import sys
@@ -27,7 +28,7 @@ from pathlib import Path
 from . import identity
 from . import init as init_mod
 from . import link as link_mod
-from . import migrate, remote, render, store, sync
+from . import filecache, migrate, remote, render, store, sync
 from .status import ACTIVE, COMPLETE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
@@ -109,8 +110,7 @@ def cmd_list(root: Path, args) -> None:
     if getattr(args, "all_projects", False):
         for p in link_mod.project_stores():
             if sync.enabled(p["root"]):
-                with sync.locked(p["root"]):
-                    sync.quiet_round(p["root"])
+                sync.rounds(p["root"], lambda r=p["root"]: sync.quiet_round(r))
         groups = [
             {"key": p["key"],
              "items": _mine(_filter_list(store.list_todos(p["root"], _folders(args, [store.OPEN])),
@@ -655,8 +655,7 @@ def _link_remote(repo: Path, args) -> None:
             (remote.sync_dir(root) / name).unlink(missing_ok=True)
     remote.save_sync_config(root, {"url": url, "project": key,
                                    "deploy_step": project.get("deploy_step", True)})
-    with sync.locked(root):
-        report = sync.run_round(root, rem, adopt=True)
+    report = sync.rounds(root, lambda: sync.run_round(root, rem, adopt=True), wait=True)
     for m in report.messages:
         print(f"sync: {m}")
     if report.error:
@@ -669,9 +668,8 @@ def cmd_sync(root: Path, args) -> None:
     rem = remote.remote_for(root, timeout=30)
     if rem is None:
         die("This store isn't synced. Run `todo link --remote <url>` first.", 2)
-    with sync.locked(root):
-        report = sync.run_round(root, rem)
-        left = sync.pending(root)
+    report = sync.rounds(root, lambda: sync.run_round(root, rem), wait=True)
+    left = sync.pending(root)
     for m in report.messages:
         print(f"sync: {m}")
     print(f"pushed {report.pushed} op(s), {report.rejected} rejected; pulled {report.pulled} change(s)")
@@ -1151,25 +1149,52 @@ def main():
     else:
         root = _resolve_root(args.dir)
     if root is not None and root.is_dir():
+        filecache.load(root)
         migrate.convert_note_meta(root)
-    if root is not None and args.command not in NO_AUTO_SYNC and sync.enabled(root) \
-            and not getattr(args, "all_projects", False):
-        code = run_synced(root, args)
-        if code:
-            sys.exit(code)
-        return
-    args.func(root, args)
+    try:
+        if root is not None and args.command not in NO_AUTO_SYNC and sync.enabled(root) \
+                and not getattr(args, "all_projects", False):
+            code = run_synced(root, args)
+            if code:
+                sys.exit(code)
+            return
+        args.func(root, args)
+    finally:
+        if root is not None and root.is_dir():
+            filecache.save(root)
 
 
 def run_synced(root: Path, args) -> int:
     """Run a command between two sync rounds; EXIT_SYNC_REJECTED if either
-    round had a change of ours turned down by the server."""
-    with sync.locked(root):
-        before = sync.quiet_round(root)
+    round had a change of ours turned down by the server. A round already
+    running elsewhere stands in for the first and pushes for the second, so
+    its rejections are reported there."""
+    before = sync.rounds(root, lambda: sync.quiet_round(root))
+    with sync.locked(root, _named_items(root, args)):
         args.func(root, args)
-        after = sync.quiet_round(root, push_only=True)
+    sync.flag_changes(root)
+    after = sync.rounds(root)
     rejected = any(r is not None and r.rejected for r in (before, after))
     return EXIT_SYNC_REJECTED if rejected else 0
+
+
+READ_ONLY = {"list", "ls", "deploy-plan"}
+
+
+def _named_items(root: Path, args) -> list | None:
+    """The uids of the items a command names, for the lock it runs under; None
+    when it acts on the store as a whole or names an item that doesn't resolve."""
+    if args.command == "add":
+        return [sync.NEW_ITEMS]
+    queries = [q for q in (getattr(args, "query", None), getattr(args, "other", None)) if q]
+    if not queries:
+        return [] if args.command in READ_ONLY else None
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            items = [store.resolve_item(root, q) for q in queries]
+    except SystemExit:
+        return None
+    return [it["uid"] or it["id"] for it in items]
 
 
 def _resolve_root(raw: str) -> Path:

@@ -19,7 +19,7 @@ import os
 import re
 from pathlib import Path
 
-from . import frontmatter, identity, ulid, yamlio
+from . import filecache, frontmatter, identity, ulid, yamlio
 from .status import COMPLETE, derive_calc_status
 from .util import die, to_str
 
@@ -136,15 +136,18 @@ def _read_entries(d: Path) -> list:
         m = _ENTRY_FILE.match(f.name)
         if not m:
             continue
-        raw = f.read_text()
-        if m.group("ext") == "yaml":
-            meta, text = frontmatter.load_map(raw), ""
-        else:
-            meta, text = frontmatter.split(raw)
+        meta, text = filecache.parsed(f, _parse_entry)
         out.append({"id": int(m.group("id")), "ts": name_to_ts(m.group("ts")),
                     "text": text[:-1] if text.endswith("\n") else text,
                     "meta": meta, "file": f})
     return sorted(out, key=lambda e: e["id"])
+
+
+def _parse_entry(f: Path):
+    raw = f.read_text()
+    if f.suffix == ".yaml":
+        return frontmatter.load_map(raw), ""
+    return frontmatter.split(raw)
 
 
 def _note(e) -> dict:

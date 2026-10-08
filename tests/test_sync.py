@@ -1,6 +1,7 @@
 """The sync client against a fake server: diff, push, pull, conflicts and
 renumbering. Two stores, A and B, stand in for two teammates."""
 
+import contextlib
 import threading
 import time
 
@@ -275,21 +276,119 @@ def test_no_deploy_step_approves_to_done(pair, server):
     assert item(a)["status"] == "done"
 
 
-def test_lock_makes_a_second_command_wait(tmp_path, server):
-    a = make(tmp_path, "a", server)
-    order = []
+def _runs_while(hold, attempt) -> bool:
+    """Whether `attempt` finishes while `hold` is held."""
+    done = threading.Event()
 
-    def second():
-        with sync.locked(a):
-            order.append("second")
+    def run():
+        with attempt:
+            done.set()
 
-    with sync.locked(a):
-        t = threading.Thread(target=second)
+    with hold:
+        t = threading.Thread(target=run, daemon=True)
         t.start()
-        time.sleep(0.2)
-        order.append("first")
+        finished = done.wait(0.3)
     t.join(2)
-    assert order == ["first", "second"]
+    return finished
+
+
+def test_commands_on_one_item_take_turns(tmp_path, server):
+    a = make(tmp_path, "a", server)
+    assert not _runs_while(sync.locked(a, ["x"]), sync.locked(a, ["x"]))
+
+
+def test_commands_on_different_items_run_alongside(tmp_path, server):
+    a = make(tmp_path, "a", server)
+    assert _runs_while(sync.locked(a, ["x"]), sync.locked(a, ["y"]))
+
+
+def test_a_whole_store_command_waits_for_item_commands(tmp_path, server):
+    a = make(tmp_path, "a", server)
+    assert not _runs_while(sync.locked(a, ["x"]), sync.locked(a))
+    assert not _runs_while(sync.locked(a), sync.locked(a, ["x"]))
+
+
+def test_a_round_holds_only_the_item_it_is_reading(pair, server, tmp_path):
+    a, _ = pair
+    run_cli(a, ["add", "Other thing"])
+    client, waiting, resume = server.client("alice"), threading.Event(), threading.Event()
+
+    class Slow:
+        def __getattr__(self, name):
+            return getattr(client, name)
+
+        def changes(self, *args, **kw):
+            waiting.set()
+            resume.wait(2)
+            return client.changes(*args, **kw)
+
+    t = threading.Thread(target=sync.rounds, args=(a, lambda: sync.run_round(a, Slow())))
+    t.start()
+    assert waiting.wait(2)
+    try:
+        assert _runs_while(contextlib.nullcontext(), sync.locked(a, [item(a)["uid"]]))
+        assert not _runs_while(contextlib.nullcontext(), sync.locked(a))
+    finally:
+        resume.set()
+        t.join(2)
+
+
+def test_a_round_leaves_an_item_a_command_holds_for_the_next_round(pair, server):
+    a, b = pair
+    run_cli(a, ["note", "login-bug", "mine"])
+    run_cli(b, ["note", "login-bug", "theirs"])
+    rnd(b, server, "bob")
+    texts = lambda: [n["text"] for n in item(a)["notes"]]  # noqa: E731
+
+    with sync.locked(a, [item(a)["uid"]]):
+        assert rnd(a, server, "alice").error is None
+    assert "mine" not in [r.get("text") for r in server.rows.values()]
+    assert "theirs" not in texts()
+
+    rnd(a, server, "alice")
+    assert "mine" in [r.get("text") for r in server.rows.values()]
+    assert "theirs" in texts()
+
+
+def test_a_round_writes_into_an_item_moved_while_it_waited(pair, server):
+    a, b = pair
+    run_cli(b, ["note", "login-bug", "from bob"])
+    rnd(b, server, "bob")
+    client = server.client("alice")
+
+    class Moving:
+        def __getattr__(self, name):
+            return getattr(client, name)
+
+        def changes(self, *args, **kw):
+            run_cli(a, ["defer", "login-bug"])
+            return client.changes(*args, **kw)
+
+    sync.rounds(a, lambda: sync.run_round(a, Moving()))
+    it = item(a)
+    assert it["status"] == "deferred"
+    assert "from bob" in [n["text"] for n in it["notes"]]
+
+
+def test_a_push_flagged_during_another_round_is_pushed_by_its_runner(pair, server, monkeypatch):
+    from todo import cli
+
+    a, _ = pair
+    monkeypatch.setattr(remote, "remote_for", lambda root: server.client("alice"))
+    started, resume = threading.Event(), threading.Event()
+
+    def busy():
+        started.set()
+        resume.wait(2)
+
+    t = threading.Thread(target=sync.rounds, args=(a, busy))
+    t.start()
+    assert started.wait(2)
+    assert cli.run_synced(a, cli.build_parser().parse_args(["note", "login-bug", "queued"])) == 0
+    assert "queued" not in [r.get("text") for r in server.rows.values()]
+    resume.set()
+    t.join(2)
+    assert "queued" in [r.get("text") for r in server.rows.values()]
 
 
 def test_offline_env_skips_the_round(pair, monkeypatch):
@@ -452,26 +551,34 @@ def test_op_order_and_bases(pair, server):
     assert rm_op["base"] == snap[rm_op["uid"]]["versions"]
 
 
-def test_main_runs_every_command_inside_the_lock(pair, server, monkeypatch, tmp_path):
+def test_main_holds_only_the_item_a_command_names(pair, server, monkeypatch, tmp_path):
     a, _ = pair
     events = []
 
-    class Recorder:
-        def __init__(self, root):
-            events.append("lock")
+    @contextlib.contextmanager
+    def recorder(root, items=None):
+        events.append(("lock", items))
+        yield
+        events.append("unlock")
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            events.append("unlock")
-
-    monkeypatch.setattr(sync, "locked", Recorder)
-    monkeypatch.setattr(sync, "quiet_round", lambda root, push_only=False: events.append("push" if push_only else "round"))
+    monkeypatch.setattr(sync, "locked", recorder)
+    monkeypatch.setattr(sync, "quiet_round",
+                        lambda root, push_only=False: events.append("push" if push_only else "round"))
     from todo import cli
     monkeypatch.setattr("sys.argv", ["todo", "--dir", str(a), "note", "login-bug", "hi"])
     cli.main()
-    assert events == ["lock", "round", "push", "unlock"]
+    held = [("lock", []), "round", "unlock", ("lock", [item(a)["uid"]]), "unlock", ("lock", []), "push", "unlock"]
+    assert events == held
+
+
+def test_a_command_naming_no_item_holds_the_whole_store(pair):
+    from todo import cli
+
+    a, _ = pair
+    parse = cli.build_parser().parse_args
+    assert cli._named_items(a, parse(["archive"])) is None
+    assert cli._named_items(a, parse(["note", "no-such-item", "x"])) is None
+    assert cli._named_items(a, parse(["list"])) == []
 
 
 def test_null_unknown_keys_survive_a_pull(pair, server):
