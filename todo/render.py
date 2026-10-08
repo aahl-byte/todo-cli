@@ -12,6 +12,13 @@ def _use_color() -> bool:
     return sys.stdout.isatty()
 
 
+def env_marks(it, sep=" ") -> str:
+    """D S P for the environments an item has reached, a dot for the rest."""
+    from .store import ENVIRONMENTS
+
+    return sep.join(label if env in it["envs"] else "·" for env, label in ENVIRONMENTS.items())
+
+
 def _item_line(it, w, color, indent="") -> str:
     status = it["status"]
     cell = colorize(status, f"{status:<12}", color)
@@ -19,6 +26,8 @@ def _item_line(it, w, color, indent="") -> str:
     if it["tasks"]:
         done = sum(1 for t in it["tasks"] if t["status"] in COMPLETE)
         mark = f'  ({done}/{len(it["tasks"])} tasks)'
+    if it.get("envs"):
+        mark += f"  [{env_marks(it, '')}]"
     return f'{indent}{it["id"]:<{w}}  {cell} {(it["priority"] or "—"):<8} {it["title"]}{mark}'
 
 
@@ -84,6 +93,8 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
     print(f'priority:  {it["priority"] or "—"}')
     if it.get("app") or it.get("section"):
         print(f'app:       {it.get("app") or "—"}' + (f' · {it["section"]}' if it.get("section") else ""))
+    if it.get("envs"):
+        print(f"envs:      {env_marks(it)}")
     if it.get("repo") or it.get("branch"):
         print(f'branch:    {it.get("repo") or "—"}' + (f' · {it["branch"]}' if it.get("branch") else ""))
     if it.get("jira"):
