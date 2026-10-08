@@ -3,7 +3,7 @@
 // and popups as the item page.
 import { useEffect, useRef, useState } from "react";
 import * as act from "@/app/item-actions";
-import { moves, type Move } from "@/lib/model";
+import { ENVIRONMENTS, moves, ticked, type Move } from "@/lib/model";
 import { Popup } from "./ui";
 import { report } from "./item/ItemView";
 
@@ -52,20 +52,29 @@ export function MoveButtons({ item, project, to, deployStep = true }: {
   );
 }
 
-/** A check's checkbox: ticks at once, and untick if the server refuses. */
+/** A check's D S P checkboxes: each ticks at once, and unticks if the server refuses. */
 export function CheckBox({ check, project }: { check: Row; project: string }) {
-  const done = check.status === "done";
-  const [shown, setShown] = useState<boolean | null>(null);
-  useEffect(() => { setShown(null); }, [done]);
-  const value = shown ?? done;
+  const saved = ticked(check);
+  const key = saved.join(",");
+  const [shown, setShown] = useState<string[] | null>(null);
+  useEffect(() => { setShown(null); }, [key]);
+  const on = shown ?? saved;
   return (
-    <input type="checkbox" checked={value} aria-label={`${check.title} done`}
-           onChange={() => {
-             setShown(!value);
-             void act.setCheck({ project, itemUid: check.item_uid, uid: check.uid, versions: check.versions,
-                                 status: value ? "pending" : "done" })
-               .then((r) => { if (!report(r)) setShown(null); });
-           }} />
+    <span className="env-checks">
+      {Object.entries(ENVIRONMENTS).map(([env, label]) => (
+        <label key={env} data-tip={env}>
+          <input type="checkbox" checked={on.includes(env)} aria-label={`${check.title} done in ${env}`}
+                 onChange={() => {
+                   const next = !on.includes(env);
+                   setShown(next ? [...on, env] : on.filter((e) => e !== env));
+                   void act.setCheck({ project, itemUid: check.item_uid, uid: check.uid, versions: check.versions,
+                                       envs: on.join(",") || null, status: on.includes("production") ? "done" : "pending", env, on: next })
+                     .then((r) => { if (!report(r)) setShown(null); });
+                 }} />
+          {label}
+        </label>
+      ))}
+    </span>
   );
 }
 

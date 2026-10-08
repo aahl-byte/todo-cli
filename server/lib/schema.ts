@@ -249,6 +249,8 @@ create table if not exists jira_outbox (
   created         timestamptz not null default now()
 );
 
+-- A check's ticked environments, as "dev,staging,production" in lifecycle order.
+alter table checks add column if not exists envs text;
 alter table projects add column if not exists actions jsonb not null default '[]'::jsonb;
 alter table projects add column if not exists actions_by text;
 alter table projects add column if not exists actions_at timestamptz;

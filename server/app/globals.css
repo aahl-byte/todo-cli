@@ -554,3 +554,5 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .actions-settings .rule-row .grow { flex: 1 1 16em; }
 .actions-settings textarea { font: 12px var(--mono); }
 .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.env-checks { display: inline-flex; gap: 6px; font: 600 10px var(--mono); color: var(--faint); }
+.env-checks label { display: inline-flex; gap: 2px; align-items: center; cursor: pointer; }

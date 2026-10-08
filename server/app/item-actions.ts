@@ -206,9 +206,11 @@ export async function addCheck(a: { project: string; itemUid: string; kind: stri
   return apply(a.project, () => build.checkOps(a.itemUid, kind, a.title, a.payload, a.timing), user.handle);
 }
 
-export async function setCheck(a: { project: string; itemUid: string; uid: string; versions: Versions; status: string }) {
+export async function setCheck(a: { project: string; itemUid: string; uid: string; versions: Versions;
+                                      envs: string | null; status: string; env: string; on: boolean }) {
   const user = await requireUser();
-  return apply(a.project, [build.setOp("check", { uid: a.uid, item_uid: a.itemUid, versions: a.versions }, { status: a.status })], user.handle);
+  return apply(a.project, () => build.checkEnvOps({ uid: a.uid, item_uid: a.itemUid, versions: a.versions, envs: a.envs, status: a.status },
+                                                  a.env, a.on), user.handle);
 }
 
 /** The item page opened: read its notices and remember the visit. */

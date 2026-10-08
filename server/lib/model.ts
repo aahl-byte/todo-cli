@@ -18,6 +18,23 @@ const CALC_PRECEDENCE = [
 /** Statuses that mean triage is done: work runs on the request from here on. */
 export const PAST_TRIAGE = ["todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved", "qa-rejected", "ready-to-deploy", "deployed", "done"];
 
+/** Deploy environments in lifecycle order, with their one-letter labels. A
+ * check is ticked per environment and is done once production is ticked.
+ * Mirrors store.ENVIRONMENTS. */
+export const ENVIRONMENTS: Record<string, string> = { dev: "D", staging: "S", production: "P" };
+export const DONE_ENV = "production";
+
+export function envList(raw: unknown): string[] {
+  const names = new Set((typeof raw === "string" ? raw.split(",") : Array.isArray(raw) ? raw : []).map((n) => String(n).trim()));
+  return Object.keys(ENVIRONMENTS).filter((e) => names.has(e));
+}
+
+/** The environments a check is ticked for; a done check with none recorded predates them and counts everywhere. */
+export function ticked(check: { envs?: unknown; status?: string }): string[] {
+  const envs = envList(check.envs);
+  return !envs.length && check.status === "done" ? Object.keys(ENVIRONMENTS) : envs;
+}
+
 export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
 export const ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion", "performance", "decoration", "spin-off"];
@@ -36,7 +53,7 @@ export const SETTABLE: Record<Entity, string[]> = {
   task: ["title", "status", "phase", "position"],
   note: ["kind", "text"],
   log: ["text"],
-  check: ["kind", "title", "payload", "timing", "status"],
+  check: ["kind", "title", "payload", "timing", "status", "envs"],
 };
 export const JSON_FIELD: Partial<Record<Entity, string>> = { item: "extra", note: "meta", log: "meta" };
 
@@ -56,7 +73,7 @@ export const CREATE_FIELDS: Record<Entity, string[]> = {
   task: ["n", "title", "status", "phase", "position"],
   note: ["n", "kind", "ts", "text"],
   log: ["n", "ts", "text"],
-  check: ["n", "kind", "title", "payload", "timing", "status"],
+  check: ["n", "kind", "title", "payload", "timing", "status", "envs"],
 };
 
 export const DEFAULTS: Record<Entity, Record<string, unknown>> = {
@@ -65,7 +82,7 @@ export const DEFAULTS: Record<Entity, Record<string, unknown>> = {
   task: { status: "todo", phase: null, position: 0 },
   note: { kind: "context" },
   log: {},
-  check: { kind: "other", payload: null, timing: "pre-deploy", status: "pending" },
+  check: { kind: "other", payload: null, timing: "pre-deploy", status: "pending", envs: null },
 };
 
 export function isSettable(entity: Entity, field: string): boolean {

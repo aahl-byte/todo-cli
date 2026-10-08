@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { ITEM_TYPES, moves, nowIso, SEEN, STATUSES } from "./model";
+import { DONE_ENV, ENVIRONMENTS, envList, ITEM_TYPES, moves, nowIso, SEEN, STATUSES, ticked } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -131,6 +131,14 @@ export function checkOps(itemUid: string, kind: string, title: string, payload: 
   if (!title.trim()) throw new Error("A check needs a title.");
   return [createOp("check", itemUid, { kind, title: title.trim(), payload: payload.trim() || null,
                                        timing: timing || "pre-deploy", status: "pending" })];
+}
+
+/** Tick or untick one environment on a check; production decides done. */
+export function checkEnvOps(check: Ref & { envs?: unknown; status?: string }, env: string, on: boolean): Op[] {
+  if (!(env in ENVIRONMENTS)) throw new Error(`Unknown environment: ${env}`);
+  const was = ticked(check);
+  const now = envList(on ? [...was, env] : was.filter((e) => e !== env));
+  return [setOp("check", check, { envs: now.join(",") || null, status: now.includes(DONE_ENV) ? "done" : "pending" })];
 }
 
 /** A move outside the normal flow: any status, with a required reason that is

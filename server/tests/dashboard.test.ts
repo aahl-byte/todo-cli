@@ -687,3 +687,17 @@ describe("round-4 validation fixes", () => {
     expect((await w.d.query("select meta from notes where uid = 'TR'"))[0].meta).toMatchObject({ triaged: true });
   });
 });
+
+describe("check environments", () => {
+  const ref = { uid: "C1", item_uid: "I1", versions: { envs: 1, status: 1 } };
+  it("ticks an environment in lifecycle order and stays pending until production", () => {
+    expect(build.checkEnvOps({ ...ref, envs: "production", status: "done" }, "dev", true)[0].data).toEqual({ envs: "dev,production", status: "done" });
+    expect(build.checkEnvOps({ ...ref, envs: null, status: "pending" }, "staging", true)[0].data).toEqual({ envs: "staging", status: "pending" });
+  });
+  it("treats a done check with no environments as ticked everywhere", () => {
+    expect(build.checkEnvOps({ ...ref, envs: null, status: "done" }, "production", false)[0].data).toEqual({ envs: "dev,staging", status: "pending" });
+  });
+  it("clears the field when nothing is left ticked", () => {
+    expect(build.checkEnvOps({ ...ref, envs: "dev", status: "pending" }, "dev", false)[0].data).toEqual({ envs: null, status: "pending" });
+  });
+});
