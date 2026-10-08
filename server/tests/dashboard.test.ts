@@ -179,6 +179,13 @@ describe("views", () => {
     expect(eve.afterByTicket.map((t) => t.item.id)).toEqual(["d3"]);
   });
 
+  it("lists an item's post-deploy checks after its pre-deploy ones", async () => {
+    await w.one("alice", item("K1", { status: "review" }));
+    await w.one("alice", child("check", "K1A", "K1", { n: 1, kind: "manual-step", title: "verify", timing: "post-deploy" }));
+    await w.one("alice", child("check", "K1B", "K1", { n: 2, kind: "db-script", title: "migrate" }));
+    expect((await loadItem(w.d, "p", "k1"))!.checks.map((c: any) => c.title)).toEqual(["migrate", "verify"]);
+  });
+
   it("lists qa-approved tickets apart, with their checks", async () => {
     await w.one("alice", item("D1", { status: "ready-to-deploy" }));
     await w.one("alice", item("A1", { status: "qa-approved" }));

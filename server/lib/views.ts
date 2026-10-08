@@ -158,7 +158,7 @@ export async function item(d: Db, key: string, id: string) {
     d.query("select * from tasks where project = $2 and item_uid = $1 order by phase nulls last, position, n", [it.uid, key]),
     d.query("select * from notes where project = $2 and item_uid = $1 order by n", [it.uid, key]),
     d.query("select * from logs where project = $2 and item_uid = $1 order by n", [it.uid, key]),
-    d.query("select * from checks where project = $2 and item_uid = $1 order by n", [it.uid, key]),
+    d.query("select * from checks where project = $2 and item_uid = $1 order by timing = 'post-deploy', n", [it.uid, key]),
     d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [it.uid, key]),
   ]);
   const by = (k: string) => notes.filter((n) => n.kind === k);
