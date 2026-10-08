@@ -525,6 +525,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .ck-pending { --c: var(--amber); }
 .actions-settings { margin-bottom: 18px; }
 .actions-settings .action-card { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line-2); }
+.actions-settings .action-card > .add { justify-self: start; }
 .actions-settings .label.sub { margin: 6px 0 2px; }
 .actions-settings .rule-row .grow { flex: 1 1 16em; }
 .actions-settings textarea { font: 12px var(--mono); }
