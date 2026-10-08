@@ -255,8 +255,16 @@ export async function readItem(a: { project: string; itemUid: string }): Promise
   return { ok: true, at: Date.now() };
 }
 
+export type RunActionState = ActionState & { run?: number; done?: boolean };
+
+async function reportRun(d: Db, project: string, name: string, run: number): Promise<RunActionState> {
+  const state = await runState(d, run);
+  if (state.done) revalidatePath(`/p/${project}`, "layout");
+  return { ok: state.ok || !state.done, done: state.done, run, message: `${name}: ${state.message}`, at: Date.now() };
+}
+
 /** Run a server Action on the item now; answers with how its first attempt went. */
-export async function runAction(a: { project: string; itemUid: string; action: string }): Promise<ActionState> {
+export async function runAction(a: { project: string; itemUid: string; action: string }): Promise<RunActionState> {
   const user = await requireUser();
   const d = await db();
   const action = (await projectActions(d, a.project)).find((x) => x.id === a.action);
@@ -264,7 +272,15 @@ export async function runAction(a: { project: string; itemUid: string; action: s
   const id = await queueManualAction(d, a.project, a.itemUid, action, user.handle);
   if (id === null) return fail("No such item.");
   await flushActions(d);
-  const state = await runState(d, id);
-  revalidatePath(`/p/${a.project}`, "layout");
-  return { ok: state.ok || !state.done, message: `${action.name}: ${state.message}`, at: Date.now() };
+  return reportRun(d, a.project, action.name, id);
+}
+
+/** Where a run started by runAction stands, delivering any retry that has come due. */
+export async function actionRun(a: { project: string; run: number }): Promise<RunActionState> {
+  await requireUser();
+  const d = await db();
+  const [row] = await d.query("select name from action_runs where id = $1 and project = $2", [a.run, a.project]);
+  if (!row) return fail("No such run.");
+  await flushActions(d);
+  return reportRun(d, a.project, row.name, a.run);
 }

@@ -591,6 +591,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .actions-settings .rule-row .grow { flex: 1 1 16em; }
 .actions-settings textarea { font: 12px var(--mono); }
 .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.action-buttons .btn { display: inline-flex; align-items: center; gap: 6px; }
+.spin { width: 10px; height: 10px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .env-checks { display: inline-flex; gap: 3px; }
 .env-dev { --env: #7b97bd; }
 .env-staging { --env: #c2a36b; }

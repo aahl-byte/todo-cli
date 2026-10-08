@@ -12,7 +12,6 @@ import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { Glance } from "./Glance";
 import { AppFields } from "../AppFields";
-import { notify } from "../Toaster";
 import { withBase } from "@/lib/base";
 
 type Row = Record<string, any>;
@@ -93,20 +92,27 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
   );
 }
 
+const RUN_POLL_MS = 3_000;
+
 function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
+  // Spins until the run is sent or has given up; only giving up is worth a toast.
   const run = async (id: string) => {
     setBusy(id);
-    const r = await act.runAction({ project: ctx.project, itemUid: ctx.itemUid, action: id });
+    let r = await act.runAction({ project: ctx.project, itemUid: ctx.itemUid, action: id });
+    while (r.ok && !r.done && r.run) {
+      await new Promise((ok) => setTimeout(ok, RUN_POLL_MS));
+      r = await act.actionRun({ project: ctx.project, run: r.run });
+    }
     setBusy(null);
-    if (report(r)) notify(r.message ?? "Sent.");
+    report(r);
   };
   return (
     <section>
       <div className="label">Actions</div>
       <div className="action-buttons">
         {ctx.actions.map((a) => a.runner === "server"
-          ? <button key={a.id} type="button" className="btn" disabled={busy !== null} onClick={() => void run(a.id)}>{busy === a.id ? "running…" : a.name}</button>
+          ? <button key={a.id} type="button" className="btn" disabled={busy !== null} onClick={() => void run(a.id)}>{busy === a.id && <span className="spin" aria-label="running" />}{a.name}</button>
           : <button key={a.id} type="button" className="btn" data-tip={`runs from the CLI: todo action ${itemId} ${a.id} (click to copy)`}
                     onClick={() => void navigator.clipboard?.writeText(`todo action ${itemId} ${a.id}`)}>{a.name} ⧉</button>)}
       </div>
