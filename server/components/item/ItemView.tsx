@@ -79,8 +79,8 @@ export const askedByMe = (q: Row, me: string) => q.author === me && q.via !== "a
 
 export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   const it = data.item;
-  const openQs = data.questions.filter((q) => q.meta?.state !== "answered" && !askedByMe(q, ctx.me));
-  const myOpenQs = data.questions.filter((q) => q.meta?.state !== "answered").length - openQs.length;
+  const openQs = data.questions.filter((q) => isOpenQ(q) && !askedByMe(q, ctx.me));
+  const myOpenQs = data.questions.filter(isOpenQ).length - openQs.length;
   const [tab, setTab] = useState<Tab>(() => defaultTab(openQs.length));
   const [focus, setFocus] = useState<string | null>(null);
 
@@ -96,7 +96,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
       else if (data.request?.n === n) target = "request";
       else {
         const note = [...data.comments, ...data.questions, ...data.notes].find((x) => x.n === n);
-        if (note) setTab(note.kind === "clarification" ? "questions" : note.kind === "context" ? "notes" : "comments");
+        if (note) setTab(note.kind === "clarification" || note.meta?.thread ? "questions" : note.kind === "context" ? "notes" : "comments");
       }
       setFocus(target);
       setTimeout(() => document.getElementById(target)?.scrollIntoView({ block: "center" }), 200);
@@ -370,15 +370,29 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
 }
 
 // ── questions ─────────────────────────────────────────────────────────────────
+const isOpenQ = (q: Row) => q.kind === "clarification" && q.meta?.state !== "answered";
+
+interface Thread { root: Row; entries: Row[]; open: boolean }
+
+/** Each question with its follow-ups (questions and replies naming it in meta.thread), in order. */
+function threads(rows: Row[]): Thread[] {
+  const uids = new Set(rows.map((r) => r.uid));
+  return rows.filter((r) => !r.meta?.thread || !uids.has(r.meta.thread)).map((root) => {
+    const entries = [root, ...rows.filter((r) => r !== root && r.meta?.thread === root.uid).sort((a, b) => a.n - b.n)];
+    return { root, entries, open: entries.some(isOpenQ) };
+  });
+}
+
 function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
   const isNew = useIsNew();
-  const open = data.questions.filter((q) => q.meta?.state !== "answered");
-  const answered = data.questions.filter((q) => q.meta?.state === "answered");
+  const all = threads(data.questions);
+  const open = all.filter((t) => t.open);
+  const answered = all.filter((t) => !t.open);
   const [showAnswered, setShowAnswered] = useState(true);
-  const newAnswer = answered.some((q) => answerIsNew(isNew, q));
+  const newAnswer = answered.some((t) => t.entries.some((q) => answerIsNew(isNew, q) || isNew(q.ts, q.author, q.via)));
   useEffect(() => { if (newAnswer) setShowAnswered(true); }, [newAnswer]);
   useEffect(() => {
-    if (answered.some((q) => focus === `n-${q.n}`)) setShowAnswered(true);
+    if (answered.some((t) => t.entries.some((q) => focus === `n-${q.n}`))) setShowAnswered(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus]);
   return (
@@ -386,7 +400,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
       <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "clarification", text }))} />
       <ul className="entries">
-        {open.map((q) => <OpenQuestion key={q.uid} q={q} ctx={ctx} focus={focus} />)}
+        {open.map((t) => <QuestionThread key={t.root.uid} t={t} ctx={ctx} focus={focus} />)}
       </ul>
       {answered.length > 0 && (
         <>
@@ -395,15 +409,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
           </button>
           {showAnswered && (
             <ul className="entries">
-              {answered.map((q) => (
-                <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""} ${answerIsNew(isNew, q) ? "is-new" : ""}`} data-uid={q.uid}>
-                  <div className="body">
-                    <div className="qa-q"><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
-                    <div className="qa-a"><span className="qa-tag">A</span><div><Markdown text={q.meta?.answer ?? ""} /></div></div>
-                    <div className="who">{answerIsNew(isNew, q) && <NewTag />}{q.meta?.answered_by}{q.meta?.answered_via === "agent" && <span className="ai">AI</span>} <Ago ts={q.meta?.answered_at} /> <Seen row={q} entity="note" ctx={ctx} /></div>
-                  </div>
-                </li>
-              ))}
+              {answered.map((t) => <QuestionThread key={t.root.uid} t={t} ctx={ctx} focus={focus} />)}
             </ul>
           )}
         </>
@@ -412,9 +418,33 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
   );
 }
 
-function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | null }) {
-  const fresh = useIsNew()(q.ts, q.author, q.via);
+function QuestionThread({ t, ctx, focus }: { t: Thread; ctx: Ctx; focus: string | null }) {
+  const [following, setFollowing] = useState(false);
+  const focused = t.entries.some((q) => focus === `n-${q.n}`);
+  return (
+    <li className={`entry thread ${t.open ? "question" : ""} ${focused ? "focus" : ""}`} data-uid={t.root.uid}>
+      <div className="body">
+        {t.entries.map((q, i) => (
+          <div key={q.uid} id={`n-${q.n}`} className={`turn ${i ? "follow" : ""}`} data-uid={q.uid}>
+            {q.kind === "clarification" ? <Question q={q} ctx={ctx} /> : <Reply r={q} ctx={ctx} />}
+          </div>
+        ))}
+        {following
+          ? <FollowUp root={t.root} ctx={ctx} onDone={() => setFollowing(false)} />
+          : <button type="button" className="add" onClick={() => setFollowing(true)}><span className="pl" aria-hidden="true">+</span>follow up</button>}
+      </div>
+    </li>
+  );
+}
+
+function Who({ by, via, ts, fresh, children }: { by: string; via?: string | null; ts: string; fresh: boolean; children?: ReactNode }) {
+  return <div className="who">{fresh && <NewTag />}{by}{via === "agent" && <span className="ai">AI</span>} <Ago ts={ts} />{children}</div>;
+}
+
+function Question({ q, ctx }: { q: Row; ctx: Ctx }) {
+  const isNew = useIsNew();
   const mine = askedByMe(q, ctx.me);
+  const open = isOpenQ(q);
   const [answering, setAnswering] = useState(false);
   const pinned = useRef(q.versions);
   const [draft, setDraft] = useState("");
@@ -426,25 +456,66 @@ function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | nul
     }
   };
   return (
-    <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""} ${fresh ? "is-new" : ""}`} data-uid={q.uid}>
-      <div className="body">
-        <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} />
-          {mine && <span className="tag waiting" data-tip="you asked this; it waits on an answer">waiting for an answer</span>}
-          <Seen row={q} entity="note" ctx={ctx} /></div>
-        <div className={`qa-q ${mine ? "mine" : "open"}`}><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
-        {answering ? (
-          <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
-            <textarea rows={2} autoFocus value={draft} aria-label="answer" placeholder="Answer" onChange={(e) => setDraft(e.target.value)} />
-            <div className="actions">
-              <button type="button" className="btn" onClick={() => setAnswering(false)}>Esc</button>
-              <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void send()}>Answer</button>
-            </div>
+    <>
+      <Who by={q.author} via={q.via} ts={q.ts} fresh={isNew(q.ts, q.author, q.via)}>
+        {open && mine && <span className="tag waiting" data-tip="you asked this; it waits on an answer">waiting for an answer</span>}
+        <Seen row={q} entity="note" ctx={ctx} />
+      </Who>
+      <div className={`qa-q ${open ? (mine ? "mine" : "open") : ""}`}><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
+      {!open && (
+        <>
+          <div className="qa-a"><span className="qa-tag">A</span><div><Markdown text={q.meta?.answer ?? ""} /></div></div>
+          <Who by={q.meta?.answered_by} via={q.meta?.answered_via} ts={q.meta?.answered_at} fresh={answerIsNew(isNew, q)} />
+        </>
+      )}
+      {open && (answering ? (
+        <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
+          <textarea rows={2} autoFocus value={draft} aria-label="answer" placeholder="Answer" onChange={(e) => setDraft(e.target.value)} />
+          <div className="actions">
+            <button type="button" className="btn" onClick={() => setAnswering(false)}>Esc</button>
+            <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void send()}>Answer</button>
           </div>
-        ) : (
-          <button type="button" className="add" onClick={() => { pinned.current = q.versions; setAnswering(true); }}>answer</button>
-        )}
+        </div>
+      ) : (
+        <button type="button" className="add" onClick={() => { pinned.current = q.versions; setAnswering(true); }}>answer</button>
+      ))}
+    </>
+  );
+}
+
+function Reply({ r, ctx }: { r: Row; ctx: Ctx }) {
+  const isNew = useIsNew();
+  return (
+    <>
+      <Who by={r.author} via={r.via} ts={r.ts} fresh={isNew(r.ts, r.author, r.via)}><Seen row={r} entity="note" ctx={ctx} /></Who>
+      <div className="qa-r"><span className="qa-tag">↳</span><div><Markdown text={r.text} /></div></div>
+    </>
+  );
+}
+
+/** Continue a thread: another question (stays open until answered), or a reply such as an instruction. */
+function FollowUp({ root, ctx, onDone }: { root: Row; ctx: Ctx; onDone: () => void }) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const post = async (kind: "clarification" | "comment") => {
+    if (!draft.trim() || busy) return;
+    setBusy(true);
+    const ok = report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind, text: draft, thread: root.uid }));
+    setBusy(false);
+    if (ok) onDone();
+  };
+  return (
+    <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") onDone(); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void post("clarification"); }}>
+      <textarea rows={2} autoFocus value={draft} aria-label="follow up" placeholder="Ask another question, or reply with an instruction"
+                onChange={(e) => setDraft(e.target.value)} />
+      <div className="actions">
+        <button type="button" className="btn" onClick={onDone}>Esc</button>
+        <button type="button" className="btn" disabled={busy || !draft.trim()} onClick={() => void post("comment")}
+                data-tip="a reply in the thread; it doesn't wait on an answer">Reply</button>
+        <button type="button" className="btn primary" disabled={busy || !draft.trim()} onClick={() => void post("clarification")}
+                data-tip="a question that stays open until answered">Ask</button>
       </div>
-    </li>
+    </div>
   );
 }
 

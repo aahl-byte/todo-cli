@@ -118,12 +118,12 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
     open_qs = [n for n in notes if _is_open_question(n)]
     if open_qs:
         print(lilac("open questions:", color))
-        for line in note_lines(open_qs):
+        for line in note_lines(open_qs, every=notes):
             print(line)
     rest = [n for n in notes if not _is_open_question(n)]
     if rest:
         print("notes:")
-        for line in note_lines(rest):
+        for line in note_lines(rest, every=notes):
             print(line)
     if it["log"]:
         print("log:")
@@ -191,16 +191,20 @@ def _note_tag(n) -> str:
     return "(" + " · ".join(parts) + ") "
 
 
-def note_lines(notes, indent: str = "  ", prefix: str = "") -> list:
+def note_lines(notes, indent: str = "  ", prefix: str = "", every=None) -> list:
     """`[id] (kind · author) text` per note, the id after `prefix`; a link adds
-    its URL, an answered clarification its answer."""
+    its URL, an answered clarification its answer, a follow-up `re [id]` of its
+    thread's first question (looked up in `every`, default `notes`)."""
     pad = indent + "    "
+    ids = {n.get("uid"): n["id"] for n in (every if every is not None else notes) if n.get("uid")}
     out = []
     for n in notes:
         meta = n.get("meta") or {}
         text = str(n["text"])
         if n.get("kind") == "link" and meta.get("url") and meta["url"] != text:
             text += f'  <{meta["url"]}>'
+        if meta.get("thread") in ids:
+            text = f're [{prefix}{ids[meta["thread"]]}]: ' + text
         line = f'{indent}[{prefix}{n["id"]}] {_note_tag(n)}' + text.replace("\n", "\n" + pad)
         if n.get("kind") == "clarification" and meta.get("answer"):
             who = f' ({meta["answered_by"]})' if meta.get("answered_by") else ""
@@ -209,12 +213,13 @@ def note_lines(notes, indent: str = "  ", prefix: str = "") -> list:
     return out
 
 
-def update_lines(rows) -> list:
-    """Unacknowledged notes (`n<id>`) and log entries (`l<id>`), as `todo updates` lists them."""
+def update_lines(rows, every=None) -> list:
+    """Unacknowledged notes (`n<id>`) and log entries (`l<id>`), as `todo updates` lists them;
+    `every` is the item's notes, to name a follow-up's thread."""
     out = []
     for kind, e in rows:
         if kind == "n":
-            out += note_lines([e], prefix="n")
+            out += note_lines([e], prefix="n", every=every)
         else:
             who = f'({e["author"]}{" · AI" if e.get("via") == "agent" else ""}) ' if e.get("author") else ""
             out.append(f'  [l{e["id"]}] log {_stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))

@@ -625,3 +625,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .qa-q.mine { color: var(--text); }
 .qa-q.mine .qa-tag { color: var(--dim); border-color: var(--line-2); }
 .tag.waiting { color: var(--dim); }
+.qa-r { display: flex; gap: 8px; align-items: baseline; }
+.qa-r > div { flex: 1; min-width: 0; }
+.qa-r .qa-tag { color: var(--amber); border-color: var(--amber-dim); }
+.thread .turn.follow { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.thread .turn:target, .thread .turn.focus { background: var(--panel-2); border-radius: 5px; }
+.thread > .body > .add { margin-top: 6px; }

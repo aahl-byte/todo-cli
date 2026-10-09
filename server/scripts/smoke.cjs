@@ -279,6 +279,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.waitForFunction(() => document.querySelector(".head .stat-label")?.textContent === "in-qa");
     await p2.click("button[aria-label=status]");
     await p2.locator(".menu li:has(.s-blocked)").click();
+    await p2.fill(".popup textarea", "waiting on the API");
     await p2.locator(".popup button.primary").click();
     await p2.locator(".toasts .toast").waitFor();
     console.log("     notice:", (await p2.locator(".toasts .toast span").first().textContent()));
@@ -462,6 +463,48 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator("nav").getByRole("link", { name: "Settings" }).click();
     await page.waitForURL(/\/p\/web\/settings$/);
     await page.getByText("This project isn't linked to Jira.").waitFor({ timeout: 5000 });
+  });
+
+  await step("a question takes a follow-up reply in its thread", async () => {
+    await page.goto(item("export-invoices-as-csv"));
+    await page.click("role=tab[name=/Questions/]");
+    await page.click("button.add:has-text('ask')");
+    await page.fill(".composer textarea", "Smoke: which format?");
+    await page.click(".composer button.primary");
+    const thread = page.locator(".thread", { hasText: "Smoke: which format?" });
+    await thread.locator("button.add:has-text('answer')").click();
+    await thread.locator("textarea[aria-label=answer]").fill("CSV");
+    await thread.locator("button.primary:has-text('Answer')").click();
+    await thread.locator(".qa-a", { hasText: "CSV" }).waitFor();
+    await thread.locator("button.add:has-text('follow up')").click();
+    await thread.locator("textarea[aria-label='follow up']").fill("Smoke: use semicolons");
+    await thread.locator("button:has-text('Reply')").click();
+    await thread.locator(".turn.follow .qa-r", { hasText: "use semicolons" }).waitFor();
+    await page.click("role=tab[name=/Comments/]");
+    if (await page.locator(".entries", { hasText: "use semicolons" }).count()) throw new Error("thread reply also listed with the comments");
+  });
+
+  await step("the id copies over plain http", async () => {
+    await page.goto(item("export-invoices-as-csv"));
+    await page.click(".wide-only .mono-id");
+    await page.locator(".wide-only .mono-id .copied-mark").waitFor();
+  });
+
+  await step("settings: the template data folds open", async () => {
+    await page.goto(base + "/p/web/settings");
+    await page.click(".template-ref > summary");
+    await page.locator(".template-ref dt", { hasText: "{{item.repo_name}}" }).waitFor();
+  });
+
+  await step("the board uses a wide screen", async () => {
+    const wide = await browser.newContext({ viewport: { width: 2400, height: 900 } });
+    await wide.addCookies(await ctx.cookies());
+    const wp = await wide.newPage();
+    await wp.goto(base + "/p/web");
+    const w = await wp.evaluate(() => document.querySelector("main").getBoundingClientRect().width);
+    if (w < 2000) throw new Error(`main is only ${w}px wide`);
+    await wp.screenshot({ path: out + "/board-wide.png" });
+    await wide.close();
   });
 
   await step("narrow screens never scroll sideways", async () => {

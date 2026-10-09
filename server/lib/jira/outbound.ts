@@ -35,7 +35,8 @@ export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<
     return;
   }
   const { note } = event;
-  if (note.source === "jira" || (rules && !rules.comments)) return;
+  // A reply in a question's thread stays with the question, which Jira never sees.
+  if (note.source === "jira" || (rules && !rules.comments) || note.meta?.thread) return;
   if (note.kind === "comment" || note.kind === "qa-rejection") {
     const label = note.kind === "qa-rejection" ? "QA rejected" : "comment";
     await enqueue(t, event.project, event.itemUid, "comment",

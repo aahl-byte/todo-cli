@@ -195,8 +195,9 @@ export async function item(d: Db, key: string, id: string) {
       blocked_from: it.status === "blocked" ? lastBlock?.from_status ?? null : null,
     },
     ...requestView(by("ticket-request"), it.status),
-    questions: by("clarification"),
-    comments: notes.filter((n) => n.kind === "comment" || n.kind === "qa-rejection"),
+    // A reply in a question's thread shows there, not with the comments.
+    questions: notes.filter((n) => n.kind === "clarification" || (n.kind === "comment" && n.meta?.thread)),
+    comments: notes.filter((n) => (n.kind === "comment" && !n.meta?.thread) || n.kind === "qa-rejection"),
     notes: by("context"),
     links: by("link"),
     logs,

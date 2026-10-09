@@ -126,10 +126,17 @@ export async function findItems(a: { project: string; q: string; not: string }) 
     [a.project, a.not, q]) as Promise<{ uid: string; id: string; title: string; status: string }[]>;
 }
 
-export async function addEntry(a: { project: string; itemUid: string; kind: string; text: string }) {
+export async function addEntry(a: { project: string; itemUid: string; kind: string; text: string; thread?: string }) {
   const user = await requireUser();
   const text = a.text.trim();
   if (!text) return fail("Write something first.");
+  if (a.thread) {
+    const [q] = await (await db()).query("select kind, meta from notes where project = $1 and item_uid = $2 and uid = $3",
+                                        [a.project, a.itemUid, a.thread]);
+    if (q?.kind !== "clarification" || !["clarification", "comment"].includes(a.kind)) return fail("Follow-ups go under a question.");
+    const thread = q.meta?.thread ?? a.thread;
+    return apply(a.project, () => build.noteOps(a.itemUid, a.kind, text, { thread }), user.handle);
+  }
   if (a.kind === "log") {
     return apply(a.project, [build.createOp("log", a.itemUid, { text, ts: nowIso() })], user.handle);
   }

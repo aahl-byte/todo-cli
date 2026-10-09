@@ -233,10 +233,21 @@ def cmd_note(root: Path, args) -> None:
     print(f'{it["id"]}: added note [{new_id}]' + (f" ({args.kind})" if args.kind != "context" else ""))
 
 
+def _thread(it, note_id) -> dict:
+    """meta placing a note in the thread of question [note_id] (or of the thread that question is in)."""
+    if note_id is None:
+        return {}
+    _note_id(it, note_id)
+    root = next(n for n in it["notes"] if n["id"] == note_id)
+    if root["kind"] != "clarification":
+        die(f"Note [{note_id}] is a {root['kind']} note; follow-ups go under a question.", 2)
+    return {"thread": (root.get("meta") or {}).get("thread") or root["uid"]}
+
+
 def cmd_comment(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
-    new_id = store.add_note(root, it["id"], _text(args, "comment"), now(), kind="comment")
-    print(f'{it["id"]}: added comment [{new_id}]')
+    new_id = store.add_note(root, it["id"], _text(args, "comment"), now(), kind="comment", extra=_thread(it, args.re))
+    print(f'{it["id"]}: added comment [{new_id}]' + (f" in question [{args.re}]'s thread" if args.re else ""))
 
 
 def cmd_url(root: Path, args) -> None:
@@ -362,8 +373,8 @@ def cmd_jira_unlink(root: Path, args) -> None:
 
 def cmd_ask(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
-    new_id = store.add_note(root, it["id"], _text(args, "question"), now(), kind="clarification")
-    print(f'{it["id"]}: asked [{new_id}] (open until answered)')
+    new_id = store.add_note(root, it["id"], _text(args, "question"), now(), kind="clarification", extra=_thread(it, args.re))
+    print(f'{it["id"]}: asked [{new_id}] (open until answered)' + (f" in question [{args.re}]'s thread" if args.re else ""))
 
 
 def cmd_answer(root: Path, args) -> None:
@@ -384,7 +395,7 @@ def cmd_updates(root: Path, args) -> None:
         print(f'{it["id"]}: nothing new for {party}')
         return
     print(f'{it["id"]}: {len(rows)} not yet acknowledged by {party}')
-    for line in render.update_lines(rows):
+    for line in render.update_lines(rows, every=it["notes"]):
         print(line)
     refs = [f"{kind}{e['id']}" for kind, e in rows]
     if args.ack:
@@ -958,6 +969,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("comment", parents=[common], help="add a comment (@handle mentions)")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("text", nargs="+", help="the comment")
+    p.add_argument("--re", type=int, metavar="ID", help="reply in the thread of question [ID]")
     p.set_defaults(func=cmd_comment)
 
     p = sub.add_parser("url", parents=[common], help="attach a link (PR, preview, QA handoff)")
@@ -970,6 +982,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ask", parents=[common], help="raise a clarification question")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("text", nargs="+", help="the question")
+    p.add_argument("--re", type=int, metavar="ID", help="a follow-up in the thread of question [ID]")
     p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("answer", parents=[common], help="answer a clarification")

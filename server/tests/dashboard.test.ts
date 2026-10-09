@@ -719,6 +719,18 @@ describe("questions and unseen activity per viewer", () => {
   });
 });
 
+describe("question threads", () => {
+  it("shows a thread's replies with its question, not with the comments", async () => {
+    await w.one("bob", item("T1"));
+    await w.one("bob", child("note", "Q1", "T1", { kind: "clarification", text: "which db?" }));
+    await w.one("bob", child("note", "R1", "T1", { kind: "comment", text: "use postgres", meta: { thread: "Q1" } }));
+    await w.one("bob", child("note", "C1", "T1", { kind: "comment", text: "plain" }));
+    const view = (await loadItem(w.d, "p", "t1"))!;
+    expect(view.questions.map((n: any) => n.uid)).toEqual(["Q1", "R1"]);
+    expect(view.comments.map((n: any) => n.uid)).toEqual(["C1"]);
+  });
+});
+
 describe("round-4 validation fixes", () => {
   it("counts a notice read on the way in as new on a first visit", async () => {
     const { markSeen } = await import("@/lib/inbox");
