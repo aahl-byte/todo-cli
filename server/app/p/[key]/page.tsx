@@ -2,6 +2,7 @@ import { BoardCard } from "@/components/BoardCard";
 import { notFound } from "next/navigation";
 import { redirect } from "next/navigation";
 import { RoleFilter } from "@/components/RoleFilter";
+import { SessionWatch } from "@/components/SessionWatch";
 import { cookies } from "next/headers";
 import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/filters";
 import { clearShippedAction } from "@/app/actions";
@@ -28,6 +29,7 @@ export default async function Board({ params, searchParams }: { params: Promise<
   return (
     <>
       <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={counts} review />
+      <SessionWatch project={key} />
       <div className="board">
         {columns.map((col) => (
           <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>

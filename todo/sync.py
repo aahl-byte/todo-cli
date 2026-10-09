@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter, store, ulid, yamlio
+from . import checkout, frontmatter, store, ulid, yamlio
 from .remote import Remote, RemoteError, sync_config, sync_dir
 from .util import to_str
 
@@ -663,6 +663,10 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
         _retry_deferred(root, snap, local, rejected_fields)
         if ops or replay or deferred or full:
             save_snapshot(root, snap)
+        try:
+            checkout.report(sync_dir(root), remote, project)
+        except RemoteError:
+            pass                    # a server without checkout reports, or a blip; the next round retries
     except RemoteError as e:
         report.error = str(e)
     finally:

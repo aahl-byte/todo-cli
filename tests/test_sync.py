@@ -2,6 +2,7 @@
 renumbering. Two stores, A and B, stand in for two teammates."""
 
 import contextlib
+import subprocess
 import threading
 import time
 
@@ -519,6 +520,9 @@ class Flaky:
 
     def changes(self, project, since, limit=500):
         return self.inner.changes(project, since, limit)
+
+    def checkout(self, project, dir_, repo):
+        return self.inner.checkout(project, dir_, repo)
 
 
 def test_lost_push_response_replays_without_self_rejection(pair, server):
@@ -1177,3 +1181,19 @@ def test_archive_flag_syncs_and_files_the_item_on_both_sides(pair, server):
     assert rnd(b, server, "bob").error is None
     assert rnd(a, server, "alice").error is None
     assert item(a)["folder"] == store.OPEN
+
+
+def test_a_round_reports_the_checkout_once_until_it_moves(tmp_path, server, monkeypatch):
+    repo = tmp_path / "work"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:Acme/Web.git"], check=True)
+    root = make(tmp_path, "store", server)
+    monkeypatch.chdir(repo)
+    rnd(root, server, "alice")
+    rnd(root, server, "alice")
+    assert server.checkouts == [("alice", "p", str(repo.resolve()), "acme/web")]
+    moved = repo.rename(tmp_path / "work-renamed")
+    monkeypatch.chdir(moved)
+    rnd(root, server, "alice")
+    assert server.checkouts[-1][2] == str(moved.resolve())

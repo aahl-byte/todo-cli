@@ -3,6 +3,7 @@
 // leased while in flight, backs off on failure, and logs its outcome once.
 import type { Db } from "../db";
 import { applyOps } from "../apply";
+import { checkoutDir } from "../checkouts";
 import { nowIso } from "../model";
 import { ulid } from "../ulid";
 import { deliver, type Fetch } from "./deliver";
@@ -19,7 +20,10 @@ export async function projectActions(t: Db, project: string): Promise<ActionDef[
 async function queue(t: Db, project: string, itemUid: string, a: ActionDef, from: string, actor: string, trigger: string): Promise<number | null> {
   const [it] = await t.query("select * from items where project = $1 and uid = $2", [project, itemUid]);
   if (!it) return null;
-  const request = render(a, itemVars(project, it as ItemLike, from, actor, process.env.PUBLIC_URL ?? ""));
+  const own = await checkoutDir(t, project, "", actor);
+  const repo = String(it.extra?.repo ?? "");
+  const places = { itemDir: repo ? (await checkoutDir(t, project, repo, actor)).dir : own.dir, projectDir: own.dir, projectRepo: own.repo };
+  const request = render(a, itemVars(project, it as ItemLike, from, actor, process.env.PUBLIC_URL ?? "", places));
   const [row] = await t.query(
     `insert into action_runs (project, item_uid, action_id, name, trigger, by, request) values ($1, $2, $3, $4, $5, $6, $7::jsonb)
      returning id`, [project, itemUid, a.id, a.name, trigger, actor, JSON.stringify(request)]);

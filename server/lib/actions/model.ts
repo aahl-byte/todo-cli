@@ -27,6 +27,9 @@ export interface ActionDef {
   dir?: string;
   prompt?: string;
   model?: string;
+  /** Resume the item's stopped session rather than start a new one; it and a live one get resumePrompt. */
+  resume?: boolean;
+  resumePrompt?: string;
 }
 
 /** Every template name, grouped for the settings reference, with what it fills in. */
@@ -48,6 +51,9 @@ export const TEMPLATE_GROUPS: { label: string; names: [string, string][] }[] = [
     ["item.repo", "its repo, e.g. owner/name"],
     ["item.repo_name", "the repo's last part, e.g. name"],
     ["item.branch", "its branch"],
+    ["item.dir", "the folder its repo is checked out in, as the todo CLI last reported it (yours first); project.dir when it has no repo"],
+    ["project.dir", "the folder the todo CLI last ran in for this project (yours first)"],
+    ["project.repo", "that folder's git remote, e.g. owner/name"],
   ] },
   { label: "People", names: [
     ["item.developer", "the developer's handle"],
@@ -70,6 +76,7 @@ function templates(a: Partial<ActionDef>): [string, string][] {
     for (const [k, v] of Object.entries(a.headers ?? {})) out.push([`header ${k}`, v]);
   } else {
     out.push(["dir", a.dir ?? ""], ["prompt", a.prompt ?? ""]);
+    if (a.resume) out.push(["resume prompt", a.resumePrompt ?? ""]);
   }
   return out;
 }
@@ -97,7 +104,8 @@ export function cleanAction(a: Partial<ActionDef>): ActionDef {
     return { ...base, method: String(a.method ?? "POST").toUpperCase(), url: String(a.url ?? "").trim(), headers, body: a.body ?? "" };
   }
   return { ...base, base: String(a.base ?? "").trim().replace(/\/+$/, ""), dir: String(a.dir ?? "").trim(),
-           prompt: String(a.prompt ?? "").trim() || DEFAULT_PROMPT, ...(a.model?.trim() ? { model: a.model.trim() } : {}) };
+           prompt: String(a.prompt ?? "").trim() || DEFAULT_PROMPT, ...(a.model?.trim() ? { model: a.model.trim() } : {}),
+           ...(a.resume ? { resume: true, resumePrompt: String(a.resumePrompt ?? "").trim() || DEFAULT_PROMPT } : {}) };
 }
 
 export function validateActions(actions: ActionDef[], statuses: readonly string[]): Problem[] {
@@ -145,7 +153,11 @@ export interface ItemLike {
   developer?: string | null; qa_assignee?: string | null; extra?: Record<string, any> | null;
 }
 
-export function itemVars(project: string, it: ItemLike, from: string, actor: string, publicUrl = ""): Vars {
+/** Folders from the CLI's checkout reports; empty when none is known. */
+export interface Places { itemDir: string; projectDir: string; projectRepo: string }
+const NO_PLACES: Places = { itemDir: "", projectDir: "", projectRepo: "" };
+
+export function itemVars(project: string, it: ItemLike, from: string, actor: string, publicUrl = "", places: Places = NO_PLACES): Vars {
   const x = it.extra ?? {};
   const repo = String(x.repo ?? "");
   return {
@@ -155,6 +167,7 @@ export function itemVars(project: string, it: ItemLike, from: string, actor: str
     "item.repo": repo, "item.repo_name": repo.split("/").pop() ?? "", "item.branch": String(x.branch ?? ""),
     "item.developer": it.developer ?? "", "item.qa": it.qa_assignee ?? "",
     "item.url": publicUrl ? `${publicUrl.replace(/\/+$/, "")}${BASE}/p/${project}/i/${it.id}` : "",
+    "item.dir": places.itemDir, "project.dir": places.projectDir, "project.repo": places.projectRepo,
     project, actor,
   };
 }
@@ -169,7 +182,7 @@ export function fill(text: string, vars: Vars): string {
 /** What a run sends, fixed when it's queued so a later edit to the item can't change it. */
 export type Request =
   | { kind: "rest"; method: string; url: string; headers: Record<string, string>; body: string | null }
-  | { kind: "watchtower"; base: string; dir: string; name: string; prompt: string; model?: string };
+  | { kind: "watchtower"; base: string; dir: string; name: string; prompt: string; model?: string; resumePrompt?: string };
 
 export function render(a: ActionDef, vars: Vars): Request {
   if (a.kind === "rest") {
@@ -179,5 +192,6 @@ export function render(a: ActionDef, vars: Vars): Request {
     return { kind: "rest", method: a.method ?? "POST", url: fill(a.url ?? "", vars), headers, body };
   }
   return { kind: "watchtower", base: a.base ?? "", dir: fill(a.dir ?? "", vars), name: `todo: ${vars["item.id"]}`,
-           prompt: fill(a.prompt || DEFAULT_PROMPT, vars), ...(a.model ? { model: a.model } : {}) };
+           prompt: fill(a.prompt || DEFAULT_PROMPT, vars), ...(a.model ? { model: a.model } : {}),
+           ...(a.resume ? { resumePrompt: fill(a.resumePrompt || DEFAULT_PROMPT, vars) } : {}) };
 }

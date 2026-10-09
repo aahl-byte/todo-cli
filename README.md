@@ -289,6 +289,12 @@ Action is sent by the `todo` process that made the move, so use it for an
 endpoint only your machine can reach. Each run leaves a line in the item's dev
 log. Design: [docs/plans/2026-10-08-actions-design.md](docs/plans/2026-10-08-actions-design.md).
 
+Each sync tells the server which folder the CLI runs in and that folder's git
+remote, so a Watchtower Action's folder can be `{{item.dir}}`: the checkout of
+the item's repo, which follows the folder when you rename it. A Watchtower Action
+can also resume the item's last stopped session, with a separate prompt for a
+live or resumed session; the item page shows each session's state.
+
 ## Syncing with a team server
 
 The server in [`server/`](server/README.md) is the source of truth, and each

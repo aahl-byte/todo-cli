@@ -295,6 +295,18 @@ create table if not exists item_seen (
   primary key (handle, project, item_uid)
 );
 
+-- The folder each person keeps a repo in, as their CLI last reported it.
+-- repo is the remote's owner/name, lowercased; '' for a folder with no remote.
+create table if not exists checkouts (
+  handle  text not null,
+  project text not null,
+  repo    text not null,
+  dir     text not null,
+  seen_at timestamptz not null default now(),
+  primary key (handle, project, repo)
+);
+create index if not exists checkouts_repo on checkouts (repo);
+
 create table if not exists item_pins (
   handle    text not null,
   project   text not null,

@@ -32,6 +32,7 @@ class FakeServer:
         self.applied = {}
         self.offline = False
         self.pushes = []
+        self.checkouts = []
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -233,6 +234,10 @@ class FakeServer:
                     raise RemoteError("fake offline")
                 server.pushes.append(copy.deepcopy(ops))
                 return server.apply(copy.deepcopy(ops), author)
+
+            def checkout(self, project, dir_, repo):
+                server.checkouts.append((author, project, dir_, repo))
+                return {"ok": True}
 
             def changes(self, project, since, limit=500):
                 if server.offline:

@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { GET as listRoute } from "@/app/api/projects/[key]/actions/route";
 import { POST as runRoute } from "@/app/api/projects/[key]/actions/run/route";
+import { POST as checkoutRoute } from "@/app/api/projects/[key]/checkout/route";
+import { repoKey } from "@/lib/checkouts";
+import { boardSessions, itemSessions } from "@/lib/actions/sessions";
 import { deliver } from "@/lib/actions/deliver";
 import { cleanAction, fill, firesOn, itemVars, render, validateActions, type ActionDef } from "@/lib/actions/model";
-import { flushActions, MAX_ATTEMPTS } from "@/lib/actions/runs";
+import { flushActions, MAX_ATTEMPTS, queueManualAction } from "@/lib/actions/runs";
 import { STATUSES } from "@/lib/model";
 import { item, set, world, type World } from "./helpers";
 
@@ -123,6 +126,38 @@ describe("watchtower delivery", () => {
     expect(calls[1].body.initialPrompt).toBeUndefined();
     expect(calls.at(-1)).toMatchObject({ url: "http://wt/api/sessions/s2/message", body: { text: "line one\nline two" } });
   });
+
+  const resuming = { ...req, resumePrompt: "/todo x: news" };
+  const stopped = (id: string, lastActivity: number) => ({ id, name: "todo: x", state: "stopped", managed: false, url: `u-${id}`, lastActivity });
+  it("resumes the newest stopped session and sends it the resume prompt once it's idle", async () => {
+    const states = [{ state: "stopped", status: "stopped" }, { state: "active", status: "busy" }, { state: "active", status: "idle" }];
+    const { f, calls } = fakeFetch((c) => {
+      if (c.url.endsWith("/roster")) return { json: { sessions: [stopped("old", 1), stopped("new", 2)] } };
+      if (c.method === "GET") return { json: states.shift() };
+      return { json: c.url.endsWith("/resume") ? { id: "new" } : { delivered: "now" } };
+    });
+    const out = await deliver(resuming, f, async () => undefined);
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.url))
+      .toEqual(["http://wt/api/sessions/new/resume", "http://wt/api/sessions/new/message"]);
+    expect(calls.at(-1)!.body.text).toBe("/todo x: news");
+    expect(out.summary).toContain("resumed");
+  });
+  it("sends a live session the resume prompt", async () => {
+    const { f, calls } = fakeFetch((c) => (c.url.endsWith("/roster")
+      ? { json: { sessions: [{ id: "s9", name: "todo: x", state: "active", managed: true, url: "u9" }] } } : { json: { delivered: "now" } }));
+    await deliver(resuming, f);
+    expect(calls[1].body.text).toBe("/todo x: news");
+  });
+  it("starts a new session with the start prompt when a resume doesn't come back", async () => {
+    const { f, calls } = fakeFetch((c) => {
+      if (c.url.endsWith("/roster")) return { json: { sessions: [stopped("gone", 1)] } };
+      if (c.url.endsWith("/resume")) return { status: 404, json: { error: "no such session" } };
+      return { json: { id: "s3", url: "u3" } };
+    });
+    const out = await deliver(resuming, f, async () => undefined);
+    expect(calls.at(-1)).toMatchObject({ url: "http://wt/api/sessions", body: { initialPrompt: "/todo x" } });
+    expect(out.summary).toContain("started");
+  });
 });
 
 describe("runs", () => {
@@ -170,5 +205,68 @@ describe("API", () => {
     await w.one("alice", item("I1"));
     const res = await runRoute(new Request("http://x", auth(w.tokens.alice, { item: "I1", action: "ping" })), params);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("checkout folders", () => {
+  const report = (token: string, body: unknown) => checkoutRoute(
+    new Request("http://x", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }),
+    { params: Promise.resolve({ key: "p" }) });
+  const queuedDir = async (who: string, itemUid: string) => {
+    await queueManualAction(w.d, "p", itemUid, tower({ dir: "{{item.dir}}|{{project.dir}}|{{project.repo}}" }), who);
+    const [r] = await w.d.query("select request from action_runs order by id desc limit 1");
+    return r.request.dir;
+  };
+
+  it("reads owner/name from a repo field or a remote URL", () => {
+    expect(repoKey("git@github.com:Acme/Web.git")).toBe("acme/web");
+    expect(repoKey("https://github.com/acme/web/")).toBe("acme/web");
+    expect(repoKey("acme/web")).toBe("acme/web");
+    expect(repoKey("web")).toBe("");
+  });
+
+  it("fills item.dir from the item's repo, preferring the actor's own folder, and follows a renamed folder", async () => {
+    expect((await report(w.tokens.alice, { dir: "relative" })).status).toBe(400);
+    await report(w.tokens.alice, { dir: "/home/alice/todo", repo: "git@github.com:acme/todo.git" });
+    await report(w.tokens.bob, { dir: "/home/bob/web", repo: "acme/web" });
+    await w.one("alice", item("I1"));
+    await w.one({ handle: "alice", unconditional: true }, set("item", "I1", "I1", { "extra.repo": "acme/web" }));
+    await w.one("alice", item("I2"));
+    expect(await queuedDir("alice", "I1")).toBe("/home/bob/web|/home/alice/todo|acme/todo");
+    await report(w.tokens.alice, { dir: "/home/alice/web", repo: "acme/web" });
+    expect(await queuedDir("alice", "I1")).toBe("/home/alice/web|/home/alice/web|acme/web");
+    await report(w.tokens.alice, { dir: "/home/alice/web-renamed", repo: "acme/web" });
+    expect(await queuedDir("alice", "I1")).toBe("/home/alice/web-renamed|/home/alice/web-renamed|acme/web");
+    await report(w.tokens.alice, { dir: "/home/alice/todo", repo: "git@github.com:acme/todo.git" });
+    expect(await queuedDir("alice", "I2")).toBe("/home/alice/todo|/home/alice/todo|acme/todo");
+  });
+});
+
+describe("session states", () => {
+  const delivered = async (itemUid: string, actionId: string, session: string) => {
+    await w.d.query(
+      `insert into action_runs (project, item_uid, action_id, name, trigger, by, request, result, done_at)
+       values ('p', $1, $2, $2, 'manual', 'alice', $3::jsonb, $4::jsonb, now())`,
+      [itemUid, actionId, JSON.stringify({ kind: "watchtower", base: "http://wt", dir: "/x", name: "todo: x", prompt: "/todo x" }),
+       JSON.stringify({ summary: "started", session, url: `http://wt/?session=${session}` })]);
+  };
+
+  it("reads each Action's latest session from Watchtower, following an id moved by /clear", async () => {
+    await w.one("alice", item("I1"));
+    await w.one("alice", item("I2"));
+    await delivered("I1", "agent", "old");
+    await delivered("I1", "agent", "s1");
+    await delivered("I1", "review", "s2");
+    await delivered("I2", "agent", "s3");
+    const { f, calls } = fakeFetch((c) => c.url.endsWith("/s1") ? { json: { id: "s1b", status: "busy", url: "http://wt/?session=s1b" } }
+      : c.url.endsWith("/s2") ? { json: { id: "s2", status: "waiting", waitingFor: "permission prompt" } }
+      : { status: 404, json: { error: "no such session" } });
+    const states = await itemSessions(w.d, "p", "I1", f);
+    expect(calls.map((c) => c.url)).not.toContain("http://wt/api/sessions/old");
+    expect(states).toEqual([
+      { actionId: "agent", name: "agent", session: "s1b", url: "http://wt/?session=s1b", status: "busy", waitingFor: null },
+      { actionId: "review", name: "review", session: "s2", url: "http://wt/?session=s2", status: "waiting", waitingFor: "permission prompt" },
+    ]);
+    expect(await boardSessions(w.d, "p", f)).toEqual({ I1: { status: "busy", waitingFor: null } });
   });
 });

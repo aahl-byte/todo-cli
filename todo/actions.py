@@ -11,6 +11,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import checkout
+
 ANY_STATUS = "*"
 DEFAULT_PROMPT = "/todo {{item.id}}"
 INITIAL_PROMPT_MAX = 200
@@ -32,8 +34,11 @@ def fires_on(action: dict, frm: str, to: str) -> bool:
                              for r in action.get("auto") or [])
 
 
-def item_vars(project: str, it: dict, frm: str, actor: str, server_url: str = "") -> dict:
+def item_vars(project: str, it: dict, frm: str, actor: str, server_url: str = "", here: dict | None = None) -> dict:
+    """`here` is this checkout ({"dir", "repo"}); item.dir is it when the item's repo is this one or unset."""
     repo = it.get("repo") or ""
+    here = here or {"dir": "", "repo": ""}
+    item_dir = here["dir"] if not repo or checkout.repo_key(repo) == here["repo"] else ""
     return {
         "item.id": it["id"], "item.title": it["title"], "item.status": it["status"], "item.from": frm,
         "item.type": it.get("type") or "", "item.priority": it.get("priority") or "",
@@ -41,6 +46,7 @@ def item_vars(project: str, it: dict, frm: str, actor: str, server_url: str = ""
         "item.repo": repo, "item.repo_name": repo.rsplit("/", 1)[-1], "item.branch": it.get("branch") or "",
         "item.developer": it.get("developer") or "", "item.qa": it.get("qa_assignee") or "",
         "item.url": f'{server_url.rstrip("/")}/p/{project}/i/{it["id"]}' if server_url else "",
+        "item.dir": item_dir, "project.dir": here["dir"], "project.repo": here["repo"],
         "project": project, "actor": actor,
     }
 
@@ -68,6 +74,8 @@ def render(action: dict, vars_: dict) -> dict:
            "prompt": fill(action.get("prompt") or DEFAULT_PROMPT, vars_)}
     if action.get("model"):
         req["model"] = action["model"]
+    if action.get("resume"):
+        req["resumePrompt"] = fill(action.get("resumePrompt") or DEFAULT_PROMPT, vars_)
     return req
 
 
@@ -109,6 +117,38 @@ def _fits_initial_prompt(prompt: str) -> bool:
     return len(prompt) <= INITIAL_PROMPT_MAX and not any(ord(ch) < 32 for ch in prompt)
 
 
+def _wait_idle(base: str, sid: str, url, opener, sleep) -> None:
+    """Wait until a session that is starting or resuming is live and idle."""
+    deadline = time.monotonic() + IDLE_WAIT
+    while True:
+        s = _json("GET", f"{base}/api/sessions/{sid}", opener=opener)
+        if s.get("state") != "stopped" and s.get("status") == "idle":
+            return
+        if s.get("status") == "waiting":
+            raise ActionError(f'session {sid} is waiting on {s.get("waitingFor") or "a person"}: {url}')
+        if time.monotonic() > deadline:
+            raise ActionError(f"session {sid} never went idle: {url}")
+        sleep(IDLE_POLL)
+
+
+def _resume_stopped(req: dict, sessions: list, opener, sleep) -> str | None:
+    """Resume the newest stopped session of this name and send the resume prompt; None when there's none or it won't come back."""
+    stopped = [s for s in sessions if s.get("name") == req["name"] and s.get("state") == "stopped"]
+    if not stopped:
+        return None
+    prev = max(stopped, key=lambda s: s.get("lastActivity") or 0)
+    base = req["base"]
+    try:
+        _json("POST", f'{base}/api/sessions/{prev["id"]}/resume', opener=opener)
+        _wait_idle(base, prev["id"], prev.get("url"), opener, sleep)
+    except ActionError as e:
+        if "waiting on" in str(e):
+            raise
+        return None
+    sent = _send_message(base, prev["id"], req["resumePrompt"], opener, sleep)
+    return f'resumed Watchtower session {req["name"]} ({sent.get("delivered", "sent")}): {prev.get("url")}'
+
+
 def deliver(req: dict, opener=urllib.request.urlopen, sleep=time.sleep) -> str:
     """Send a rendered Action; returns the line for the item's dev log."""
     if req["kind"] == "rest":
@@ -119,8 +159,12 @@ def deliver(req: dict, opener=urllib.request.urlopen, sleep=time.sleep) -> str:
     live = next((s for s in sessions if s.get("name") == req["name"] and s.get("state") == "active"
                  and s.get("managed")), None)
     if live:
-        sent = _send_message(base, live["id"], req["prompt"], opener, sleep)
+        sent = _send_message(base, live["id"], req.get("resumePrompt") or req["prompt"], opener, sleep)
         return f'sent to Watchtower session {req["name"]} ({sent.get("delivered", "sent")}): {live.get("url")}'
+    if req.get("resumePrompt") is not None:
+        resumed = _resume_stopped(req, sessions, opener, sleep)
+        if resumed:
+            return resumed
     inline = _fits_initial_prompt(req["prompt"])
     body = {"dir": req["dir"], "name": req["name"]}
     if req.get("model"):
@@ -129,16 +173,6 @@ def deliver(req: dict, opener=urllib.request.urlopen, sleep=time.sleep) -> str:
         body["initialPrompt"] = req["prompt"]
     started = _json("POST", f"{base}/api/sessions", body, opener)
     if not inline:
-        deadline = time.monotonic() + IDLE_WAIT
-        while True:
-            s = _json("GET", f'{base}/api/sessions/{started["id"]}', opener=opener)
-            if s.get("status") == "idle":
-                break
-            if s.get("status") == "waiting":
-                raise ActionError(f'session {started["id"]} is waiting on {s.get("waitingFor") or "a person"}: '
-                                  f'{started.get("url")}')
-            if time.monotonic() > deadline:
-                raise ActionError(f'session {started["id"]} never went idle: {started.get("url")}')
-            sleep(IDLE_POLL)
+        _wait_idle(base, started["id"], started.get("url"), opener, sleep)
         _send_message(base, started["id"], req["prompt"], opener, sleep)
     return f'started Watchtower session {req["name"]} in {req["dir"]}: {started.get("url")}'

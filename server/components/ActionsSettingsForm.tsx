@@ -69,14 +69,30 @@ export function ActionsSettingsForm({ projectKey, actions, statuses }: { project
             <>
               <div className="rule-row">
                 <input aria-label="watchtower address" placeholder="http://leaf-rain:10011" value={a.base ?? ""} onChange={(e) => edit(i, { base: e.target.value })} />
-                <input aria-label="folder" className="grow" placeholder="/mnt/rain/git/{{item.repo_name}}" value={a.dir ?? ""} onChange={(e) => edit(i, { dir: e.target.value })} />
+                <input aria-label="folder" className="grow" placeholder="{{item.dir}}" value={a.dir ?? ""} onChange={(e) => edit(i, { dir: e.target.value })} />
                 <select aria-label="model" value={a.model ?? ""} onChange={(e) => edit(i, { model: e.target.value || undefined })}>
                   <option value="">default model</option>
                   {["opus", "sonnet", "haiku"].map((m) => <option key={m}>{m}</option>)}
                 </select>
               </div>
+              <label className="check">
+                <input type="checkbox" checked={!!a.resume}
+                       onChange={(e) => edit(i, { resume: e.target.checked, resumePrompt: a.resumePrompt || DEFAULT_PROMPT })} />
+                resume the item&apos;s last session instead of starting a new one
+              </label>
+              <div className="label sub">{a.resume ? "Start prompt: a new session" : "Prompt"}</div>
               <textarea aria-label="prompt" rows={2} value={a.prompt ?? ""} onChange={(e) => edit(i, { prompt: e.target.value })} />
-              <p className="hint">Reuses the live session named <code>todo: &lt;item id&gt;</code>, or starts one in the folder.</p>
+              {a.resume && (
+                <>
+                  <div className="label sub">Resume prompt: a live or resumed session</div>
+                  <textarea aria-label="resume prompt" rows={2} value={a.resumePrompt ?? ""} onChange={(e) => edit(i, { resumePrompt: e.target.value })} />
+                </>
+              )}
+              <p className="hint">
+                {a.resume
+                  ? <>Messages the live session named <code>todo: &lt;item id&gt;</code>, else resumes its last stopped one with its history, else starts one in the folder.</>
+                  : <>Reuses the live session named <code>todo: &lt;item id&gt;</code>, or starts one in the folder.</>}
+              </p>
             </>
           )}
           <div className="label sub">Fires on its own when an item moves</div>

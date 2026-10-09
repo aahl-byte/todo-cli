@@ -29,7 +29,7 @@ from . import actions as actions_mod
 from . import identity
 from . import init as init_mod
 from . import link as link_mod
-from . import filecache, migrate, remote, render, store, sync
+from . import checkout, filecache, migrate, remote, render, store, sync
 from .status import ACTIVE, COMPLETE, REASONED, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
@@ -111,7 +111,7 @@ def _run_cli_action(root: Path, it, action: dict, frm: str, trigger: str) -> boo
     """Send a CLI Action for `it` and log the outcome on the item."""
     cfg = remote.sync_config(root) or {}
     req = actions_mod.render(action, actions_mod.item_vars(cfg.get("project", ""), it, frm, identity.user(),
-                                                          cfg.get("url", "")))
+                                                          cfg.get("url", ""), checkout.local()))
     try:
         line, ok = actions_mod.deliver(req), True
     except actions_mod.ActionError as e:

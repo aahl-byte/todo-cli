@@ -135,6 +135,34 @@ def test_watchtower_sends_a_long_prompt_once_idle():
     assert http.calls[-1]["url"] == "http://wt/api/sessions/s2/message"
 
 
+def test_watchtower_resumes_the_newest_stopped_session_with_the_resume_prompt():
+    states = [{"state": "stopped", "status": "stopped"}, {"state": "active", "status": "idle"}]
+
+    def answer(c):
+        if c["url"].endswith("/roster"):
+            return 200, {"sessions": [{"id": "old", "name": "todo: x", "state": "stopped", "url": "u-old", "lastActivity": 1},
+                                      {"id": "new", "name": "todo: x", "state": "stopped", "url": "u-new", "lastActivity": 2}]}
+        if c["method"] == "GET":
+            return 200, states.pop(0)
+        return 200, {"id": "new"} if c["url"].endswith("/resume") else {"delivered": "now"}
+    http = FakeHttp(answer)
+    line = actions.deliver({"kind": "watchtower", "base": "http://wt", "dir": "/r", "name": "todo: x", "prompt": "/todo x",
+                            "resumePrompt": "/todo x: news"}, http, sleep=lambda s: None)
+    assert [c["url"] for c in http.calls if c["method"] == "POST"] == \
+        ["http://wt/api/sessions/new/resume", "http://wt/api/sessions/new/message"]
+    assert http.calls[-1]["body"]["text"] == "/todo x: news"
+    assert line.startswith("resumed")
+
+
+def test_render_carries_the_resume_prompt_and_the_checkout_folder():
+    it = {"id": "x", "title": "X", "status": "todo", "repo": "Acme/Web"}
+    v = actions.item_vars("p", it, "", "tester", here={"dir": "/w/web", "repo": "acme/web"})
+    req = actions.render({**TOWER, "dir": "{{item.dir}}", "resume": True, "resumePrompt": "again {{item.id}}"}, v)
+    assert (req["dir"], req["resumePrompt"]) == ("/w/web", "again x")
+    other = actions.item_vars("p", {**it, "repo": "acme/api"}, "", "tester", here={"dir": "/w/web", "repo": "acme/web"})
+    assert (other["item.dir"], other["project.dir"]) == ("", "/w/web")
+
+
 @pytest.fixture
 def sent(monkeypatch):
     calls = []

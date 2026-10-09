@@ -1,7 +1,7 @@
 "use client";
 // The right rail: people, details, links, checks, history. Labels are small;
 // values are click-to-pick; adds open a popup.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as act from "@/app/item-actions";
 import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
@@ -14,6 +14,7 @@ import { Glance } from "./Glance";
 import { AppFields } from "../AppFields";
 import { CopyButton } from "../Copy";
 import { withBase } from "@/lib/base";
+import type { SessionState, SessionStatus } from "@/lib/actions/sessions";
 
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
@@ -94,8 +95,44 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
 
 const RUN_POLL_MS = 3_000;
 
+const SESSION_POLL_MS = 5_000;
+const SESSION_LABEL: Record<SessionStatus, string> = {
+  busy: "working", idle: "idle", waiting: "waiting", stopped: "stopped", shell: "shell", unknown: "unreachable",
+};
+
+/** The Watchtower sessions this item's Actions started, kept fresh while the page is visible. */
+function useSessions(ctx: Ctx, kick: number): SessionState[] {
+  const [sessions, setSessions] = useState<SessionState[]>([]);
+  useEffect(() => {
+    let live = true;
+    const tick = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await fetch(withBase(`/api/projects/${encodeURIComponent(ctx.project)}/sessions?item=${encodeURIComponent(ctx.itemUid)}`), { cache: "no-store" });
+        if (res.ok && live) setSessions((await res.json()).sessions ?? []);
+      } catch { /* the next tick retries */ }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), SESSION_POLL_MS);
+    return () => { live = false; clearInterval(id); };
+  }, [ctx.project, ctx.itemUid, kick]);
+  return sessions;
+}
+
+function SessionLine({ s }: { s: SessionState }) {
+  const label = s.status === "waiting" && s.waitingFor ? `waiting on ${s.waitingFor}` : SESSION_LABEL[s.status];
+  return (
+    <span className={`wt-state wt-${s.status}`} data-tip={`Watchtower session ${s.session.slice(0, 8)}`}>
+      <span className="led" />{label}
+      {s.url && <a href={s.url} target="_blank" rel="noreferrer">open ↗</a>}
+    </span>
+  );
+}
+
 function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [kick, setKick] = useState(0);
+  const sessions = useSessions(ctx, kick);
   // Spins until the run is sent or has given up; only giving up is worth a toast.
   const run = async (id: string) => {
     setBusy(id);
@@ -105,16 +142,25 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
       r = await act.actionRun({ project: ctx.project, run: r.run });
     }
     setBusy(null);
+    setKick((k) => k + 1);
     report(r);
   };
   return (
     <section>
       <div className="label">Actions</div>
       <div className="action-buttons">
-        {ctx.actions.map((a) => a.runner === "server"
-          ? <button key={a.id} type="button" className="btn" disabled={busy !== null} onClick={() => void run(a.id)}>{busy === a.id && <span className="spin" aria-label="running" />}{a.name}</button>
-          : <CopyButton key={a.id} className="btn" text={`todo action ${itemId} ${a.id}`}
-                        tip={`runs from the CLI: todo action ${itemId} ${a.id} (click to copy)`}>{a.name} ⧉</CopyButton>)}
+        {ctx.actions.map((a) => {
+          const s = sessions.find((x) => x.actionId === a.id);
+          return (
+            <div key={a.id} className="action-row">
+              {a.runner === "server"
+                ? <button type="button" className="btn" disabled={busy !== null} onClick={() => void run(a.id)}>{busy === a.id && <span className="spin" aria-label="running" />}{a.name}</button>
+                : <CopyButton className="btn" text={`todo action ${itemId} ${a.id}`}
+                              tip={`runs from the CLI: todo action ${itemId} ${a.id} (click to copy)`}>{a.name} ⧉</CopyButton>}
+              {s && <SessionLine s={s} />}
+            </div>
+          );
+        })}
       </div>
     </section>
   );
