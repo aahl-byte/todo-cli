@@ -645,3 +645,4 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .card[data-session="waiting"]::before { background: var(--lilac); }
 @keyframes wt-churn { from { background-position: 0 0; } to { background-position: 0 300%; } }
 .actions-settings .check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--dim); }
+.popup .check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--dim); flex: 1; }

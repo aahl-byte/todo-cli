@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { GET as listRoute } from "@/app/api/projects/[key]/actions/route";
 import { POST as runRoute } from "@/app/api/projects/[key]/actions/run/route";
 import { POST as checkoutRoute } from "@/app/api/projects/[key]/checkout/route";
-import { repoKey } from "@/lib/checkouts";
+import { knownCheckouts, recordCheckout, repoDir, repoKey, wtFileUrl } from "@/lib/checkouts";
 import { boardSessions, itemSessions } from "@/lib/actions/sessions";
 import { deliver } from "@/lib/actions/deliver";
 import { cleanAction, fill, firesOn, itemVars, render, validateActions, type ActionDef } from "@/lib/actions/model";
@@ -268,5 +268,20 @@ describe("session states", () => {
       { actionId: "review", name: "review", session: "s2", url: "http://wt/?session=s2", status: "waiting", waitingFor: "permission prompt" },
     ]);
     expect(await boardSessions(w.d, "p", f)).toEqual({ I1: { status: "busy", waitingFor: null } });
+  });
+});
+
+describe("Watchtower file links", () => {
+  it("finds a repo's folder by folder, owner/name or bare name, the person's own first", async () => {
+    await recordCheckout(w.d, "bob", "p", "/home/bob/watchtower", "git@github.com:me/watchtower.git");
+    await recordCheckout(w.d, "alice", "p", "/home/alice/watchtower", "me/watchtower");
+    await recordCheckout(w.d, "alice", "q", "/home/alice/scratch", "");
+    expect(await repoDir(w.d, "alice", "watchtower")).toBe("/home/alice/watchtower");
+    expect(await repoDir(w.d, "bob", "me/Watchtower")).toBe("/home/bob/watchtower");
+    expect(await repoDir(w.d, "bob", "scratch")).toBe("/home/alice/scratch");
+    expect(await repoDir(w.d, "bob", "/srv/x/")).toBe("/srv/x");
+    expect(await repoDir(w.d, "bob", "nope")).toBeNull();
+    expect((await knownCheckouts(w.d, "bob"))[0]).toEqual({ repo: "me/watchtower", dir: "/home/bob/watchtower" });
+    expect(wtFileUrl("/a b", "src/App.svelte", true)).toMatch(/\/\?dir=%2Fa%20b&file=src%2FApp.svelte&mode=edit$/);
   });
 });

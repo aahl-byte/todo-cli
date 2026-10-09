@@ -24,3 +24,31 @@ export async function checkoutDir(d: Db, project: string, repo: string, actor: s
     : await d.query("select dir, repo from checkouts where project = $1 order by (handle = $2) desc, seen_at desc limit 1", [project, actor]);
   return { dir: row?.dir ?? "", repo: row?.repo ?? "" };
 }
+
+/** Watchtower's address for links; a file link opens there. */
+export const WATCHTOWER_URL = (process.env.WATCHTOWER_URL ?? "https://leaf-rain.shrew-goblin.ts.net/watchtower/latest").replace(/\/+$/, "");
+
+export function wtFileUrl(dir: string, file: string, edit = false): string {
+  return `${WATCHTOWER_URL}/?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}${edit ? "&mode=edit" : ""}`;
+}
+
+/** A folder for a repo given as a folder path, owner/name, or a bare name; the person's own checkout first. */
+export async function repoDir(d: Db, handle: string, repo: string): Promise<string | null> {
+  const r = repo.trim();
+  if (r.startsWith("/")) return r.replace(/\/+$/, "") || "/";
+  const key = repoKey(r);
+  const name = r.toLowerCase();
+  const [row] = await d.query(
+    `select dir from checkouts
+      where ($2 <> '' and repo = $2) or ($2 = '' and (split_part(repo, '/', 2) = $3 or lower(dir) like '%/' || $3))
+      order by (handle = $1) desc, seen_at desc limit 1`, [handle, key, name]);
+  return row?.dir ?? null;
+}
+
+/** The checkouts a person can pick from: theirs first, then everyone's, one per folder. */
+export async function knownCheckouts(d: Db, handle: string): Promise<{ repo: string; dir: string }[]> {
+  const rows = await d.query(
+    `select repo, dir from (select distinct on (dir) repo, dir, handle = $1 as mine, seen_at from checkouts order by dir, (handle = $1) desc, seen_at desc) c
+      order by mine desc, seen_at desc limit 50`, [handle]);
+  return rows.map((r) => ({ repo: r.repo, dir: r.dir }));
+}

@@ -490,6 +490,18 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator(".wide-only .mono-id .copied-mark").waitFor();
   });
 
+  await step("a Watchtower file link opens the file in Watchtower", async () => {
+    await page.goto(item("export-invoices-as-csv"));
+    await page.click(".wide-only button[aria-label='add link']");
+    await page.selectOption(".popup select[aria-label=type]", "wt-file");
+    await page.fill(".popup input[aria-label=repo]", "/srv/demo");
+    await page.fill(".popup input[aria-label=file]", "src/App.svelte");
+    await page.click(".popup button.primary");
+    const link = page.locator(".wide-only .rrow a", { hasText: "demo/src/App.svelte" });
+    await link.waitFor();
+    if (!/\/\?dir=%2Fsrv%2Fdemo&file=src%2FApp.svelte$/.test(await link.getAttribute("href"))) throw new Error("wrong href " + await link.getAttribute("href"));
+  });
+
   await step("settings: the template data folds open", async () => {
     await page.goto(base + "/p/web/settings");
     await page.click(".template-ref > summary");

@@ -10,6 +10,7 @@ import { db } from "@/lib/db";
 import { later } from "@/lib/http";
 import { flushOutboxes } from "@/lib/outbox";
 import { markSeen } from "@/lib/inbox";
+import { knownCheckouts, repoDir, wtFileUrl } from "@/lib/checkouts";
 import { setPinned } from "@/lib/pins";
 import { ITEM_TYPES, LINK_TYPES, CHECK_KINDS, nowIso } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
@@ -205,6 +206,23 @@ export async function addLink(a: { project: string; itemUid: string; url: string
   const user = await requireUser();
   const type = LINK_TYPES.includes(a.type) ? a.type : "other";
   return apply(a.project, () => build.linkOps(a.itemUid, a.url, a.label, type), user.handle);
+}
+
+/** A Watchtower link that opens `file` from a repo's checkout. */
+export async function addWtFileLink(a: { project: string; itemUid: string; repo: string; file: string; edit: boolean }) {
+  const user = await requireUser();
+  const file = a.file.trim();
+  if (!a.repo.trim() || !file) return fail("Name the repo and the file.");
+  const dir = await repoDir(await db(), user.handle, a.repo);
+  if (!dir) return fail(`No checkout of ${a.repo.trim()} is known. Run todo in it once, or give its folder.`);
+  const inside = file.startsWith(`${dir}/`) ? file.slice(dir.length + 1) : file;
+  const label = `${dir.split("/").pop()}/${inside}`;
+  return apply(a.project, () => build.linkOps(a.itemUid, wtFileUrl(dir, file, a.edit), label, "wt-file"), user.handle);
+}
+
+export async function checkoutChoices(): Promise<{ repo: string; dir: string }[]> {
+  const user = await requireUser();
+  return knownCheckouts(await db(), user.handle);
 }
 
 export async function addCheck(a: { project: string; itemUid: string; kind: string; title: string; payload: string; timing: string }) {

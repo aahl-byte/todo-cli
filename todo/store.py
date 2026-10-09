@@ -63,7 +63,7 @@ PRIORITIES = ["low", "medium", "high", "urgent", "critical"]
 ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion",
               "performance", "decoration", "spin-off"]
 LINK_TYPES = ["pr", "preview", "qa-handoff", "external-ticket", "bug-ticket",
-              "documentation", "design", "other"]
+              "documentation", "design", "wt-file", "other"]
 CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag",
                "manual-step", "other"]
 CHECK_TIMINGS = ["pre-deploy", "post-deploy"]

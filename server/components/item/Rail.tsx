@@ -18,7 +18,7 @@ import type { SessionState, SessionStatus } from "@/lib/actions/sessions";
 
 type Row = Record<string, any>;
 const PRIORITIES = ["low", "medium", "high", "urgent"];
-const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA" };
+const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA", "wt-file": "WT" };
 const TIMING: Record<string, string> = { "pre-deploy": "before deploy", "post-deploy": "after deploy" };
 const CHECKS_TIP: Record<ChecksState, string> = { pass: "passing", fail: "failing", pending: "running" };
 
@@ -302,11 +302,20 @@ function Related({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
 
 function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>; ctx: Ctx }) {
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ url: "", label: "", type: "pr" });
+  const blank = { url: "", label: "", type: "pr", repo: "", file: "", edit: false };
+  const [form, setForm] = useState(blank);
+  const [checkouts, setCheckouts] = useState<{ repo: string; dir: string }[]>([]);
+  const wt = form.type === "wt-file";
+  useEffect(() => { if (adding && wt && !checkouts.length) void act.checkoutChoices().then(setCheckouts); }, [adding, wt, checkouts.length]);
+  const ready = wt ? !!form.repo.trim() && !!form.file.trim() : /^https?:\/\//.test(form.url.trim());
   const save = async () => {
-    if (report(await act.addLink({ project: ctx.project, itemUid: ctx.itemUid, ...form }))) {
+    if (!ready) return;
+    const r = wt
+      ? await act.addWtFileLink({ project: ctx.project, itemUid: ctx.itemUid, repo: form.repo, file: form.file, edit: form.edit })
+      : await act.addLink({ project: ctx.project, itemUid: ctx.itemUid, url: form.url, label: form.label, type: form.type });
+    if (report(r)) {
       setAdding(false);
-      setForm({ url: "", label: "", type: "pr" });
+      setForm(blank);
     }
   };
   return (
@@ -328,18 +337,32 @@ function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>;
       })}
       {adding && (
         <Popup title="Add link" onClose={() => setAdding(false)}>
-          <input value={form.url} placeholder="https://…" aria-label="URL" onChange={(e) => setForm({ ...form, url: e.target.value })}
-                 onKeyDown={(e) => { if (e.key === "Enter") void save(); }} />
-          <div className="row">
-            <input value={form.label} placeholder="label" aria-label="label" onChange={(e) => setForm({ ...form, label: e.target.value })}
+          {wt ? (
+            <>
+              <input value={form.repo} placeholder="repo: name, owner/name or folder" aria-label="repo" list="wt-checkouts"
+                     onChange={(e) => setForm({ ...form, repo: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") void save(); }} />
+              <datalist id="wt-checkouts">
+                {checkouts.map((c) => <option key={c.dir} value={c.dir}>{c.repo || c.dir}</option>)}
+              </datalist>
+              <input value={form.file} placeholder="file, e.g. src/App.svelte" aria-label="file"
+                     onChange={(e) => setForm({ ...form, file: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") void save(); }} />
+            </>
+          ) : (
+            <input value={form.url} placeholder="https://…" aria-label="URL" onChange={(e) => setForm({ ...form, url: e.target.value })}
                    onKeyDown={(e) => { if (e.key === "Enter") void save(); }} />
+          )}
+          <div className="row">
+            {wt
+              ? <label className="check"><input type="checkbox" checked={form.edit} onChange={(e) => setForm({ ...form, edit: e.target.checked })} />open in the editor</label>
+              : <input value={form.label} placeholder="label" aria-label="label" onChange={(e) => setForm({ ...form, label: e.target.value })}
+                       onKeyDown={(e) => { if (e.key === "Enter") void save(); }} />}
             <select value={form.type} aria-label="type" onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              {LINK_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {LINK_TYPES.map((t) => <option key={t} value={t}>{t === "wt-file" ? "Watchtower file" : t}</option>)}
             </select>
           </div>
           <div className="actions">
             <button type="button" className="btn" onClick={() => setAdding(false)}>Cancel</button>
-            <button type="button" className="btn primary" disabled={!/^https?:\/\//.test(form.url.trim())} onClick={() => void save()}>Add</button>
+            <button type="button" className="btn primary" disabled={!ready} onClick={() => void save()}>Add</button>
           </div>
         </Popup>
       )}
