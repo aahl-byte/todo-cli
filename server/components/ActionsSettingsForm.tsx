@@ -1,8 +1,9 @@
 "use client";
 import { useMemo, useState, useTransition } from "react";
 import { saveActionsAction } from "@/app/settings-actions";
-import { ANY_STATUS, cleanAction, DEFAULT_PROMPT, METHODS, TEMPLATE_NAMES, validateActions, type ActionDef } from "@/lib/actions/model";
+import { ANY_STATUS, cleanAction, DEFAULT_PROMPT, METHODS, TEMPLATE_GROUPS, validateActions, type ActionDef } from "@/lib/actions/model";
 import type { Problem } from "@/lib/jira/rules";
+import { CopyButton } from "./Copy";
 
 const headerText = (h: Record<string, string> = {}) => Object.entries(h).map(([k, v]) => `${k}: ${v}`).join("\n");
 function parseHeaders(text: string): Record<string, string> {
@@ -33,9 +34,9 @@ export function ActionsSettingsForm({ projectKey, actions, statuses }: { project
     <div className="actions-settings">
       <p className="hint">
         An Action calls a URL for an item, by hand from the item page or <code>todo action</code>, or on its own when an item makes
-        one of its status moves. Templates take <code>{"{{name}}"}</code>, or <code>{"{{name | json}}"}</code> and <code>{"{{name | url}}"}</code>:{" "}
-        {TEMPLATE_NAMES.join(", ")}.
+        one of its status moves. Its fields take templates filled from the item.
       </p>
+      <TemplateReference />
       {list.map((a, i) => (
         <section className="action-card" key={i} data-action={a.id}>
           <div className="rule-row">
@@ -110,5 +111,30 @@ export function ActionsSettingsForm({ projectKey, actions, statuses }: { project
         {saved && !saved.ok && <span className="hot">Not saved: {saved.problems.filter((p) => p.level === "error").map((p) => p.message).join(" ")}</span>}
       </div>
     </div>
+  );
+}
+
+function TemplateReference() {
+  return (
+    <details className="template-ref">
+      <summary><span className="chev">›</span> Template data</summary>
+      <p className="hint">
+        Write <code>{"{{name}}"}</code>; add <code>| json</code> for a quoted JSON string or <code>| url</code> to encode it for a URL.
+        Click a name to copy it.
+      </p>
+      {TEMPLATE_GROUPS.map((g) => (
+        <div key={g.label} className="ref-group">
+          <div className="label sub">{g.label}</div>
+          <dl>
+            {g.names.map(([name, about]) => (
+              <div key={name}>
+                <dt><CopyButton text={`{{${name}}}`} className="edit-text"><code>{`{{${name}}}`}</code></CopyButton></dt>
+                <dd>{about}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </details>
   );
 }

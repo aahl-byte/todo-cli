@@ -29,10 +29,36 @@ export interface ActionDef {
   model?: string;
 }
 
-export const TEMPLATE_NAMES = [
-  "item.id", "item.title", "item.status", "item.from", "item.type", "item.priority", "item.app", "item.section",
-  "item.repo", "item.repo_name", "item.branch", "item.developer", "item.qa", "item.url", "project", "actor",
+/** Every template name, grouped for the settings reference, with what it fills in. */
+export const TEMPLATE_GROUPS: { label: string; names: [string, string][] }[] = [
+  { label: "Item", names: [
+    ["item.id", "the item's id, e.g. fix-login"],
+    ["item.title", "its title"],
+    ["item.type", "feature, bug, refactor, …"],
+    ["item.priority", "low, medium, high, urgent"],
+    ["item.app", "its app"],
+    ["item.section", "its section"],
+    ["item.url", "a link to its page (needs PUBLIC_URL on the server)"],
+  ] },
+  { label: "Status", names: [
+    ["item.status", "the status it has now (after the move, for a status move)"],
+    ["item.from", "the status it moved from; empty for a manual run"],
+  ] },
+  { label: "Code", names: [
+    ["item.repo", "its repo, e.g. owner/name"],
+    ["item.repo_name", "the repo's last part, e.g. name"],
+    ["item.branch", "its branch"],
+  ] },
+  { label: "People", names: [
+    ["item.developer", "the developer's handle"],
+    ["item.qa", "the QA assignee's handle"],
+    ["actor", "who ran the Action or made the move"],
+  ] },
+  { label: "Project", names: [
+    ["project", "the project key"],
+  ] },
 ];
+export const TEMPLATE_NAMES = TEMPLATE_GROUPS.flatMap((g) => g.names.map(([n]) => n));
 const FILTERS = ["json", "url"];
 const PLACEHOLDER = /\{\{\s*([\w.]+)\s*(?:\|\s*(\w+)\s*)?\}\}/g;
 
