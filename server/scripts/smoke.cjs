@@ -8,7 +8,7 @@ const fs = require("fs");
 const os = require("os");
 
 const tokens = process.env.TOKENS ? JSON.parse(fs.readFileSync(process.env.TOKENS, "utf8")) : { pat: "pat-test", dev: "dev-test", qa: "qa-test" };
-const base = process.env.BASE_URL || "http://127.0.0.1:3917";
+const base = process.env.BASE_URL || "http://127.0.0.1:10093/todo-demo";
 const out = process.env.SHOTS || os.tmpdir();
 const errors = [];
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
