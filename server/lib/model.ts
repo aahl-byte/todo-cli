@@ -191,11 +191,14 @@ export function moves(from: string, ctx: MoveContext = {}): Move[] {
   return out.sort((a, b) => order[a.group] - order[b.group]);
 }
 
+/** Moves that post their required reason as a comment tagged with the status. */
+export const REASONED = ["blocked", "cancelled"];
+
 export function commentRule(from: string, to: string): Pick<Move, "comment" | "rejection"> {
   if (to === "qa-rejected") return { comment: "required", rejection: true };
   if (to === "in-progress" && (from === "deployed" || from === "done")) return { comment: "required" };
   if (to === "in-progress" && from === "review") return { comment: "optional" };
-  if (to === "blocked") return { comment: "optional" };
+  if (to === "blocked" || to === "cancelled") return { comment: "required" };
   return { comment: null };
 }
 

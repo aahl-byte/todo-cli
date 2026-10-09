@@ -526,7 +526,7 @@ def test_lost_push_response_replays_without_self_rejection(pair, server):
     run_cli(a, ["status", "login-bug", "in-progress"])
     flaky = Flaky(server, "alice")
     assert sync.run_round(a, flaky).error
-    run_cli(a, ["status", "login-bug", "blocked"])
+    run_cli(a, ["status", "login-bug", "blocked", "--reason", "waiting"])
     report = sync.run_round(a, flaky)
     assert report.error is None and report.rejected == 0
     assert server.rows[item(a)["uid"]]["status"] == "blocked"

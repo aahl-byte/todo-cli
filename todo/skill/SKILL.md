@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.11.7
+version: 0.12.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -56,7 +56,9 @@ be redundant:
   reorganizing the list) with no artifact for anyone to look at.
 
 `blocked` is a special state an item enters on demand — use it when you couldn't
-continue.
+continue. **`blocked` and `cancelled` each take a required reason** —
+`todo block <q> "<what it's waiting on>"`, `todo cancel <q> "<why>"` — posted as
+a comment tagged with the status.
 
 `done` and `cancelled` are the terminal pair: both hide from `todo list`.
 `cancelled` items move to `.TODO/CANCELLED/` at once; `done` items move to
@@ -203,10 +205,10 @@ todo get <query> [--log]         # show one item in full (--log: the whole dev l
 todo triage <query>              # → in-triage  (planning)
 todo start  <query>              # → in-progress (developing)
 todo review <query>              # → review     (awaiting user review)
-todo block  <query>              # → blocked    (can't proceed)
+todo block  <query> <reason>     # → blocked    (can't proceed; reason posted as a comment)
 todo done   <query>              # → done       (stamps completed)
 todo defer  <query>              # → deferred
-todo cancel <query>              # → cancelled  (terminal like done: hidden, filed in CANCELLED/)
+todo cancel <query> <reason>     # → cancelled  (terminal like done: hidden, filed in CANCELLED/)
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note (write it as legible Markdown); --kind K

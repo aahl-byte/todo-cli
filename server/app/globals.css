@@ -185,7 +185,8 @@ code { font: 12px var(--mono); color: var(--md-strong); background: var(--raise)
 .live { width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 7px var(--cyan); }
 .live.off { background: var(--faint); box-shadow: none; }
 .count { font: 600 9px var(--mono); color: var(--ink); background: var(--amber); border-radius: 8px; padding: 0 5px; margin-left: 4px; }
-main { padding: 16px max(16px, env(safe-area-inset-left)); max-width: 1440px; margin: 0 auto; }
+main { padding: 16px max(16px, env(safe-area-inset-left)); margin: 0 auto; }
+main:has(> .item), main.inbox { max-width: 1440px; }
 h1 { font: 600 11px var(--disp); letter-spacing: .16em; text-transform: uppercase; color: var(--dim); margin: 2px 0 14px; }
 
 /* ---- pinned sidebar -------------------------------------------------------- */
@@ -605,3 +606,4 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .env-box:has(input:checked) { color: #0b0e12; background: color-mix(in srgb, var(--env) 80%, transparent);
   border-color: var(--env); }
 .env-box:has(input:focus-visible) { outline: 1px solid var(--env); outline-offset: 1px; }
+.copied-mark { color: var(--ok, var(--cyan)); }

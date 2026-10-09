@@ -88,7 +88,7 @@ def test_status_name_as_legacy_command(root):
     # every one of the 7 statuses works as a bare subcommand
     for status in ["todo", "in-triage", "in-progress", "review",
                    "blocked", "deferred", "done"]:
-        run(root, [status, "beta"])
+        run(root, [status, "beta", "why"] if status == "blocked" else [status, "beta"])
         assert store.resolve_item(root, "beta")["status"] == status
 
 

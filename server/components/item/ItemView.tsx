@@ -5,7 +5,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
 import type { ActionState } from "@/lib/action-helpers";
-import { COMPLETE, isAgentParty, moves, PARKED, SEEN, STATUSES, type Move } from "@/lib/model";
+import { COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import { Markdown } from "../Markdown";
 import { Composer } from "../Composer";
@@ -253,9 +253,11 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
   const forcing = move.status === "deployed" && pendingPre > 0;
   const title = move.rejection ? "Send back from QA"
     : move.status === "blocked" ? "Block"
+    : move.status === "cancelled" ? "Cancel"
     : forcing ? `Deploy with ${pendingPre} pre-deploy check${pendingPre > 1 ? "s" : ""} pending?`
     : `${from} → ${move.status}`;
-  const placeholder = move.rejection ? "What failed?" : move.status === "blocked" ? "Blocked on…" : "Why?";
+  const placeholder = move.rejection ? "What failed?" : move.status === "blocked" ? "Blocked on…"
+    : move.status === "cancelled" ? "Why it won't be done" : "Why?";
   const ok = !busy && (move.comment !== "required" || !!text.trim());
   const submit = async () => { if (!ok) return; setBusy(true); await onSubmit(text, forcing); setBusy(false); };
   return (
@@ -268,7 +270,7 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
       <div className="actions">
         <button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className={`btn ${forcing || move.rejection ? "danger" : "primary"}`} disabled={!ok} onClick={() => void submit()}>
-          {forcing ? "Deploy anyway" : move.rejection ? "Send back" : move.status === "blocked" ? "Block" : "Move"}
+          {forcing ? "Deploy anyway" : move.rejection ? "Send back" : move.status === "blocked" ? "Block" : move.status === "cancelled" ? "Cancel it" : "Move"}
         </button>
       </div>
     </Popup>
@@ -345,7 +347,8 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
             <div className="body">
               <div className="who">
                 {isNew(c.ts, c.author) && <NewTag />}
-                {c.kind === "qa-rejection" && <span className="tag rej">QA rejected</span>} {c.author}
+                {c.kind === "qa-rejection" && <span className="tag rej">QA rejected</span>}
+                {c.kind === "comment" && REASONED.includes(c.meta?.with_status) && <span className="tag rej">{c.meta.with_status}</span>} {c.author}
                 {c.via === "agent" && <span className="ai">AI</span>}
                 {c.source === "jira" && <span className="faint"> · jira</span>} <Ago ts={c.ts} />
                 {c.meta?.edited_at && <span className="faint" data-tip={`edited ${new Date(c.meta.edited_at).toLocaleString()}`}> · edited</span>}

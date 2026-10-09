@@ -230,7 +230,8 @@ describe("transitions", () => {
     expect(m("in-qa", "in-progress")).toBeUndefined();
     expect(m("deployed", "in-progress")).toMatchObject({ comment: "required" });
     expect(m("review", "in-progress")).toMatchObject({ comment: "optional" });
-    expect(m("todo", "blocked")).toMatchObject({ comment: "optional" });
+    expect(m("todo", "blocked")).toMatchObject({ comment: "required" });
+    expect(m("todo", "cancelled")).toMatchObject({ comment: "required" });
     expect(m("todo", "in-progress")).toMatchObject({ comment: null });
   });
   it("lets every active status be cancelled and requested items only reach triage", () => {
@@ -247,6 +248,12 @@ describe("move ops", () => {
   it("refuses moves outside the table and missing required comments", () => {
     expect(() => build.moveOps({ ...it1, status: "requested" }, "in-progress", { me: "dev" })).toThrow(/Can't move/);
     expect(() => build.moveOps({ ...it1, status: "in-qa" }, "qa-rejected", { me: "qa" })).toThrow(/comment/);
+  });
+  it("tags a block or cancel reason with the status it gave", () => {
+    expect(() => build.moveOps({ ...it1, status: "todo" }, "blocked", { me: "dev" })).toThrow(/comment/);
+    const [s, n] = build.moveOps({ ...it1, status: "todo" }, "cancelled", { me: "dev", comment: "superseded" });
+    expect(n).toMatchObject({ data: { kind: "comment", text: "superseded", meta: { with_status: "cancelled" } } });
+    expect(n.group).toBe(s.group);
   });
   it("groups a rejection comment with the status change", () => {
     const [s, n] = build.moveOps({ ...it1, status: "in-qa", qa_assignee: "qa" }, "qa-rejected", { me: "qa", comment: "broken" });

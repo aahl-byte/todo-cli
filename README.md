@@ -47,10 +47,10 @@ Move an item along as your relationship to it changes:
 | `in-triage`   | you're writing a plan / scoping it   | `todo triage <q>`  |
 | `in-progress` | you're actively building it          | `todo start <q>`   |
 | `review`      | awaiting user review (purple)        | `todo review <q>`  |
-| `blocked`     | can't proceed (red)                  | `todo block <q>`   |
+| `blocked`     | can't proceed (red)                  | `todo block <q> <reason>` |
 | `done`        | complete (stamps `completed`)        | `todo done <q>`    |
 | `deferred`    | parked off the main path             | `todo defer <q>`   |
-| `cancelled`   | never going to happen (dim red)      | `todo cancel <q>`  |
+| `cancelled`   | never going to happen (dim red)      | `todo cancel <q> <reason>` |
 
 `review` and `blocked` are special states an item enters on demand — not every
 item passes through them. In a TTY the list/get views colorize each status
@@ -139,10 +139,10 @@ todo get <query> [--log]         # show one item in full (--log: whole dev log)
 todo triage <query>              # → in-triage  (planning)
 todo start  <query>              # → in-progress (developing)
 todo review <query>              # → review     (awaiting user review)
-todo block  <query>              # → blocked    (can't proceed)
+todo block  <query> <reason>     # → blocked    (can't proceed; reason posted as a comment)
 todo done   <query>              # → done       (stamps completed)
 todo defer  <query>              # → deferred
-todo cancel <query>              # → cancelled  (terminal, like done)
+todo cancel <query> <reason>     # → cancelled  (terminal, like done; reason posted as a comment)
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note

@@ -30,7 +30,7 @@ from . import identity
 from . import init as init_mod
 from . import link as link_mod
 from . import filecache, migrate, remote, render, store, sync
-from .status import ACTIVE, COMPLETE, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
+from .status import ACTIVE, COMPLETE, REASONED, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
 # Shortcuts that make no sense for a child task: `deploy` is gated by the item's
@@ -52,18 +52,25 @@ def _require_root(root: Path) -> None:
         die(f"No {store.ROOT_NAME} found at {root}\n(use --dir to point elsewhere)", 2)
 
 
-def _set_status(root: Path, query: str, status: str, force: bool = False) -> None:
+def _set_status(root: Path, query: str, status: str, force: bool = False, reason: str = "") -> None:
     if status not in STATUSES:
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
     it = store.resolve_item(root, query)
     _check_transition(it, status, force)
+    reason = reason.strip()
+    if status in REASONED and status != it["status"] and not reason:
+        verb = {v: k for k, v in SHORTCUTS.items()}[status]
+        die(f'Moving to {status} needs a reason: todo {verb} {it["id"]} "<why>"', 2)
     forced = (status == "deployed" and it["status"] != status
               and bool(store.pending_pre_deploy(it)))
     patch = {"status": status}
     if status == "in-progress" and not it["developer"]:
         patch["developer"] = identity.user()
     store.update_todo(root, it["id"], patch, now(), forced=forced)
-    print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else ""))
+    note = ""
+    if reason and status in REASONED:
+        note = f"  (comment [{store.add_note(root, it['id'], reason, now(), kind='comment', extra={'with_status': status})}])"
+    print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else "") + note)
     if status in ("in-progress", "review") and sync.enabled(root):
         _warn_empty_fields(it)
     if status != it["status"]:
@@ -183,7 +190,7 @@ def related_items(root: Path, it: dict) -> list:
 
 
 def cmd_status(root: Path, args) -> None:
-    _set_status(root, args.query, args.status, args.force)
+    _set_status(root, args.query, args.status, args.force, args.reason or "")
 
 
 def cmd_shortcut(root: Path, args) -> None:
@@ -191,13 +198,13 @@ def cmd_shortcut(root: Path, args) -> None:
     cfg = remote.sync_config(root) or {}
     if status in ("qa-approved", "ready-to-deploy") and cfg.get("deploy_step") is False:
         status = "done"             # a project with no deploy step finishes at QA approval
-    _set_status(root, args.query, status, getattr(args, "force", False))
+    _set_status(root, args.query, status, getattr(args, "force", False), " ".join(getattr(args, "reason", None) or []))
 
 
 def cmd_status_alias(root: Path, args) -> None:
     # Legacy: the bare status name used as a command (`todo in-progress X`).
     # The subcommand name IS the target status.
-    _set_status(root, args.query, args.command, getattr(args, "force", False))
+    _set_status(root, args.query, args.command, getattr(args, "force", False), " ".join(getattr(args, "reason", None) or []))
 
 
 def cmd_reject(root: Path, args) -> None:
@@ -914,6 +921,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("status", choices=STATUSES, help="new status")
     p.add_argument("--force", action="store_true",
                    help="deploy even with pending pre-deploy checks")
+    p.add_argument("--reason", default=None, help=f"why; required for {' and '.join(REASONED)}")
     p.set_defaults(func=cmd_status)
 
     for name, helptext in SHORTCUT_HELP.items():
@@ -930,6 +938,8 @@ def build_parser() -> argparse.ArgumentParser:
         if SHORTCUTS[name] == "deployed":
             p.add_argument("--force", action="store_true",
                            help="deploy even with pending pre-deploy checks")
+        if SHORTCUTS[name] in REASONED:
+            p.add_argument("reason", nargs="*", help="why (required; posted as a comment)")
         p.set_defaults(func=cmd_shortcut)
 
     p = sub.add_parser("reject", parents=[common],
@@ -1217,6 +1227,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("query", help="id or part of a title")
         if status == "deployed":
             p.add_argument("--force", action="store_true")
+        if status in REASONED:
+            p.add_argument("reason", nargs="*")
         p.set_defaults(func=cmd_status_alias)
 
     return parser

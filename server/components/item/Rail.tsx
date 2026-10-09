@@ -12,6 +12,7 @@ import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { Glance } from "./Glance";
 import { AppFields } from "../AppFields";
+import { CopyButton } from "../Copy";
 import { withBase } from "@/lib/base";
 
 type Row = Record<string, any>;
@@ -63,8 +64,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
                 options={PRIORITIES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.priority) edit("priority", v); }} />
           {it.super_phase != null && <><span className="k">phase</span><span>P{it.super_phase}</span></>}
           <span className="k">id</span>
-          <button type="button" className="edit-text mono-id" data-tip="copy"
-                  onClick={() => void navigator.clipboard?.writeText(it.id)}>{it.id}</button>
+          <CopyButton text={it.id} className="edit-text mono-id">{it.id}</CopyButton>
           {it.jira.length > 0 && (
             <>
               <span className="k">jira</span>
@@ -113,8 +113,8 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
       <div className="action-buttons">
         {ctx.actions.map((a) => a.runner === "server"
           ? <button key={a.id} type="button" className="btn" disabled={busy !== null} onClick={() => void run(a.id)}>{busy === a.id && <span className="spin" aria-label="running" />}{a.name}</button>
-          : <button key={a.id} type="button" className="btn" data-tip={`runs from the CLI: todo action ${itemId} ${a.id} (click to copy)`}
-                    onClick={() => void navigator.clipboard?.writeText(`todo action ${itemId} ${a.id}`)}>{a.name} ⧉</button>)}
+          : <CopyButton key={a.id} className="btn" text={`todo action ${itemId} ${a.id}`}
+                        tip={`runs from the CLI: todo action ${itemId} ${a.id} (click to copy)`}>{a.name} ⧉</CopyButton>)}
       </div>
     </section>
   );

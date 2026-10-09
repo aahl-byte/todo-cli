@@ -3,6 +3,8 @@ in CANCELLED/ — but with no `completed` stamp, since nothing was completed."""
 
 from pathlib import Path
 
+import pytest
+
 from todo import store, yamlio
 from todo.cli import build_parser
 
@@ -14,13 +16,26 @@ def run(file, argv):
 
 
 def test_cancel_shortcut(root):
-    run(root, ["cancel", "beta"])
+    run(root, ["cancel", "beta", "superseded"])
     assert store.resolve_item(root, "beta")["status"] == "cancelled"
     assert store.resolve_item(root, "beta")["completed"] is None
 
 
+def test_cancel_and_block_need_a_reason_posted_as_a_comment(root):
+    for argv in (["cancel", "beta"], ["block", "beta"], ["status", "beta", "blocked"]):
+        with pytest.raises(SystemExit):
+            run(root, argv)
+    run(root, ["block", "beta", "waiting", "on", "the", "API"])
+    it = store.resolve_item(root, "beta")
+    note = it["notes"][-1]
+    assert it["status"] == "blocked"
+    assert (note["kind"], note["text"], note["meta"]["with_status"]) == ("comment", "waiting on the API", "blocked")
+    run(root, ["status", "beta", "cancelled", "--reason", "dropped"])
+    assert store.resolve_item(root, "beta")["notes"][-1]["text"] == "dropped"
+
+
 def test_cancelled_hidden_from_list_shown_with_all(root, capsys):
-    run(root, ["cancel", "beta"])
+    run(root, ["cancel", "beta", "superseded"])
     capsys.readouterr()
     run(root, ["list"])
     assert "beta" not in capsys.readouterr().out
@@ -32,7 +47,7 @@ def test_cancelled_hidden_from_list_shown_with_all(root, capsys):
 
 def test_cancel_moves_to_cancelled_and_archive_takes_done_and_cancelled(root, capsys):
     run(root, ["done", "alpha"])
-    run(root, ["cancel", "beta"])
+    run(root, ["cancel", "beta", "superseded"])
     assert (root / "CANCELLED" / "beta").is_dir()
     assert (root / "OPEN" / "alpha").is_dir()
     capsys.readouterr()
@@ -45,7 +60,7 @@ def test_cancel_moves_to_cancelled_and_archive_takes_done_and_cancelled(root, ca
 
 
 def test_reopening_an_archived_cancelled_item_unarchives_it(root):
-    run(root, ["cancel", "beta"])
+    run(root, ["cancel", "beta", "superseded"])
     run(root, ["archive"])
     run(root, ["start", "beta"])
     assert "archived" not in yamlio.read(root / "OPEN" / "beta" / store.ITEM_FILE)

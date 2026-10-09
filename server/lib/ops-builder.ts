@@ -2,7 +2,7 @@
 // versions the form was opened with, so a stale tab is rejected rather than
 // overwriting a newer change.
 import type { Op } from "./apply";
-import { DONE_ENV, ENVIRONMENTS, envList, ITEM_TYPES, moves, nowIso, SEEN, STATUSES, ticked } from "./model";
+import { DONE_ENV, ENVIRONMENTS, envList, ITEM_TYPES, moves, nowIso, REASONED, SEEN, STATUSES, ticked } from "./model";
 import { ulid } from "./ulid";
 
 export type Versions = Record<string, number>;
@@ -185,7 +185,7 @@ export function moveOps(item: MoveItem, to: string, opts: {
     setOp("item", item, data, { ...extra, group }),
     createOp("note", item.uid, {
       kind: move.rejection ? "qa-rejection" : "comment", text: comment, ts: nowIso(),
-      meta: move.rejection ? { with_status: to } : {},
+      meta: move.rejection || REASONED.includes(to) ? { with_status: to } : {},
     }, { group }),
   ];
 }

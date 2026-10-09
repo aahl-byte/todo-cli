@@ -45,6 +45,9 @@ PAST_TRIAGE = {"todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-app
                "qa-rejected", "ready-to-deploy", "deployed", "done"}
 
 # Shortcut subcommand → status it sets.
+# Statuses a person or agent must give a reason for; it's posted as a comment.
+REASONED = ("blocked", "cancelled")
+
 SHORTCUTS = {
     "request": "requested",
     "triage": "in-triage",
@@ -68,9 +71,9 @@ SHORTCUT_HELP = {
     "triage": "→ in-triage (planning)",
     "start": "→ in-progress (developing)",
     "review": "→ review (awaiting user review)",
-    "block": "→ blocked (can't proceed)",
+    "block": "→ blocked (can't proceed), with a required reason",
     "defer": "→ deferred",
-    "cancel": "→ cancelled (never going to happen)",
+    "cancel": "→ cancelled (never going to happen), with a required reason",
     "done": "→ done (stamps completed)",
     "reopen": "→ todo",
     "ready-qa": "→ ready-for-qa (hand to QA)",

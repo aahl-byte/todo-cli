@@ -26,7 +26,7 @@ def test_status_changes_move_the_item(root):
     assert folder(root, "beta") == "DEFERRED"
     run(root, ["start", "beta"])
     assert folder(root, "beta") == "OPEN"
-    run(root, ["cancel", "beta"])
+    run(root, ["cancel", "beta", "superseded"])
     assert folder(root, "beta") == "CANCELLED"
 
 
@@ -68,7 +68,7 @@ def test_misfiled_item_is_moved_on_read(root):
 
 def test_title_query_prefers_open_items(root):
     store.add_todo(root, "beta two", TS)
-    run(root, ["cancel", "beta-two"])
+    run(root, ["cancel", "beta-two", "superseded"])
     assert store.resolve_item(root, "bet")["id"] == "beta"
 
 
