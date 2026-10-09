@@ -161,7 +161,7 @@ todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # reorder
 todo task title <query> <id> <title...>  # retitle a task
 todo task rm <query> <id>        # remove task by id
 todo add    "<title>" [--request TEXT [--url U]] [--app A] [--section S]   # add an item
-todo comment|ask <query> <text...>        # comment (@mentions) | clarification question
+todo comment|ask <query> <text...> [--re ID]  # comment (@mentions) | clarification question; --re: in question ID's thread
 todo answer <query> <id> <text...>        # answer a clarification
 todo updates <query> [--ack]              # notes, answers and log entries you haven't acknowledged
 todo ack <query> n<id>|l<id>...           # acknowledge notes and questions (n) or log entries (l)

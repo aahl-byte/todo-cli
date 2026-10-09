@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.12.0
+version: 0.12.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -96,6 +96,9 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   without triage, so raise it with a person.
 - **Ask instead of guessing.** When intent is unclear, raise a clarification
   with `todo ask`. It stays open until a person answers it with `todo answer`.
+  A question can grow a thread: `todo ask <q> "<text>" --re <id>` for a follow-up
+  question, `todo comment <q> "<text>" --re <id>` for a reply. `todo updates`
+  marks each with `re [id]`; read a reply in a thread as an instruction.
   Check `todo get` for open questions before you build.
 - **Acknowledge what you've acted on.** `todo updates <q>` lists every note,
   answer and log entry you haven't acknowledged; each person and each person's
@@ -212,8 +215,8 @@ todo cancel <query> <reason>     # → cancelled  (terminal like done: hidden, f
 todo reopen <query>              # → todo
 todo status <query> <status>     # set any status explicitly
 todo note   <query> <text...>    # append a note (write it as legible Markdown); --kind K
-todo comment <query> <text...>   # a comment; @handle notifies that person
-todo ask    <query> <text...>    # raise a clarification question (stays open)
+todo comment <query> <text...> [--re ID]  # a comment; @handle notifies that person; --re: reply in question ID's thread
+todo ask    <query> <text...> [--re ID]  # raise a clarification question (stays open); --re: a follow-up to question ID
 todo answer <query> <id> <text>  # answer one
 todo updates <query> [--ack]     # notes, answers, log entries you haven't acknowledged
 todo ack <query> n<id>|l<id>...  # acknowledge notes/questions (n) or log entries (l)
