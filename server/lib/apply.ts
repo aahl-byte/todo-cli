@@ -178,7 +178,8 @@ class Ctx {
   }
 
   async notify(handle: string | null | undefined, kind: string, itemUid: string, noteUid?: string) {
-    if (!handle || handle === this.actor.handle) return;
+    // A person's own agent acting for them still tells them.
+    if (!handle || (handle === this.actor.handle && this.op.via !== "agent")) return;
     const known = await this.t.query("select 1 from users where handle = $1", [handle]);
     if (!known.length) return;
     await this.t.query(

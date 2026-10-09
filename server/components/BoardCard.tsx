@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { CSSProperties } from "react";
 import { Led } from "@/components/ui";
 import { deriveCalcStatus, PAST_TRIAGE } from "@/lib/model";
 import type { Card } from "@/lib/views";
@@ -26,14 +27,41 @@ function Glance({ c }: { c: Card }) {
   );
 }
 
+const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? "s" : ""}`;
+const flagCount = (c: Card) => Number(!!c.unseen_comments) + Number(!!c.unseen_answers) + Number(c.open_questions > 0 || !!c.my_open_questions);
+const hasFlags = (c: Card) => flagCount(c) > 0;
+
+function CommentIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <path d="M2.5 3h11a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7l-3 2.5v-2.5H2.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Top-right flags: unseen comments, unseen answers to my questions, then open questions. */
+function Flags({ c }: { c: Card }) {
+  if (!hasFlags(c)) return null;
+  return (
+    <span className="flags">
+      {!!c.unseen_comments && <span className="flag comments" data-tip={`${plural(c.unseen_comments, "comment")} since you last looked`}><CommentIcon /></span>}
+      {!!c.unseen_answers && <span className="flag answers" data-tip={`${plural(c.unseen_answers, "answer")} to your questions since you last looked`}>↩</span>}
+      {c.open_questions > 0
+        ? <span className="flag asks" data-tip={plural(c.open_questions, "open question")}>?</span>
+        : !!c.my_open_questions && <span className="flag asks mine" data-tip={`${plural(c.my_open_questions, "question")} of yours, waiting on an answer`}>?</span>}
+    </span>
+  );
+}
+
 /** A board card: status, title, where it lives, and its badges. */
 export function BoardCard({ c, project, who, led, current }: {
   c: Card; project: string; who: string | null; led: boolean; current?: boolean;
 }) {
   return (
-    <Link href={`/p/${project}/i/${c.id}`} className={`card s-${c.status} ${c.open_questions > 0 ? "asking" : ""}`} data-uid={c.uid}
+    <Link href={`/p/${project}/i/${c.id}`} className={`card s-${c.status} ${hasFlags(c) ? "flagged" : ""}`} data-uid={c.uid}
+          style={hasFlags(c) ? ({ "--flags": flagCount(c) } as CSSProperties) : undefined}
           aria-current={current ? "page" : undefined}>
-      {c.open_questions > 0 && <span className="asks" data-tip={`${c.open_questions} open question${c.open_questions > 1 ? "s" : ""}`}>?</span>}
+      <Flags c={c} />
       {led && <Led status={c.status} label />}
       <div className="title">{c.title}</div>
       {c.extra?.app ? <div className="where">{c.extra.app}{c.extra.section && ` · ${c.extra.section}`}</div>

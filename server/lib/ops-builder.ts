@@ -101,7 +101,7 @@ export function relationOps(itemUid: string, target: string): Op[] {
 export function answerOps(note: Ref, text: string, me: string): Op[] {
   if (!text.trim()) throw new Error("Write an answer first.");
   return [setOp("note", note, { "meta.state": "answered", "meta.answer": text.trim(),
-                                "meta.answered_by": me, "meta.answered_at": nowIso() })];
+                                "meta.answered_by": me, "meta.answered_via": via, "meta.answered_at": nowIso() })];
 }
 
 /** Adds `me` to who has seen each entry; the server merges it with anyone else's. */

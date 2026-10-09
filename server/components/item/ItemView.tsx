@@ -51,8 +51,8 @@ function seenOnce(project: string, itemUid: string) {
   return result;
 }
 
-/** Whether something another person wrote at `ts` arrived since my last visit. */
-type IsNew = (ts: string | null | undefined, by: string | null | undefined) => boolean;
+/** Whether something I didn't write myself (another person, or my agent) arrived at `ts`, since my last visit. */
+type IsNew = (ts: string | null | undefined, by: string | null | undefined, via?: string | null) => boolean;
 const Fresh = createContext<IsNew>(() => false);
 export const useIsNew = () => useContext(Fresh);
 const NewTag = () => <span className="tag new">new</span>;
@@ -74,9 +74,13 @@ function defaultTab(openQuestions: number): Tab {
   return openQuestions ? "questions" : "comments";
 }
 
+/** A question waits on its reader unless they asked it themself. */
+export const askedByMe = (q: Row, me: string) => q.author === me && q.via !== "agent";
+
 export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   const it = data.item;
-  const openQs = data.questions.filter((q) => q.meta?.state !== "answered");
+  const openQs = data.questions.filter((q) => q.meta?.state !== "answered" && !askedByMe(q, ctx.me));
+  const myOpenQs = data.questions.filter((q) => q.meta?.state !== "answered").length - openQs.length;
   const [tab, setTab] = useState<Tab>(() => defaultTab(openQs.length));
   const [focus, setFocus] = useState<string | null>(null);
 
@@ -115,13 +119,14 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
     });
     return () => { live = false; };
   }, [ctx.project, it.uid]);
-  const isNew: IsNew = (ts, by) => !!lastSeen && !!ts && by !== ctx.me && Date.parse(ts) > Date.parse(lastSeen);
-  const newComments = data.comments.some((c) => isNew(c.ts, c.author));
-  const newQuestions = data.questions.some((q) => isNew(q.ts, q.author) || isNew(q.meta?.answered_at, q.meta?.answered_by));
+  const isNew: IsNew = (ts, by, via) => !!lastSeen && !!ts && !(by === ctx.me && via !== "agent") && Date.parse(ts) > Date.parse(lastSeen);
+  const newComments = data.comments.some((c) => isNew(c.ts, c.author, c.via));
+  const newQuestions = data.questions.some((q) => isNew(q.ts, q.author, q.via) || answerIsNew(isNew, q));
   const dot = <span className="new-dot" aria-label="new" />;
   const tabs: { key: Tab; label: string; n?: ReactNode }[] = [
     { key: "comments", label: "Comments", n: data.comments.length ? <>{newComments && dot}{data.comments.length}</> : null },
-    { key: "questions", label: "Questions", n: openQs.length || newQuestions ? <>{newQuestions && dot}{openQs.length ? <span className="q-n">{openQs.length}</span> : null}</> : null },
+    { key: "questions", label: "Questions", n: openQs.length || myOpenQs || newQuestions ? <>{newQuestions && dot}
+        {openQs.length ? <span className="q-n">{openQs.length}</span> : myOpenQs ? <span className="faint" data-tip="your questions, waiting on an answer">{myOpenQs}</span> : null}</> : null },
     { key: "tasks", label: "Tasks", n: data.tasks.length ? `${tasksDone}/${data.tasks.length}` : null },
     { key: "notes", label: "Notes", n: data.notes.length || null },
     { key: "log", label: "Log", n: data.logs.length || null },
@@ -343,10 +348,10 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "comment", text }))} />
       <ul className="entries">
         {[...data.comments].reverse().map((c) => (
-          <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""} ${isNew(c.ts, c.author) ? "is-new" : ""}`} data-uid={c.uid}>
+          <li key={c.uid} id={`n-${c.n}`} className={`entry ${focus === `n-${c.n}` ? "focus" : ""} ${isNew(c.ts, c.author, c.via) ? "is-new" : ""}`} data-uid={c.uid}>
             <div className="body">
               <div className="who">
-                {isNew(c.ts, c.author) && <NewTag />}
+                {isNew(c.ts, c.author, c.via) && <NewTag />}
                 {c.kind === "qa-rejection" && <span className="tag rej">QA rejected</span>}
                 {c.kind === "comment" && REASONED.includes(c.meta?.with_status) && <span className="tag rej">{c.meta.with_status}</span>} {c.author}
                 {c.via === "agent" && <span className="ai">AI</span>}
@@ -370,7 +375,7 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
   const open = data.questions.filter((q) => q.meta?.state !== "answered");
   const answered = data.questions.filter((q) => q.meta?.state === "answered");
   const [showAnswered, setShowAnswered] = useState(true);
-  const newAnswer = answered.some((q) => isNew(q.meta?.answered_at, q.meta?.answered_by));
+  const newAnswer = answered.some((q) => answerIsNew(isNew, q));
   useEffect(() => { if (newAnswer) setShowAnswered(true); }, [newAnswer]);
   useEffect(() => {
     if (answered.some((q) => focus === `n-${q.n}`)) setShowAnswered(true);
@@ -391,11 +396,11 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
           {showAnswered && (
             <ul className="entries">
               {answered.map((q) => (
-                <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""} ${isNew(q.meta?.answered_at, q.meta?.answered_by) ? "is-new" : ""}`} data-uid={q.uid}>
+                <li key={q.uid} id={`n-${q.n}`} className={`entry ${focus === `n-${q.n}` ? "focus" : ""} ${answerIsNew(isNew, q) ? "is-new" : ""}`} data-uid={q.uid}>
                   <div className="body">
                     <div className="qa-q"><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
                     <div className="qa-a"><span className="qa-tag">A</span><div><Markdown text={q.meta?.answer ?? ""} /></div></div>
-                    <div className="who">{isNew(q.meta?.answered_at, q.meta?.answered_by) && <NewTag />}{q.meta?.answered_by} <Ago ts={q.meta?.answered_at} /> <Seen row={q} entity="note" ctx={ctx} /></div>
+                    <div className="who">{answerIsNew(isNew, q) && <NewTag />}{q.meta?.answered_by}{q.meta?.answered_via === "agent" && <span className="ai">AI</span>} <Ago ts={q.meta?.answered_at} /> <Seen row={q} entity="note" ctx={ctx} /></div>
                   </div>
                 </li>
               ))}
@@ -408,7 +413,8 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
 }
 
 function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | null }) {
-  const fresh = useIsNew()(q.ts, q.author);
+  const fresh = useIsNew()(q.ts, q.author, q.via);
+  const mine = askedByMe(q, ctx.me);
   const [answering, setAnswering] = useState(false);
   const pinned = useRef(q.versions);
   const [draft, setDraft] = useState("");
@@ -422,8 +428,10 @@ function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | nul
   return (
     <li id={`n-${q.n}`} className={`entry question ${focus === `n-${q.n}` ? "focus" : ""} ${fresh ? "is-new" : ""}`} data-uid={q.uid}>
       <div className="body">
-        <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} /> <Seen row={q} entity="note" ctx={ctx} /></div>
-        <div className="qa-q open"><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
+        <div className="who">{fresh && <NewTag />}{q.author}{q.via === "agent" && <span className="ai">AI</span>} <Ago ts={q.ts} />
+          {mine && <span className="tag waiting" data-tip="you asked this; it waits on an answer">waiting for an answer</span>}
+          <Seen row={q} entity="note" ctx={ctx} /></div>
+        <div className={`qa-q ${mine ? "mine" : "open"}`}><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
         {answering ? (
           <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
             <textarea rows={2} autoFocus value={draft} aria-label="answer" placeholder="Answer" onChange={(e) => setDraft(e.target.value)} />
@@ -439,6 +447,8 @@ function OpenQuestion({ q, ctx, focus }: { q: Row; ctx: Ctx; focus: string | nul
     </li>
   );
 }
+
+const answerIsNew = (isNew: IsNew, q: Row) => isNew(q.meta?.answered_at, q.meta?.answered_by, q.meta?.answered_via);
 
 // ── notes and dev log (watchtower: collapsed to the first line) ───────────────
 function firstLine(text: string): string {

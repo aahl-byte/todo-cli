@@ -518,7 +518,7 @@ def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: st
     for e in _read_entries(item_dir / NOTES_DIR):
         if e["id"] == note_id:
             meta = dict(e["meta"]) or {"uid": None, "kind": "context"}
-            meta.update(state="answered", answer=answer, answered_by=identity.user(),
+            meta.update(state="answered", answer=answer, answered_by=identity.user(), answered_via=identity.via(),
                         answered_at=now_iso, **{SEEN: [identity.party()]})
             yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
             return True

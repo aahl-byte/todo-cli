@@ -59,7 +59,7 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
   const [refused, setRefused] = useState(false);
   const [open, setOpen] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
-  const fresh = useIsNew()(req?.ts, req?.author);
+  const fresh = useIsNew()(req?.ts, req?.author, req?.via);
   // A version not yet triaged opens as its changes since the one triage last saw.
   const base = req && !req.meta?.triaged ? (versions.slice(1).find((v) => v.meta?.triaged) ?? versions[1] ?? null) : null;
   const [asText, setAsText] = useState(false);

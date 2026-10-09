@@ -51,26 +51,51 @@ export interface Card extends Row {
   last_to: string | null;
   request_meta: { version: number; triaged: boolean } | null;
   extra: Record<string, any> | null;
+  /** For the viewer passed to cards(): open questions they asked themself, which wait on someone else. */
+  my_open_questions?: number;
+  /** For the viewer: answers to their questions, and comments, that arrived since they last opened the item. */
+  unseen_answers?: number;
+  unseen_comments?: number;
 }
 
-export async function cards(d: Db, key: string, where = "", params: unknown[] = []): Promise<Card[]> {
+/** Per-viewer counts. An entry is the viewer's own only when they wrote it themself, not through their agent.
+ * Unseen means newer than their last visit; an item never visited counts from when they joined, if it's theirs. */
+function viewerColumns(me: string) {
+  const mine = (n: string) => `(${n}.author = ${me} and coalesce(${n}.via, 'human') <> 'agent')`;
+  const since = `coalesce((select s.seen_at from item_seen s where s.handle = ${me} and s.project = i.project and s.item_uid = i.uid),
+                          case when ${me} in (i.developer, i.qa_assignee, i.creator) then (select u.created from users u where u.handle = ${me}) end)`;
+  const open = "n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered'";
+  return `,
+       (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and ${open} and not ${mine("n")}) as open_questions,
+       (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and ${open} and ${mine("n")}) as my_open_questions,
+       (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification'
+           and n.meta->>'state' = 'answered' and n.author = ${me}
+           and not (n.meta->>'answered_by' = ${me} and coalesce(n.meta->>'answered_via', 'human') <> 'agent')
+           and (n.meta->>'answered_at')::timestamptz > ${since}) as unseen_answers,
+       (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind in ('comment', 'qa-rejection')
+           and not ${mine("n")} and n.ts::timestamptz > ${since}) as unseen_comments`;
+}
+
+/** Board cards. Pass `me` for the viewer's counts: open_questions then leaves out the viewer's own. */
+export async function cards(d: Db, key: string, where = "", params: unknown[] = [], me?: string): Promise<Card[]> {
+  const viewer = me ? viewerColumns(`$${params.length + 2}`) : "";
   const rows = await d.query(
     `select i.*,
        coalesce((select jsonb_agg(jsonb_build_object('key', l.jira_key, 'status', l.jira_status) order by l.linked_at, l.jira_key)
                    from jira_links l where l.item_uid = i.uid and l.project = i.project), '[]'::jsonb) as jira,
        coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_statuses,
        coalesce((select array_agg(coalesce(t.phase, -1) order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_phases,
-       (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,
+       ${viewer ? "" : "(select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,"}
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'pre-deploy' and c.status <> 'done') as pending_pre,
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'post-deploy' and c.status <> 'done') as pending_post,
        (select h.via from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_via,
        (select jsonb_build_object('version', coalesce((n.meta->>'version')::int, 1), 'triaged', coalesce((n.meta->>'triaged')::boolean, false))
           from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'ticket-request'
           order by coalesce((n.meta->>'version')::int, 1) desc, n.n desc limit 1) as request_meta,
-       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to
+       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to${viewer}
      from items i
      where i.project = $1 ${where}
-     order by i.created, i.id`, [key, ...params]);
+     order by i.created, i.id`, [key, ...params, ...(me ? [me] : [])]);
   return rows as Card[];
 }
 
@@ -130,7 +155,7 @@ function shipped(c: Card, cutoff: number): boolean {
 }
 
 export async function board(d: Db, p: Project, f: BoardFilters, me: string, now = Date.now()) {
-  const every = (await cards(d, p.key)).filter((c) => !c.extra?.archived);
+  const every = (await cards(d, p.key, "", [], me)).filter((c) => !c.extra?.archived);
   const cutoff = now - SHIPPED_DAYS * 864e5;
   const visible = every.filter((c) => (f.parked || !PARKED.includes(c.status))
     && (!["deployed", "done"].includes(c.status) || shipped(c, cutoff)));

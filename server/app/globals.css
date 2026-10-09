@@ -260,8 +260,13 @@ body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); 
 .card:hover { border-color: var(--line-2); color: inherit; }
 .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--s-todo)); }
 .card .title { font-size: 12.5px; font-weight: 500; color: var(--text); margin: 4px 0 6px; word-break: break-word; }
-.card .asks { position: absolute; top: 2px; right: 8px; font: 800 26px/1 var(--disp); color: var(--lilac); }
-.card.asking > .title, .card.asking > .stat { margin-right: 22px; }
+.card .flags { position: absolute; top: 4px; right: 8px; display: flex; gap: 5px; align-items: center; }
+.card .flag { display: inline-grid; place-items: center; line-height: 1; }
+.card .flag.asks { font: 800 18px/1 var(--disp); color: var(--lilac); }
+.card .flag.asks.mine { color: var(--faint); }
+.card .flag.comments { color: var(--amber); }
+.card .flag.answers { font: 700 14px/1 var(--mono); color: var(--cyan); }
+.card.flagged > .title, .card.flagged > .stat { margin-right: calc(var(--flags) * 18px + 4px); }
 .card .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-height: 18px; }
 .flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { box-shadow: inset 0 0 0 1px var(--amber); } to { box-shadow: none; } }
@@ -617,3 +622,6 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .template-ref dt button { padding: 0; }
 .template-ref dd { margin: 0; font-size: 12px; color: var(--dim); align-self: center; }
 @media (max-width: 600px) { .template-ref .ref-group dl { grid-template-columns: 1fr; } .template-ref dd { margin-bottom: 6px; } }
+.qa-q.mine { color: var(--text); }
+.qa-q.mine .qa-tag { color: var(--dim); border-color: var(--line-2); }
+.tag.waiting { color: var(--dim); }

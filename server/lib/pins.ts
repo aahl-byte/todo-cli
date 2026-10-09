@@ -8,7 +8,7 @@ export async function pins(db: Db, handle: string, project: string): Promise<Car
     "select item_uid from item_pins where handle = $1 and project = $2 order by pinned_at, item_uid",
     [handle, project])).map((r) => r.item_uid as string);
   if (!order.length) return [];
-  const rows = await cards(db, project, "and i.uid = any($2)", [order]);
+  const rows = await cards(db, project, "and i.uid = any($2)", [order], handle);
   return rows.sort((a, b) => order.indexOf(a.uid) - order.indexOf(b.uid));
 }
 

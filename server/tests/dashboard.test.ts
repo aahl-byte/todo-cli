@@ -685,6 +685,40 @@ describe("notices", () => {
   });
 });
 
+describe("questions and unseen activity per viewer", () => {
+  const answer = (uid: string, itemUid: string, via: "human" | "agent") =>
+    set("note", uid, itemUid, { "meta.state": "answered", "meta.answer": "yes", "meta.answered_by": "bob",
+                                "meta.answered_via": via, "meta.answered_at": new Date().toISOString() }, {}, { via });
+  const card = async (me: string, id: string) =>
+    (await board(w.d, (await project(w.d, "p"))!, {}, me)).columns.flatMap((c) => c.items).find((c) => c.uid === id)!;
+
+  it("tells a person when their own agent answers their question", async () => {
+    await w.one("bob", item("A1", { developer: "bob" }));
+    await w.one("bob", child("note", "Q1", "A1", { kind: "clarification", text: "why?" }));
+    await w.one({ handle: "bob", unconditional: true }, answer("Q1", "A1", "agent"));
+    expect(await w.d.query("select handle, kind from notifications")).toEqual([{ handle: "bob", kind: "answer" }]);
+  });
+
+  it("flags only questions for the viewer, and answers and comments they haven't seen", async () => {
+    await w.one("bob", item("A1", { developer: "bob" }));
+    await w.one("bob", child("note", "Q1", "A1", { kind: "clarification", text: "mine" }));
+    let mine = await card("bob", "A1");
+    expect([mine.open_questions, mine.my_open_questions]).toEqual([0, 1]);
+    expect((await card("alice", "A1")).open_questions).toBe(1);
+    await w.one({ handle: "bob", via: "agent" } as any, { ...child("note", "Q2", "A1", { kind: "clarification", text: "agent asks" }), via: "agent" });
+    await w.one({ handle: "bob", unconditional: true }, answer("Q1", "A1", "agent"));
+    await w.one({ handle: "bob" }, { ...child("note", "C1", "A1", { kind: "comment", text: "agent says" }), via: "agent" });
+    await w.one("bob", child("note", "C2", "A1", { kind: "comment", text: "I say" }));
+    mine = await card("bob", "A1");
+    expect([mine.open_questions, mine.my_open_questions, mine.unseen_answers, mine.unseen_comments]).toEqual([1, 0, 1, 1]);
+    const { markSeen } = await import("@/lib/inbox");
+    await markSeen(w.d, "bob", "p", "A1");
+    mine = await card("bob", "A1");
+    expect([mine.unseen_answers, mine.unseen_comments]).toEqual([0, 0]);
+    expect((await card("carol", "A1")).unseen_comments).toBe(0);   // not hers, never opened
+  });
+});
+
 describe("round-4 validation fixes", () => {
   it("counts a notice read on the way in as new on a first visit", async () => {
     const { markSeen } = await import("@/lib/inbox");
