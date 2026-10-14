@@ -251,6 +251,10 @@ body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); 
 .chip { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; color: var(--dim); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 4px 1px 8px; }
 .display-head { display: flex; align-items: baseline; gap: 12px; margin: 0 2px 14px; }
 .updated { color: var(--faint); font-size: 11px; }
+.displays { max-width: 720px; }
+.display-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 28px; }
+.display-picks .add { font-size: 14px; padding: 10px 14px; }
+.display-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(220px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
 .column > .label { display: flex; gap: 6px; margin: 0 2px 8px; }
 .column > .label .clear-col { margin-left: auto; }

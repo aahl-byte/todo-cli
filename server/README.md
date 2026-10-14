@@ -63,16 +63,16 @@ design; there are no per-project roles.
 
 `/display/<project>` shows a project's board with no controls, refreshing every
 minute, for a screen nobody signs in on. It takes a display key, not a user
-token, and a key opens one project's board and nothing else:
+token, and a key opens one project's board and nothing else.
 
-```bash
-DATABASE_URL=... NEXT_BASE_PATH=/todo-bishs npm run display -- add web tablet   # prints the link to open on the device
-DATABASE_URL=... npm run display -- list
-DATABASE_URL=... npm run display -- remove web tablet
-```
+**Set one up** on the device itself: sign in, open `/displays` (also under the
+user menu) and pick a project. The device keeps its key for a year, in a cookie
+sent only to `/display/`. The same page lists every display, when each was last
+seen, and removes one.
 
-Opening the link once stores the key in a cookie, scoped to `/display/`, for a
-year. Adding the same label again replaces its key.
+From a shell, `npm run display -- add <project> <label>` prints a link that sets
+up whichever browser opens it; `list` and `remove <project> <label>` match the
+page.
 
 Behind a sign-in proxy, let `<base>/display/` and `<base>/_next/static/`
 through without sign-in; the page needs the app's built assets and nothing else.

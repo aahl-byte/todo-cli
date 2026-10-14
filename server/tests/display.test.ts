@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { addProject } from "@/lib/auth";
-import { addDisplay, displayAllowed, removeDisplay } from "@/lib/display";
+import { addDisplay, displayAllowed, displays, removeDisplay } from "@/lib/display";
 import { world, type World } from "./helpers";
 
 const { GET: enroll } = await import("@/app/display/[key]/enroll/route");
@@ -32,6 +32,14 @@ describe("display keys", () => {
     expect(await displayAllowed(w.d, "p", old)).toBe(false);
     expect(await removeDisplay(w.d, "p", "tablet")).toBe(true);
     expect(await displayAllowed(w.d, "p", key)).toBe(false);
+  });
+
+  it("list with when each was last opened", async () => {
+    const key = await addDisplay(w.d, "p", "tablet");
+    await addDisplay(w.d, "q", "hall");
+    await displayAllowed(w.d, "p", key);
+    const rows = await displays(w.d);
+    expect(rows.map((r) => [r.project, r.label, !!r.last_seen])).toEqual([["p", "tablet", true], ["q", "hall", false]]);
   });
 
   it("enroll sets a display-scoped cookie and drops the key from the URL", async () => {

@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { BoardCard, columnWho } from "@/components/BoardCard";
@@ -15,7 +16,7 @@ export default async function Display({ params }: { params: Promise<{ key: strin
   const { key } = await params;
   const d = await db();
   if (!(await displayAllowed(d, key, (await cookies()).get(DISPLAY_COOKIE)?.value)))
-    return <main className="display"><p className="updated">This display isn't signed in. Open its display link again.</p></main>;
+    return <main className="display"><p className="updated">This display isn't signed in. Set it up again from <Link href="/displays">displays</Link>.</p></main>;
   const p = await project(d, key);
   if (!p) notFound();
   const { columns } = await board(d, p, {}, "");

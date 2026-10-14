@@ -1,7 +1,18 @@
 import type { Db } from "./db";
 import { hashToken, newToken } from "./auth";
+import { withBase } from "./base";
 
 export const DISPLAY_COOKIE = "todo_display";
+
+/** The display key's cookie: sent only to display pages, and kept for a year. */
+export const displayCookie = (https: boolean) =>
+  ({ httpOnly: true, sameSite: "lax", secure: https, path: withBase("/display/"), maxAge: 60 * 60 * 24 * 365 }) as const;
+
+export interface Display { project: string; label: string; created: string; last_seen: string | null }
+
+export async function displays(d: Db): Promise<Display[]> {
+  return d.query("select project, label, created, last_seen from display_tokens order by project, created") as any;
+}
 
 /** Issue a display key for one project's board; the same label again replaces its key. */
 export async function addDisplay(d: Db, project: string, label: string, token: string = newToken()): Promise<string> {
