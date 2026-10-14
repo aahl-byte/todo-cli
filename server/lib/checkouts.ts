@@ -1,6 +1,7 @@
 // Where people keep a project's repos on disk, as the CLI reports them. Actions
 // read it so a session starts in the right folder after the folder moves.
 import type { Db } from "./db";
+import { WATCHTOWER_URL } from "./watchtower";
 
 /** `owner/name` from a repo field or a remote URL, lowercased; "" when it has no such shape. */
 export function repoKey(raw: string | null | undefined): string {
@@ -24,9 +25,6 @@ export async function checkoutDir(d: Db, project: string, repo: string, actor: s
     : await d.query("select dir, repo from checkouts where project = $1 order by (handle = $2) desc, seen_at desc limit 1", [project, actor]);
   return { dir: row?.dir ?? "", repo: row?.repo ?? "" };
 }
-
-/** Watchtower's address for links; a file link opens there. */
-export const WATCHTOWER_URL = (process.env.WATCHTOWER_URL ?? "https://leaf-rain.shrew-goblin.ts.net/watchtower/latest").replace(/\/+$/, "");
 
 export function wtFileUrl(dir: string, file: string, edit = false): string {
   return `${WATCHTOWER_URL}/?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}${edit ? "&mode=edit" : ""}`;

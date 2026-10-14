@@ -124,7 +124,7 @@ function SessionLine({ s }: { s: SessionState }) {
   return (
     <span className={`wt-state wt-${s.status}`} data-tip={`Watchtower session ${s.session.slice(0, 8)}`}>
       <span className="led" />{label}
-      {s.url && <a href={s.url} target="_blank" rel="noreferrer">open ↗</a>}
+      <a href={s.url} target="_blank" rel="noreferrer">open ↗</a>
     </span>
   );
 }

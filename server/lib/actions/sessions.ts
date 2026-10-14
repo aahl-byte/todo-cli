@@ -1,6 +1,7 @@
 // Live state of the Watchtower sessions Actions started, read from Watchtower
 // by each run's recorded session id.
 import type { Db } from "../db";
+import { apiBase, sessionUrl } from "../watchtower";
 import type { Fetch } from "./deliver";
 
 const TIMEOUT_MS = 2_000;
@@ -13,23 +14,24 @@ export interface SessionState {
   actionId: string;
   name: string;
   session: string;
-  url: string | null;
+  url: string;
   status: SessionStatus;
   waitingFor: string | null;
 }
 
-interface RunRow { item_uid: string; action_id: string; name: string; base: string; session: string; url: string | null }
+interface RunRow { item_uid: string; action_id: string; name: string; base: string; session: string }
 
 async function look(r: RunRow, f: Fetch): Promise<SessionState> {
-  const out: SessionState = { actionId: r.action_id, name: r.name, session: r.session, url: r.url, status: "unknown", waitingFor: null };
+  const out: SessionState = { actionId: r.action_id, name: r.name, session: r.session, url: sessionUrl(r.base, r.session), status: "unknown", waitingFor: null };
   try {
-    const res = await f(`${r.base}/api/sessions/${encodeURIComponent(r.session)}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await f(`${apiBase(r.base)}/api/sessions/${encodeURIComponent(r.session)}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (res.status === 404) return { ...out, status: "stopped" };
     if (!res.ok) return out;
     const s = await res.json();
     const status = ["busy", "idle", "waiting", "stopped", "shell"].includes(s.status) ? s.status : "unknown";
     // Ids follow /clear: the answer may name the session's new id.
-    return { ...out, session: s.id ?? r.session, url: s.url ?? r.url, status, waitingFor: status === "waiting" ? s.waitingFor ?? null : null };
+    const session = s.id ?? r.session;
+    return { ...out, session, url: sessionUrl(r.base, session), status, waitingFor: status === "waiting" ? s.waitingFor ?? null : null };
   } catch {
     return out;
   }
@@ -39,7 +41,7 @@ async function look(r: RunRow, f: Fetch): Promise<SessionState> {
 async function latestRuns(d: Db, project: string, where: string, params: unknown[]): Promise<RunRow[]> {
   return d.query(
     `select distinct on (item_uid, action_id) item_uid, action_id, name, request->>'base' as base,
-            result->>'session' as session, result->>'url' as url
+            result->>'session' as session
        from action_runs
       where project = $1 and request->>'kind' = 'watchtower' and result->>'session' is not null ${where}
       order by item_uid, action_id, id desc`, [project, ...params]) as Promise<RunRow[]>;

@@ -5,6 +5,7 @@ import { POST as checkoutRoute } from "@/app/api/projects/[key]/checkout/route";
 import { knownCheckouts, recordCheckout, repoDir, repoKey, wtFileUrl } from "@/lib/checkouts";
 import { boardSessions, itemSessions } from "@/lib/actions/sessions";
 import { deliver } from "@/lib/actions/deliver";
+import { WATCHTOWER_URL } from "@/lib/watchtower";
 import { cleanAction, fill, firesOn, itemVars, render, validateActions, type ActionDef } from "@/lib/actions/model";
 import { flushActions, MAX_ATTEMPTS, queueManualAction } from "@/lib/actions/runs";
 import { STATUSES } from "@/lib/model";
@@ -91,6 +92,12 @@ describe("watchtower delivery", () => {
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["GET http://wt/api/roster", "POST http://wt/api/sessions"]);
     expect(calls[1].body).toEqual({ dir: "/r/web", name: "todo: x", initialPrompt: "/todo x" });
     expect(out.summary).toContain("http://wt/?session=s1");
+  });
+  it("calls the gated Watchtower on its loopback port, but links the public address", async () => {
+    const { f, calls } = fakeFetch((c) => (c.url.endsWith("/roster") ? { json: { sessions: [] } } : { json: { id: "s1", url: "http://127.0.0.1:10012/?session=s1" } }));
+    const out = await deliver({ ...req, base: WATCHTOWER_URL }, f);
+    expect(calls.map((c) => c.url)).toEqual(["http://127.0.0.1:10010/latest/api/roster", "http://127.0.0.1:10010/latest/api/sessions"]);
+    expect(out.detail.url).toBe(`${WATCHTOWER_URL}/?session=s1`);
   });
   it("reuses the item's live session", async () => {
     const { f, calls } = fakeFetch((c) => (c.url.endsWith("/roster")

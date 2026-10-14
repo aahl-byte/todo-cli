@@ -1,4 +1,5 @@
 // Send one rendered Action. Mirrors todo/actions.py in the CLI.
+import { apiBase, sessionUrl } from "../watchtower";
 import { INITIAL_PROMPT_MAX, type Request } from "./model";
 
 export type Fetch = typeof fetch;
@@ -66,19 +67,20 @@ async function waitIdle(f: Fetch, base: string, id: string, url: string, sleep: 
 }
 
 /** Resume the newest stopped session of this name and send it the resume prompt; null when there's none or it won't come back. */
-async function resumeStopped(f: Fetch, req: Extract<Request, { kind: "watchtower" }>, sessions: any[], sleep: Sleep): Promise<Outcome | null> {
+async function resumeStopped(f: Fetch, req: Extract<Request, { kind: "watchtower" }>, api: string, sessions: any[], sleep: Sleep): Promise<Outcome | null> {
   const prev = sessions.filter((s) => s?.name === req.name && s?.state === "stopped")
     .sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0))[0];
   if (!prev) return null;
+  const url = sessionUrl(req.base, prev.id);
   try {
-    await callJson(f, "POST", `${req.base}/api/sessions/${prev.id}/resume`);
-    await waitIdle(f, req.base, prev.id, prev.url, sleep);
+    await callJson(f, "POST", `${api}/api/sessions/${prev.id}/resume`);
+    await waitIdle(f, api, prev.id, url, sleep);
   } catch (e) {
     if (e instanceof DeliveryError && /waiting on/.test(e.message)) throw e;
     return null;
   }
-  const sent = await sendMessage(f, req.base, prev.id, req.resumePrompt!, sleep);
-  return { summary: `resumed Watchtower session ${req.name} (${sent.delivered ?? "sent"}): ${prev.url}`, detail: { session: prev.id, url: prev.url } };
+  const sent = await sendMessage(f, api, prev.id, req.resumePrompt!, sleep);
+  return { summary: `resumed Watchtower session ${req.name} (${sent.delivered ?? "sent"}): ${url}`, detail: { session: prev.id, url } };
 }
 
 export async function deliver(req: Request, f: Fetch = fetch, sleep: Sleep = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<Outcome> {
@@ -86,23 +88,26 @@ export async function deliver(req: Request, f: Fetch = fetch, sleep: Sleep = (ms
     const { status, text } = await call(f, req.method, req.url, req.headers, req.body);
     return { summary: `${req.method} ${req.url} → ${status}`, detail: { status, body: text.slice(0, SNIPPET) } };
   }
-  const { sessions = [] } = await callJson(f, "GET", `${req.base}/api/roster`);
+  const api = apiBase(req.base);
+  const { sessions = [] } = await callJson(f, "GET", `${api}/api/roster`);
   const live = sessions.find((s: any) => s?.name === req.name && s?.state === "active" && s?.managed);
   if (live) {
-    const sent = await sendMessage(f, req.base, live.id, req.resumePrompt ?? req.prompt, sleep);
-    return { summary: `sent to Watchtower session ${req.name} (${sent.delivered ?? "sent"}): ${live.url}`, detail: { session: live.id, url: live.url } };
+    const url = sessionUrl(req.base, live.id);
+    const sent = await sendMessage(f, api, live.id, req.resumePrompt ?? req.prompt, sleep);
+    return { summary: `sent to Watchtower session ${req.name} (${sent.delivered ?? "sent"}): ${url}`, detail: { session: live.id, url } };
   }
   if (req.resumePrompt !== undefined) {
-    const resumed = await resumeStopped(f, req, sessions, sleep);
+    const resumed = await resumeStopped(f, req, api, sessions, sleep);
     if (resumed) return resumed;
   }
   const inline = fitsInitialPrompt(req.prompt);
-  const started = await callJson(f, "POST", `${req.base}/api/sessions`, {
+  const started = await callJson(f, "POST", `${api}/api/sessions`, {
     dir: req.dir, name: req.name, ...(req.model ? { model: req.model } : {}), ...(inline ? { initialPrompt: req.prompt } : {}),
   });
+  const url = sessionUrl(req.base, started.id);
   if (!inline) {
-    await waitIdle(f, req.base, started.id, started.url, sleep);
-    await sendMessage(f, req.base, started.id, req.prompt, sleep);
+    await waitIdle(f, api, started.id, url, sleep);
+    await sendMessage(f, api, started.id, req.prompt, sleep);
   }
-  return { summary: `started Watchtower session ${req.name} in ${req.dir}: ${started.url}`, detail: { session: started.id, url: started.url } };
+  return { summary: `started Watchtower session ${req.name} in ${req.dir}: ${url}`, detail: { session: started.id, url } };
 }
