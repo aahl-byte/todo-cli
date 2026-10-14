@@ -122,7 +122,7 @@ export const COLUMNS = [
   { key: "open", label: "Open", statuses: ["qa-rejected", "in-triage", "blocked", "requested"] },
   { key: "ready", label: "Ready", statuses: ["review", "todo"] },
   { key: "progress", label: "In progress", statuses: ["in-progress"] },
-  { key: "qa", label: "QA", statuses: ["in-qa", "ready-for-qa"] },
+  { key: "qa", label: "QA", statuses: ["ready-for-qa", "in-qa"] },
   { key: "deploy", label: "Deploy", statuses: ["qa-approved", "ready-to-deploy"] },
   { key: "shipped", label: "Shipped", statuses: ["deployed", "done"] },
   { key: "parked", label: "Parked", statuses: PARKED },
