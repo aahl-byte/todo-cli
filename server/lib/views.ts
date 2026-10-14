@@ -53,13 +53,15 @@ export interface Card extends Row {
   extra: Record<string, any> | null;
   /** For the viewer passed to cards(): open questions they asked themself, which wait on someone else. */
   my_open_questions?: number;
-  /** For the viewer: answers to their questions, and comments, that arrived since they last opened the item. */
+  /** For the viewer: answers to their questions that arrived since they last opened the item, and comments they
+   * haven't marked seen. */
   unseen_answers?: number;
   unseen_comments?: number;
 }
 
 /** Per-viewer counts. An entry is the viewer's own only when they wrote it themself, not through their agent.
- * Unseen means newer than their last visit; an item never visited counts from when they joined, if it's theirs. */
+ * Unseen means newer than their last visit; an item never visited counts from when they joined, if it's theirs.
+ * A comment stays unseen until marked seen, on items they've visited or are on. */
 function viewerColumns(me: string) {
   const mine = (n: string) => `(${n}.author = ${me} and coalesce(${n}.via, 'human') <> 'agent')`;
   const since = `coalesce((select s.seen_at from item_seen s where s.handle = ${me} and s.project = i.project and s.item_uid = i.uid),
@@ -73,7 +75,9 @@ function viewerColumns(me: string) {
            and not (n.meta->>'answered_by' = ${me} and coalesce(n.meta->>'answered_via', 'human') <> 'agent')
            and (n.meta->>'answered_at')::timestamptz > ${since}) as unseen_answers,
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind in ('comment', 'qa-rejection')
-           and not ${mine("n")} and n.ts::timestamptz > ${since}) as unseen_comments`;
+           and not ${mine("n")} and ${since} is not null
+           and case when jsonb_typeof(n.meta->'seen_by') = 'array' then not n.meta->'seen_by' @> to_jsonb(${me}::text)
+                    else n.ts::timestamptz > ${since} end) as unseen_comments`;
 }
 
 /** Board cards. Pass `me` for the viewer's counts: open_questions then leaves out the viewer's own. */

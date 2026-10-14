@@ -714,8 +714,18 @@ describe("questions and unseen activity per viewer", () => {
     const { markSeen } = await import("@/lib/inbox");
     await markSeen(w.d, "bob", "p", "A1");
     mine = await card("bob", "A1");
-    expect([mine.unseen_answers, mine.unseen_comments]).toEqual([0, 0]);
+    expect([mine.unseen_answers, mine.unseen_comments]).toEqual([0, 1]);
     expect((await card("carol", "A1")).unseen_comments).toBe(0);   // not hers, never opened
+  });
+
+  it("keeps a comment unseen until it is marked seen", async () => {
+    await w.one("bob", item("A1", { developer: "bob" }));
+    await w.one("alice", child("note", "C1", "A1", { kind: "comment", text: "look" }));
+    const { markSeen } = await import("@/lib/inbox");
+    await markSeen(w.d, "bob", "p", "A1");
+    expect((await card("bob", "A1")).unseen_comments).toBe(1);
+    await w.one("bob", set("note", "C1", "A1", { "meta.seen_by": ["bob"] }, (await w.d.query("select versions from notes where uid = 'C1'"))[0].versions));
+    expect((await card("bob", "A1")).unseen_comments).toBe(0);
   });
 });
 

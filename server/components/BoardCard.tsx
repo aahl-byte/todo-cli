@@ -44,7 +44,7 @@ function Flags({ c }: { c: Card }) {
   if (!hasFlags(c)) return null;
   return (
     <span className="flags">
-      {!!c.unseen_comments && <span className="flag comments" data-tip={`${plural(c.unseen_comments, "comment")} since you last looked`}><CommentIcon /></span>}
+      {!!c.unseen_comments && <span className="flag comments" data-tip={`${plural(c.unseen_comments, "comment")} you haven't marked seen`}><CommentIcon /></span>}
       {!!c.unseen_answers && <span className="flag answers" data-tip={`${plural(c.unseen_answers, "answer")} to your questions since you last looked`}>↩</span>}
       {c.open_questions > 0
         ? <span className="flag asks" data-tip={plural(c.open_questions, "open question")}>?</span>
