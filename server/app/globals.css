@@ -257,6 +257,7 @@ body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); 
 .display .card:hover { border-color: var(--line); }
 .updated { color: var(--faint); font-size: 11px; }
 .displays { max-width: 720px; }
+.switcher .menu .menu-extra { border-top: 1px solid var(--line); color: var(--cyan); }
 .display-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 28px; }
 .display-picks .add { font-size: 14px; padding: 10px 14px; }
 .display-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }

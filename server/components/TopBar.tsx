@@ -14,7 +14,10 @@ export function TopBar({ handle, project, all }: { handle: string; project?: Pro
       {all.length > 1 ? (
         <details className="switcher">
           <summary className="label">{project ? project.name || project.key : "projects"}<span className="caret">▾</span></summary>
-          <div className="menu">{all.map((p) => <Link key={p.key} href={`/p/${p.key}`}>{p.name || p.key}</Link>)}</div>
+          <div className="menu">
+            {all.map((p) => <Link key={p.key} href={`/p/${p.key}`}>{p.name || p.key}</Link>)}
+            <Link href="/displays" className="menu-extra">wall display</Link>
+          </div>
         </details>
       ) : project && <span className="label proj">{project.name || project.key}</span>}
       {project && <Nav projectKey={project.key} deployStep={project.deploy_step} />}

@@ -6,12 +6,12 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { addDisplay, DISPLAY_COOKIE, displayCookie, removeDisplay } from "@/lib/display";
-import { requireUser } from "@/lib/session";
+import { COOKIE, requireUser } from "@/lib/session";
 import { project } from "@/lib/views";
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "");
 
-/** Make this browser a display of the project, then show it. */
+/** Make this browser a display of the project, signed out of everything else, then show it. */
 export async function startDisplayAction(fd: FormData): Promise<void> {
   const user = await requireUser();
   const d = await db();
@@ -19,7 +19,9 @@ export async function startDisplayAction(fd: FormData): Promise<void> {
   if (!p) redirect("/displays");
   const token = await addDisplay(d, p.key, `${user.handle} ${crypto.randomBytes(2).toString("hex")}`);
   const https = ((await headers()).get("x-forwarded-proto") ?? "http").split(",")[0].trim() === "https";
-  (await cookies()).set(DISPLAY_COOKIE, token, displayCookie(https));
+  const jar = await cookies();
+  jar.set(DISPLAY_COOKIE, token, displayCookie(https));
+  jar.delete(COOKIE);
   redirect(`/display/${encodeURIComponent(p.key)}`);
 }
 

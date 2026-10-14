@@ -20,9 +20,6 @@ export const viewport: Viewport = { themeColor: "#11151b" };
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${mono.variable} ${disp.variable}`}>
-      <head>
-        <link rel="manifest" href={withBase("/manifest.webmanifest")} crossOrigin="use-credentials" />
-      </head>
       <body>
         <WakeLock />
         {children}
