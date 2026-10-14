@@ -255,6 +255,7 @@ body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); 
 .display-badge { color: var(--cyan); border-color: var(--cyan-dim); font-size: 10px; padding: 2px 9px; }
 .updated { color: var(--faint); font-size: 11px; }
 .displays { max-width: 720px; }
+.menu-static .caret { display: none; }
 .switcher .menu .menu-extra { border-top: 1px solid var(--line); color: var(--cyan); }
 .display-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 28px; }
 .display-picks .add { font-size: 14px; padding: 10px 14px; }
