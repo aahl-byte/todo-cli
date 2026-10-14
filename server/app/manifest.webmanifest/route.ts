@@ -1,8 +1,10 @@
 import type { MetadataRoute } from "next";
 import { APP_NAME, withBase } from "@/lib/base";
 
-export default function manifest(): MetadataRoute.Manifest {
-  return {
+// A route rather than app/manifest.ts, so the layout can link it with
+// credentials: the sign-in proxy in front of the app refuses cookieless fetches.
+export function GET() {
+  const manifest: MetadataRoute.Manifest = {
     id: withBase("/"),
     name: APP_NAME,
     short_name: APP_NAME,
@@ -18,4 +20,5 @@ export default function manifest(): MetadataRoute.Manifest {
       { src: withBase("/icon-maskable-512.png"), sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
   };
+  return Response.json(manifest, { headers: { "Content-Type": "application/manifest+json" } });
 }
