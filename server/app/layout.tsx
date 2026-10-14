@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { WakeLock } from "@/components/WakeLock";
 import "./globals.css";
 
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
@@ -10,7 +11,10 @@ export const metadata = { title: "todo", description: "Team todo dashboard" };
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${mono.variable} ${disp.variable}`}>
-      <body>{children}</body>
+      <body>
+        <WakeLock />
+        {children}
+      </body>
     </html>
   );
 }
