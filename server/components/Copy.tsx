@@ -31,7 +31,7 @@ export function CopyButton({ text, tip = "copy", className, children }: { text: 
     setTimeout(() => setState("idle"), COPIED_MS);
   };
   return (
-    <button type="button" className={`${className ?? ""} ${state === "copied" ? "copied" : ""}`}
+    <button type="button" className={`copy ${className ?? ""} ${state === "copied" ? "copied" : ""}`}
             data-tip={state === "copied" ? "copied" : state === "failed" ? "couldn't copy" : tip} onClick={() => void copy()}>
       {children}{state === "copied" && <span className="copied-mark" aria-label="copied"> ✓</span>}
     </button>
