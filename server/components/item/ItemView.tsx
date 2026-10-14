@@ -397,46 +397,52 @@ function threads(rows: Row[]): Thread[] {
   });
 }
 
+/** When the thread last moved: its newest question, reply or answer. */
+const lastActivity = (t: Thread) =>
+  Math.max(...t.entries.flatMap((q) => [Date.parse(q.ts), Date.parse(q.meta?.answered_at ?? "")]).filter((n) => !Number.isNaN(n)));
+
+const threadIsNew = (isNew: IsNew, t: Thread) => t.entries.some((q) => answerIsNew(isNew, q) || isNew(q.ts, q.author, q.via));
+
 function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
   const isNew = useIsNew();
   const all = threads(data.questions);
-  const open = all.filter((t) => t.open);
-  const answered = all.filter((t) => !t.open);
-  const [showAnswered, setShowAnswered] = useState(true);
-  const newAnswer = answered.some((t) => t.entries.some((q) => answerIsNew(isNew, q) || isNew(q.ts, q.author, q.via)));
-  useEffect(() => { if (newAnswer) setShowAnswered(true); }, [newAnswer]);
-  useEffect(() => {
-    if (answered.some((t) => t.entries.some((q) => focus === `n-${q.n}`))) setShowAnswered(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus]);
+  const unread = all.filter((t) => threadIsNew(isNew, t)).sort((a, b) => lastActivity(b) - lastActivity(a));
+  const rest = all.filter((t) => !unread.includes(t));
+  const answered = rest.filter((t) => !t.open).sort((a, b) => lastActivity(b) - lastActivity(a));
   return (
     <>
       <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
               onAdd={async (text) => report(await act.addEntry({ project: ctx.project, itemUid: ctx.itemUid, kind: "clarification", text }))} />
-      <ul className="entries">
-        {open.map((t) => <QuestionThread key={t.root.uid} t={t} ctx={ctx} focus={focus} />)}
-      </ul>
-      {answered.length > 0 && (
-        <>
-          <button type="button" className="tgroup" onClick={() => setShowAnswered((s) => !s)}>
-            <span className={`chev ${showAnswered ? "open" : ""}`}>›</span> answered {answered.length}
-          </button>
-          {showAnswered && (
-            <ul className="entries">
-              {answered.map((t) => <QuestionThread key={t.root.uid} t={t} ctx={ctx} focus={focus} />)}
-            </ul>
-          )}
-        </>
-      )}
+      <ThreadGroup label="unread" list={unread} ctx={ctx} focus={focus} />
+      <ThreadGroup label="questions" list={rest.filter((t) => t.open)} ctx={ctx} focus={focus} />
+      <ThreadGroup label="answers" list={answered} ctx={ctx} focus={focus} />
+    </>
+  );
+}
+
+function ThreadGroup({ label, list, ctx, focus }: { label: string; list: Thread[]; ctx: Ctx; focus: string | null }) {
+  const [shown, setShown] = useState(true);
+  useEffect(() => {
+    if (list.some((t) => t.entries.some((q) => focus === `n-${q.n}`))) setShown(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
+  if (!list.length) return null;
+  return (
+    <>
+      <button type="button" className="tgroup" aria-expanded={shown} onClick={() => setShown((s) => !s)}>
+        <span className={`chev ${shown ? "open" : ""}`}>›</span> {label} {list.length}
+      </button>
+      {shown && <ul className="entries">{list.map((t) => <QuestionThread key={t.root.uid} t={t} ctx={ctx} focus={focus} />)}</ul>}
     </>
   );
 }
 
 function QuestionThread({ t, ctx, focus }: { t: Thread; ctx: Ctx; focus: string | null }) {
+  const isNew = useIsNew();
   const [following, setFollowing] = useState(false);
   const focused = t.entries.some((q) => focus === `n-${q.n}`);
   return (
-    <li className={`entry thread ${t.open ? "question" : ""} ${focused ? "focus" : ""}`} data-uid={t.root.uid}>
+    <li className={`entry thread ${t.open ? "question" : ""} ${focused ? "focus" : ""} ${threadIsNew(isNew, t) ? "is-new" : ""}`} data-uid={t.root.uid}>
       <div className="body">
         {t.entries.map((q, i) => (
           <div key={q.uid} id={`n-${q.n}`} className={`turn ${i ? "follow" : ""}`} data-uid={q.uid}>
