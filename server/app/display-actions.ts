@@ -22,7 +22,7 @@ export async function startDisplayAction(fd: FormData): Promise<void> {
   const jar = await cookies();
   jar.set(DISPLAY_COOKIE, token, displayCookie(https));
   jar.delete(COOKIE);
-  redirect(`/display/${encodeURIComponent(p.key)}`);
+  redirect(`/display/${encodeURIComponent(p.key)}?setup=1`);
 }
 
 export async function removeDisplayAction(fd: FormData): Promise<void> {

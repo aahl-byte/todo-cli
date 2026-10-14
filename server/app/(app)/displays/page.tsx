@@ -21,7 +21,7 @@ export default async function Displays() {
       <TopBar handle={user.handle} all={all} />
       <main className="displays">
         <h1>Show a board on this device</h1>
-        <p className="hint">The board stays up without signing in again, refreshing every minute. Nothing on it can be changed, and this device is signed out of todo.</p>
+        <p className="hint">The board stays up without signing in again, refreshing every minute. Nothing on it can be changed, and this device is signed out of todo and the sign-in gate.</p>
         <div className="display-picks">
           {all.map((p) => (
             <form key={p.key} action={startDisplayAction}>
