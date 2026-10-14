@@ -17,7 +17,7 @@ export async function startDisplayAction(fd: FormData): Promise<void> {
   const d = await db();
   const p = await project(d, str(fd, "project"));
   if (!p) redirect("/displays");
-  const token = await addDisplay(d, p.key, `${user.handle} ${crypto.randomBytes(2).toString("hex")}`);
+  const token = await addDisplay(d, p.key, `${user.handle} ${crypto.randomBytes(2).toString("hex")}`, user.handle);
   const https = ((await headers()).get("x-forwarded-proto") ?? "http").split(",")[0].trim() === "https";
   const jar = await cookies();
   jar.set(DISPLAY_COOKIE, token, displayCookie(https));

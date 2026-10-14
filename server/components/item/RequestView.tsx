@@ -5,10 +5,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as act from "@/app/item-actions";
 import type { ItemView as Data } from "@/lib/views";
-import { Markdown } from "../Markdown";
 import { Ago, Popup } from "../ui";
 import { images, insertImages } from "@/lib/upload-client";
-import { report, uploadsFor, useIsNew, type Ctx } from "./ItemView";
+import { Md, report, uploadsFor, useIsNew, type Ctx } from "./ItemView";
 
 type Row = Record<string, any>;
 const LONG_LINES = 6;
@@ -121,7 +120,7 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
       ) : (
         <>
           {req.meta?.url && <a className="req-url" href={req.meta.url} target="_blank" rel="noreferrer">{req.meta.url}</a>}
-          <Markdown text={req.text} />
+          <Md text={req.text} />
         </>
       ))}
 
@@ -130,7 +129,7 @@ export function RequestView({ data, ctx, focus }: { data: Data; ctx: Ctx; focus?
         {base && mode !== "inline" && (
           <button type="button" className="more" onClick={() => setAsText((t) => !t)}>{asText ? "show changes" : "show as text"}</button>
         )}
-        {mode !== "inline" && (
+        {mode !== "inline" && !ctx.readOnly && (
           <button type="button" className="add" onClick={start}>{!req ? <><span className="pl" aria-hidden="true">+</span>request</> : editable ? "✎ edit" : "✎ new version"}</button>
         )}
         {fresh && <span className="tag new">new</span>}
@@ -180,7 +179,7 @@ function Version({ v, previous, current, expanded }: { v: Row; previous?: Row; c
           : meta.frozen ? <span className="tag">frozen</span> : <span className="tag">draft</span>}
         <Ago ts={meta.frozen_at ?? v.ts} />
       </button>
-      {open && (previous ? <Diff before={said(previous)} after={said(v)} /> : <div className="md-box"><Markdown text={said(v)} /></div>)}
+      {open && (previous ? <Diff before={said(previous)} after={said(v)} /> : <div className="md-box"><Md text={said(v)} /></div>)}
     </li>
   );
 }

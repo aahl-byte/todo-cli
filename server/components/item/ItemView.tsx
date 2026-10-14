@@ -8,6 +8,7 @@ import type { ActionState } from "@/lib/action-helpers";
 import { COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import { Markdown } from "../Markdown";
+import { ReadOnly, useReadOnly, type ReadOnlyView } from "../ReadOnly";
 import { Composer } from "../Composer";
 import { notify } from "../Toaster";
 import { Ago, EditableText, Led, Menu, Popup, Stamp } from "../ui";
@@ -26,6 +27,8 @@ export interface Ctx {
   itemUid: string;
   pinned: boolean;
   actions: { id: string; name: string; runner: string }[];
+  /** Set on a wall display: everything shows, nothing writes. */
+  readOnly?: ReadOnlyView | null;
 }
 
 /** Report a refused write in a toast, with the winning change's time local. */
@@ -57,6 +60,12 @@ const Fresh = createContext<IsNew>(() => false);
 export const useIsNew = () => useContext(Fresh);
 const NewTag = () => <span className="tag new">new</span>;
 
+/** Markdown whose stored images load through a read-only page's own path. */
+export function Md(props: { text: string; oneLine?: boolean }) {
+  const readOnly = useReadOnly();
+  return <Markdown {...props} files={readOnly ? `${readOnly.base}/files` : undefined} />;
+}
+
 /** Who hasn't acknowledged an entry's latest content: any agent, and you. */
 function Seen({ row, entity, ctx }: { row: Row; entity: "note" | "log"; ctx: Ctx }) {
   const seen = row.meta?.[SEEN];
@@ -65,7 +74,7 @@ function Seen({ row, entity, ctx }: { row: Row; entity: "note" | "log"; ctx: Ctx
   return (
     <>
       {!seen.some(isAgentParty) && <span className="tag unseen" data-tip="No agent has acknowledged this yet">AI unseen</span>}
-      {!seen.includes(ctx.me) && <button type="button" className="ack" onClick={() => void ack()}>mark seen</button>}
+      {!seen.includes(ctx.me) && !ctx.readOnly && <button type="button" className="ack" onClick={() => void ack()}>mark seen</button>}
     </>
   );
 }
@@ -111,6 +120,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   // The previous visit, fixed for this page view so a live refresh can't clear the highlights.
   const [lastSeen, setLastSeen] = useState<string | null>(null);
   useEffect(() => {
+    if (ctx.readOnly) return;
     let live = true;
     void seenOnce(ctx.project, it.uid).then((r) => {
       if (!live) return;
@@ -118,7 +128,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
       window.dispatchEvent(new CustomEvent("todo:unread", { detail: r.unread }));
     });
     return () => { live = false; };
-  }, [ctx.project, it.uid]);
+  }, [ctx.project, it.uid, ctx.readOnly]);
   const isNew: IsNew = (ts, by, via) => !!lastSeen && !!ts && !(by === ctx.me && via !== "agent") && Date.parse(ts) > Date.parse(lastSeen);
   const newComments = data.comments.some((c) => isNew(c.ts, c.author, c.via));
   const newQuestions = data.questions.some((q) => isNew(q.ts, q.author, q.via) || answerIsNew(isNew, q));
@@ -133,6 +143,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   ];
 
   return (
+    <ReadOnly.Provider value={ctx.readOnly ?? null}>
     <Fresh.Provider value={isNew}>
     <div className="item" data-uid={it.uid}>
       <div className="item-main">
@@ -158,6 +169,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
       <aside className="rail wide-only"><Rail data={data} ctx={ctx} onTasks={() => setTab("tasks")} /></aside>
     </div>
     </Fresh.Provider>
+    </ReadOnly.Provider>
   );
 }
 
@@ -201,11 +213,11 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
                         return ok;
                       }} />
       </h1>
-      <button type="button" className={`btn ${ctx.pinned ? "on" : ""}`} aria-pressed={ctx.pinned}
+      {!ctx.readOnly && <button type="button" className={`btn ${ctx.pinned ? "on" : ""}`} aria-pressed={ctx.pinned}
               data-tip={ctx.pinned ? "unpin from the left bar" : "pin to the left bar"}
               onClick={() => void act.pin({ project: ctx.project, itemUid: it.uid, on: !ctx.pinned })}>
         {ctx.pinned ? "pinned" : "pin"}
-      </button>
+      </button>}
       {override && (
         <OverridePopup from={it.status} offered={options.map((m) => m.status)} onClose={() => setOverride(null)}
                        onSubmit={async (to, reason) => {
@@ -313,6 +325,7 @@ export function AddBox({ label, placeholder, onAdd, users, uploads, children }: 
   label: string; placeholder: string; onAdd: (text: string) => Promise<boolean>; users?: string[];
   uploads?: { project: string; scope: string } | null; children?: ReactNode;
 }) {
+  const readOnly = useReadOnly();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -325,6 +338,7 @@ export function AddBox({ label, placeholder, onAdd, users, uploads, children }: 
     setBusy(false);
     if (ok) { if (el) el.value = ""; setOpen(false); }
   };
+  if (readOnly) return null;
   if (!open) return <button type="button" className="add" onClick={() => setOpen(true)}><span className="pl" aria-hidden="true">+</span>{label}</button>;
   return (
     <div ref={box} className="composer"
@@ -359,7 +373,7 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
                 {c.meta?.edited_at && <span className="faint" data-tip={`edited ${new Date(c.meta.edited_at).toLocaleString()}`}> · edited</span>}
                 <Seen row={c} entity="note" ctx={ctx} />
               </div>
-              <Markdown text={c.text} />
+              <Md text={c.text} />
             </div>
             {c.author === ctx.me && <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: "note", uid: c.uid, versions: c.versions })} />}
           </li>
@@ -429,7 +443,7 @@ function QuestionThread({ t, ctx, focus }: { t: Thread; ctx: Ctx; focus: string 
             {q.kind === "clarification" ? <Question q={q} ctx={ctx} /> : <Reply r={q} ctx={ctx} />}
           </div>
         ))}
-        {following
+        {ctx.readOnly ? null : following
           ? <FollowUp root={t.root} ctx={ctx} onDone={() => setFollowing(false)} />
           : <button type="button" className="add" onClick={() => setFollowing(true)}><span className="pl" aria-hidden="true">+</span>follow up</button>}
       </div>
@@ -461,14 +475,14 @@ function Question({ q, ctx }: { q: Row; ctx: Ctx }) {
         {open && mine && <span className="tag waiting" data-tip="you asked this; it waits on an answer">waiting for an answer</span>}
         <Seen row={q} entity="note" ctx={ctx} />
       </Who>
-      <div className={`qa-q ${open ? (mine ? "mine" : "open") : ""}`}><span className="qa-tag">Q</span><div><Markdown text={q.text} /></div></div>
+      <div className={`qa-q ${open ? (mine ? "mine" : "open") : ""}`}><span className="qa-tag">Q</span><div><Md text={q.text} /></div></div>
       {!open && (
         <>
-          <div className="qa-a"><span className="qa-tag">A</span><div><Markdown text={q.meta?.answer ?? ""} /></div></div>
+          <div className="qa-a"><span className="qa-tag">A</span><div><Md text={q.meta?.answer ?? ""} /></div></div>
           <Who by={q.meta?.answered_by} via={q.meta?.answered_via} ts={q.meta?.answered_at} fresh={answerIsNew(isNew, q)} />
         </>
       )}
-      {open && (answering ? (
+      {open && !ctx.readOnly && (answering ? (
         <div className="composer" onKeyDown={(e) => { if (e.key === "Escape") setAnswering(false); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(); }}>
           <textarea rows={2} autoFocus value={draft} aria-label="answer" placeholder="Answer" onChange={(e) => setDraft(e.target.value)} />
           <div className="actions">
@@ -488,7 +502,7 @@ function Reply({ r, ctx }: { r: Row; ctx: Ctx }) {
   return (
     <>
       <Who by={r.author} via={r.via} ts={r.ts} fresh={isNew(r.ts, r.author, r.via)}><Seen row={r} entity="note" ctx={ctx} /></Who>
-      <div className="qa-r"><span className="qa-tag">↳</span><div><Markdown text={r.text} /></div></div>
+      <div className="qa-r"><span className="qa-tag">↳</span><div><Md text={r.text} /></div></div>
     </>
   );
 }
@@ -577,16 +591,16 @@ function Entry({ row, kind, ctx, id, open, focus, toggle }: {
               <button type="button" className="btn primary" disabled={!draft.trim()} onClick={() => void save()}>Save</button>
             </div>
           </div>
-        ) : open ? <Markdown text={row.text} /> : (
+        ) : open ? <Md text={row.text} /> : (
           <button type="button" className="first" onClick={toggle}>
-            <Markdown text={firstLine(row.text)} oneLine />
+            <Md text={firstLine(row.text)} oneLine />
           </button>
         )}
       </div>
       {!editing && (
         <span className="acts">
           <Seen row={row} entity={kind === "log" ? "log" : "note"} ctx={ctx} />
-          {kind === "context" && <button type="button" className="x" aria-label="edit" onClick={() => { pinned.current = row.versions; setDraft(row.text); setEditing(true); }}>✎</button>}
+          {kind === "context" && !ctx.readOnly && <button type="button" className="x" aria-label="edit" onClick={() => { pinned.current = row.versions; setDraft(row.text); setEditing(true); }}>✎</button>}
           <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: kind === "log" ? "log" : "note", uid: row.uid, versions: row.versions })} />
         </span>
       )}
@@ -596,12 +610,14 @@ function Entry({ row, kind, ctx, id, open, focus, toggle }: {
 
 /** ✕, then a second click on "delete?" within a few seconds. */
 export function Remove({ onConfirm }: { onConfirm: () => Promise<ActionState> }) {
+  const readOnly = useReadOnly();
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
     const t = setTimeout(() => setArmed(false), 3000);
     return () => clearTimeout(t);
   }, [armed]);
+  if (readOnly) return null;
   return armed
     ? <button type="button" className="x armed" onClick={() => { setArmed(false); void onConfirm().then(report); }}>delete?</button>
     : <button type="button" className="x" aria-label="remove" onClick={() => setArmed(true)}>✕</button>;

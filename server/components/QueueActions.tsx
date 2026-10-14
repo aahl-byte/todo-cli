@@ -3,6 +3,7 @@
 // and popups as the item page.
 import { useEffect, useRef, useState } from "react";
 import * as act from "@/app/item-actions";
+import { useReadOnly } from "./ReadOnly";
 import { ENVIRONMENTS, moves, ticked, type Move } from "@/lib/model";
 import { Popup } from "./ui";
 import { report } from "./item/ItemView";
@@ -54,6 +55,7 @@ export function MoveButtons({ item, project, to, deployStep = true }: {
 
 /** A check's D S P checkboxes: each ticks at once, and unticks if the server refuses. */
 export function CheckBox({ check, project }: { check: Row; project: string }) {
+  const readOnly = useReadOnly();
   const saved = ticked(check);
   const key = saved.join(",");
   const [shown, setShown] = useState<string[] | null>(null);
@@ -63,7 +65,7 @@ export function CheckBox({ check, project }: { check: Row; project: string }) {
     <span className="env-checks">
       {Object.entries(ENVIRONMENTS).map(([env, label]) => (
         <label key={env} className={`env-box env-${env}`} data-tip={env}>
-          <input type="checkbox" checked={on.includes(env)} aria-label={`${check.title} done in ${env}`}
+          <input type="checkbox" checked={on.includes(env)} disabled={!!readOnly} aria-label={`${check.title} done in ${env}`}
                  onChange={() => {
                    const next = !on.includes(env);
                    setShown(next ? [...on, env] : on.filter((e) => e !== env));

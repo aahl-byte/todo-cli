@@ -13,20 +13,25 @@ export function safeUrl(url: string, key: string): string {
   return /^(https?:|mailto:)/i.test(url) ? url : "";
 }
 
-const components: Components = {
+const FILES = "/api/files";
+
+/** Our stored images load from `files` (a path under the base) in place of the file API. */
+const fileUrl = (src: string, files?: string) => withBase(files ? files + src.slice(FILES.length) : src);
+
+const components = (files?: string): Components => ({
   a: ({ node: _node, href, children, ...rest }) => href
     ? <a {...rest} href={href} target="_blank" rel="noreferrer">{children}</a>
     : <>{children}</>,
-  img: ({ node: _node, src, alt }) => (src ? <img src={FILE_SRC.test(String(src)) ? withBase(String(src)) : String(src)} alt={alt ?? ""} /> : <>{alt}</>),
+  img: ({ node: _node, src, alt }) => (src ? <img src={FILE_SRC.test(String(src)) ? fileUrl(String(src), files) : String(src)} alt={alt ?? ""} /> : <>{alt}</>),
   table: ({ node: _node, children }) => <div className="md-table"><table>{children}</table></div>,
-};
+});
 
-export function Markdown({ text, oneLine }: { text: string; oneLine?: boolean }) {
+export function Markdown({ text, oneLine, files }: { text: string; oneLine?: boolean; files?: string }) {
   const md = String(text ?? "");
   if (oneLine) {
     return (
       <span className="md">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={safeUrl} components={components}
+        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={safeUrl} components={components(files)}
                        allowedElements={INLINE} unwrapDisallowed>
           {md.split("\n")[0].replace(/^\s*(#+|[-*>]|\d+\.)\s+/, "")}
         </ReactMarkdown>
@@ -35,7 +40,7 @@ export function Markdown({ text, oneLine }: { text: string; oneLine?: boolean })
   }
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={safeUrl} components={components}>{md}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} urlTransform={safeUrl} components={components(files)}>{md}</ReactMarkdown>
     </div>
   );
 }

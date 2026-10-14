@@ -105,7 +105,7 @@ function TaskRow({ t, ctx, focus }: { t: Row; ctx: Ctx; focus: boolean }) {
   return (
     <div id={`t-${t.n}`} className={`trow s-${t.status} ${finished(t.status) ? "fin" : ""} ${focus ? "focus" : ""}`} data-uid={t.uid}>
       <span className="quick" onClickCapture={(e) => {
-        if (e.shiftKey || e.metaKey || e.ctrlKey) {
+        if (!ctx.readOnly && (e.shiftKey || e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           e.stopPropagation();
           pinned.current = t.versions;
@@ -127,7 +127,7 @@ function TaskRow({ t, ctx, focus }: { t: Row; ctx: Ctx; focus: boolean }) {
         <input className="tphase-in" autoFocus inputMode="numeric" aria-label="phase" value={phaseDraft}
                onChange={(e) => setPhaseDraft(e.target.value)} onBlur={() => void commitPhase()}
                onKeyDown={(e) => { if (e.key === "Enter") void commitPhase(); if (e.key === "Escape") setPhaseEdit(false); }} />
-      ) : (
+      ) : ctx.readOnly ? <span className="tphase x">{t.phase === null ? "P–" : `P${t.phase}`}</span> : (
         <button type="button" className="tphase x" aria-label="set phase" data-tip="phase"
                 onClick={() => { pinned.current = t.versions; setPhaseDraft(t.phase === null ? "" : String(t.phase)); setPhaseEdit(true); }}>
           {t.phase === null ? "P–" : `P${t.phase}`}

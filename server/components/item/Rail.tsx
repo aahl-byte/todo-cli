@@ -1,7 +1,7 @@
 "use client";
 // The right rail: people, details, links, checks, history. Labels are small;
 // values are click-to-pick; adds open a popup.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
 import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
@@ -10,6 +10,7 @@ import { safeUrl } from "@/lib/url";
 import { Ago, Led, Menu, Popup, richTip } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
+import { useReadOnly } from "../ReadOnly";
 import { Glance } from "./Glance";
 import { AppFields } from "../AppFields";
 import { CopyButton } from "../Copy";
@@ -166,6 +167,13 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
   );
 }
 
+/** A value that opens its editor on click, or plain text where nothing can change. */
+function Editable({ readOnly, onOpen, children }: { readOnly: boolean; onOpen: () => void; children: ReactNode }) {
+  return readOnly
+    ? <span className="edit-text">{children}</span>
+    : <button type="button" className="edit-text" onClick={onOpen}>{children}</button>;
+}
+
 function AppValue({ data, ctx }: { data: Data; ctx: Ctx }) {
   const it = data.item;
   const [open, setOpen] = useState(false);
@@ -179,9 +187,9 @@ function AppValue({ data, ctx }: { data: Data; ctx: Ctx }) {
   };
   return (
     <>
-      <button type="button" className="edit-text" onClick={() => { pinned.current = it.versions; setOpen(true); }}>
+      <Editable readOnly={!!ctx.readOnly} onOpen={() => { pinned.current = it.versions; setOpen(true); }}>
         {app ? <>{app}{section && <span className="faint"> · {section}</span>}</> : <span className="faint">—</span>}
-      </button>
+      </Editable>
       {open && (
         <Popup title="App and section" onClose={() => setOpen(false)}>
           <form className="row" action={(fd) => void save(fd)}>
@@ -210,9 +218,9 @@ function BranchValue({ data, ctx }: { data: Data; ctx: Ctx }) {
   };
   return (
     <>
-      <button type="button" className="edit-text" onClick={() => { pinned.current = it.versions; setOpen(true); }}>
+      <Editable readOnly={!!ctx.readOnly} onOpen={() => { pinned.current = it.versions; setOpen(true); }}>
         {repo || branch ? <>{repo && <span className="faint">{repo} · </span>}{branch || "—"}</> : <span className="faint">—</span>}
-      </button>
+      </Editable>
       {open && (
         <Popup title="Repo and branch" onClose={() => setOpen(false)}>
           <form className="row" action={(fd) => void save(fd)}>
@@ -233,13 +241,15 @@ const size = (n: number | null) => (n == null ? "" : n < 1024 ? `${n} B` : n < 1
 
 /** Every file attached in Jira: our copies of images, Jira links for the rest. */
 function Files({ rows, jiraBase }: { rows: Row[]; jiraBase: string | null }) {
+  const readOnly = useReadOnly();
+  const url = (key: string) => withBase(`${readOnly ? `${readOnly.base}/files` : "/api/files"}/${key}`);
   return (
     <section className="files">
       <div className="label">Files<span>{rows.length}</span></div>
       <div className="thumbs">
         {rows.filter((f) => f.file_key).map((f) => (
-          <a key={f.attachment_id} href={withBase(`/api/files/${f.file_key}`)} target="_blank" rel="noreferrer" data-tip={f.filename}>
-            <img src={withBase(`/api/files/${f.file_key}`)} alt={f.filename} loading="lazy" />
+          <a key={f.attachment_id} href={url(f.file_key)} target="_blank" rel="noreferrer" data-tip={f.filename}>
+            <img src={url(f.file_key)} alt={f.filename} loading="lazy" />
           </a>
         ))}
       </div>
@@ -274,11 +284,11 @@ function Related({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
   const taken = new Set(rows.map((r) => r.uid));
   return (
     <section>
-      <div className="label">Related<button type="button" className="plus" aria-label="relate an item" onClick={() => setAdding(true)}>+</button></div>
+      <div className="label">Related{!ctx.readOnly && <button type="button" className="plus" aria-label="relate an item" onClick={() => setAdding(true)}>+</button>}</div>
       {rows.map((r) => (
         <div key={r.uid} className="rrow" data-uid={r.uid}>
           <Led status={r.status} />
-          <a className="grow" href={withBase(`/p/${ctx.project}/i/${r.id}`)}>{r.title}</a>
+          <a className="grow" href={withBase(`${ctx.readOnly?.base ?? `/p/${ctx.project}`}/i/${r.id}`)}>{r.title}</a>
           {r.developer && <span className="faint">{r.developer}</span>}
           <Remove onConfirm={() => act.unrelate({ project: ctx.project, notes: r.notes })} />
         </div>
@@ -320,7 +330,7 @@ function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>;
   };
   return (
     <section>
-      <div className="label">Links<button type="button" className="plus" aria-label="add link" onClick={() => setAdding(true)}>+</button></div>
+      <div className="label">Links{!ctx.readOnly && <button type="button" className="plus" aria-label="add link" onClick={() => setAdding(true)}>+</button>}</div>
       {rows.map((l) => {
         const url = safeUrl(l.meta?.url);
         const tag = LINK_TAG[l.meta?.type] ?? (l.meta?.type && l.meta.type !== "other" ? l.meta.type : null);
@@ -396,7 +406,7 @@ function Checks({ rows, ctx }: { rows: Row[]; ctx: Ctx }) {
   );
   return (
     <section>
-      <div className="label">Checks<button type="button" className="plus" aria-label="add check" onClick={() => setAdding(true)}>+</button></div>
+      <div className="label">Checks{!ctx.readOnly && <button type="button" className="plus" aria-label="add check" onClick={() => setAdding(true)}>+</button>}</div>
       {open.map(row)}
       {done.length > 0 && (
         <button type="button" className="tgroup" onClick={() => setShowDone((s) => !s)}>

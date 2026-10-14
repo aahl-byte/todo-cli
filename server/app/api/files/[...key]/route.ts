@@ -1,5 +1,5 @@
 import { authed, json } from "@/lib/http";
-import { getObject, hasObject, KEY_RE, MAX_BYTES, putObject, readUrl, viaApp, typeOf } from "@/lib/files";
+import { fileResponse, hasObject, KEY_RE, MAX_BYTES, putObject, viaApp, typeOf } from "@/lib/files";
 
 type Params = { params: Promise<{ key: string[] }> };
 
@@ -13,13 +13,7 @@ export async function GET(req: Request, p: Params) {
   if (a instanceof Response) return a;
   const key = await keyOf(p);
   if (!key) return json({ error: "not found" }, 404);
-  if (!viaApp()) return new Response(null, { status: 302, headers: { location: await readUrl(key), "cache-control": "private, max-age=240" } });
-  const bytes = await getObject(key);
-  if (!bytes) return json({ error: "not found" }, 404);
-  return new Response(new Uint8Array(bytes), { headers: {
-    "content-type": typeOf(key), "x-content-type-options": "nosniff", "cache-control": "private, max-age=86400",
-    "content-security-policy": "default-src 'none'",
-  } });
+  return fileResponse(key);
 }
 
 /** The app-side stand-in for S3's presigned POST: local files, or proxied S3. */

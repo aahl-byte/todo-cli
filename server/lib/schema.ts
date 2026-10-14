@@ -325,4 +325,6 @@ create table if not exists display_tokens (
   last_seen  timestamptz,
   unique (project, label)
 );
+-- Who set the display up: it shows their pins.
+alter table display_tokens add column if not exists handle text;
 `;

@@ -61,9 +61,10 @@ design; there are no per-project roles.
 
 ## Wall display
 
-`/display/<project>` shows a project's board with no controls, refreshing every
-minute, for a screen nobody signs in on. It takes a display key, not a user
-token, and a key opens one project's board and nothing else.
+`/display/<project>` shows a project's board, refreshing every minute, for a
+screen nobody signs in on. Its cards open the full item page, read-only, and it
+shows the pins of whoever set it up. It takes a display key, not a user token,
+and a key opens one project's display and nothing else.
 
 **Set one up** on the device itself: sign in, open `/displays` (also under the
 user menu) and pick a project. The device keeps its key for a year, in a cookie
@@ -75,7 +76,8 @@ up whichever browser opens it; `list` and `remove <project> <label>` match the
 page.
 
 Behind a sign-in proxy, let `<base>/display/` and `<base>/_next/static/`
-through without sign-in; the page needs the app's built assets and nothing else.
+through without sign-in; a display loads everything else, images included,
+under its own path.
 
 ## Jira bridge
 

@@ -22,12 +22,16 @@ export const viaApp = () => !s3() || proxied();
 export const filesEnabled = () => s3() || !process.env.VERCEL;
 export const typeOf = (key: string) => TYPES[key.split(".").pop()!.toLowerCase()];
 
+const keyPart = (s: string) => s.replace(/[^\w-]/g, "").slice(0, 64) || "x";
+
 export function newKey(project: string, scope: string, contentType: string): string | null {
   const ext = EXT[contentType];
   if (!ext) return null;
-  const clean = (s: string) => s.replace(/[^\w-]/g, "").slice(0, 64) || "x";
-  return `${clean(project)}/${clean(scope)}/${ulid()}.${ext}`;
+  return `${keyPart(project)}/${keyPart(scope)}/${ulid()}.${ext}`;
 }
+
+/** Whether a stored file belongs to the project. */
+export const inProject = (key: string, project: string) => key.startsWith(`${keyPart(project)}/`);
 
 /** The S3 client; `browser` signs URLs for the address browsers use, which
  * differs from the server's own when the bucket is local. */
@@ -108,4 +112,15 @@ export async function readLocal(key: string): Promise<Buffer | null> {
   } catch {
     return null;
   }
+}
+
+/** A stored file for the browser: a short-lived S3 link, or the bytes when the app serves them. */
+export async function fileResponse(key: string): Promise<Response> {
+  if (!viaApp()) return new Response(null, { status: 302, headers: { location: await readUrl(key), "cache-control": "private, max-age=240" } });
+  const bytes = await getObject(key);
+  if (!bytes) return new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "content-type": "application/json" } });
+  return new Response(new Uint8Array(bytes), { headers: {
+    "content-type": typeOf(key), "x-content-type-options": "nosniff", "cache-control": "private, max-age=86400",
+    "content-security-policy": "default-src 'none'",
+  } });
 }

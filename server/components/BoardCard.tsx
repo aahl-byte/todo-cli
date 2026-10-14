@@ -59,13 +59,15 @@ export function columnWho(column: string, c: Card): string | null {
 }
 
 /** A board card: status, title, where it lives, and its badges. */
-export function BoardCard({ c, project, who, led, current, linked = true }: {
-  c: Card; project: string; who: string | null; led: boolean; current?: boolean; linked?: boolean;
+export function BoardCard({ c, project, who, led, current, base = `/p/${project}` }: {
+  c: Card; project: string; who: string | null; led: boolean; current?: boolean;
+  /** Where item links start; a wall display keeps them inside its own pages. */
+  base?: string;
 }) {
   const props = { className: `card s-${c.status} ${hasFlags(c) ? "flagged" : ""}`, "data-uid": c.uid,
                   style: hasFlags(c) ? ({ "--flags": flagCount(c) } as CSSProperties) : undefined };
-  const body = (
-    <>
+  return (
+    <Link href={`${base}/i/${c.id}`} {...props} aria-current={current ? "page" : undefined}>
       <Flags c={c} />
       {led && <Led status={c.status} label />}
       <div className="title">{c.title}</div>
@@ -81,9 +83,6 @@ export function BoardCard({ c, project, who, led, current, linked = true }: {
         {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
         <Glance c={c} />
       </div>
-    </>
+    </Link>
   );
-  return linked
-    ? <Link href={`/p/${project}/i/${c.id}`} {...props} aria-current={current ? "page" : undefined}>{body}</Link>
-    : <div {...props}>{body}</div>;
 }

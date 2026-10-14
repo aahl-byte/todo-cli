@@ -19,7 +19,11 @@ function slugOf(title: string, id: string) {
   return title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "").startsWith(id);
 }
 
-export function Pins({ project, pins, thin: thinAtFirst }: { project: string; pins: Card[]; thin: boolean }) {
+export function Pins({ project, pins, thin: thinAtFirst, base = `/p/${project}`, readOnly = false }: {
+  project: string; pins: Card[]; thin: boolean;
+  /** Where item links start, and whether pins can be removed here. */
+  base?: string; readOnly?: boolean;
+}) {
   const path = usePathname();
   const [thin, setThin] = useState(thinAtFirst);
   if (!pins.length) return null;
@@ -35,17 +39,17 @@ export function Pins({ project, pins, thin: thinAtFirst }: { project: string; pi
                 data-tip={thin ? "show cards" : "collapse"}>{thin ? "»" : "«"}</button>
       </div>
       {pins.map((c) => {
-        const href = `/p/${project}/i/${c.id}`;
+        const href = `${base}/i/${c.id}`;
         const here = path === href;
         return (
           <div key={c.uid} className={`pin s-${c.status}`}>
-            <BoardCard c={c} project={project} who={c.developer ?? (c.status === "requested" ? c.creator : null)} led current={here} />
+            <BoardCard c={c} project={project} who={c.developer ?? (c.status === "requested" ? c.creator : null)} led current={here} base={base} />
             <Link href={href} className="tile" aria-current={here ? "page" : undefined}>
               <span className="mark">{initials(c.title)}</span>
               <span className="name">{!slugOf(c.title, c.id) && <span className="pid">{c.id}</span>}{c.title}</span>
             </Link>
-            <button type="button" className="unpin" aria-label={`unpin ${c.id}`} data-tip="unpin"
-                    onClick={() => void pin({ project, itemUid: c.uid, on: false })}>×</button>
+            {!readOnly && <button type="button" className="unpin" aria-label={`unpin ${c.id}`} data-tip="unpin"
+                                  onClick={() => void pin({ project, itemUid: c.uid, on: false })}>×</button>}
           </div>
         );
       })}

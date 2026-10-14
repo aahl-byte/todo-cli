@@ -2,6 +2,7 @@
 // Shared controls in the watchtower drawer's idiom: status light, popover menu,
 // popup, instant tooltip, click-to-edit text.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useReadOnly } from "./ReadOnly";
 
 export function Led({ status, label = false }: { status: string; label?: boolean }) {
   return (
@@ -33,6 +34,7 @@ export function Menu({ trigger, options, current, onPick, onOpen, label, disable
   className?: string;
   tip?: string;
 }) {
+  const readOnly = useReadOnly();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   // The options are frozen while the menu is open, so a live refresh can't
@@ -78,6 +80,7 @@ export function Menu({ trigger, options, current, onPick, onOpen, label, disable
     if (shown[i]) onPick(shown[i].value, { shiftKey });
   };
 
+  if (readOnly) return <span className={`menu-static ${className ?? ""}`}>{trigger}</span>;
   return (
     <>
       <button ref={btn} type="button" className={`menu-btn ${className ?? ""}`} aria-haspopup="listbox" aria-expanded={open}
@@ -235,6 +238,7 @@ export function EditableText({ value, onSave, onStart, label, className, multili
   /** Saving an empty value clears it instead of cancelling. */
   allowEmpty?: boolean;
 }) {
+  const readOnly = useReadOnly();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const done = useRef(false);
@@ -248,6 +252,7 @@ export function EditableText({ value, onSave, onStart, label, className, multili
     if (saved === false) { done.current = false; return; }
     setEditing(false);
   };
+  if (readOnly) return <span className={`edit-text ${className ?? ""}`}>{value || (placeholder && <span className="faint">{placeholder}</span>)}</span>;
   if (!editing) {
     return (
       <button type="button" className={`edit-text ${className ?? ""}`} aria-label={`${label}: ${value}`}
