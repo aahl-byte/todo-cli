@@ -181,7 +181,7 @@ todo relate|unrelate <query> <other>      # related work, shown on both items
 todo jira link|unlink <query> <KEY...>    # Jira tickets this item covers
 todo reject <query> <text...>             # QA → qa-rejected with a required comment
 todo list --mine                          # where I'm developer or QA
-todo login <url> <token> | whoami | sync | inbox   # team server
+todo login <url> | whoami | sync | inbox   # team server
 todo link --remote <url> [--project KEY]  # sync this store with a team server
 todo archive                     # archive done and cancelled items (synced; clears Shipped)
 todo migrate [-g]                # rewrite files the fast YAML loader rejects
@@ -301,7 +301,7 @@ The server in [`server/`](server/README.md) is the source of truth, and each
 developer's `.TODO/` is a cache. It works offline.
 
 ```bash
-todo login https://todo.example.com <token>       # from `npm run user:add`
+todo login https://todo.example.com            # asks for the token (hidden); `npm run user:add` makes one
 todo link --remote https://todo.example.com --project web
 ```
 

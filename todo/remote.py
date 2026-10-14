@@ -64,6 +64,17 @@ def save_login(url: str, handle: str, token: str) -> None:
     identity.save_config(cfg)
 
 
+def _explain(status: int, detail) -> str:
+    """The server's error, with what to do about the two 401s: the sign-in
+    gate in front of the server, and the server's own token check."""
+    if status == 401 and detail == "sign-in required":
+        return ("sign-in required: a sign-in gate in front of the server blocked this request; "
+                "its /api path isn't open to the CLI")
+    if status == 401 and detail == "unauthorized":
+        return "unauthorized: the token is wrong or revoked; run `todo login <url>` for a new one"
+    return str(detail)
+
+
 class Remote:
     def __init__(self, url: str, token: str | None, timeout: float = DEFAULT_TIMEOUT):
         self.url = url.rstrip("/")
@@ -84,7 +95,7 @@ class Remote:
                 detail = json.loads(e.read() or b"{}").get("error") or e.reason
             except ValueError:
                 detail = e.reason
-            raise RemoteError(f"{self.url}: {e.code} {detail}", e.code) from None
+            raise RemoteError(f"{self.url}: {e.code} {_explain(e.code, detail)}", e.code) from None
         except (urllib.error.URLError, OSError, ValueError) as e:
             reason = getattr(e, "reason", e)
             raise RemoteError(f"{self.url} unreachable ({reason})") from None

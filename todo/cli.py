@@ -19,6 +19,7 @@ shape changes.
 
 import argparse
 import contextlib
+import getpass
 import io
 import re
 import subprocess
@@ -749,7 +750,23 @@ def cmd_sync(root: Path, args) -> None:
         sys.exit(EXIT_SYNC_REJECTED)
 
 
+def _login_token(args) -> str:
+    if args.token:
+        print("note: a token given on the command line stays in your shell history; "
+              "run `todo login <url>` to be asked for it instead.", file=sys.stderr)
+        return args.token
+    if sys.stdin.isatty():
+        token = getpass.getpass(f"API token for {args.url.rstrip('/')} (input hidden): ")
+    else:
+        token = sys.stdin.readline()
+    token = token.strip()
+    if not token:
+        die("No token given.", 2)
+    return token
+
+
 def cmd_login(root: Path, args) -> None:
+    args.token = _login_token(args)
     rem = remote.Remote(args.url, args.token, timeout=15)
     try:
         me = rem.me()
@@ -1190,7 +1207,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("login", help="save a server token (and your handle) for syncing")
     p.add_argument("url", help="server URL, e.g. https://todo.example.com")
-    p.add_argument("token", help="your API token")
+    p.add_argument("token", nargs="?",
+                   help="your API token; leave out to be asked for it (hidden)")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("whoami", parents=[common], help="show your identity and sync setup")
