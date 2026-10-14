@@ -249,7 +249,12 @@ body:has(.pins.thin) main { padding-left: max(56px, env(safe-area-inset-left)); 
 .filters .search input:focus + kbd, .filters .search input:not(:placeholder-shown) + kbd { display: none; }
 @media (max-width: 600px) { .filters .search { margin-left: 0; flex: 1; } .filters .search input { width: 100%; } }
 .chip { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; color: var(--dim); border: 1px solid var(--line-2); border-radius: 999px; padding: 1px 4px 1px 8px; }
-.display-head { display: flex; align-items: baseline; gap: 12px; margin: 0 2px 14px; }
+.display { border-top: 3px solid var(--cyan); }
+.display-head { display: flex; align-items: center; gap: 12px; margin: 0 2px 14px; }
+.display-head .brand { margin: 0; }
+.display-badge { color: var(--cyan); border-color: var(--cyan-dim); font-size: 10px; padding: 2px 9px; }
+.display .card { cursor: default; }
+.display .card:hover { border-color: var(--line); }
 .updated { color: var(--faint); font-size: 11px; }
 .displays { max-width: 720px; }
 .display-picks { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 28px; }

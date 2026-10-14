@@ -22,7 +22,11 @@ export default async function Display({ params }: { params: Promise<{ key: strin
   const { columns } = await board(d, p, {}, "");
   return (
     <main className="display">
-      <div className="display-head"><h1 className="brand">{p.name}</h1><AutoRefresh everyMs={REFRESH_MS} at={Date.now()} /></div>
+      <div className="display-head">
+        <h1 className="brand">{p.name}</h1>
+        <span className="tag display-badge">read-only display</span>
+        <AutoRefresh everyMs={REFRESH_MS} at={Date.now()} />
+      </div>
       <div className="board">
         {columns.map((col) => (
           <section key={col.key} className={`column ${col.items.length ? "" : "empty-col"}`} aria-label={col.label}>
