@@ -26,11 +26,9 @@ export async function markRead(db: Db, handle: string, ids: number[]): Promise<n
   return rows.length;
 }
 
-/** Record a visit to an item: its notices are read, and the visit time kept.
- * Returns when the user last saw it (before now) — on a first visit, when its
- * oldest unread notice arrived — and the unread count left. */
-export async function markSeen(db: Db, handle: string, project: string, itemUid: string):
-    Promise<{ lastSeen: string | null; unread: number }> {
+/** When the user last saw an item, without recording a visit. On a first
+ * visit, it is when the item's oldest unread notice arrived. */
+export async function lastVisit(db: Db, handle: string, project: string, itemUid: string): Promise<string | null> {
   const [prev] = await db.query(
     "select seen_at from item_seen where handle = $1 and project = $2 and item_uid = $3", [handle, project, itemUid]);
   let lastSeen: Date | null = prev?.seen_at ?? null;
@@ -43,6 +41,14 @@ export async function markSeen(db: Db, handle: string, project: string, itemUid:
       [handle, project, itemUid]);
     lastSeen = n?.at ? new Date(new Date(n.at).getTime() - 1000) : null;
   }
+  return lastSeen ? new Date(lastSeen).toISOString() : null;
+}
+
+/** Record a visit to an item: its notices are read, and the visit time kept.
+ * Returns when the user last saw it before now, and the unread count left. */
+export async function markSeen(db: Db, handle: string, project: string, itemUid: string):
+    Promise<{ lastSeen: string | null; unread: number }> {
+  const lastSeen = await lastVisit(db, handle, project, itemUid);
   await db.query(
     "update notifications set read_at = now() where handle = $1 and project = $2 and item_uid = $3 and read_at is null",
     [handle, project, itemUid]);
@@ -50,7 +56,7 @@ export async function markSeen(db: Db, handle: string, project: string, itemUid:
     `insert into item_seen (handle, project, item_uid, seen_at) values ($1, $2, $3, now())
      on conflict (handle, project, item_uid) do update set seen_at = excluded.seen_at`, [handle, project, itemUid]);
   const [c] = await db.query("select count(*)::int as n from notifications where handle = $1 and read_at is null", [handle]);
-  return { lastSeen: lastSeen ? new Date(lastSeen).toISOString() : null, unread: Number(c.n) };
+  return { lastSeen, unread: Number(c.n) };
 }
 
 /** Notices that ask something of you; the rest are for your information. */

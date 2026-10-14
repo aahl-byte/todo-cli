@@ -7,17 +7,18 @@ import { board, project } from "@/lib/views";
 
 export const dynamic = "force-dynamic";
 
-/** One project's board on a wall display. */
+/** One project's board on a wall display, flagged as whoever set it up sees it. */
 export default async function DisplayBoard({ params, searchParams }: {
   params: Promise<{ key: string }>; searchParams: Promise<{ setup?: string }>;
 }) {
   const { key } = await params;
   const { setup } = await searchParams;
-  if (!(await currentDisplay(key))) return null;
+  const display = await currentDisplay(key);
+  if (!display) return null;
   const d = await db();
   const p = await project(d, key);
   if (!p) notFound();
-  const { columns } = await board(d, p, {}, "");
+  const { columns } = await board(d, p, {}, display.handle ?? "");
   return (
     <>
       {setup && <GateSignOut />}

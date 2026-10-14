@@ -29,6 +29,8 @@ export interface Ctx {
   actions: { id: string; name: string; runner: string }[];
   /** Set on a wall display: everything shows, nothing writes. */
   readOnly?: ReadOnlyView | null;
+  /** The viewer's last visit, given up front by a page that doesn't record one. */
+  lastSeen?: string | null;
 }
 
 /** Report a refused write in a toast, with the winning change's time local. */
@@ -118,7 +120,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
 
   const tasksDone = data.tasks.filter((t) => COMPLETE.includes(t.status) || PARKED.includes(t.status)).length;
   // The previous visit, fixed for this page view so a live refresh can't clear the highlights.
-  const [lastSeen, setLastSeen] = useState<string | null>(null);
+  const [lastSeen, setLastSeen] = useState<string | null>(ctx.lastSeen ?? null);
   useEffect(() => {
     if (ctx.readOnly) return;
     let live = true;

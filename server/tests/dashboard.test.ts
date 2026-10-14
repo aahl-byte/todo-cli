@@ -561,6 +561,17 @@ describe("seen", () => {
     expect(again.lastSeen).toBe(new Date(at).toISOString());
     expect((await markSeen(w.d, "carol", "p", "N2")).lastSeen).toBeNull();   // nothing pending, never visited
   });
+
+  it("reads the last visit without recording one or reading notices", async () => {
+    const { lastVisit, markSeen } = await import("@/lib/inbox");
+    await w.one("alice", item("N1", { developer: "bob" }));
+    await w.one("alice", child("note", "C1", "N1", { kind: "comment", text: "@bob look" }));
+    const peek = await lastVisit(w.d, "bob", "p", "N1");
+    expect(peek).not.toBeNull();
+    expect(await w.d.query("select 1 from item_seen")).toEqual([]);
+    expect(await w.d.query("select 1 from notifications where read_at is not null")).toEqual([]);
+    expect((await markSeen(w.d, "bob", "p", "N1")).lastSeen).toBe(peek);
+  });
 });
 
 describe("inbox grouping", () => {
