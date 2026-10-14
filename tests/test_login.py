@@ -1,5 +1,5 @@
-"""`todo login` against a stub server: the token prompt, the history warning,
-and the two kinds of 401."""
+"""`todo login` against a stub server: browser approval, the token prompt, the
+history warning, and the two kinds of 401."""
 
 import json
 import subprocess
@@ -13,6 +13,8 @@ TOKEN = "good-token"
 
 
 def make_handler(mode):
+    polls = [0]
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -23,6 +25,22 @@ def make_handler(mode):
             if self.headers.get("authorization") != f"Bearer {TOKEN}":
                 return self.reply(401, {"error": "unauthorized"})
             self.reply(200, {"handle": "alice"})
+
+        def do_POST(self):
+            if mode == "gate":
+                return self.reply(401, {"error": "sign-in required"})
+            if mode == "old":
+                return self.reply(404, {"error": "not found"})
+            n = int(self.headers.get("content-length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            if self.path.endswith("/start"):
+                return self.reply(200, {"device_code": "dev", "user_code": "ABCD-2345", "expires_in": 30, "interval": 0.05})
+            polls[0] += 1
+            if mode == "denied":
+                return self.reply(200, {"status": "expired"})
+            if polls[0] < 3:
+                return self.reply(200, {"status": "pending"})
+            self.reply(200, {"status": "approved", "token": TOKEN, "handle": "alice"})
 
         def reply(self, code, body):
             data = json.dumps(body).encode()
@@ -59,8 +77,30 @@ def login(tmp_path, *argv, stdin=""):
                           cwd=tmp_path, env=env, input=stdin, capture_output=True, text=True, timeout=60)
 
 
-def test_token_read_from_stdin_when_not_given(stub, tmp_path):
-    out = login(tmp_path, stub(), stdin=TOKEN + "\n")
+def test_browser_approval_signs_in_without_a_token_on_the_terminal(stub, tmp_path):
+    url = stub()
+    out = login(tmp_path, url)
+    assert out.returncode == 0, out.stderr
+    assert f"{url}/login/device?code=ABCD-2345" in out.stdout
+    assert "as alice" in out.stdout
+    assert TOKEN not in out.stdout + out.stderr
+    assert TOKEN in (tmp_path / ".todo" / "config.yaml").read_text()
+
+
+def test_denied_or_expired_request_fails(stub, tmp_path):
+    out = login(tmp_path, stub("denied"))
+    assert out.returncode == 1
+    assert "expired or was denied" in out.stderr
+
+
+def test_server_without_browser_login_falls_back_to_the_token_prompt(stub, tmp_path):
+    out = login(tmp_path, stub("old"), stdin=TOKEN + "\n")
+    assert "paste an API token" in out.stderr
+    assert out.returncode == 0 and "as alice" in out.stdout
+
+
+def test_token_flag_prompts_instead_of_opening_the_browser(stub, tmp_path):
+    out = login(tmp_path, stub(), "--token", stdin=TOKEN + "\n")
     assert out.returncode == 0, out.stderr
     assert "as alice" in out.stdout
     assert "shell history" not in out.stderr
@@ -73,7 +113,7 @@ def test_positional_token_warns_about_shell_history(stub, tmp_path):
 
 
 def test_empty_token_is_refused(stub, tmp_path):
-    out = login(tmp_path, stub(), stdin="\n")
+    out = login(tmp_path, stub(), "--token", stdin="\n")
     assert out.returncode == 2
     assert "No token" in out.stderr
 

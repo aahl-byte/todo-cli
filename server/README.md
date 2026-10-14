@@ -32,8 +32,15 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    DATABASE_URL=... npm run project:add -- web "Web app"
    ```
 
-   `user:add` prints the token that user signs in with, in the dashboard and in
-   `todo login`. Running it again for the same handle issues a new token.
+   `user:add` prints the token that user signs in with in the dashboard.
+   Running it again for the same handle issues a new token.
+
+   `todo login <url>` signs a CLI in through the browser: `POST /api/login/start`
+   returns a code, a signed-in user approves it at `/login/device`, and
+   `POST /api/login/poll` hands the CLI a token of its own (`api_tokens`, one
+   per device, revocable under `/devices`). Behind a sign-in gate, leave
+   `/api/` open and everything else gated: approval needs the dashboard
+   session, and the two login routes allow at most 25 requests waiting.
 
    `migrate` refuses a database built from the pre-release schema (entity rows
    keyed by uid alone); recreate such a database.

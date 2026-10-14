@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.12.2
+version: 0.13.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -244,7 +244,8 @@ todo jira link|unlink <query> <KEY...>   # Jira tickets this item covers
 todo list --mine                 # items where I'm developer or QA
 todo actions                     # the project's Actions (defined on the server's settings page)
 todo action <query> <id>         # run one on an item; the outcome lands in its dev log
-todo sync | todo inbox | todo whoami | todo login <url>
+todo sync | todo inbox | todo whoami
+todo login <url>                 # approve the code it prints in your browser
 todo link --remote <url> [--project KEY]   # sync this store with a team server
 todo notes  <query>              # list notes with their [id]s
 todo renote <query> <id> <text...> # replace a note's text, keeping its id

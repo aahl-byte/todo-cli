@@ -301,9 +301,16 @@ The server in [`server/`](server/README.md) is the source of truth, and each
 developer's `.TODO/` is a cache. It works offline.
 
 ```bash
-todo login https://todo.example.com            # asks for the token (hidden); `npm run user:add` makes one
+todo login https://todo.example.com            # approve the code it shows in your browser
 todo link --remote https://todo.example.com --project web
 ```
+
+`todo login` prints a code and a dashboard link. Open it signed in, check the
+code matches, and approve: the CLI collects a token of its own, so nothing
+secret is typed or lands in shell history. `todo login <url> --token` asks for
+a token instead (hidden), for servers that predate this. Each login is its own
+token, listed under *command lines* in the dashboard menu, where it can be
+revoked.
 
 After that, every command syncs before it runs and pushes after. A round
 compares the items a command touched with the last-synced snapshot, and every

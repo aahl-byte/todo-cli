@@ -22,8 +22,10 @@ import contextlib
 import getpass
 import io
 import re
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import actions as actions_mod
@@ -753,7 +755,7 @@ def cmd_sync(root: Path, args) -> None:
 def _login_token(args) -> str:
     if args.token:
         print("note: a token given on the command line stays in your shell history; "
-              "run `todo login <url>` to be asked for it instead.", file=sys.stderr)
+              "run `todo login <url>` to sign in through your browser instead.", file=sys.stderr)
         return args.token
     if sys.stdin.isatty():
         token = getpass.getpass(f"API token for {args.url.rstrip('/')} (input hidden): ")
@@ -765,8 +767,43 @@ def _login_token(args) -> str:
     return token
 
 
+def _browser_login(url: str) -> str | None:
+    """Sign in by approving a code in the browser; the token comes back here
+    without passing through the terminal. None when the server predates it."""
+    rem = remote.Remote(url, None, timeout=15)
+    try:
+        started = rem.login_start(f"{getpass.getuser()}@{socket.gethostname()}")
+    except remote.RemoteError as e:
+        if e.status in (404, 405):
+            return None
+        die(f"Login failed: {e}", 1)
+    code = started["user_code"]
+    print(f"Open {url.rstrip('/')}/login/device?code={code} in your browser and approve code {code}.")
+    deadline = time.monotonic() + started.get("expires_in", 600)
+    interval = float(started.get("interval", 3))
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        try:
+            got = rem.login_poll(started["device_code"])
+        except remote.RemoteError as e:
+            die(f"Login failed: {e}", 1)
+        if got["status"] == "approved":
+            return got["token"]
+        if got["status"] == "expired":
+            die("Login failed: the request expired or was denied.", 1)
+        if got["status"] == "slow_down":
+            interval += 2
+    die("Login failed: no approval in time.", 1)
+
+
 def cmd_login(root: Path, args) -> None:
-    args.token = _login_token(args)
+    if args.token or args.ask:
+        args.token = _login_token(args)
+    else:
+        args.token = _browser_login(args.url)
+        if args.token is None:
+            print("This server can't sign in through a browser; paste an API token instead.", file=sys.stderr)
+            args.token = _login_token(args)
     rem = remote.Remote(args.url, args.token, timeout=15)
     try:
         me = rem.me()
@@ -1207,8 +1244,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("login", help="save a server token (and your handle) for syncing")
     p.add_argument("url", help="server URL, e.g. https://todo.example.com")
-    p.add_argument("token", nargs="?",
-                   help="your API token; leave out to be asked for it (hidden)")
+    p.add_argument("token", nargs="?", help="an API token (it stays in shell history; prefer the browser or --token)")
+    p.add_argument("--token", dest="ask", action="store_true",
+                   help="paste an API token (hidden) instead of approving in the browser")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("whoami", parents=[common], help="show your identity and sync setup")

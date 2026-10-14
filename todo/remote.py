@@ -103,6 +103,12 @@ class Remote:
     def me(self) -> dict:
         return self.request("GET", "/api/me")
 
+    def login_start(self, label: str) -> dict:
+        return self.request("POST", "/api/login/start", {"label": label})
+
+    def login_poll(self, device_code: str) -> dict:
+        return self.request("POST", "/api/login/poll", {"device_code": device_code})
+
     def ensure_project(self, key: str) -> dict:
         return self.request("POST", "/api/projects", {"key": key})
 
