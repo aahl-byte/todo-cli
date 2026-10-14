@@ -9,6 +9,7 @@
     "start": "next start",
     "migrate": "tsx scripts/migrate.ts",
     "user:add": "tsx scripts/user-add.ts",
+    "display": "tsx scripts/display.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "project:add": "tsx scripts/project-add.ts",

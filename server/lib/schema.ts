@@ -315,4 +315,14 @@ create table if not exists item_pins (
   primary key (handle, project, item_uid),
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
+
+-- Read-only keys for a wall display: each shows one project's board.
+create table if not exists display_tokens (
+  token_hash text primary key,
+  project    text not null references projects(key),
+  label      text not null,
+  created    timestamptz not null default now(),
+  last_seen  timestamptz,
+  unique (project, label)
+);
 `;

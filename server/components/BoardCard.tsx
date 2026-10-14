@@ -53,14 +53,19 @@ function Flags({ c }: { c: Card }) {
   );
 }
 
+/** Whose initials a card shows in a board column: QA's in the QA column, else the developer's, else a request's author. */
+export function columnWho(column: string, c: Card): string | null {
+  return column === "qa" ? c.qa_assignee : c.developer ?? (c.status === "requested" ? c.creator : null);
+}
+
 /** A board card: status, title, where it lives, and its badges. */
-export function BoardCard({ c, project, who, led, current }: {
-  c: Card; project: string; who: string | null; led: boolean; current?: boolean;
+export function BoardCard({ c, project, who, led, current, linked = true }: {
+  c: Card; project: string; who: string | null; led: boolean; current?: boolean; linked?: boolean;
 }) {
-  return (
-    <Link href={`/p/${project}/i/${c.id}`} className={`card s-${c.status} ${hasFlags(c) ? "flagged" : ""}`} data-uid={c.uid}
-          style={hasFlags(c) ? ({ "--flags": flagCount(c) } as CSSProperties) : undefined}
-          aria-current={current ? "page" : undefined}>
+  const props = { className: `card s-${c.status} ${hasFlags(c) ? "flagged" : ""}`, "data-uid": c.uid,
+                  style: hasFlags(c) ? ({ "--flags": flagCount(c) } as CSSProperties) : undefined };
+  const body = (
+    <>
       <Flags c={c} />
       {led && <Led status={c.status} label />}
       <div className="title">{c.title}</div>
@@ -76,6 +81,9 @@ export function BoardCard({ c, project, who, led, current }: {
         {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
         <Glance c={c} />
       </div>
-    </Link>
+    </>
   );
+  return linked
+    ? <Link href={`/p/${project}/i/${c.id}`} {...props} aria-current={current ? "page" : undefined}>{body}</Link>
+    : <div {...props}>{body}</div>;
 }

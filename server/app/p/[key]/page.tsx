@@ -1,4 +1,4 @@
-import { BoardCard } from "@/components/BoardCard";
+import { BoardCard, columnWho } from "@/components/BoardCard";
 import { notFound } from "next/navigation";
 import { redirect } from "next/navigation";
 import { RoleFilter } from "@/components/RoleFilter";
@@ -40,12 +40,9 @@ export default async function Board({ params, searchParams }: { params: Promise<
                   <button type="submit" className="plus" data-tip="archive every shipped and cancelled item">clear</button>
                 </form>)}
             </div>
-            {col.items.map((c) => {
-              const who = col.key === "qa" ? c.qa_assignee : c.developer ?? (c.status === "requested" ? c.creator : null);
-              return (
-                <BoardCard key={c.uid} c={c} project={key} who={who} led={col.statuses.length > 1} />
-              );
-            })}
+            {col.items.map((c) => (
+              <BoardCard key={c.uid} c={c} project={key} who={columnWho(col.key, c)} led={col.statuses.length > 1} />
+            ))}
           </section>
         ))}
       </div>
