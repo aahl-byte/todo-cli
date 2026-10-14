@@ -327,4 +327,28 @@ create table if not exists display_tokens (
 );
 -- Who set the display up: it shows their pins.
 alter table display_tokens add column if not exists handle text;
+
+-- Per-device API tokens, minted when a signed-in user approves a CLI login.
+-- users.token_hash stays the user's own token.
+create table if not exists api_tokens (
+  id         bigserial primary key,
+  token_hash text not null unique,
+  handle     text not null references users(handle) on delete cascade,
+  label      text not null,
+  created    timestamptz not null default now(),
+  last_used  timestamptz
+);
+create index if not exists api_tokens_handle on api_tokens (handle);
+
+-- A CLI waiting for a browser to approve it. The token is minted when the CLI
+-- collects it, so it is never stored.
+create table if not exists device_logins (
+  device_hash text primary key,
+  user_code   text not null unique,
+  label       text not null,
+  handle      text,
+  expires     timestamptz not null,
+  last_poll   timestamptz,
+  created     timestamptz not null default now()
+);
 `;

@@ -27,7 +27,7 @@ export function TopBar({ handle, project, all }: { handle: string; project?: Pro
       <Live project={project?.key} cursor={project?.seq} />
       <details className="switcher user">
         <summary className="label">{handle}<span className="caret">▾</span></summary>
-        <div className="menu"><Link href="/displays">wall display</Link><form action={logoutAction}><button className="add">sign out</button></form></div>
+        <div className="menu"><Link href="/displays">wall display</Link><Link href="/devices">command lines</Link><form action={logoutAction}><button className="add">sign out</button></form></div>
       </details>
       <Toaster />
       <Tooltips />

@@ -16,8 +16,17 @@ export function newToken(): string {
 
 export async function userForToken(db: Db, token: string | null | undefined): Promise<User | null> {
   if (!token) return null;
-  const [row] = await db.query("select handle, name from users where token_hash = $1", [hashToken(token)]);
-  return row ? { handle: row.handle, name: row.name } : null;
+  const hash = hashToken(token);
+  const [row] = await db.query(
+    `select handle, name from users where token_hash = $1
+     union all
+     select u.handle, u.name from api_tokens t join users u on u.handle = t.handle where t.token_hash = $1
+     limit 1`, [hash]);
+  if (!row) return null;
+  await db.query(
+    "update api_tokens set last_used = now() where token_hash = $1 and (last_used is null or last_used < now() - interval '1 minute')",
+    [hash]);
+  return { handle: row.handle, name: row.name };
 }
 
 /** The request's token: a Bearer header (CLI), or the dashboard's cookie. A
