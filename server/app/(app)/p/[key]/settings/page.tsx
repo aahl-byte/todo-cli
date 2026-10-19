@@ -24,7 +24,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
       <RecentRuns runs={await recentRuns(d, key)} projectKey={key} />
     </>
   );
-  if (!s.jiraProject) return <div className="settings">{actions}<div className="label section">Jira</div><p className="empty">This project isn't linked to Jira.</p></div>;
+  if (s.mode === "import" && !s.jiraProject) return <div className="settings">{actions}<div className="label section">Jira</div><p className="empty">This project isn't linked to Jira.</p></div>;
   const state = s.serverReadOnly ? "Writes off: this server is read-only (JIRA_READ_ONLY)."
     : s.outbound.writes ? "Writes on." : "Writes off for this project.";
   const runs = await dryRuns(d, key);
@@ -33,13 +33,14 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
       {actions}
       <div className="label section">Jira</div>
       <p className="settings-head">
-        {s.jiraUrl ? <a href={s.jiraUrl} target="_blank" rel="noreferrer">{s.jiraProject} ↗</a> : s.jiraProject}
+        {s.mode === "links" ? <span>Linked issues{s.jiraProjects.length ? ` in ${s.jiraProjects.join(", ")}` : ""}</span>
+          : s.jiraUrl ? <a href={s.jiraUrl} target="_blank" rel="noreferrer">{s.jiraProject} ↗</a> : s.jiraProject}
         <span className={s.serverReadOnly || !s.outbound.writes ? "tag" : "tag hot"}>{state}</span>
         {s.savedBy && <span className="hint">saved by {s.savedBy}, {when(s.savedAt!)}</span>}
-        {!s.jiraStatuses && <span className="hot">Jira couldn't be reached, so its statuses aren't listed.</span>}
+        {!s.jiraStatuses && s.jiraProjects.length > 0 && <span className="hot">Jira couldn't be reached, so its statuses aren't listed.</span>}
       </p>
       <JiraSettingsForm projectKey={key} inbound={s.inbound} outbound={s.outbound} statuses={STATUSES}
-                        jiraStatuses={s.jiraStatuses} serverReadOnly={s.serverReadOnly} />
+                        jiraStatuses={s.jiraStatuses} serverReadOnly={s.serverReadOnly} mode={s.mode} />
       <div className="label section">Would send</div>
       {!runs.length ? <p className="empty">Nothing yet. Calls a trigger or comment would make show here while writes are off.</p> : (
         <div className="dry-runs">

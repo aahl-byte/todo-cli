@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyOps, type Op } from "@/lib/apply";
 import { ulid } from "@/lib/ulid";
 import { migrate, pglite } from "@/lib/db";
 import { addProject } from "@/lib/auth";
 import { linkedProjects, syncJira } from "@/lib/jira/sync";
+import { flushJira } from "@/lib/jira/flush";
+import { loadJiraSettings, saveJiraSettings } from "@/lib/jira/settings";
+import { outboundRules } from "@/lib/jira/rules";
 import { item as itemView } from "@/lib/views";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -247,5 +250,57 @@ describe("jira links mode", () => {
   it("lists the links-mode projects for a poll of all of them", async () => {
     await addProject(w.d, "r");
     expect(await linkedProjects(w.d)).toEqual(["p", "q"]);
+  });
+});
+
+describe("jira links-mode triggers", () => {
+  const RULES = { writes: true, comments: true, never: [], triggers: [{ from: "todo", to: "in-progress", jira: "In Progress" }] };
+  const outbound = () => w.d.query("update projects set jira_outbound = $1::jsonb where key = 'p'", [JSON.stringify(RULES)]);
+  const move = async (uid: string, status: string) => {
+    const [it] = await w.d.query("select versions from items where uid = $1", [uid]);
+    return w.one("alice", set("item", uid, uid, { status }, { status: it.versions.status }));
+  };
+  const outbox = () => w.d.query(
+    "select action, payload->>'key' as key, payload->>'status' as status, done_at is null as pending from jira_outbox order by id");
+
+  it("queues a triggered move for every issue the item links, and no comments", async () => {
+    await outbound();
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1", "OPS-7"] } }));
+    await move("A", "in-progress");
+    await w.one("alice", { op: "create", entity: "note", uid: "N1", item_uid: "A", data: { kind: "comment", text: "hi", ts: "t" } });
+    expect(await outbox()).toEqual([
+      { action: "transition", key: "CNS-1", status: "In Progress", pending: false },
+      { action: "transition", key: "OPS-7", status: "In Progress", pending: false },
+    ]);
+  });
+
+  it("sends each linked issue its own move while writes are on", async () => {
+    delete process.env.JIRA_READ_ONLY;
+    await outbound();
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1", "OPS-7"] } }));
+    await move("A", "in-progress");
+    const posts: string[] = [];
+    const impl = vi.fn(async (url: any, init: any) => {
+      if (init.method === "POST") posts.push(String(url));
+      if (String(url).endsWith("?fields=status")) return new Response(JSON.stringify({ fields: { status: { name: "To Do" } } }));
+      if (String(url).endsWith("/transitions") && init.method === "GET") return new Response(JSON.stringify({ transitions: [{ id: "1", to: { name: "In Progress" } }] }));
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    expect(await flushJira(w.d, impl)).toEqual({ sent: 2, failed: 0 });
+    expect(posts.map((u) => u.split("/").slice(-2, -1)[0])).toEqual(["CNS-1", "OPS-7"]);
+  });
+
+  it("offers the todo-to-Jira rules with the statuses of the Jira projects its items link", async () => {
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1", "OPS-7"] } }));
+    const asked: string[] = [];
+    const impl = vi.fn(async (url: any) => {
+      asked.push(String(url).split("/project/")[1]);
+      return new Response(JSON.stringify([{ statuses: [{ name: String(url).includes("CNS") ? "Open" : "Done" }, { name: "In Progress" }] }]));
+    }) as unknown as typeof fetch;
+    const s = await loadJiraSettings(w.d, "p", impl);
+    expect(s).toMatchObject({ mode: "links", jiraProject: null, jiraProjects: ["CNS", "OPS"], jiraStatuses: ["Done", "In Progress", "Open"] });
+    expect(asked).toEqual(["CNS/statuses", "OPS/statuses"]);
+    expect(await saveJiraSettings(w.d, "p", "alice", { statuses: {} }, outboundRules(RULES)!)).toEqual([]);
+    expect((await w.d.query("select jira_outbound from projects where key = 'p'"))[0].jira_outbound.triggers).toEqual(RULES.triggers);
   });
 });

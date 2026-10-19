@@ -26,10 +26,11 @@ function Pick({ value, options, onChange, label }: { value: string; options: rea
   );
 }
 
-export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jiraStatuses, serverReadOnly }: {
+export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jiraStatuses, serverReadOnly, mode = "import" }: {
   projectKey: string; inbound: InboundRules; outbound: OutboundRules; statuses: readonly string[];
-  jiraStatuses: string[] | null; serverReadOnly: boolean;
+  jiraStatuses: string[] | null; serverReadOnly: boolean; mode?: "import" | "links";
 }) {
+  const links = mode === "links";
   const [sets, setSets] = useState<StatusSet[]>(Object.entries(inbound.statuses).map(([jira, s]) => ({ jira, statuses: [...s] })));
   const [rules, setRules] = useState<Rule[]>(inbound.transitions ?? []);
   const [out, setOut] = useState<OutboundRules>(outbound);
@@ -55,6 +56,12 @@ export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jira
 
   return (
     <div className="jira-settings">
+      {links ? (
+      <section>
+        <div className="label section">Jira → todo</div>
+        <p className="hint">Links mode: a linked issue's status shows next to its key and never moves the item.</p>
+      </section>
+      ) : (
       <section>
         <div className="label section">Jira → todo</div>
         <p className="hint">Each Jira status covers a set of todo statuses. An item moved in Jira lands on the first, unless it already sits in the set.</p>
@@ -100,6 +107,7 @@ export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jira
         </div>
         <button type="button" className="add" onClick={() => setRules([...rules, { from: "", to: "", status: "" }])}><span className="pl">+</span>move rule</button>
       </section>
+      )}
 
       <section>
         <div className="label section">todo → Jira</div>
@@ -108,10 +116,12 @@ export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jira
           Send to Jira
           <span className="hint">{serverReadOnly ? "Locked off: this server is read-only (JIRA_READ_ONLY)." : out.writes ? "On: triggered calls are sent." : "Off: triggered calls are only recorded below."}</span>
         </label>
+        {links ? <p className="hint">A trigger moves every Jira issue the item links. Comments stay in todo.</p> : (
         <label className="switch">
           <input type="checkbox" checked={out.comments} onChange={(e) => editOut({ comments: e.target.checked })} />
           Post comments
         </label>
+        )}
         <div className="rule-row">
           <span className="hint">Never move Jira to</span>
           <span className="chips">
@@ -142,7 +152,7 @@ export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jira
           <Pick label="test from" value={test.from} options={statuses} onChange={(v) => setTest({ ...test, from: v })} />
           <span className="arrow">→</span>
           <Pick label="test to" value={test.to} options={statuses} onChange={(v) => setTest({ ...test, to: v })} />
-          <span className="result">{describeMove(sets.length ? inboundNow : null, out, test.from, test.to)}</span>
+          <span className="result">{describeMove(sets.length && !links ? inboundNow : null, out, test.from, test.to)}</span>
         </div>
       </section>
 

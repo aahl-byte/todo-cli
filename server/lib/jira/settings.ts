@@ -6,7 +6,10 @@ import { jiraConfig, jiraReadOnly } from "./config";
 import { inboundRules, outboundRules, validateRules, type InboundRules, type OutboundRules, type Problem } from "./rules";
 
 export interface JiraSettings {
+  mode: "import" | "links";
   jiraProject: string | null;
+  /** The Jira projects whose statuses the rules pick from. */
+  jiraProjects: string[];
   jiraUrl: string | null;
   inbound: InboundRules;
   outbound: OutboundRules;
@@ -34,18 +37,39 @@ export async function jiraStatuses(jiraProject: string, fetchImpl?: Fetch): Prom
   }
 }
 
+/** Every status of these Jira projects, or null when Jira couldn't be asked. */
+export async function jiraStatusesOf(jiraProjects: string[], fetchImpl?: Fetch): Promise<string[] | null> {
+  if (!jiraProjects.length) return null;
+  const lists = await Promise.all(jiraProjects.map((j) => jiraStatuses(j, fetchImpl)));
+  if (lists.some((l) => !l)) return null;
+  return [...new Set(lists.flat() as string[])].sort();
+}
+
+/** A links-mode project picks from the Jira projects its items link; import mode from its own. */
+export async function settingsJiraProjects(db: Db, key: string): Promise<{ mode: "import" | "links"; jiraProjects: string[] } | null> {
+  const [p] = await db.query("select jira_mode, jira_project from projects where key = $1", [key]);
+  if (!p) return null;
+  if (p.jira_mode !== "links") return { mode: "import", jiraProjects: p.jira_project ? [p.jira_project] : [] };
+  const linked = await db.query(
+    `select distinct split_part(jira_key, '-', 1) as j from jira_links where project = $1 and source = 'field' order by 1`, [key]);
+  return { mode: "links", jiraProjects: linked.map((r) => r.j) };
+}
+
 export async function loadJiraSettings(db: Db, key: string, fetchImpl?: Fetch): Promise<JiraSettings | null> {
   const [p] = await db.query(
     "select jira_project, jira_inbound, jira_outbound, jira_settings_by, jira_settings_at from projects where key = $1", [key]);
   if (!p) return null;
   const cfg = jiraConfig();
+  const { mode, jiraProjects } = (await settingsJiraProjects(db, key))!;
   return {
+    mode,
     jiraProject: p.jira_project ?? null,
+    jiraProjects,
     jiraUrl: cfg && p.jira_project ? `${cfg.baseUrl}/browse/${p.jira_project}` : null,
     inbound: inboundRules(p.jira_inbound) ?? { statuses: {}, transitions: [] },
     outbound: outboundRules(p.jira_outbound) ?? EMPTY_OUTBOUND,
     serverReadOnly: jiraReadOnly(),
-    jiraStatuses: p.jira_project ? await jiraStatuses(p.jira_project, fetchImpl) : null,
+    jiraStatuses: await jiraStatusesOf(jiraProjects, fetchImpl),
     savedBy: p.jira_settings_by ?? null,
     savedAt: p.jira_settings_at ? new Date(p.jira_settings_at).toISOString() : null,
   };

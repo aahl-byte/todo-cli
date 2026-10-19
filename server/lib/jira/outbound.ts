@@ -17,33 +17,40 @@ export function jiraTarget(map: Record<string, string> | null | undefined, statu
 
 export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<void> {
   if (actor.bridge) return;
-  const [link] = await t.query(
-    `select l.jira_key, p.jira_status_map, p.jira_outbound from jira_links l join projects p on p.key = l.project
-      where l.project = $1 and l.item_uid = $2 and l.source = 'import'`, [event.project, event.itemUid]);
-  if (!link) return;
-  const rules = outboundRules(link.jira_outbound);
+  const [p] = await t.query("select jira_mode, jira_status_map, jira_outbound from projects where key = $1", [event.project]);
+  if (!p) return;
+  const rules = outboundRules(p.jira_outbound);
+  // An import-mode item speaks for the issue it was imported from; a links-mode
+  // item moves every issue its jira field names, and posts no comments.
+  const links = p.jira_mode === "links";
+  const keys: string[] = (await t.query(
+    "select jira_key from jira_links where project = $1 and item_uid = $2 and source = $3 order by jira_key",
+    [event.project, event.itemUid, links ? "field" : "import"])).map((r) => r.jira_key);
+  if (!keys.length) return;
   if (event.kind === "status") {
-    const target = rules ? outboundTarget(rules, event.from, event.status) : jiraTarget(link.jira_status_map, event.status);
+    const target = rules ? outboundTarget(rules, event.from, event.status) : links ? null : jiraTarget(p.jira_status_map, event.status);
     if (!target) return;
-    // A newer transition supersedes any older one still waiting, so a retried
-    // old row can never land after the new one. A dry run supersedes nothing.
+    // A newer transition supersedes any older one still waiting for the same
+    // issue, so a retried old row can never land after it. A dry run supersedes nothing.
     if (await jiraWrites(t, event.project)) await t.query(
       `update jira_outbox set done_at = now(), result = '{"superseded":true}'::jsonb
-        where project = $1 and item_uid = $2 and action = 'transition' and done_at is null and claimed_at is null`,
-      [event.project, event.itemUid]);
-    await enqueue(t, event.project, event.itemUid, "transition", { key: link.jira_key, status: target });
+        where project = $1 and item_uid = $2 and action = 'transition' and done_at is null and claimed_at is null
+          and payload->>'key' = any($3::text[])`,
+      [event.project, event.itemUid, keys]);
+    for (const key of keys) await enqueue(t, event.project, event.itemUid, "transition", { key, status: target });
     return;
   }
   const { note } = event;
   // A reply in a question's thread stays with the question, which Jira never sees.
-  if (note.source === "jira" || (rules && !rules.comments) || note.meta?.thread) return;
+  if (links || note.source === "jira" || (rules && !rules.comments) || note.meta?.thread) return;
+  const [key] = keys;
   if (note.kind === "comment" || note.kind === "qa-rejection") {
     const label = note.kind === "qa-rejection" ? "QA rejected" : "comment";
     await enqueue(t, event.project, event.itemUid, "comment",
-      { key: link.jira_key, text: note.text, author: note.author, label });
+      { key, text: note.text, author: note.author, label });
   } else if (note.kind === "link" && note.meta?.url && !rules) {
     await enqueue(t, event.project, event.itemUid, "remotelink",
-      { key: link.jira_key, url: note.meta.url, title: note.meta.label || note.text || note.meta.url, global_id: note.uid });
+      { key, url: note.meta.url, title: note.meta.label || note.text || note.meta.url, global_id: note.uid });
   }
 }
 

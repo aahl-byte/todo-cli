@@ -75,19 +75,20 @@ async function neverTarget(db: Db, row: any): Promise<boolean> {
   return never.some((n) => n.toLowerCase() === String(row.payload.status).toLowerCase());
 }
 
-/** A newer transition for the same item makes this one moot; a dry run doesn't. */
+/** A newer transition of the same issue for the same item makes this one moot; a dry run doesn't. */
 async function superseded(db: Db, row: any): Promise<boolean> {
   const newer = await db.query(
     `select 1 from jira_outbox where project = $3 and item_uid = $1 and action = 'transition' and id > $2
-        and not coalesce((result->>'dry_run')::boolean, false) limit 1`,
-    [row.item_uid, row.id, row.project]);
+        and payload->>'key' = $4 and not coalesce((result->>'dry_run')::boolean, false) limit 1`,
+    [row.item_uid, row.id, row.project, row.payload.key]);
   return newer.length > 0;
 }
 
 async function olderInFlight(db: Db, row: any): Promise<boolean> {
   const older = await db.query(
     `select 1 from jira_outbox where project = $4 and item_uid = $1 and action = 'transition' and id < $2 and done_at is null
-        and claimed_at >= now() - make_interval(mins => $3) limit 1`, [row.item_uid, row.id, LEASE_MINUTES, row.project]);
+        and payload->>'key' = $5 and claimed_at >= now() - make_interval(mins => $3) limit 1`,
+    [row.item_uid, row.id, LEASE_MINUTES, row.project, row.payload.key]);
   return older.length > 0;
 }
 

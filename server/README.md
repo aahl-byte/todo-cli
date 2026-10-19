@@ -103,6 +103,10 @@ rules: a frozen request gets a new version, which returns the item to
 `requested`. A linked issue's status is shown next to its key and never moves
 the item.
 
+Triggers on the settings page run the other way in both modes: a todo move
+transitions the imported issue, or in links mode every issue the item links.
+Links mode posts no comments to Jira.
+
 **Put a project in links mode** and poll it, read-only:
 
 ```bash
