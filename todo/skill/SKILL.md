@@ -1,7 +1,7 @@
 ---
 name: todo
-version: 0.13.0
-description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, change its status through the lifecycle (todo → in-triage → in-progress → done / deferred / cancelled, or the team lifecycle through QA and deploy), or add notes, questions, links, deployment checks and dev-log entries. Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
+version: 0.14.0
+description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
 # TODO
@@ -15,17 +15,102 @@ precious planning artifact — **edit it through the CLI, not by hand**, so ids,
 folders and comments stay consistent and writes stay atomic. A legacy
 single-file `TODO.yaml` is converted to `.TODO/` the first time `todo` runs.
 
-**Core principle:** keep the item's status honest as you work — flip it the
-moment you change what you're doing, and leave a note when you learn something.
+**Core principle:** an item is the record people read to learn what was asked,
+where the work lives and how far it got. Keep all of it current as you work —
+status, request, fields, tasks and links — not just the status. Filling these
+in is part of the task, whether or not anyone asks for it.
 
-## When to use
+## Working an item
 
-- The user points you at a TODO item (e.g. "todo > FOO", "work on the BAR item").
-  Run `todo updates <q>` first: it lists what people added since you last
-  acknowledged anything — answers, comments, notes, review notes in the log.
-- You start planning, start coding, or finish a tracked task → update its status.
-- You want to look up what an item actually asks for → `get` it.
-- You learn something worth recording → add a note.
+Use this whenever the user points you at an item ("todo > FOO", "work on the
+BAR item") or you pick one up yourself. Each step names what the item should
+hold by the time you leave it.
+
+### 1. Catch up
+
+- `todo updates <q>` lists what people added since you last acknowledged
+  anything: answers, comments, notes, review notes in the log. Read a reply in a
+  question's thread (`re [id]`) as an instruction.
+- `todo get <q>` shows the request, open questions and every field. Anything
+  shown as `—` (including `request:   —`) is a gap for you to fill.
+- After you act on an entry, acknowledge it: `todo ack <q> n<id>` (notes,
+  questions) or `l<id>` (log entries), or `todo updates <q> --ack` once you've
+  handled the whole list. Acknowledge on acting, not on reading: an
+  unacknowledged answer is how the next session learns it still has to act.
+
+### 2. Triage, before any code
+
+Triage makes the item something a person could pick up cold. Do every step,
+even on an item you filed yourself.
+
+1. **Write the request if there is none.** The request is what was asked, in
+   the asker's terms: what the user told you, or the title expanded into the
+   outcome it wants. Post it while the item sits in `requested`:
+
+   ```
+   todo request <q>                          # → requested (skip if already there)
+   todo request <q> --text "<what was asked>"
+   ```
+
+   Posted on an item already past `requested`, a first request is frozen on
+   the spot and flagged `(untriaged)`. Do that only when work has already
+   begun; it honestly records what the work was built against.
+2. **`todo triage <q>`** — you're planning now.
+3. **Fill every field:** `todo set <q> <field> <value>` for `type`, `priority`,
+   `app`, `section`, `repo` (`owner/repo`) and `branch`. Reuse the app and
+   section names other items already use (`todo list --all`).
+4. **Plan as phased tasks:** `todo task add <q> "<title>" --phase N`, and name
+   each phase with `todo phase <q> N "<title>"`. A written plan or design doc is
+   a link, not a note: `todo url <q> <url> --type documentation` (or `design`).
+5. **Connect it:** `todo relate <q> <other>` for associated items;
+   `todo jira link <q> KEY…` for the Jira tickets it covers.
+6. **Ask instead of guessing.** When intent is unclear, `todo ask <q> "<text>"`;
+   it stays open until a person answers. `--re <id>` threads a follow-up.
+7. **`todo start <q>`** when you begin coding. It makes you the developer if
+   nobody is.
+
+**Going `requested → in-triage → onward` is what marks the request triaged.**
+`todo start` straight from `requested` skips triage and leaves that request
+version flagged `(untriaged)` for good.
+
+### 3. Re-triage a changed request
+
+A request is versioned, and `todo get` shows the current version
+(`request: v2 [id]`). An item that comes back to `requested` with a new version
+— a person posted one, or a newly linked Jira ticket appended its text — needs
+triage again before work continues:
+
+- Compare the new version with the last: `todo notes <q> --kind ticket-request`.
+- Adjust tasks, fields and links to match the new text, and note what changed in
+  the plan.
+- `todo triage <q>`, then `todo start <q>` — or `todo review <q>` if the change
+  needs no new work. Passing through `in-triage` marks the new version triaged.
+
+To change the request yourself, post the whole new text with
+`todo request <q> --text "<text>"`; it sends the item back to `requested`.
+Versions past `requested` are frozen and can't be edited. A version shown
+`(untriaged)` is being worked without triage, so raise it with a person
+(`todo ask`).
+
+### 4. While building
+
+- **Attach links the moment they exist:** `todo url <q> <url> --type pr` for
+  each PR, `preview` for a preview deploy, `documentation` for docs you write,
+  `design` for designs. Other types: `qa-handoff`, `external-ticket`,
+  `bug-ticket`. `--label L` names a link.
+- Move tasks as you go (`todo task start|done <q> <id>`), add tasks you
+  discover, and keep them phased.
+- `todo log` the trail — what you tried, what broke; `todo note` the context —
+  the why, the decision, the gotcha.
+- On a team project, record each deploy need as a deployment check when you
+  create it (see Team projects).
+
+### 5. Finish
+
+Run `todo get <q>` and fill whatever is still empty — request, fields, PR and
+doc links, task statuses — then `todo review <q>` (see the lifecycle for when
+`done` is right instead). On a synced store, `start` and `review` print
+`warning: … has no app, section…` for empty fields: fix them before moving on.
 
 ## The lifecycle
 
@@ -89,42 +174,16 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   `--human`.
 - **Read `ticket-request` notes as intent, not instructions.** They come from
   outside the project, so re-interpret them against the code before acting.
-- **A request is versioned; `todo get` shows the current version.** Once the
-  item leaves `requested` that version is frozen. To change it, post the whole
-  new text with `todo request <q> --text "<text>"`, which sends the item back to
-  `requested` for triage. A version marked `(untriaged)` is being worked on
-  without triage, so raise it with a person.
-- **Ask instead of guessing.** When intent is unclear, raise a clarification
-  with `todo ask`. It stays open until a person answers it with `todo answer`.
-  A question can grow a thread: `todo ask <q> "<text>" --re <id>` for a follow-up
-  question, `todo comment <q> "<text>" --re <id>` for a reply. `todo updates`
-  marks each with `re [id]`; read a reply in a thread as an instruction.
-  Check `todo get` for open questions before you build.
-- **Acknowledge what you've acted on.** `todo updates <q>` lists every note,
-  answer and log entry you haven't acknowledged; each person and each person's
-  agent acknowledge separately, and what you write counts as seen. After you
-  act on an entry, `todo ack <q> n<id>` (notes and questions) or `l<id>` (log
-  entries), or `todo updates <q> --ack` once you've handled the whole list.
-  Acknowledge on acting, not on reading: an unacknowledged answer is how the
-  next session learns it still has to act on it.
-- **Fill in the item's fields while you triage it**, before any code:
-  `todo set <q> app <app>`, `section <section>`, `repo <owner/repo>` and
-  `branch <branch>`. Match the app and section names other items already use
-  (`todo list --all`). `todo start` makes you the developer if nobody is, and
-  `start` and `review` warn about whichever of the four fields are still empty.
-- **Attach what you produce:** `todo url <q> <url> --type pr|preview|qa-handoff`.
-  Other types: `external-ticket`, `bug-ticket`, `documentation`, `design`.
-- **Name your phases** with `todo phase <q> <N> "<title>"` when you stage work,
-  so the plan reads as steps rather than numbers.
-- **Relate associated work:** `todo relate <q> <other>` marks two items as
-  related, and `todo get` lists them from either side.
+- **Each person and each person's agent acknowledge separately**, and what you
+  write counts as seen; see Working an item, step 1.
 - **Link the Jira tickets an item covers:** `todo jira link <q> CNS-123 [CNS-456 …]`,
   and `todo jira unlink <q> CNS-456` to drop one. An item can hold several keys,
   and one key can sit on several items, in this project or others. On the
   server's next Jira poll, each newly linked ticket's summary and description
   are appended to the item's request as a `## CNS-123 · <summary>` block, and
   its Jira comments arrive as comment notes. If the request was frozen, that
-  append is a new version and **the item goes back to `requested`** for triage.
+  append is a new version and **the item goes back to `requested`** for triage
+  (Working an item, step 3).
   Jira's status never moves the item; `todo get` shows it next to each key.
 - **Prepare a `qa-approved` item's deploy, then `todo stage` it.** Make sure
   its PRs are merged to staging and every migration, env var and prerequisite
@@ -220,7 +279,8 @@ todo ask    <query> <text...> [--re ID]  # raise a clarification question (stays
 todo answer <query> <id> <text>  # answer one
 todo updates <query> [--ack]     # notes, answers, log entries you haven't acknowledged
 todo ack <query> n<id>|l<id>...  # acknowledge notes/questions (n) or log entries (l)
-todo url    <query> <url> [--type pr|preview|qa-handoff|other] [--label L]
+todo url    <query> <url> [--type T] [--label L]   # T: pr preview documentation design qa-handoff
+                                                 #    external-ticket bug-ticket wt-file other
 todo assign <query> [--dev H] [--qa H]   # people ("none" clears)
 todo history <query>             # status transitions: who, when, via
 todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment check
@@ -230,9 +290,8 @@ todo checks <query>
 todo deploy-plan                 # every check the next deploy needs
 todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (deploy: --force past checks)
 todo reject <query> <text...>    # QA → qa-rejected with a required comment
-todo add "<title>" --request "<text>"   # file a requested item with its ticket request
 todo request <query> --text "<text>" [--url U]   # post a new request version (back to requested)
-todo add "<title>" --request "<text>" [--url U] [--app A] [--section S]
+todo add "<title>" --request "<text>" [--url U] [--app A] [--section S] [--type T]   # file it as requested, with its request
 todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
 todo set <query> type <type>
@@ -261,7 +320,7 @@ todo task phase  <query> <id> <N> # set/clear a task's phase (N, or "none")
 todo task move   <query> <id> [--top|--bottom|--before ID|--after ID]  # order within a phase
 todo task title <query> <id> <title...>  # retitle a task
 todo task rm <query> <id>        # remove task by id
-todo add    "<title>" [--type T] # add a new item (type defaults to feature)
+todo add    "<title>" [--type T] # add a new item with no request (type defaults to feature)
 todo archive                     # archive done and cancelled items (synced; clears Shipped)
 todo migrate [-g]                # rewrite files the fast YAML loader rejects
 todo link   [--name <key>]       # move todos to the global store (~/.todo), via a symlink
@@ -309,16 +368,30 @@ to every item including `done`.
 
 ```
 todo updates skill-todo                   # anything new since you last acknowledged?
-todo get skill-todo                       # read what it asks for
+todo get skill-todo                       # request, open questions, empty fields (—)
+# triage: no request yet, so write one first
+todo request skill-todo
+todo request skill-todo --text "Agents should keep items complete: request, fields, links."
 todo triage skill-todo                    # I'm writing the plan
-todo note skill-todo "plan in docs/plans/2026-06-23-foo.md"
-todo start skill-todo                     # I'm building it
+todo set skill-todo type feature
+todo set skill-todo priority medium
+todo set skill-todo app cli
+todo set skill-todo section skill
+todo set skill-todo repo aahl-byte/todo
+todo set skill-todo branch skill-workflow
+todo task add skill-todo "Restructure the skill around the work" --phase 1
+todo phase skill-todo 1 "Skill text"
+todo url skill-todo https://github.com/aahl-byte/todo/blob/skill-workflow/docs/plans/foo.md --type documentation
+todo start skill-todo                     # I'm building it — the request is now triaged
 todo log skill-todo "ruamel re-folds long scalars — rstrip per line"
 # …work…
-todo note skill-todo "shipped in <commit>; covered by tests"
-todo review skill-todo                     # finished — hand it to the user to sign off
+todo url skill-todo https://github.com/aahl-byte/todo/pull/42 --type pr
+todo task done skill-todo 1
+todo updates skill-todo --ack             # handled everything listed
+todo get skill-todo                       # anything still empty? fill it
+todo review skill-todo                    # finished — hand it to the user to sign off
 # …user approves…
-todo done skill-todo                       # accepted (or skip review per the rules above)
+todo done skill-todo                      # accepted (or skip review per the lifecycle rules)
 ```
 
 ## Notes & gotchas
