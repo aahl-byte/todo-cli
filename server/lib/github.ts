@@ -1,11 +1,12 @@
-// Live pull-request status for PR links, read from GitHub's REST API and
-// cached briefly in memory. GITHUB_TOKEN is optional: public repos work
-// without it, private ones need it.
+// Live pull-request status for PR links, read from GitHub's API and cached
+// briefly in memory. GITHUB_TOKEN is optional: public repos work without it,
+// private ones need it, and unresolved review threads (GraphQL only) need it.
 
 export type Fetch = typeof fetch;
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type ChecksState = "pass" | "fail" | "pending";
-export interface PrStatus { state: PrState; checks: ChecksState | null }
+/** `unresolved` counts open review threads; null when it couldn't be read. */
+export interface PrStatus { state: PrState; checks: ChecksState | null; unresolved: number | null }
 export interface PrRef { owner: string; repo: string; number: number }
 
 const API = "https://api.github.com";
@@ -39,15 +40,42 @@ export function resetPrCache(): void {
   cache.clear();
 }
 
+function headers(token: string | undefined): Record<string, string> {
+  return { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28",
+           ...(token ? { authorization: `Bearer ${token}` } : {}) };
+}
+
 async function get(path: string, fetchImpl: Fetch): Promise<any> {
-  const token = process.env.GITHUB_TOKEN;
-  const res = await fetchImpl(API + path, {
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-    headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28",
-               ...(token ? { authorization: `Bearer ${token}` } : {}) },
-  });
+  const res = await fetchImpl(API + path, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(process.env.GITHUB_TOKEN) });
   if (!res.ok) throw new Error(`GitHub GET ${path}: ${res.status}`);
   return res.json();
+}
+
+const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: 100) { nodes { isResolved } } } }
+}`;
+
+/** Unresolved review threads on a PR. GitHub's GraphQL API needs a token, so with none this is null. */
+async function unresolvedThreads({ owner, repo, number }: PrRef, fetchImpl: Fetch): Promise<number | null> {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) return null;
+  const res = await fetchImpl(`${API}/graphql`, {
+    method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(token),
+    body: JSON.stringify({ query: THREADS_QUERY, variables: { owner, repo, number } }),
+  });
+  if (!res.ok) throw new Error(`GitHub GraphQL: ${res.status}`);
+  const body = await res.json();
+  const threads = body?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+  if (!Array.isArray(threads)) throw new Error("GitHub GraphQL: no review threads");
+  return threads.filter((t: { isResolved: boolean }) => !t.isResolved).length;
+}
+
+async function checksFor(base: string, sha: string, fetchImpl: Fetch): Promise<ChecksState | null> {
+  const [runs, combined] = await Promise.all([
+    get(`${base}/commits/${sha}/check-runs?per_page=100`, fetchImpl),
+    get(`${base}/commits/${sha}/status`, fetchImpl),
+  ]);
+  return checksState(runs.check_runs ?? [], combined.statuses ?? []);
 }
 
 /** The status, and whether any part of it failed to load. */
@@ -55,17 +83,16 @@ async function fetchStatus({ owner, repo, number }: PrRef, fetchImpl: Fetch): Pr
   const base = `/repos/${owner}/${repo}`;
   const pr = await get(`${base}/pulls/${number}`, fetchImpl);
   const state = prState(pr);
-  if (state === "merged" || state === "closed") return { status: { state, checks: null }, partial: false };
-  const sha = pr.head.sha;
-  try {
-    const [runs, combined] = await Promise.all([
-      get(`${base}/commits/${sha}/check-runs?per_page=100`, fetchImpl),
-      get(`${base}/commits/${sha}/status`, fetchImpl),
-    ]);
-    return { status: { state, checks: checksState(runs.check_runs ?? [], combined.statuses ?? []) }, partial: false };
-  } catch {
-    return { status: { state, checks: null }, partial: true };
-  }
+  const finished = state === "merged" || state === "closed";
+  const [checks, unresolved] = await Promise.allSettled([
+    finished ? Promise.resolve(null) : checksFor(base, pr.head.sha, fetchImpl),
+    unresolvedThreads({ owner, repo, number }, fetchImpl),
+  ]);
+  return {
+    status: { state, checks: checks.status === "fulfilled" ? checks.value : null,
+              unresolved: unresolved.status === "fulfilled" ? unresolved.value : null },
+    partial: checks.status === "rejected" || unresolved.status === "rejected",
+  };
 }
 
 /** A PR's status, or null when GitHub can't tell us; failed lookups, checks included, retry after a short pause. */

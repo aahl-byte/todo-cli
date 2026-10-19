@@ -1,13 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checksState, linkPrStatuses, parsePrUrl, prState, prStatus, resetPrCache, type Fetch } from "@/lib/github";
 
-beforeEach(() => resetPrCache());
+beforeEach(() => {
+  resetPrCache();
+  vi.unstubAllEnvs();
+  vi.stubEnv("GITHUB_TOKEN", "");
+});
 
-function fakeGitHub(pulls: Record<string, any>, runs: any[] | null = [], statuses: any[] = []) {
+function fakeGitHub(pulls: Record<string, any>, runs: any[] | null = [], statuses: any[] = [], threads: boolean[] | null = []) {
   const calls: string[] = [];
   const impl = (async (url: any) => {
     const path = String(url).replace("https://api.github.com", "");
     calls.push(path);
+    if (path === "/graphql") {
+      if (!threads) return new Response("", { status: 502 });
+      return Response.json({ data: { repository: { pullRequest: { reviewThreads: { nodes: threads.map((isResolved) => ({ isResolved })) } } } } });
+    }
     const pr = path.match(/\/pulls\/(\d+)$/);
     if (pr) return pulls[pr[1]] ? Response.json(pulls[pr[1]]) : new Response("not found", { status: 404 });
     if (path.includes("/check-runs")) return runs ? Response.json({ check_runs: runs }) : new Response("", { status: 500 });
@@ -64,13 +72,13 @@ describe("prStatus", () => {
 
   it("reads an open PR's checks from its head commit", async () => {
     const gh = fakeGitHub({ 1: open }, [{ status: "completed", conclusion: "failure" }]);
-    expect(await prStatus(ref, gh.impl)).toEqual({ state: "open", checks: "fail" });
+    expect(await prStatus(ref, gh.impl)).toEqual({ state: "open", checks: "fail", unresolved: null });
     expect(gh.calls).toEqual(["/repos/acme/web/pulls/1", "/repos/acme/web/commits/abc/check-runs?per_page=100", "/repos/acme/web/commits/abc/status"]);
   });
 
   it("skips checks once a PR is merged", async () => {
     const gh = fakeGitHub({ 1: { ...open, state: "closed", merged_at: "2026-10-01T00:00:00Z" } });
-    expect(await prStatus(ref, gh.impl)).toEqual({ state: "merged", checks: null });
+    expect(await prStatus(ref, gh.impl)).toEqual({ state: "merged", checks: null, unresolved: null });
     expect(gh.calls).toHaveLength(1);
   });
 
@@ -83,11 +91,34 @@ describe("prStatus", () => {
 
   it("keeps the PR state when its checks fail to load, and retries them soon", async () => {
     const gh = fakeGitHub({ 1: open }, null);
-    expect(await prStatus(ref, gh.impl)).toEqual({ state: "open", checks: null });
+    expect(await prStatus(ref, gh.impl)).toEqual({ state: "open", checks: null, unresolved: null });
     vi.setSystemTime(Date.now() + 60_000);
     await prStatus(ref, gh.impl);
     vi.useRealTimers();
     expect(gh.calls.filter((c) => c.endsWith("/pulls/1"))).toHaveLength(2);
+  });
+
+  it("counts unresolved review threads when a token is set, merged PRs included", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "t");
+    const gh = fakeGitHub({ 1: { ...open, state: "closed", merged_at: "2026-10-01T00:00:00Z" } }, [], [], [false, true, false]);
+    expect(await prStatus(ref, gh.impl)).toEqual({ state: "merged", checks: null, unresolved: 2 });
+    expect(gh.calls).toEqual(["/repos/acme/web/pulls/1", "/graphql"]);
+  });
+
+  it("skips the review-thread lookup without a token", async () => {
+    const gh = fakeGitHub({ 1: open });
+    await prStatus(ref, gh.impl);
+    expect(gh.calls).not.toContain("/graphql");
+  });
+
+  it("keeps state and checks when review threads fail to load, and retries soon", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "t");
+    const gh = fakeGitHub({ 1: open }, [{ status: "completed", conclusion: "success" }], [], null);
+    expect(await prStatus(ref, gh.impl)).toEqual({ state: "open", checks: "pass", unresolved: null });
+    vi.setSystemTime(Date.now() + 60_000);
+    await prStatus(ref, gh.impl);
+    vi.useRealTimers();
+    expect(gh.calls.filter((c) => c === "/graphql")).toHaveLength(2);
   });
 
   it("is null when GitHub refuses", async () => {
@@ -103,6 +134,6 @@ describe("linkPrStatuses", () => {
       { uid: "b", meta: { url: "https://example.com/preview" } },
       { uid: "c", meta: { url: "https://github.com/acme/web/pull/2" } },
     ];
-    expect(await linkPrStatuses(links, gh.impl)).toEqual({ a: { state: "draft", checks: null } });
+    expect(await linkPrStatuses(links, gh.impl)).toEqual({ a: { state: "draft", checks: null, unresolved: null } });
   });
 });

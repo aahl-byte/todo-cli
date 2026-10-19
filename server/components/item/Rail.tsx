@@ -22,6 +22,7 @@ const PRIORITIES = ["low", "medium", "high", "urgent"];
 const LINK_TAG: Record<string, string> = { pr: "PR", "qa-handoff": "QA", "wt-file": "WT" };
 const TIMING: Record<string, string> = { "pre-deploy": "before deploy", "post-deploy": "after deploy" };
 const CHECKS_TIP: Record<ChecksState, string> = { pass: "passing", fail: "failing", pending: "running" };
+const unresolvedTip = (n: number) => `${n} unresolved review thread${n === 1 ? "" : "s"}`;
 
 
 export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: () => void }) {
@@ -338,6 +339,7 @@ function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>;
         return (
           <div key={l.uid} className="rrow" data-uid={l.uid}>
             {pr ? <span className={`tag pr-${pr.state}`}>{tag ?? "PR"} · {pr.state}</span> : tag && <span className="tag">{tag}</span>}
+            {!!pr?.unresolved && <span className="unresolved" aria-label={unresolvedTip(pr.unresolved)} data-tip={unresolvedTip(pr.unresolved)}>!</span>}
             {url ? <a className="grow" href={url} target="_blank" rel="noreferrer" data-tip={url}>{l.meta?.label || l.text}</a>
                  : <span className="grow">{l.meta?.label || l.text}</span>}
             {pr?.checks && <span className={`checks ck-${pr.checks}`} data-tip={`checks ${CHECKS_TIP[pr.checks]}`}><span className="led" /></span>}

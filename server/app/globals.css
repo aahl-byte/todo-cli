@@ -601,6 +601,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .ck-pass { --c: var(--s-ready-to-deploy); }
 .ck-fail { --c: var(--danger); }
 .ck-pending { --c: var(--amber); }
+.unresolved { color: var(--danger); font-weight: 700; padding: 0 2px; }
 .actions-settings { margin-bottom: 18px; }
 .actions-settings .action-card { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line-2); }
 .actions-settings .action-card > .add { justify-self: start; }
