@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.14.0
+version: 0.14.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -304,7 +304,7 @@ todo list --mine                 # items where I'm developer or QA
 todo actions                     # the project's Actions (defined on the server's settings page)
 todo action <query> <id>         # run one on an item; the outcome lands in its dev log
 todo sync | todo inbox | todo whoami
-todo login <url>                 # approve the code it prints in your browser
+todo login <url>                 # approve the code it prints; keeps a saved token that still works
 todo link --remote <url> [--project KEY]   # sync this store with a team server
 todo notes  <query>              # list notes with their [id]s
 todo renote <query> <id> <text...> # replace a note's text, keeping its id

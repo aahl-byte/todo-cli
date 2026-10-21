@@ -310,7 +310,8 @@ code matches, and approve: the CLI collects a token of its own, so nothing
 secret is typed or lands in shell history. `todo login <url> --token` asks for
 a token instead (hidden), for servers that predate this. Each login is its own
 token, listed under *command lines* in the dashboard menu, where it can be
-revoked.
+revoked. Running `todo login` again keeps the saved token while it still
+works; `--new` signs in afresh.
 
 After that, every command syncs before it runs and pushes after. A round
 compares the items a command touched with the last-synced snapshot, and every

@@ -796,7 +796,21 @@ def _browser_login(url: str) -> str | None:
     die("Login failed: no approval in time.", 1)
 
 
+def _still_signed_in(url: str) -> dict | None:
+    token = remote.token_for(url)
+    if not token:
+        return None
+    try:
+        return remote.Remote(url, token, timeout=15).me()
+    except remote.RemoteError:
+        return None
+
+
 def cmd_login(root: Path, args) -> None:
+    if not (args.token or args.ask or args.new) and (me := _still_signed_in(args.url)):
+        print(f"Already logged in to {args.url.rstrip('/')} as {me['handle']}; keeping the saved token "
+              "(--new signs in again).")
+        return
     if args.token or args.ask:
         args.token = _login_token(args)
     else:
@@ -1247,6 +1261,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("token", nargs="?", help="an API token (it stays in shell history; prefer the browser or --token)")
     p.add_argument("--token", dest="ask", action="store_true",
                    help="paste an API token (hidden) instead of approving in the browser")
+    p.add_argument("--new", action="store_true", help="sign in again even when the saved token still works")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("whoami", parents=[common], help="show your identity and sync setup")
