@@ -4,10 +4,15 @@ import { Calls, type ConnectionOptions } from "./connections";
 import { runCode, type Isolation } from "./code-runner";
 import { test } from "./expr";
 import { Attached, finish } from "./limits";
-import { pluginErrors } from "./load";
+import { loadPlugins, pluginErrors, PluginsFileError } from "./load";
+import { ALWAYS_ON, SHIPPED } from "./shipped";
+import { pickInstances } from "./triggers";
 import { fillJson } from "./template";
 import { runYaml } from "./yaml-runner";
-import { DEFAULT_DEADLINE_MS, POST_REQUEST, type InstanceDef, type PluginDef, type RunInput, type RunResult } from "./types";
+import {
+  DEFAULT_DEADLINE_MS, POST_REQUEST, type ConnectionDef, type ConnectionOrigin, type InstanceDef, type Limits, type PluginDef, type PluginEvent,
+  type PluginItem, type PluginsFile, type ResolvedConnection, type RunInput, type RunResult,
+} from "./types";
 
 export interface HostDeps extends ConnectionOptions {
   /** Stands in for the code runner's sleeps, for tests. */
@@ -97,4 +102,108 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
     await calls.close();
   }
   return finish(result, secretsOf(input));
+}
+
+export interface EventInput {
+  /** The repo's .todo-plugins/plugins.yaml and its code files by name; absent when the repo has none. */
+  repo?: { text: string; files: Record<string, string> };
+  /** Host-wide connections; a repo's connection of the same name overrides one. */
+  hostConnections?: Record<string, ConnectionDef>;
+  /** This host's secrets for this repo, by connection name. */
+  secrets?: Record<string, string>;
+  /** Instances the host keeps: one with a repo instance's id overrides it, the rest are added. */
+  storedInstances?: Record<string, InstanceDef[]>;
+  /** Capabilities granted, by plugin. */
+  grants?: Record<string, string[]>;
+  item: PluginItem;
+  event: PluginEvent;
+  dryRun?: boolean;
+  allowRepoCommands?: boolean;
+  limits?: Limits;
+}
+
+export interface EventRun { plugin: string; instance: InstanceDef; result: RunResult }
+export interface EventResult { results: EventRun[]; errors: string[]; track: string[] }
+
+export const DEFAULT_INSTANCE: InstanceDef = { id: "default", name: "default" };
+
+function resolveConnection(def: ConnectionDef, origin: ConnectionOrigin, secret: string | undefined): ResolvedConnection | null {
+  const extra = { origin, ...(secret === undefined ? {} : { secret }) };
+  if ("http" in def && def.http) return { kind: "http", url: def.http.url, ...(def.http.auth ? { auth: def.http.auth } : {}), ...extra };
+  if ("mcp" in def && def.mcp) return { kind: "mcp", ...def.mcp, ...extra };
+  return null;
+}
+
+/** The host's connections, then the repo's over them, each with this host's secret. */
+function connectionsFor(input: EventInput, file: PluginsFile): Record<string, ResolvedConnection> {
+  const out: Record<string, ResolvedConnection> = {};
+  const add = (defs: Record<string, ConnectionDef> | undefined, origin: ConnectionOrigin) => {
+    for (const [name, def] of Object.entries(defs ?? {})) {
+      const c = resolveConnection(def, origin, input.secrets?.[name]);
+      if (c) out[name] = c;
+    }
+  };
+  add(input.hostConnections, "host");
+  add(file.connections, "repo");
+  return out;
+}
+
+/** The repo file's plugins with shipped ones resolved, after the always-on shipped plugins. */
+function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): [string, PluginDef, string | undefined][] {
+  const out = new Map<string, [PluginDef, string | undefined]>();
+  for (const name of ALWAYS_ON) out.set(name, [SHIPPED[name].def, SHIPPED[name].code]);
+  for (const [name, def] of Object.entries(file.plugins ?? {})) {
+    if (def.use !== undefined) {
+      const shipped = def.use === "shipped" ? SHIPPED[name] : undefined;
+      if (shipped) out.set(name, [shipped.def, shipped.code]);
+      else errors.push(def.use === "shipped" ? `plugin ${name}: no plugin named ${name} ships with todo` : `plugin ${name}: use: ${def.use} isn't a source todo knows`);
+    } else if (name in SHIPPED) {
+      errors.push(`plugin ${name}: ships with todo, so the repo can only enable it with use: shipped`);
+    } else if (def.code && !(def.code in (input.repo?.files ?? {}))) {
+      errors.push(`plugin ${name}: ${def.code} isn't in .todo-plugins/`);
+    } else {
+      out.set(name, [def, def.code ? input.repo!.files[def.code] : undefined]);
+    }
+  }
+  return [...out].map(([name, [def, code]]) => [name, def, code]);
+}
+
+const needsNoSettings = (def: PluginDef) => Object.values(def.settings ?? {})
+  .every((s) => s.optional || s.default !== undefined || s.type === "list" || s.type === "toggle");
+
+/** The repo's instances, overridden or added to by stored ones; an implicit default when there are none and nothing must be set. */
+export function instancesFor(def: PluginDef, repo: InstanceDef[], stored: InstanceDef[]): InstanceDef[] {
+  const merged = repo.map((r) => {
+    const s = stored.find((x) => x.id === r.id);
+    return s ? { ...r, ...s, settings: { ...r.settings, ...s.settings } } : r;
+  });
+  merged.push(...stored.filter((s) => !repo.some((r) => r.id === s.id)));
+  if (!merged.length && needsNoSettings(def)) merged.push({ ...DEFAULT_INSTANCE });
+  return merged.filter((i) => i.enabled !== false);
+}
+
+/** Given a repo's plugin file and an event on an item, run every instance the event fires, one after another. */
+export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<EventResult> {
+  const errors: string[] = [];
+  let file: PluginsFile = {};
+  if (input.repo) {
+    try {
+      file = loadPlugins(input.repo.text, { extraPlugins: ALWAYS_ON });
+    } catch (e) {
+      errors.push(...(e instanceof PluginsFileError ? e.errors : [message(e)]));
+    }
+  }
+  const connections = connectionsFor(input, file);
+  const results: EventRun[] = [];
+  for (const [name, def, code] of pluginsFor(input, file, errors)) {
+    const instances = instancesFor(def, file.instances?.[name] ?? [], input.storedInstances?.[name] ?? []);
+    for (const instance of pickInstances(def, instances, input.event)) {
+      const result = await runInstance({
+        plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
+        limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands,
+      }, deps);
+      results.push({ plugin: name, instance, result });
+    }
+  }
+  return { results, errors, track: file.track ?? [] };
 }

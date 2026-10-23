@@ -7,9 +7,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { runInstance } from "@/lib/plugins/host";
+import { runEvent, runInstance, type EventInput, type EventResult } from "@/lib/plugins/host";
 import { loadPlugins } from "@/lib/plugins/load";
-import type { InstanceDef, PluginEvent, ResolvedConnection, RunInput, RunResult } from "@/lib/plugins/types";
+import type { ConnectionDef, InstanceDef, PluginEvent, ResolvedConnection, RunInput, RunResult } from "@/lib/plugins/types";
 import { fakeServer, type FakeServer, type Recorded, type RecordedTool } from "./plugin-fakes";
 
 const DIR = path.join(import.meta.dirname, "fixtures/plugins");
@@ -103,7 +103,7 @@ describe.each(HOSTS)("plugin conformance (%s)", (_, host) => {
 
 describe("bundled plugin host", () => {
   it("exits 2 on input it can't read", async () => {
-    for (const stdin of ["", "not json", "[]", '{"plugin": {}}']) {
+    for (const stdin of ["", "not json", "[]", '{"plugin": {}}', '{"mode": "event"}', '{"mode": "event", "item": {}, "event": {}, "repo": "x"}', '{"mode": "nope"}']) {
       const { code, stderr } = await bundled(stdin);
       expect(code).toBe(2);
       expect(stderr).toMatch(/^plugin host: /);
@@ -117,5 +117,58 @@ describe("bundled plugin host", () => {
     }));
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ attached: [], wouldSend: [], log: [], error: "boom" });
+  });
+});
+
+interface EventCase {
+  about: string;
+  /** A file in fixtures/plugins/repos, or the file's text inline. */
+  repo?: string;
+  repo_text?: string;
+  /** The repo's code files: name in .todo-plugins/ → fixture file. */
+  files?: Record<string, string>;
+  hostConnections?: Record<string, ConnectionDef>;
+  secrets?: Record<string, string>;
+  storedInstances?: Record<string, InstanceDef[]>;
+  grants?: Record<string, string[]>;
+  event: PluginEvent;
+  item?: Record<string, unknown>;
+  dryRun?: boolean;
+  allowRepoCommands?: boolean;
+  /** Recorded answers per connection; http://fake-<name> in the repo file and host connections points at that fake. */
+  responses?: Record<string, Recorded[]>;
+  expect: { errors: string[]; track: string[]; results: { plugin: string; instance: string; result: RunResult }[] };
+}
+
+const EVENT_CASES = readdirSync(path.join(DIR, "event-cases")).filter((f) => f.endsWith(".yaml")).sort()
+  .map((f) => [f.replace(/\.yaml$/, ""), parse(readFileSync(path.join(DIR, "event-cases", f), "utf8")) as EventCase] as const);
+
+const EVENT_HOSTS: [string, (input: EventInput) => Promise<EventResult>][] = [
+  ["in-process", (input) => runEvent(input)],
+  ["bundle", async (input) => {
+    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "event", ...input }));
+    expect(code, stderr).toBe(0);
+    return JSON.parse(stdout);
+  }],
+];
+
+describe.each(EVENT_HOSTS)("runEvent conformance (%s)", (_, host) => {
+  it.each(EVENT_CASES)("%s", async (_name, c) => {
+    let text = c.repo ? readFileSync(path.join(DIR, "repos", c.repo), "utf8") : c.repo_text;
+    let hostConnections = JSON.stringify(c.hostConnections ?? {});
+    for (const [conn, responses] of Object.entries(c.responses ?? {})) {
+      const fake = await fakeServer(responses);
+      servers.push(fake);
+      text = text?.replaceAll(`http://fake-${conn}`, fake.url);
+      hostConnections = hostConnections.replaceAll(`http://fake-${conn}`, fake.url);
+    }
+    const files = Object.fromEntries(Object.entries(c.files ?? {}).map(([name, f]) => [name, readFileSync(path.join(DIR, f), "utf8")]));
+    const out = await host({
+      repo: text === undefined ? undefined : { text, files }, hostConnections: JSON.parse(hostConnections), secrets: c.secrets,
+      storedInstances: c.storedInstances, grants: c.grants, item: { ...ITEM, ...c.item }, event: c.event, dryRun: c.dryRun,
+      allowRepoCommands: c.allowRepoCommands,
+    });
+    expect({ errors: out.errors, track: out.track, results: out.results.map((r) => ({ plugin: r.plugin, instance: r.instance.id, result: r.result })) },
+           c.about).toEqual(c.expect);
   });
 });

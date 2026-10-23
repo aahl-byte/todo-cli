@@ -1,0 +1,21 @@
+about: a repo without a plugins file still gets pr-link, over the host's github connection
+hostConnections:
+  github: {http: {url: "http://fake-github", auth: bearer}}
+secrets: {github: ghp_test}
+event: {type: push, branch: feat/login}
+item: {branches: [feat/login]}
+responses:
+  github:
+    - method: GET
+      path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all
+      body: [{html_url: "https://github.com/acme/web/pull/7", number: 7, title: Fix login}]
+expect:
+  errors: []
+  track: []
+  results:
+    - plugin: pr-link
+      instance: default
+      result:
+        attached: [{kind: link, key: "link:https://github.com/acme/web/pull/7", type: pr, url: "https://github.com/acme/web/pull/7", label: "#7 · Fix login"}]
+        wouldSend: []
+        log: []
