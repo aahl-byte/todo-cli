@@ -32,7 +32,7 @@ from . import actions as actions_mod
 from . import identity
 from . import init as init_mod
 from . import link as link_mod
-from . import checkout, filecache, migrate, remote, render, store, sync
+from . import checkout, filecache, gitfacts, migrate, remote, render, store, sync
 from .status import ACTIVE, COMPLETE, REASONED, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
@@ -60,6 +60,7 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
         die(f'Invalid status "{status}". One of: {", ".join(STATUSES)}', 2)
     it = store.resolve_item(root, query)
     _check_transition(it, status, force)
+    forced_edges = bool(_check_edges(root, it, status, force))
     reason = reason.strip()
     if status in REASONED and status != it["status"] and not reason:
         verb = {v: k for k, v in SHORTCUTS.items()}[status]
@@ -67,7 +68,7 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
     changed = it["status"] != status
     forced_deploy = status == "deployed" and changed and bool(store.pending_pre_deploy(it))
     forced_handoff = status == "ready-for-qa" and changed and identity.via() == "agent"
-    forced = forced_deploy or forced_handoff
+    forced = forced_deploy or forced_handoff or forced_edges
     patch = {"status": status}
     if status == "in-progress" and not it["developer"]:
         patch["developer"] = identity.user()
@@ -76,6 +77,8 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
     if reason and status in REASONED:
         note = f"  (comment [{store.add_note(root, it['id'], reason, now(), kind='comment', extra={'with_status': status})}])"
     flag = "  (forced past pending checks)" if forced_deploy else "  (forced by an agent)" if forced_handoff else ""
+    if forced_edges:
+        flag += "  (forced past unresolved dependencies)"
     print(f'{it["id"]}: {it["status"]} → {status}' + flag + note)
     if status in ("in-progress", "review") and sync.enabled(root):
         _warn_empty_fields(it)
@@ -109,6 +112,19 @@ def _check_transition(it, status: str, force: bool) -> None:
             lines = "\n".join(f'  [{c["id"]}] {c["kind"]}  {c["title"]}' for c in pending)
             die(f'{it["id"]} has {len(pending)} pending pre-deploy check(s):\n{lines}\n'
                 "Finish them (`todo check done`) or pass --force.", 2)
+
+
+def _check_edges(root: Path, it, status: str, force: bool) -> list:
+    """An item can't stage or deploy while it waits on an unresolved
+    dependency; --force lifts it. Returns the edges a force went past."""
+    if status not in gitfacts.GUARDED or it["status"] == status:
+        return []
+    edges = gitfacts.unresolved(root, it)
+    if edges and not force:
+        lines = "\n".join(f"  needs {gitfacts.describe(e)}" for e in edges)
+        die(f'{it["id"]} waits on {len(edges)} unresolved dependenc{"y" if len(edges) == 1 else "ies"}:\n{lines}\n'
+            "Land each one in its target first, or pass --force.", 2)
+    return edges
 
 
 def _project_actions(root: Path) -> list:
@@ -176,13 +192,14 @@ def cmd_list(root: Path, args) -> None:
     _require_root(root)
     items = _filter_list(store.list_todos(root, _folders(args, [store.OPEN])),
                          args, default_active=False)
-    render.print_list(_mine(items, args))
+    render.print_list(_mine(items, args), waits=gitfacts.waits(root, items))
 
 
 def cmd_get(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     cfg = remote.sync_config(root) or {}
-    render.print_item(it, full_log=args.log, related=related_items(root, it), server=cfg.get("url"))
+    render.print_item(it, full_log=args.log, related=related_items(root, it), server=cfg.get("url"),
+                      git=gitfacts.view(root, it))
     waiting = store.unseen(it, identity.party())
     if waiting:
         print(f'updates:   {len(waiting)} not yet acknowledged by {identity.party()} (todo updates {it["id"]})')
@@ -534,6 +551,35 @@ def cmd_deploy_plan(root: Path, args) -> None:
              if any(c["timing"] == "post-deploy" and c["status"] != "done" for c in it["checks"])]
     complete = {it["id"] for it in everything if it["status"] in COMPLETE}
     render.print_deploy_plan(ready, after, complete, {it["id"] for it in everything}, prepping)
+
+
+def cmd_deps(root: Path, args) -> None:
+    _require_root(root)
+    if args.from_checks:
+        rows = gitfacts.from_checks(root)
+        for item_id, c in rows:
+            print(f'{item_id}  [{c["id"]}]  {c["title"]}  {c["payload"] or "—"}')
+        if not rows:
+            print("(no prereq-branch checks)")
+        return
+    items = [store.resolve_item(root, args.query)] if args.query else store.list_todos(root, [store.OPEN])
+    shown = 0
+    for it in items:
+        lines = render.dep_lines(gitfacts.view(root, store.get_item(root, it["id"])))
+        if lines or args.query:
+            print(it["id"])
+            for line in lines or ["  (no dependencies, conflicts or overlaps)"]:
+                print(line)
+            shown += 1
+    if not shown:
+        print("(no dependencies, conflicts or overlaps)")
+
+
+def cmd_refresh(root: Path, args) -> None:
+    _require_root(root)
+    items = [store.resolve_item(root, args.query)] if args.query else None
+    changed = gitfacts.refresh(root, items)
+    print(f'git facts: {len(changed)} item(s) changed' + (f' ({", ".join(changed)})' if changed else ""))
 
 
 def cmd_renote(root: Path, args) -> None:
@@ -1023,7 +1069,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.add_argument("status", choices=STATUSES, help="new status")
     p.add_argument("--force", action="store_true",
-                   help="deploy even with pending pre-deploy checks; as an agent, hand to QA when a person asked")
+                   help="stage or deploy past pending pre-deploy checks or unresolved dependencies; "
+                        "as an agent, hand to QA when a person asked")
     p.add_argument("--reason", default=None, help=f"why; required for {' and '.join(REASONED)}")
     p.set_defaults(func=cmd_status)
 
@@ -1040,7 +1087,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("query", help="id or part of a title")
         if SHORTCUTS[name] == "deployed":
             p.add_argument("--force", action="store_true",
-                           help="deploy even with pending pre-deploy checks")
+                           help="deploy even with pending pre-deploy checks or unresolved dependencies")
+        if SHORTCUTS[name] == "ready-to-deploy":
+            p.add_argument("--force", action="store_true", help="stage even with unresolved dependencies")
         if SHORTCUTS[name] == "ready-for-qa":
             p.add_argument("--force", action="store_true",
                            help="as an agent, hand to QA when a person asked")
@@ -1141,6 +1190,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("deploy-plan", parents=[common],
                        help="every check the next deploy needs, across ready-to-deploy items")
     p.set_defaults(func=cmd_deploy_plan)
+
+    p = sub.add_parser("deps", parents=[common],
+                       help="what an item needs and what needs it, with conflicts and overlaps (from git)")
+    p.add_argument("query", nargs="?", help="id or part of a title (default: every open item with any)")
+    p.add_argument("--from-checks", action="store_true",
+                   help="list every prereq-branch check, to drop or confirm")
+    p.set_defaults(func=cmd_deps)
+
+    p = sub.add_parser("refresh", parents=[common], help="recompute git facts now")
+    p.add_argument("query", nargs="?", help="id or part of a title (default: every repo)")
+    p.set_defaults(func=cmd_refresh)
 
     p = sub.add_parser("renote", parents=[common], help="replace a note's text, keeping its id")
     p.add_argument("query", help="id or part of a title")
@@ -1345,7 +1405,7 @@ def build_parser() -> argparse.ArgumentParser:
         # of the listed commands (SUPPRESS would print a literal "==SUPPRESS==").
         p = sub.add_parser(status, parents=[common])
         p.add_argument("query", help="id or part of a title")
-        if status in ("deployed", "ready-for-qa"):
+        if status in ("deployed", "ready-for-qa", "ready-to-deploy"):
             p.add_argument("--force", action="store_true")
         if status in REASONED:
             p.add_argument("reason", nargs="*")
@@ -1383,6 +1443,8 @@ def main():
                 sys.exit(code)
             return
         args.func(root, args)
+        if root is not None:
+            gitfacts.maybe_local(root)
     finally:
         if root is not None and root.is_dir():
             filecache.save(root)
@@ -1420,7 +1482,7 @@ def _mark_changes(root: Path, named, existing: set) -> None:
             sync.mark_changed(root, d.name)
 
 
-READ_ONLY = {"list", "ls", "deploy-plan"}
+READ_ONLY = {"list", "ls", "deploy-plan", "deps", "refresh"}
 
 
 def _lock_keys(args, named) -> list | None:

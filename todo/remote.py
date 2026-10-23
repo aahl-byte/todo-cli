@@ -124,6 +124,10 @@ class Remote:
         path = f"/api/projects/{urllib.parse.quote(project)}/checkout"
         return self.request("POST", path, {"dir": dir_, "repo": repo})
 
+    def git_facts(self, project: str, facts: list) -> dict:
+        path = f"/api/projects/{urllib.parse.quote(project)}/git-facts"
+        return self.request("POST", path, {"facts": facts})
+
     def run_action(self, project: str, item: str, action: str) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/actions/run"
         return self.request("POST", path, {"item": item, "action": action})

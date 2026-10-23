@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import checkout, frontmatter, store, ulid, yamlio
+from . import checkout, frontmatter, gitfacts, store, ulid, yamlio
 from .remote import Remote, RemoteError, sync_config, sync_dir
 from .util import to_str
 
@@ -667,6 +667,7 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             checkout.report(sync_dir(root), remote, project)
         except RemoteError:
             pass                    # a server without checkout reports, or a blip; the next round retries
+        _git_facts(root, remote, project)
     except RemoteError as e:
         report.error = str(e)
     finally:
@@ -674,6 +675,14 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             for item_id in marks:
                 mark_changed(root, item_id)
     return report
+
+
+def _git_facts(root: Path, remote: Remote, project: str) -> None:
+    """Recompute git facts for branches that moved, and post what changed."""
+    try:
+        gitfacts.on_round(root, remote, project)
+    except Exception as e:  # noqa: BLE001 — git facts must never break a round
+        print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
 
 
 BATCH_BYTES = 1_000_000          # well under Vercel's 4.5 MB request limit

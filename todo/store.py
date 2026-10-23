@@ -58,7 +58,7 @@ def ticked(check: dict) -> list:
         return list(ENVIRONMENTS)
     return env_list(check.get("envs"))
 NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link",
-              "clarification", "relation"]
+              "clarification", "relation", "dependency"]
 PRIORITIES = ["low", "medium", "high", "urgent", "critical"]
 ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion",
               "performance", "decoration", "spin-off"]

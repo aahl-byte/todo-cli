@@ -33,6 +33,8 @@ class FakeServer:
         self.offline = False
         self.pushes = []
         self.checkouts = []
+        self.git_facts = []
+        self.git_facts_offline = False
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -237,6 +239,13 @@ class FakeServer:
 
             def checkout(self, project, dir_, repo):
                 server.checkouts.append((author, project, dir_, repo))
+                return {"ok": True}
+
+            def git_facts(self, project, facts):
+                if server.git_facts_offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                server.git_facts.extend(copy.deepcopy(facts))
                 return {"ok": True}
 
             def changes(self, project, since, limit=500):
