@@ -1,6 +1,9 @@
 // A local HTTP server that answers from recorded responses and keeps what it was sent.
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+// @ts-expect-error a plain-JS fixture, shared with the stdio server
+import { mcpServer } from "./fixtures/plugins/fake-mcp.mjs";
 
 /** One recorded answer; a route answers its list in order and then repeats the last one. */
 export interface Recorded { method: string; path: string; status?: number; body?: unknown; text?: string; delayMs?: number }
@@ -41,5 +44,20 @@ export async function fakeServer(responses: Recorded[]): Promise<FakeServer> {
     url: `http://127.0.0.1:${port}`,
     received,
     close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+  };
+}
+
+export interface RecordedTool { name: string; readOnly?: boolean; results: Record<string, unknown>[] }
+
+/** An in-process MCP server; each transport() call links a fresh client to it. */
+export function fakeMcp(tools: RecordedTool[]) {
+  const calls: { tool: string; input: unknown }[] = [];
+  return {
+    calls,
+    transport() {
+      const [client, server] = InMemoryTransport.createLinkedPair();
+      void mcpServer(tools, calls).connect(server);
+      return client;
+    },
   };
 }

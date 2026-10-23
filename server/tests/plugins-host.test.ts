@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPlugins, PluginsFileError } from "@/lib/plugins/load";
 import { runInstance } from "@/lib/plugins/host";
+import { openConnection } from "@/lib/plugins/connections";
 import type { PluginEvent, PluginItem, ResolvedConnection, RunInput } from "@/lib/plugins/types";
-import { fakeServer, type FakeServer, type Recorded } from "./plugin-fakes";
+import { fakeMcp, fakeServer, type FakeServer, type Recorded } from "./plugin-fakes";
 import { fillExpr, fillJson, fillString, fillUrl, lookup, templateErrors } from "@/lib/plugins/template";
 import { search, test as holds, truthy } from "@/lib/plugins/expr";
 
@@ -310,5 +311,92 @@ instances:
 `);
     expect(file.track).toEqual(["staging", "main"]);
     expect(file.instances!.p.map((i) => i.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("connections", () => {
+  it("sends JSON over HTTP with the secret in the right header", async () => {
+    const server = await serve([{ method: "POST", path: "/a?x=1", body: { ok: 1 } }, { method: "GET", path: "/b", text: "" }]);
+    const auths: [ResolvedConnection, string, string][] = [
+      [{ kind: "http", url: `${server.url}/`, auth: "bearer", secret: "t0k" }, "authorization", "Bearer t0k"],
+      [{ kind: "http", url: server.url, auth: "basic", secret: "me:pw" }, "authorization", `Basic ${Buffer.from("me:pw").toString("base64")}`],
+      [{ kind: "http", url: server.url, auth: "header:X-Api-Key", secret: "k" }, "x-api-key", "k"],
+    ];
+    for (const [conn, header, value] of auths) {
+      const c = openConnection("api", conn);
+      expect(await c.send({ connection: "api", method: "POST", path: "/a?x=1", input: { n: 1 } })).toEqual({ ok: 1 });
+      const got = server.received.at(-1)!;
+      expect(got.headers[header]).toBe(value);
+      expect(got.headers["content-type"]).toBe("application/json");
+      expect(got.body).toEqual({ n: 1 });
+    }
+    expect(await openConnection("api", { kind: "http", url: server.url }).send({ connection: "api", method: "GET", path: "/b" })).toBeNull();
+    expect(server.received.at(-1)!.headers.authorization).toBeUndefined();
+  });
+
+  it("fails a non-2xx answer with its status and the start of its body, and a slow one on the timeout", async () => {
+    const server = await serve([
+      { method: "GET", path: "/gone", status: 404, text: "x".repeat(400) },
+      { method: "GET", path: "/slow", delayMs: 300, body: {} },
+    ]);
+    const c = openConnection("api", { kind: "http", url: server.url }, { timeoutMs: 50 });
+    await expect(c.send({ connection: "api", method: "GET", path: "/gone" })).rejects.toThrow(`api: GET /gone answered 404: ${"x".repeat(300)}`);
+    await expect(c.send({ connection: "api", method: "GET", path: "/slow" })).rejects.toThrow(/^api: GET \/slow failed: /);
+    expect(await c.isReadOnly({ connection: "api", method: "HEAD", path: "/" })).toBe(true);
+    expect(await c.isReadOnly({ connection: "api", method: "DELETE", path: "/" })).toBe(false);
+  });
+
+  it("calls MCP tools and reads their structured content, JSON text or plain text", async () => {
+    const mcp = fakeMcp([
+      { name: "structured", readOnly: true, results: [{ content: [{ type: "text", text: "ignored" }], structuredContent: { a: 1 } }] },
+      { name: "json", readOnly: false, results: [{ content: [{ type: "text", text: '{"b":2}' }] }] },
+      { name: "plain", results: [{ content: [{ type: "text", text: "hello" }] }] },
+      { name: "broken", results: [{ content: [{ type: "text", text: "no such issue" }], isError: true }] },
+    ]);
+    const c = openConnection("jira", { kind: "mcp", command: "unused" }, { mcpTransport: () => mcp.transport() });
+    try {
+      expect(await c.send({ connection: "jira", tool: "structured", input: { q: 1 } })).toEqual({ a: 1 });
+      expect(await c.send({ connection: "jira", tool: "json" })).toEqual({ b: 2 });
+      expect(await c.send({ connection: "jira", tool: "plain" })).toBe("hello");
+      await expect(c.send({ connection: "jira", tool: "broken" })).rejects.toThrow("jira: broken: no such issue");
+      expect(mcp.calls[0]).toEqual({ tool: "structured", input: { q: 1 } });
+      expect(await c.isReadOnly({ connection: "jira", tool: "structured" })).toBe(true);
+      expect(await c.isReadOnly({ connection: "jira", tool: "json" })).toBe(false);
+      expect(await c.isReadOnly({ connection: "jira", tool: "plain" })).toBe(false);
+    } finally {
+      await c.close();
+    }
+  });
+
+  it("lets read-only MCP tools through in dry-run and records the rest", async () => {
+    const mcp = fakeMcp([
+      { name: "getTransitions", readOnly: true, results: [{ structuredContent: { transitions: [{ id: "31", to: { name: "Won't Do" } }] } }] },
+      { name: "transition", results: [{ content: [{ type: "text", text: "{}" }] }] },
+    ]);
+    const file = loadPlugins(`
+plugins:
+  jira-transition:
+    connections: [jira]
+    per: jira
+    when: "!contains(settings.never, settings.to)"
+    settings:
+      to: {label: Jira status, type: choice}
+      never: {label: Never move to, type: list, scope: plugin}
+    steps:
+      - {name: transitions, tool: getTransitions, input: {issueIdOrKey: "{{issue}}"}}
+      - {name: transition, value: "transitions.transitions[?to.name=={{settings.to}}] | [0]"}
+      - {when: transition, tool: transition, input: {issueIdOrKey: "{{issue}}", transition: {id: "{{transition.id}}"}}}
+`);
+    const result = await runInstance({
+      plugin: file.plugins!["jira-transition"], name: "jira-transition", item: { ...ITEM, jira: ["SR-1", "SR-2"] },
+      instance: { id: "j", name: "Won't do", settings: { to: "Won't Do" } }, event: { type: "status", from: "todo", to: "cancelled" },
+      connections: { jira: { kind: "mcp", url: "http://unused" } }, dryRun: true,
+    }, { mcpTransport: () => mcp.transport() });
+    expect(result.error).toBeUndefined();
+    expect(mcp.calls.map((c) => c.tool)).toEqual(["getTransitions", "getTransitions"]);
+    expect(result.wouldSend).toEqual([
+      { connection: "jira", tool: "transition", input: { issueIdOrKey: "SR-1", transition: { id: "31" } } },
+      { connection: "jira", tool: "transition", input: { issueIdOrKey: "SR-2", transition: { id: "31" } } },
+    ]);
   });
 });
