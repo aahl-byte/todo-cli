@@ -178,6 +178,10 @@ class FakeServer:
             if f == "status" and row["_entity"] == "task" and v not in VALID_STATUSES:
                 rejected.append({"field": f, "reason": "invalid", "server_value": cur, "version": ver})
                 continue
+            if f == "status" and row["_entity"] == "item" and v in ("ready-to-deploy", "deployed") \
+                    and cur != v and not op.get("force") and self._waits(row["uid"]):
+                rejected.append({"field": f, "reason": "waits-on", "server_value": cur, "version": ver})
+                continue
             if cur == v:
                 out[f] = ver or 0
             elif f != "position" and ver is not None and (op.get("base") or {}).get(f) != ver:
@@ -202,6 +206,11 @@ class FakeServer:
         if rejected:
             res["rejected"] = rejected
         return res
+
+    def _waits(self, item_uid):
+        """Like the server's guard: the item's latest posted git facts wait on something."""
+        posted = [f["data"] for f in self.git_facts if f["item_uid"] == item_uid]
+        return bool(posted and posted[-1].get("waits_on"))
 
     def _history(self, item, frm, to, author, op):
         import uuid
@@ -245,8 +254,10 @@ class FakeServer:
                 if server.git_facts_offline:
                     from todo.remote import RemoteError
                     raise RemoteError("fake offline")
-                server.git_facts.extend(copy.deepcopy(facts))
-                return {"ok": True}
+                known = [f for f in facts if f["item_uid"] in server.rows]
+                server.git_facts.extend(copy.deepcopy(known))
+                return {"ok": True, "stored": len(known),
+                        "skipped": [f["item_uid"] for f in facts if f["item_uid"] not in server.rows]}
 
             def changes(self, project, since, limit=500):
                 if server.offline:

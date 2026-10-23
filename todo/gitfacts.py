@@ -1,8 +1,13 @@
 """Git facts: where each item's branches landed, which in-flight branches
 depend on others, and which conflict or overlap. They come from the repo's
-local checkout (and each branch's PR on GitHub), live in the item folder as
+local checkout (and each branch's PRs on GitHub), live in the item folder as
 `git.yaml`, and are never set by hand. See
 docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
+
+Each branch's unlanded commits U(X) = T(X)..X come from one rev-list; pairs
+are related only by intersecting those sets in memory. A failure never reads
+as "no edge": the previous state stays, marked unknown, and the next round
+retries.
 """
 
 from __future__ import annotations
@@ -30,20 +35,35 @@ CACHE_FILE = "git-cache.json"
 PLUGINS_FILE = ".todo-plugins/plugins.yaml"
 POLL_EVERY = 30                 # seconds between ls-remote calls for one repo, so a command's two rounds share one
 LOCAL_EVERY = 300               # a local-only store recomputes at most this often, at the end of a command
+UNLANDED_CAP = 2000             # past this many unlanded commits a branch's relations are unknown
 MERGE_TREE_GIT = (2, 38)
 GUARDED = ("ready-to-deploy", "deployed")
-UNRESOLVED = ("waiting", "stale")
+UNRESOLVED = ("waiting", "stale", "unknown")
 CANT_LAND = ("cancelled", "deferred")
+COMPLETE = ("done", "deployed")
+OPEN_PR = ("open", "draft")
 HINT = "whichever merges second merges the other in"
+SHARES_HINT = ("can't tell which builds on which; base the dependent PR on the other branch, "
+               "or merge one into the other")
 API = "https://api.github.com"
 SHOWN_COMMITS = 3
+SHA_KEY = 12                    # cached commit sets keep this many hex digits per commit
 _PR_URL = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)(?:[/?#]|$)", re.I)
 
 
+class _GitHubError:
+    def __repr__(self):
+        return "GH_ERROR"
+
+
+GH_ERROR = _GitHubError()       # gh_get's answer when GitHub failed, as opposed to None for "no token"
+
+
 # ── git ───────────────────────────────────────────────────────────────────────
-def _git(cwd: Path, *args: str, timeout: float = 60):
+def _git(cwd: Path, *args: str, timeout: float = 60, stdin: str | None = None):
     try:
-        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout,
+                              input=stdin)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -63,50 +83,72 @@ def git_version() -> tuple:
 
 
 class Repo:
-    """One repo's local checkout, with results cached by the commits they compare."""
+    """One repo's local checkout. Results computed from complete data are
+    cached by the commits they compare."""
 
     def __init__(self, key: str, dir_: Path, cache: dict):
         self.key, self.dir, self.cache = key, dir_, cache
         self.tips: dict = {}
+        self.default = "main"
         self.used: dict = {}
 
     def ls_remote(self) -> dict | None:
-        out = _out(self.dir, "ls-remote", "--heads", "origin", timeout=20)
+        """Branch tips, and the default branch from the remote's HEAD; None when unreachable."""
+        out = _out(self.dir, "ls-remote", "--symref", "origin", "HEAD", "refs/heads/*", timeout=20)
         if out is None:
             return None
-        tips = {}
+        tips, default = {}, None
         for line in out.splitlines():
+            if line.startswith("ref: "):
+                ref = line[len("ref: "):].split("\t")[0]
+                default = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
+                continue
             sha, _, ref = line.partition("\t")
             if ref.startswith("refs/heads/"):
                 tips[ref[len("refs/heads/"):]] = sha
+        self.default = default or ("master" if "main" not in tips and "master" in tips else "main")
         return tips
 
-    def has(self, sha: str) -> bool:
-        r = _git(self.dir, "cat-file", "-e", f"{sha}^{{commit}}")
-        return r is not None and r.returncode == 0
+    def shallow(self) -> bool:
+        return _out(self.dir, "rev-parse", "--is-shallow-repository") == "true"
 
-    def fetch_if_needed(self, shas) -> None:
-        if any(not self.has(s) for s in shas):
-            _git(self.dir, "fetch", "--quiet", "origin", timeout=120)
+    def missing(self, shas) -> set:
+        """The commits not in the local object store, from one batch check."""
+        shas = sorted({s for s in shas if s})
+        if not shas:
+            return set()
+        r = _git(self.dir, "cat-file", "--batch-check", stdin="".join(s + "\n" for s in shas))
+        if r is None or r.returncode != 0:
+            return set(shas)
+        return {line.split()[0] for line in r.stdout.splitlines() if line.endswith(" missing")}
 
-    def default_branch(self) -> str:
-        ref = _out(self.dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-        if ref and ref.startswith("origin/"):
-            return ref[len("origin/"):]
-        return "master" if "main" not in self.tips and "master" in self.tips else "main"
+    def fetch_if_needed(self, shas) -> bool:
+        """Fetch when a commit is missing; False when one still is afterwards."""
+        if not self.missing(shas):
+            return True
+        _git(self.dir, "fetch", "--quiet", "origin", timeout=120)
+        return not self.missing(shas)
 
-    def track(self, default: str) -> list:
+    def track(self) -> list:
         """The `track:` list from the plugins file on the default branch; [] without one."""
-        text = _out(self.dir, "show", f"{self.tips.get(default) or 'origin/' + default}:{PLUGINS_FILE}")
-        if not text:
+        tip = self.tips.get(self.default)
+        if not tip:
             return []
-        try:
-            from ruamel.yaml import YAML
-            doc = YAML(typ="safe").load(text)
-        except Exception:  # noqa: BLE001 — a malformed file tracks nothing
-            return []
-        raw = doc.get("track") if isinstance(doc, dict) else None
-        return [to_str(t) for t in raw if to_str(t)] if isinstance(raw, list) else []
+
+        def run():
+            r = _git(self.dir, "show", f"{tip}:{PLUGINS_FILE}")
+            if r is None:
+                return None
+            if r.returncode != 0:
+                return []
+            try:
+                from ruamel.yaml import YAML
+                doc = YAML(typ="safe").load(r.stdout)
+            except Exception:  # noqa: BLE001 — a malformed file tracks nothing
+                return []
+            raw = doc.get("track") if isinstance(doc, dict) else None
+            return [to_str(t) for t in raw if to_str(t)] if isinstance(raw, list) else []
+        return self._cached("track", tip, run) or []
 
     def _cached(self, kind: str, key: str, compute):
         bucket = self.cache.setdefault(kind, {})
@@ -126,19 +168,22 @@ class Repo:
             return None if r is None or r.returncode not in (0, 1) else r.returncode == 0
         return self._cached("anc", f"{sha}:{tip}", run)
 
-    def merge_base(self, a: str, b: str) -> str | None:
+    def unlanded(self, tip: str, head: str) -> list | None:
+        """U = tip..head, newest first, as short shas; None on failure or past the cap."""
         def run():
-            r = _git(self.dir, "merge-base", a, b)
-            return None if r is None or r.returncode not in (0, 1) else r.stdout.strip()
-        return self._cached("mb", f"{a}:{b}", run) or None
+            out = _out(self.dir, "rev-list", f"--max-count={UNLANDED_CAP + 1}", f"{tip}..{head}")
+            if out is None:
+                return None
+            shas = [s[:SHA_KEY] for s in out.split()]
+            return None if len(shas) > UNLANDED_CAP else shas
+        return self._cached("u", f"{tip}:{head}", run)
 
-    def shared(self, tip: str, mb: str) -> dict:
-        """The commits of `mb` not in `tip`: how many, and the newest few."""
+    def changed(self, tip: str, head: str) -> list | None:
+        """Files `head` changes since its merge base with `tip`."""
         def run():
-            count = _out(self.dir, "rev-list", "--count", f"{tip}..{mb}")
-            shas = _out(self.dir, "log", "--format=%h", "--abbrev=7", f"-n{SHOWN_COMMITS}", f"{tip}..{mb}")
-            return None if count is None else {"count": int(count), "commits": (shas or "").split()}
-        return self._cached("shared", f"{tip}:{mb}", run) or {"count": 0, "commits": []}
+            out = _out(self.dir, "diff", "--name-only", f"{tip}...{head}")
+            return None if out is None else sorted(set(out.splitlines()) - {""})
+        return self._cached("diff", f"{tip}:{head}", run)
 
     def conflicts(self, a: str, b: str) -> list | None:
         def run():
@@ -147,12 +192,6 @@ class Repo:
                 return None
             return sorted(set(r.stdout.splitlines()[1:]) - {""}) if r.returncode == 1 else []
         return self._cached("conflicts", f"{a}:{b}", run)
-
-    def changed(self, base: str, head: str) -> list:
-        def run():
-            out = _out(self.dir, "diff", "--name-only", base, head)
-            return None if out is None else sorted(set(out.splitlines()) - {""})
-        return self._cached("diff", f"{base}:{head}", run) or []
 
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
@@ -172,7 +211,7 @@ def _github_token() -> str | None:
 
 
 def gh_get(path: str):
-    """GitHub REST GET; None with no token or on any failure."""
+    """GitHub REST GET: the parsed body, None with no token, GH_ERROR when GitHub failed."""
     tok = _github_token()
     if not tok:
         return None
@@ -183,7 +222,7 @@ def gh_get(path: str):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read() or b"null")
     except (urllib.error.URLError, OSError, ValueError):
-        return None
+        return GH_ERROR
 
 
 def _pr_fields(pr: dict) -> dict:
@@ -191,21 +230,27 @@ def _pr_fields(pr: dict) -> dict:
         "draft" if pr.get("draft") else "open"
     out = {"number": pr.get("number"), "state": state, "base": (pr.get("base") or {}).get("ref"),
            "url": pr.get("html_url")}
+    head = (pr.get("head") or {}).get("sha")
+    if head:
+        out["head"] = head
     if state == "merged" and pr.get("merge_commit_sha"):
         out["merge_commit"] = pr["merge_commit_sha"]
     return out
 
 
-def branch_pr(repo_key: str, branch: str):
-    """The branch's PR (an open one first, else the newest); {} with none; None when GitHub can't tell."""
+def branch_prs(repo_key: str, branch: str):
+    """(current PR, every merged PR plus the open one): the current one is the
+    open PR, else the newest. None with no token; GH_ERROR when GitHub failed."""
     owner = repo_key.split("/")[0]
     rows = gh_get(f"/repos/{repo_key}/pulls?head={urllib.parse.quote(owner, safe='')}:"
-                  f"{urllib.parse.quote(branch, safe='')}&state=all&per_page=20")
+                  f"{urllib.parse.quote(branch, safe='')}&state=all&per_page=100")
+    if rows is None or rows is GH_ERROR:
+        return rows
     if not isinstance(rows, list):
-        return None
-    if not rows:
-        return {}
-    return _pr_fields(next((r for r in rows if r.get("state") == "open"), rows[0]))
+        return GH_ERROR
+    prs = [_pr_fields(r) for r in rows]
+    current = next((p for p in prs if p["state"] in OPEN_PR), prs[0] if prs else None)
+    return current, [p for p in prs if p["state"] == "merged" or p["state"] in OPEN_PR]
 
 
 def url_pr(url: str):
@@ -213,6 +258,8 @@ def url_pr(url: str):
     if not m:
         return None
     pr = gh_get(f"/repos/{m.group(1)}/{m.group(2)}/pulls/{m.group(3)}")
+    if pr is GH_ERROR:
+        return GH_ERROR
     return _pr_fields(pr) if isinstance(pr, dict) and pr.get("number") else None
 
 
@@ -249,12 +296,8 @@ def _save(root: Path, it: dict, facts: dict) -> None:
     yamlio.write_atomic(f, yamlio.dump(y, facts))
 
 
-def _state_dir(root: Path) -> Path:
-    return sync_dir(root) if sync_config(root) else root
-
-
 def _state_file(root: Path, name: str) -> Path:
-    return _state_dir(root) / (name if sync_config(root) else "." + name)
+    return sync_dir(root) / name if sync_config(root) else root / ("." + name)
 
 
 def _read_json(f: Path) -> dict:
@@ -332,92 +375,231 @@ def _archived(root: Path, it: dict) -> bool:
 
 
 # ── computing ─────────────────────────────────────────────────────────────────
-def _branch_facts(repo: Repo, it: dict, old: dict, default: str, track: list, fetch_pr: bool) -> list:
+def _branch_facts(repo: Repo, it: dict, old: dict, fetch_prs, track: list) -> list:
+    """Each branch's head, PRs and landed-in; `unknown` says why something
+    couldn't be read. `fetch_prs` is "force", True (when the head moved since
+    the last fetch) or False."""
     out = []
     for name in it["branches"]:
         o = old.get(name) or {}
-        head = repo.tips.get(name)
-        gone = head is None
-        head = head or o.get("head")
-        pr = o.get("pr")
-        if fetch_pr and (not pr or pr.get("state") != "merged"):
-            got = branch_pr(repo.key, name)
-            if got is not None:
-                pr = got or None
+        live = repo.tips.get(name)
+        head = live or o.get("head")
         b = {"name": name}
         if head:
             b["head"] = head
-            b["first"] = o.get("first") or head
-        if gone:
+        if live is None:
             b["gone"] = True
+        pr, prs = o.get("pr"), o.get("prs") or []
+        if "pr_head" in o:
+            b["pr_head"] = o["pr_head"]
+        if head and (fetch_prs == "force" or (fetch_prs and o.get("pr_head") != head)):
+            got = branch_prs(repo.key, name)
+            if got is GH_ERROR:
+                b["unknown"] = "GitHub didn't answer for its PRs"
+            elif got is not None:
+                (pr, prs), b["pr_head"] = got, head
         if pr:
             b["pr"] = pr
-        b["target"] = (pr or {}).get("base") or default
-        landed = (pr or {}).get("merge_commit") or head
+        if prs:
+            b["prs"] = prs
+        landed = next((p.get("merge_commit") for p in prs if p["state"] == "merged" and p.get("head") == head
+                       and p.get("merge_commit")), None) or head
         if landed:
             b["landed"] = landed
             if track:
-                b["in"] = {t: bool(repo.is_ancestor(landed, repo.tips[t])) for t in track if t in repo.tips}
+                b["in"] = {t: repo.is_ancestor(landed, repo.tips[t]) if t in repo.tips else None for t in track}
         out.append(b)
     return out
 
 
-def _state(repo: Repo, dep: dict, branch: dict, tip: str | None) -> tuple:
-    """(state, why) of an edge onto `branch` of item `dep`, landing in the branch whose tip is `tip`."""
-    pr = branch.get("pr") or {}
-    if tip and branch.get("landed") and repo.is_ancestor(branch["landed"], tip):
-        return "landed", ""
+def _targets(repo: Repo, facts: dict, open_ids: set, owners: dict, track: list) -> None:
+    """T(B) per branch: follow an open PR's base through branches open items
+    own, stopping at a branch nobody owns; with no open PR, the first tracked
+    branch on the remote, else the default branch."""
+    by_name = {b["name"]: b for i in open_ids for b in facts[i]["branches"]}
+    fallback = next((t for t in track if t in repo.tips), None) or repo.default
+    for fx in facts.values():
+        for b in fx["branches"]:
+            chain, cur, seen, target = [], b, {b["name"]}, fallback
+            while True:
+                pr = cur.get("pr") or {}
+                if pr.get("state") not in OPEN_PR or not pr.get("base"):
+                    break
+                base = pr["base"]
+                if base in seen:
+                    break
+                if base not in owners:
+                    target = base
+                    break
+                chain.append(base)
+                seen.add(base)
+                cur = by_name[base]
+            b["target"] = target
+            if chain:
+                b["chain"] = chain
+            if target not in repo.tips and "unknown" not in b:
+                b["unknown"] = f"its target {target} isn't on the remote"
+
+
+def _relate(x: tuple, y: tuple, ux: set, uy: set):
+    """Who needs whom between two related branches: (dependent, dependency), or None when it's ambiguous."""
+    (xi, xb), (yi, yb) = x, y
+    if yb["name"] in (xb.get("chain") or []):
+        return x, y
+    if xb["name"] in (yb.get("chain") or []):
+        return y, x
+    if xb["head"] == yb["head"]:
+        return None
+    if yb["head"][:SHA_KEY] in ux:
+        return x, y
+    if xb["head"][:SHA_KEY] in uy:
+        return y, x
+    return None
+
+
+def _resolve(repo: Repo, dep: dict, ab: dict, tip: str, mb: str) -> tuple:
+    """(state, why) of "B needs A" while they still share unlanded commits:
+    landed through a merged PR of A's branch that carried the shared commits
+    and reached B's target; stale when A can't land; else waiting."""
+    covered = False
+    for p in ab.get("prs") or []:
+        if p["state"] != "merged" or not p.get("head"):
+            continue
+        carried = repo.is_ancestor(mb, p["head"])
+        if carried is None:
+            return "unknown", f'couldn\'t check PR #{p["number"]}'
+        if not carried:
+            continue
+        covered = True
+        if p.get("merge_commit"):
+            reached = repo.is_ancestor(p["merge_commit"], tip)
+            if reached is None:
+                return "unknown", f'couldn\'t check PR #{p["number"]}'
+            if reached:
+                return "landed", f'{ab["name"]} landed through PR #{p["number"]} ({p["merge_commit"][:7]})'
     if dep["status"] in CANT_LAND:
         return "stale", f'{dep["id"]} is {dep["status"]}'
-    if pr.get("state") == "closed":
+    pr = ab.get("pr") or {}
+    if pr.get("state") == "closed" and not covered:
         return "stale", f'its PR #{pr.get("number")} closed unmerged'
     return "waiting", ""
 
 
-def _git_edges(repo: Repo, items: list, facts: dict) -> list:
-    """(B, B's branch, A, A's branch, edge) for each B that carries unlanded commits of A."""
-    edges = []
-    for b_it in items:
+def _edge(a_it: dict, ab: dict, bb: dict, state: str, why: str, shared: list) -> dict:
+    n = len(shared)
+    evidence = why or (f'{bb["name"]} carries {n} commit{"s" if n != 1 else ""} of {ab["name"]} '
+                       f'not in {bb["target"]}: {", ".join(s[:7] for s in shared[:SHOWN_COMMITS])}')
+    return {"id": a_it["id"], "item": a_it.get("uid"), "branch": ab["name"], "via": bb["name"],
+            "target": bb["target"], "state": state, "source": "git", "evidence": evidence,
+            "shared": n, "commits": [s[:7] for s in shared[:SHOWN_COMMITS]], "mb": shared[0] if shared else None}
+
+
+def _mirror(e: dict, b_it: dict, bb: dict, ab: dict) -> dict:
+    return {**e, "id": b_it["id"], "item": b_it.get("uid"), "branch": bb["name"], "via": ab["name"]}
+
+
+def _git_relations(repo: Repo, items: list, facts: dict, prev: dict) -> None:
+    """Needs, needed-by and shares between branches of different items, from
+    intersecting their unlanded commits; carried over as unknown where a
+    branch couldn't be read, and kept as landed once the shared commits reached
+    the dependent's target."""
+    by_id = {it["id"]: it for it in items}
+    u: dict = {}
+    for it in items:
+        for b in facts[it["id"]]["branches"]:
+            if "unknown" in b or not b.get("head"):
+                continue
+            got = repo.unlanded(repo.tips[b["target"]], b["head"])
+            if got is None:
+                b["unknown"] = f"couldn't list its commits not in {b['target']} (or more than {UNLANDED_CAP})"
+                continue
+            u[(it["id"], b["name"])] = got
+    index: dict = {}
+    for key, shas in u.items():
+        for s in shas:
+            index.setdefault(s, []).append(key)
+    shared: dict = {}
+    for keys in index.values():
+        for x, y in combinations(keys, 2):
+            if x[0] != y[0]:
+                shared.setdefault(tuple(sorted((x, y))), True)
+    branch = {(i, b["name"]): b for i in facts for b in facts[i]["branches"]}
+    related = set()
+    for (xk, yk) in shared:
+        xi, yi = by_id[xk[0]], by_id[yk[0]]
+        x, y = (xi, branch[xk]), (yi, branch[yk])
+        ux, uy = set(u[xk]), set(u[yk])
+        related.add((xk, yk))
+        rel = _relate(x, y, ux, uy)
+        if rel is None:
+            for (pi, pb), (qi, qb), up, uq in ((x, y, u[xk], uy), (y, x, u[yk], ux)):
+                common = [s for s in up if s in uq]
+                facts[pi["id"]]["shares"].append({
+                    "id": qi["id"], "item": qi.get("uid"), "branch": qb["name"], "via": pb["name"], "shared": len(common),
+                    "commits": [s[:7] for s in common[:SHOWN_COMMITS]], "evidence": SHARES_HINT})
+            continue
+        (b_it, bb), (a_it, ab) = rel
         if b_it["status"] == "cancelled":
             continue
-        for bb in facts[b_it["id"]]["branches"]:
-            tip = repo.tips.get(bb["target"])
-            if not bb.get("head") or not tip:
+        common = [s for s in u[(b_it["id"], bb["name"])] if s in set(u[(a_it["id"], ab["name"])])]
+        state, why = _resolve(repo, a_it, ab, repo.tips[bb["target"]], common[0])
+        e = _edge(a_it, ab, bb, state, why, common)
+        facts[b_it["id"]]["needs"].append(e)
+        facts[a_it["id"]]["needed_by"].append(_mirror(e, b_it, bb, ab))
+    _carry(repo, items, facts, prev, u, related)
+
+
+def _carry(repo: Repo, items: list, facts: dict, prev: dict, u: dict, related: set) -> None:
+    """Previous git edges and shares that this round didn't find again: kept
+    as unknown when a side couldn't be read, as landed when the shared commits
+    are now in the dependent's target."""
+    by_id = {it["id"]: it for it in items}
+    branch = {(i, b["name"]): b for i in facts for b in facts[i]["branches"]}
+
+    def unknown_of(key):
+        b = branch.get(key)
+        return b.get("unknown") if b is not None else None
+
+    for it in items:
+        if it["status"] == "cancelled":
+            continue
+        old = prev.get(it["id"]) or {}
+        for e in old.get("needs") or []:
+            if e.get("source") != "git" or not e.get("id") or e.get("id") not in by_id:
                 continue
-            for a_it in items:
-                if a_it is b_it:
-                    continue
-                for ab in facts[a_it["id"]]["branches"]:
-                    if not ab.get("head") or ab["name"] == bb["name"]:
-                        continue
-                    mb = repo.merge_base(ab["head"], bb["head"])
-                    if not mb or mb == bb["head"] or repo.is_ancestor(mb, tip) is not False:
-                        continue
-                    state, why = _state(repo, a_it, ab, tip)
-                    sh = repo.shared(tip, mb)
-                    n = sh["count"]
-                    evidence = why or (f'{bb["name"]} carries {n} commit{"s" if n != 1 else ""} of {ab["name"]} '
-                                       f'not in {bb["target"]}: {", ".join(sh["commits"])}')
-                    if state == "landed":
-                        evidence = f'{ab["name"]} landed in {bb["target"]} ({ab["landed"][:7]})'
-                    edges.append((b_it, bb, a_it, ab, {
-                        "id": a_it["id"], "item": a_it.get("uid"), "branch": ab["name"], "via": bb["name"],
-                        "target": bb["target"], "state": state, "source": "git", "evidence": evidence,
-                        "shared": n, "commits": sh["commits"]}))
-    pairs = {(b["id"], bb["name"], a["id"], ab["name"]) for b, bb, a, ab, _ in edges}
-    return [(b, bb, a, ab, e) for b, bb, a, ab, e in edges
-            if (a["id"], ab["name"], b["id"], bb["name"]) not in pairs or _cut_from(repo, bb, ab)]
+            me, other = (it["id"], e.get("via")), (e["id"], e.get("branch"))
+            if me not in branch or other not in branch or tuple(sorted((me, other))) in related:
+                continue
+            why = unknown_of(me) or unknown_of(other)
+            dep = by_id[e["id"]]
+            if why:
+                _add_pair(facts, it, dep, {**e, "state": "unknown", "reason": why, "target": branch[me].get("target")})
+                continue
+            tip = repo.tips.get(branch[me]["target"])
+            mb = e.get("mb")
+            landed = repo.is_ancestor(mb, tip) if mb and tip else False
+            if landed is None:
+                _add_pair(facts, it, dep, {**e, "state": "unknown", "reason": "couldn't check its shared commits"})
+            elif landed:
+                _add_pair(facts, it, dep, {**e, "state": "landed", "target": branch[me]["target"],
+                                           "evidence": f'the shared commits are in {branch[me]["target"]}'})
+        for s in old.get("shares") or []:
+            me, other = (it["id"], s.get("via")), (s.get("id"), s.get("branch"))
+            if me not in branch or other not in branch or tuple(sorted((me, other))) in related:
+                continue
+            why = unknown_of(me) or unknown_of(other)
+            if why:
+                facts[it["id"]]["shares"].append({**s, "state": "unknown", "reason": why})
 
 
-def _cut_from(repo: Repo, bb: dict, ab: dict) -> bool:
-    """For two branches that each carry the other's unlanded commits, whether
-    B was cut from A, so not A from B: B's first-seen head isn't in A's. When
-    neither is in the other, both edges stay."""
-    fa, fb = ab.get("first"), bb.get("first")
-    return not (fa and fb and fa != fb and repo.is_ancestor(fb, fa))
+def _add_pair(facts: dict, b_it: dict, a_it: dict, e: dict) -> None:
+    facts[b_it["id"]]["needs"].append(e)
+    if a_it["id"] in facts:
+        facts[a_it["id"]]["needed_by"].append({**e, "id": b_it["id"], "item": b_it.get("uid"),
+                                               "branch": e.get("via"), "via": e.get("branch")})
 
 
-def _note_edges(root: Path, repo: Repo, it: dict, notes: list, items: list, facts: dict, default: str) -> list:
+def _note_edges(root: Path, repo: Repo, it: dict, notes: list, items: list, facts: dict, all_items: list) -> list:
     """Edges from plugin-made dependency notes: (needed item or None, its branch or None, edge)."""
     out = []
     by_branch = {b: x for x in items for b in x["branches"]}
@@ -425,17 +607,15 @@ def _note_edges(root: Path, repo: Repo, it: dict, notes: list, items: list, fact
     for n in notes:
         m = n.get("meta") or {}
         needs = to_str(m.get("needs")).strip()
-        target = to_str(m.get("in")).strip() or (own[0]["target"] if own else default)
+        target = to_str(m.get("in")).strip() or (own[0].get("target") if own else None) or repo.default
         tip = repo.tips.get(target)
         edge = {"needs": needs, "target": target, "source": "plugin", "note": n.get("uid"),
                 "evidence": to_str(m.get("because")).strip() or n["text"].strip()}
         dep, branches = None, []
         if needs.startswith("item:"):
             ref = needs[len("item:"):]
-            dep = next((x for x in items if ref in (x["id"], x.get("uid"))), None)
-            if dep is None:
-                dep = next((x for x in store.list_todos(root) if ref in (x["id"], x.get("uid"))), None)
-            branches = (facts.get(dep["id"]) or load(root, dep)).get("branches") or [] if dep else []
+            dep = next((x for x in all_items if ref in (x["id"], x.get("uid"))), None)
+            branches = ((facts.get(dep["id"]) or load(root, dep)).get("branches") or []) if dep else []
         elif needs.startswith("branch:"):
             name = needs[len("branch:"):]
             dep = by_branch.get(name)
@@ -451,21 +631,28 @@ def _note_edges(root: Path, repo: Repo, it: dict, notes: list, items: list, fact
             continue
         if dep is not None:
             edge.update({"id": dep["id"], "item": dep.get("uid")})
-        states = [_state(repo, dep, b, tip) if dep is not None else
-                  (("landed", "") if tip and b.get("landed") and repo.is_ancestor(b["landed"], tip) else ("waiting", ""))
-                  for b in branches]
-        if not states:
-            edge["state"] = "stale" if dep is not None and dep["status"] in CANT_LAND else "waiting"
-        elif all(s == "landed" for s, _ in states):
-            edge["state"] = "landed"
-        else:
-            edge["state"] = "stale" if any(s == "stale" for s, _ in states) else "waiting"
+        edge["state"] = _note_state(repo, dep, branches, tip)
         out.append((dep, branches[0] if len(branches) == 1 else None, edge))
     return out
 
 
+def _note_state(repo: Repo, dep: dict | None, branches: list, tip: str | None) -> str:
+    if dep is not None and dep["status"] in CANT_LAND:
+        return "stale"
+    if dep is not None and not dep["branches"]:
+        return "landed" if dep["status"] in COMPLETE else "waiting"
+    if not branches or not tip:
+        return "waiting"
+    states = [repo.is_ancestor(b["landed"], tip) if b.get("landed") else False for b in branches]
+    if any(s is None for s in states):
+        return "unknown"
+    return "landed" if all(states) else "waiting"
+
+
 def _pr_edge(repo: Repo, url: str, target: str, meta: dict) -> dict:
     pr = url_pr(url)
+    if pr is GH_ERROR:
+        return {"state": "unknown", "reason": "GitHub didn't answer for the PR"}
     if pr is None:
         return {"state": "waiting"}
     if pr["state"] == "closed":
@@ -477,62 +664,79 @@ def _pr_edge(repo: Repo, url: str, target: str, meta: dict) -> dict:
         return {"state": "landed", "pr": pr}
     landed = repo.is_ancestor(sha, repo.tips[target]) if key == repo.key and target in repo.tips \
         else _gh_in(key, sha, target)
-    return {"state": "landed" if landed else "waiting", "pr": pr}
+    return {"state": "landed" if landed else "unknown" if landed is None else "waiting", "pr": pr}
 
 
 def _hints(repo: Repo, items: list, facts: dict, notice: list) -> None:
-    """Conflicts and overlaps between live branches of different items."""
-    live = [(it, b) for it in items if it["status"] != "cancelled"
-            for b in facts[it["id"]]["branches"]
-            if b.get("head") and not b.get("gone") and (b.get("pr") or {}).get("state") not in ("merged", "closed")]
+    """Conflicts and overlaps between live, unrelated branches of different
+    items: files both change, and merge-tree only where they do."""
+    related = {frozenset(((it["id"], e.get("via")), (e.get("id"), e.get("branch"))))
+               for it in items for k in ("needs", "shares") for e in facts[it["id"]][k]}
+    live = []
+    for it in items:
+        if it["status"] == "cancelled":
+            continue
+        for b in facts[it["id"]]["branches"]:
+            if "unknown" in b or b.get("gone") or not b.get("head") or (b.get("pr") or {}).get("state") in ("merged", "closed"):
+                continue
+            files = repo.changed(repo.tips[b["target"]], b["head"])
+            if files:
+                live.append((it, b, set(files)))
     can_merge_tree = git_version() >= MERGE_TREE_GIT
     if not can_merge_tree and live:
         notice.append("conflicts need git 2.38 or newer; skipped")
-    for (a_it, ab), (b_it, bb) in combinations(live, 2):
-        if a_it is b_it:
+    for (a_it, ab, af), (b_it, bb, bf) in combinations(live, 2):
+        if a_it is b_it or frozenset(((a_it["id"], ab["name"]), (b_it["id"], bb["name"]))) in related:
+            continue
+        common = sorted(af & bf)
+        if not common:
             continue
         pair = ((a_it, ab, b_it, bb), (b_it, bb, a_it, ab))
         files = repo.conflicts(ab["head"], bb["head"]) if can_merge_tree else None
-        if files:
-            for x, xb, y, yb in pair:
-                facts[x["id"]]["conflicts"].append(
-                    {"id": y["id"], "item": y.get("uid"), "branch": yb["name"], "via": xb["name"], "files": files})
-        mb = repo.merge_base(ab["head"], bb["head"])
-        if not mb:
-            continue
-        common = sorted(set(repo.changed(mb, ab["head"])) & set(repo.changed(mb, bb["head"])))
-        if common:
-            for x, xb, y, yb in pair:
-                facts[x["id"]]["overlaps"].append(
-                    {"id": y["id"], "item": y.get("uid"), "branch": yb["name"], "via": xb["name"], "files": common})
+        for x, xb, y, yb in pair:
+            row = {"id": y["id"], "item": y.get("uid"), "branch": yb["name"], "via": xb["name"]}
+            facts[x["id"]]["overlaps"].append({**row, "files": common})
+            if files:
+                facts[x["id"]]["conflicts"].append({**row, "files": files})
 
 
-def _compute(root: Path, repo: Repo, items: list, fetch_pr) -> dict:
-    """Every item's facts in one repo, by item id."""
-    default = repo.default_branch()
-    track = repo.track(default)
+def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, failure: str | None = None) -> dict:
+    """Every item's facts in one repo, by item id. With `failure`, nothing
+    could be read: every previous fact stays, its edges marked unknown."""
+    prev = {it["id"]: load(root, it) for it in items}
+    track = repo.track() if failure is None else []
+    open_ids = {it["id"] for it in items if it["status"] != "cancelled"}
+    owners = {b: it["id"] for it in items if it["id"] in open_ids for b in it["branches"]}
     facts = {}
     for it in items:
-        old = {b.get("name"): b for b in load(root, it).get("branches") or [] if isinstance(b, dict)}
-        facts[it["id"]] = {"repo": repo.key, "branches": _branch_facts(repo, it, old, default, track, fetch_pr(it)),
-                           "needs": [], "needed_by": [], "conflicts": [], "overlaps": []}
-    for b_it, bb, a_it, ab, e in _git_edges(repo, items, facts):
-        facts[b_it["id"]]["needs"].append(e)
-        facts[a_it["id"]]["needed_by"].append({**e, "id": b_it["id"], "item": b_it.get("uid"),
-                                               "branch": bb["name"], "via": ab["name"]})
+        old = {b.get("name"): b for b in prev[it["id"]].get("branches") or [] if isinstance(b, dict)}
+        if failure is not None:
+            branches = [{**(old.get(n) or {"name": n}), "unknown": failure} for n in it["branches"]]
+        else:
+            branches = _branch_facts(repo, it, old, fetch_prs(it), track)
+        facts[it["id"]] = {"repo": repo.key, "branches": branches,
+                           "needs": [], "needed_by": [], "shares": [], "conflicts": [], "overlaps": []}
+    if failure is not None:
+        _carry(repo, items, facts, prev, {}, set())
+    else:
+        _targets(repo, facts, open_ids, owners, track)
+        _git_relations(repo, items, facts, prev)
     for it in items:
         if it["status"] == "cancelled":
             continue
         full = store.get_item(root, it["id"]) or {"notes": []}
         notes = [n for n in full["notes"] if n["kind"] == "dependency"]
-        for dep, dep_branch, e in _note_edges(root, repo, it, notes, items, facts, default):
+        for dep, dep_branch, e in _note_edges(root, repo, it, notes, items, facts, all_items):
+            if failure is not None:
+                e = {**e, "state": "unknown", "reason": failure}
             facts[it["id"]]["needs"].append(e)
             if dep is not None and dep["id"] in facts:
                 facts[dep["id"]]["needed_by"].append({**e, "id": it["id"], "item": it.get("uid"),
                                                       "branch": (it["branches"] or [None])[0],
                                                       "via": dep_branch["name"] if dep_branch else None})
-    notice: list = []
-    _hints(repo, items, facts, notice)
+    notice: list = [failure] if failure else []
+    if failure is None:
+        _hints(repo, items, facts, notice)
     for it in items:
         f = facts[it["id"]]
         f["waits_on"] = sorted({e.get("id") or e.get("needs") for e in f["needs"] if e["state"] in UNRESOLVED})
@@ -552,13 +756,28 @@ def _recorded(root: Path, it: dict) -> list:
     return [b.get("name") for b in load(root, it).get("branches") or [] if isinstance(b, dict)]
 
 
+def _relevant(root: Path, group: list) -> set:
+    """Branches whose move can change a fact: the items' own, their targets and PR bases, the default and tracked ones."""
+    names = {"HEAD"}
+    for it in group:
+        names.update(it["branches"])
+        f = load(root, it)
+        for b in f.get("branches") or []:
+            names.update(x for x in (b.get("target"), (b.get("pr") or {}).get("base")) if x)
+            names.update(b.get("chain") or [])
+            names.update((b.get("in") or {}).keys())
+    return names
+
+
 def on_round(root: Path, remote=None, project: str | None = None, *, force: bool = False,
-             repos: set | None = None) -> list:
-    """Recompute the repos whose branches moved (one ls-remote each) or whose
-    items' branches changed; with `force`, every repo asked for. Posts what
-    changed to the server when given one. Returns the ids of changed items."""
-    items = [it for it in store.list_todos(root) if not _archived(root, it)]
-    groups = _groups(root, items)
+             repos: set | None = None, fetch_prs=True, prs_for: set | None = None) -> list:
+    """Recompute the repos whose relevant branches moved (one ls-remote each)
+    or whose items' branches changed; with `force`, every repo asked for. PRs
+    are refetched for branches whose head moved since their last fetch, and
+    for the items in `prs_for`. Posts what changed when given a server.
+    Returns the ids of changed items."""
+    all_items = [it for it in store.list_todos(root) if not _archived(root, it)]
+    groups = _groups(root, all_items)
     tips_file, cache_file = _state_file(root, TIPS_FILE), _state_file(root, CACHE_FILE)
     state = _read_json(tips_file)
     cache = _read_json(cache_file)
@@ -582,15 +801,30 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
             continue
         old_tips = saved.get("tips") or {}
         moved = {n for n in set(tips) | set(old_tips) if tips.get(n) != old_tips.get(n)}
-        state[key] = {"at": time.time(), "tips": tips}
-        if not (force or touched or moved):
+        if saved.get("default") not in (None, repo.default):
+            moved.add("HEAD")
+        if not (force or touched or moved & _relevant(root, group) or saved.get("incomplete")):
+            state[key] = {**saved, "at": time.time(), "tips": tips, "default": repo.default}
             continue
         repo.tips = tips
-        repo.fetch_if_needed(tips.values())
-        wide = force or bool(moved - {b for it in group for b in it["branches"]})
-        fresh = _compute(root, repo, group, lambda it: wide or it["id"] in touched or bool(moved & set(it["branches"])))
-        for kind, bucket in repo.used.items():
-            used.setdefault(kind, {}).update(bucket)
+        failure = None
+        if repo.shallow():
+            failure = "this checkout is a shallow clone; git facts need its full history"
+        else:
+            heads = list(tips.values()) + [b.get("head") for it in group for b in load(root, it).get("branches") or []
+                                           if b.get("head") and b.get("name") in it["branches"]]
+            if not repo.fetch_if_needed(tips.values()):
+                failure = "fetching from origin didn't bring every branch's commits"
+            elif repo.missing(heads):
+                repo.fetch_if_needed(heads)
+        want = prs_for or set()
+        fresh = _compute(root, repo, group, lambda it: "force" if it["id"] in want else fetch_prs, all_items, failure)
+        incomplete = failure is not None or any("unknown" in b for f in fresh.values() for b in f.get("branches") or [])
+        if not incomplete:
+            for kind, bucket in repo.used.items():
+                used.setdefault(kind, {}).update(bucket)
+        state[key] = {"at": time.time(), "default": repo.default, "tips": old_tips if incomplete else tips,
+                      **({"incomplete": True} if incomplete else {})}
         stamp = now()
         for it in group:
             new = fresh.get(it["id"], {})
@@ -608,7 +842,7 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
 
 
 def _post(root: Path, remote, project, ids: set) -> set:
-    """Send facts for `ids`; the ids still to send."""
+    """Send facts for `ids`; the ids still to send, which includes items the server doesn't have yet."""
     facts = []
     for item_id in sorted(ids):
         it = store.get_item(root, item_id)
@@ -617,19 +851,27 @@ def _post(root: Path, remote, project, ids: set) -> set:
     if not facts:
         return set()
     try:
-        remote.git_facts(project, facts)
+        got = remote.git_facts(project, facts)
     except (RemoteError, AttributeError):
         return ids
-    return set()
+    skipped = set(got.get("skipped") or []) if isinstance(got, dict) else set()
+    return {i for i in ids if (store.get_item(root, i) or {}).get("uid") in skipped}
 
 
 def refresh(root: Path, items=None) -> list:
-    """Recompute now, for the repos of `items` (every repo when None). A
-    synced store posts the results in its next round."""
-    repos = None
+    """Recompute now, for the repos of `items` (every repo when None), refetching
+    the PRs of those items and of the items they're related to."""
+    repos, prs_for = None, None
+    if items is None:
+        return on_round(root, force=True, fetch_prs="force")
     if items is not None:
-        repos = set(_groups(root, [it for it in items if not _archived(root, it)]))
-    return on_round(root, force=True, repos=repos)
+        items = [it for it in items if not _archived(root, it)]
+        repos = set(_groups(root, items))
+        prs_for = {it["id"] for it in items}
+        for it in items:
+            f = load(root, it)
+            prs_for.update(e["id"] for k in ("needs", "needed_by", "shares") for e in f.get(k) or [] if e.get("id"))
+    return on_round(root, force=True, repos=repos, prs_for=prs_for)
 
 
 def post_pending(root: Path) -> None:
@@ -645,7 +887,8 @@ def post_pending(root: Path) -> None:
 
 
 def maybe_local(root: Path) -> None:
-    """A local-only store's recompute, at most every LOCAL_EVERY seconds."""
+    """A local-only store's recompute, at most every LOCAL_EVERY seconds, from
+    local git alone: PRs wait for `todo refresh`."""
     if sync_config(root) is not None or not root.is_dir():
         return
     f = _state_file(root, TIPS_FILE)
@@ -655,7 +898,7 @@ def maybe_local(root: Path) -> None:
     state["local_at"] = time.time()
     _write_json(f, state)
     try:
-        on_round(root)
+        on_round(root, fetch_prs=False)
     except Exception as e:  # noqa: BLE001 — facts must never break a command
         print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
 
@@ -677,24 +920,35 @@ def view(root: Path, it: dict) -> dict:
         if n["kind"] == "dependency" and n.get("uid") not in seen:
             m = n.get("meta") or {}
             needs.append({"needs": to_str(m.get("needs")), "target": to_str(m.get("in")) or None,
-                          "state": "waiting", "source": "plugin", "note": n.get("uid"),
-                          "evidence": (to_str(m.get("because")) or n["text"]).strip() + " (not yet checked)"})
+                          "state": "unknown", "source": "plugin", "note": n.get("uid"),
+                          "evidence": (to_str(m.get("because")) or n["text"]).strip(), "reason": "not checked yet"})
     if needs or facts:
         facts["needs"] = needs
         facts["waits_on"] = sorted({e.get("id") or e.get("needs") for e in needs if e["state"] in UNRESOLVED})
     return facts
 
 
+def _blockers(root: Path, it: dict) -> list:
+    f = view(root, it)
+    edges = [e for e in f.get("needs") or [] if e["state"] in UNRESOLVED]
+    own = [{"needs": b["name"], "state": "unknown", "source": "git", "reason": b["unknown"]}
+           for b in f.get("branches") or [] if b.get("unknown") and b.get("name") in it["branches"]]
+    return edges + own
+
+
 def unresolved(root: Path, it: dict) -> list:
-    """The item's waiting or stale edges; facts that say so are rechecked first."""
+    """What stops the item staging: waiting, stale or unknown edges, and its own
+    branches that couldn't be read. Facts that say so are rechecked first, and
+    a synced store posts the recheck straight away."""
     it = store.get_item(root, it["id"]) or it
-    edges = [e for e in view(root, it).get("needs") or [] if e["state"] in UNRESOLVED]
+    edges = _blockers(root, it)
     if edges:
         try:
             refresh(root, [it])
+            post_pending(root)
         except Exception:  # noqa: BLE001 — keep the stored facts
             return edges
-        edges = [e for e in view(root, it).get("needs") or [] if e["state"] in UNRESOLVED]
+        edges = _blockers(root, it)
     return edges
 
 
@@ -713,6 +967,8 @@ def describe(e: dict) -> str:
     who = e.get("id") or e.get("needs") or "?"
     where = f' ({e["branch"]})' if e.get("branch") else ""
     why = f' — {e["evidence"]}' if e.get("evidence") else ""
+    if e.get("state") == "unknown":
+        why += f' (unknown: {e.get("reason") or "not computed"})'
     return f'{who}{where} {e["state"]}{why}'
 
 

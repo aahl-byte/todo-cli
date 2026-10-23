@@ -1,6 +1,9 @@
 """Git facts from real fixture repos: a bare origin plus a clone holding the
 store, PRs from a fake GitHub client."""
 
+import collections
+import json
+import shutil
 import subprocess
 
 import pytest
@@ -79,11 +82,13 @@ class Fixture:
         store.update_todo(self.root, it["id"], {"branches": branches})
         return it["id"]
 
-    def pr(self, branch, number, base="staging", state="open", merge_commit=None):
-        self.prs[branch] = [{"number": number, "state": "closed" if state in ("merged", "closed") else "open",
-                             "draft": False, "merged_at": "2026-10-23T00:00:00Z" if state == "merged" else None,
-                             "merge_commit_sha": merge_commit, "base": {"ref": base},
-                             "html_url": f"https://github.com/acme/web/pull/{number}"}]
+    def pr(self, branch, number, base="staging", state="open", merge_commit=None, add=False):
+        """Record a PR for `branch` at its current head; `add` keeps the earlier ones."""
+        row = {"number": number, "state": "closed" if state in ("merged", "closed") else "open",
+               "draft": False, "merged_at": "2026-10-23T00:00:00Z" if state == "merged" else None,
+               "merge_commit_sha": merge_commit, "base": {"ref": base}, "head": {"sha": self.sha(branch)},
+               "html_url": f"https://github.com/acme/web/pull/{number}"}
+        self.prs[branch] = [row] + (self.prs.get(branch, []) if add else [])
 
     def refresh(self):
         return gitfacts.refresh(self.root)
@@ -463,12 +468,15 @@ def synced(fx, monkeypatch):
 def test_round_posts_facts_and_never_syncs_git_yaml(fx, synced):
     a, b = stacked(fx)
     sync.run_round(fx.root, synced.client("alice"))
+    sync.run_round(fx.root, synced.client("alice"))
     assert (fx.root / ".sync" / "git-tips.json").is_file()
     posted = {f["item_uid"]: f["data"] for f in synced.git_facts}
     assert posted[store.resolve_item(fx.root, b)["uid"]]["waits_on"] == [a]
     assert sync.pending(fx.root) == []
-    ops = [op for push in synced.pushes for op in push]
-    assert not any("git" in str(op.get("data", {}).keys()) for op in ops)
+    pushed = json.dumps(synced.pushes)
+    snapshot = json.dumps(sync.load_snapshot(fx.root))
+    for text in (pushed, snapshot):
+        assert "git.yaml" not in text and "waits_on" not in text and "needed_by" not in text
 
 
 def test_failed_post_retries_next_round(fx, synced, monkeypatch):
@@ -507,17 +515,292 @@ def test_a_person_cant_hand_enter_a_dependency_note(fx):
         run_cli(fx.root, ["note", b, "x", "--kind", "dependency"])
 
 
-def test_new_commits_on_a_dependency_dont_turn_the_edge_around(fx):
+def ev(fx, i):
+    f = fx.facts(i)
+    return edge_view(f.get("needs") or []), edge_view(f.get("needed_by") or [])
+
+
+def shares(fx, i):
+    return [(x["id"], x["branch"]) for x in fx.facts(i).get("shares") or []]
+
+
+def test_a_pr_based_on_the_dependency_needs_it_and_stage_refuses(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8, base="feat/a")
+    store.update_todo(fx.root, b, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+    fx.refresh()
+    [e] = fx.facts(b)["needs"]
+    assert (e["id"], e["state"], e["target"]) == (a, "waiting", "staging")
+    assert fx.facts(b)["branches"][0]["chain"] == ["feat/a"]
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["stage", b])
+
+
+def test_a_dependency_moving_on_makes_the_pair_ambiguous(fx, capsys):
     a, b = stacked(fx)
     fx.refresh()
     fx.commit("feat/a", "a2.txt", "more\n")
     fx.refresh()
-    assert edge_view(fx.facts(b)["needs"]) == [(a, "feat/a", "feat/b", "waiting")]
-    assert fx.facts(a)["needs"] == []
+    assert ev(fx, a) == ([], []) and ev(fx, b) == ([], [])
+    assert shares(fx, a) == [(b, "feat/b")] and shares(fx, b) == [(a, "feat/a")]
+    run_cli(fx.root, ["get", b])
+    out = capsys.readouterr().out
+    assert "shares unlanded commits with:" in out and "can't tell which builds on which" in out
 
 
-def test_a_pr_based_on_the_dependency_targets_it_so_no_edge(fx):
+def test_a_branch_recreated_on_top_of_its_dependent_turns_the_edge(fx):
     a, b = stacked(fx)
-    fx.pr("feat/b", 8, base="feat/a")
     fx.refresh()
-    assert fx.facts(b)["needs"] == [] and fx.facts(b)["branches"][0]["target"] == "feat/a"
+    fx.delete("feat/a")
+    fx.branch("feat/a", "feat/b")
+    fx.commit("feat/a", "a3.txt", "new a\n")
+    fx.refresh()
+    assert ev(fx, a) == ([(b, "feat/b", "feat/a", "waiting")], [])
+    assert ev(fx, b) == ([], [(a, "feat/a", "feat/b", "waiting")])
+
+
+def test_criss_cross_merges_are_ambiguous(fx):
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    git(fx.work, "merge", "-q", "--no-ff", "-m", "m", "feat/a")
+    git(fx.work, "push", "-q", "origin", "feat/b")
+    git(fx.work, "checkout", "-q", "feat/a")
+    git(fx.work, "merge", "-q", "--no-ff", "-m", "m", "feat/b~1")
+    git(fx.work, "push", "-q", "origin", "feat/a")
+    a, b = fx.item("A", ["feat/a"]), fx.item("B", ["feat/b"])
+    fx.refresh()
+    assert fx.facts(a)["waits_on"] == [] and fx.facts(b)["waits_on"] == []
+    assert shares(fx, a) == [(b, "feat/b")]
+
+
+def test_staging_ahead_of_main_without_prs_doesnt_deadlock(fx):
+    fx.commit("staging", "s.txt", "s\n")
+    for n in "abc":
+        fx.branch(f"feat/{n}")
+        fx.commit(f"feat/{n}", f"{n}.txt", f"{n}\n")
+    ids = [fx.item(n.upper(), [f"feat/{n}"]) for n in "abc"]
+    fx.refresh()
+    for i in ids:
+        f = fx.facts(i)
+        assert f["branches"][0]["target"] == "staging" and f["waits_on"] == [] and f.get("shares") == []
+
+
+def test_a_merge_commit_dependency_stays_landed(fx):
+    a, b = stacked(fx)
+    fx.refresh()
+    m = fx.merge("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=m)
+    fx.pr("feat/b", 8)
+    fx.refresh()
+    assert ev(fx, b) == ([(a, "feat/a", "feat/b", "landed")], [])
+    assert fx.facts(b)["waits_on"] == []
+
+
+def test_a_branch_reused_after_its_pr_merged_waits_again(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8)
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "landed"
+    fx.commit("feat/a", "a2.txt", "a2\n")
+    fx.pr("feat/a", 9, add=True)
+    git(fx.work, "checkout", "-q", "feat/b")
+    git(fx.work, "merge", "-q", "--no-ff", "-m", "m", "feat/a")
+    git(fx.work, "push", "-q", "origin", "feat/b")
+    store.update_todo(fx.root, b, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+    fx.refresh()
+    assert [p["number"] for p in fx.facts(a)["branches"][0]["prs"]] == [9, 7]
+    assert ev(fx, b)[0] == [(a, "feat/a", "feat/b", "waiting")]
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["stage", b])
+
+
+def test_dependency_note_on_an_item_with_no_branches_follows_its_status(fx):
+    x = fx.item("X", [], status="in-progress")
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    b = fx.item("B", ["feat/b"])
+    store.add_note(fx.root, b, "needs X", "2026-10-23T00:00:00.000Z", kind="dependency", extra={"needs": f"item:{x}"})
+    for status, state in (("in-progress", "waiting"), ("done", "landed"), ("cancelled", "stale")):
+        store.update_todo(fx.root, x, {"status": status}, "2026-10-23T00:00:00.000Z")
+        fx.refresh()
+        assert fx.facts(b)["needs"][0]["state"] == state, status
+
+
+def test_a_failed_fetch_keeps_the_edge_unknown_until_a_round_succeeds(fx, tmp_path, monkeypatch, capsys):
+    a, b = stacked(fx)
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    gitfacts.on_round(fx.root)
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", str(fx.origin), str(other))
+    for br in ("feat/b",):
+        git(other, "checkout", "-q", br)
+        (other / "x9").write_text(br)
+        git(other, "add", "x9")
+        git(other, "commit", "-qm", "x9")
+        git(other, "push", "-q", "origin", br)
+    git(fx.work, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+    gitfacts.on_round(fx.root)
+    [e] = fx.facts(b)["needs"]
+    assert e["state"] == "unknown" and "fetch" in e["reason"] and fx.facts(b)["waits_on"] == [a]
+    store.update_todo(fx.root, b, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["stage", b])
+    assert "todo refresh" in capsys.readouterr().err
+    git(fx.work, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["needs"][0]["state"] == "waiting"
+
+
+def test_a_shallow_clone_skips_facts_with_a_notice(fx, tmp_path):
+    a, b = stacked(fx)
+    sh = tmp_path / "shallow"
+    git(tmp_path, "clone", "-q", "--depth", "1", "--no-single-branch", f"file://{fx.origin}", str(sh))
+    root = sh / store.ROOT_NAME
+    shutil.copytree(fx.root, root)
+    gitfacts.refresh(root)
+    f = gitfacts.load(root, store.resolve_item(root, a))
+    assert "shallow" in f["notice"] and "unknown" in f["branches"][0] and "in" not in f["branches"][0]
+    cache = gitfacts._read_json(root / ".git-cache.json")
+    assert not cache.get("anc") and not cache.get("u")
+
+
+def test_a_deleted_tracked_branch_leaves_its_targets_unknown(fx, capsys):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8)
+    store.update_todo(fx.root, b, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+    git(fx.work, "push", "-q", "origin", "--delete", "staging")
+    fx.refresh()
+    br = fx.facts(b)["branches"][0]
+    assert "staging" in br["unknown"] and br["in"]["staging"] is None
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["stage", b])
+    assert "unknown" in capsys.readouterr().err
+
+
+def test_a_github_error_leaves_the_branch_unknown(fx, monkeypatch):
+    a, b = stacked(fx)
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "waiting"
+    monkeypatch.setattr(gitfacts, "gh_get", lambda path: gitfacts.GH_ERROR)
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "unknown"
+
+
+def test_the_default_branch_comes_from_the_remote_head(tmp_path, monkeypatch):
+    monkeypatch.setattr(gitfacts, "gh_get", lambda path: [])
+    origin, work = tmp_path / "o.git", tmp_path / "w"
+    git(tmp_path, "init", "--bare", "-b", "develop", str(origin))
+    git(tmp_path, "init", "-q", "-b", "develop", str(work))
+    git(work, "remote", "add", "origin", str(origin))
+    (work / "f").write_text("f")
+    git(work, "add", "f")
+    git(work, "commit", "-qm", "i")
+    git(work, "push", "-q", "-u", "origin", "develop")
+    git(work, "checkout", "-q", "-b", "feat/a")
+    (work / "a").write_text("a")
+    git(work, "add", "a")
+    git(work, "commit", "-qm", "a")
+    git(work, "push", "-q", "origin", "feat/a")
+    root = work / store.ROOT_NAME
+    (root / store.OPEN).mkdir(parents=True)
+    it = store.add_todo(root, "A", "2026-10-23T00:00:00.000Z")
+    store.update_todo(root, it["id"], {"branches": ["feat/a"]})
+    gitfacts.refresh(root)
+    assert gitfacts.load(root, store.resolve_item(root, it["id"]))["branches"][0]["target"] == "develop"
+
+
+def test_a_local_store_never_fetches_prs_at_the_end_of_a_command(fx, monkeypatch):
+    stacked(fx)
+    calls = []
+    monkeypatch.setattr(gitfacts, "gh_get", lambda path: calls.append(path) or [])
+    gitfacts.maybe_local(fx.root)
+    assert calls == [] and fx.facts("alpha")["branches"]
+
+
+def test_refresh_takes_the_store_lock():
+    from todo import cli
+    assert "refresh" not in cli.READ_ONLY
+
+
+def test_the_server_keeps_a_stage_the_cli_approved(fx, synced, monkeypatch):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8)
+    store.update_todo(fx.root, b, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+    sync.run_round(fx.root, synced.client("alice"))
+    sync.run_round(fx.root, synced.client("alice"))          # the first round creates the items, the next posts
+    assert synced._waits(store.resolve_item(fx.root, b)["uid"])
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    monkeypatch.setattr(gitfacts, "remote_for", lambda root: None)       # the guard's own post can't reach it
+    run_cli(fx.root, ["stage", b])
+    sync.run_round(fx.root, synced.client("alice"))
+    assert store.resolve_item(fx.root, b)["status"] == "ready-to-deploy"
+    assert not synced._waits(store.resolve_item(fx.root, b)["uid"])
+
+
+def test_fifty_items_cost_o_n_git_calls_per_round(fx, monkeypatch):
+    n = 50
+    for i in range(n):
+        git(fx.work, "checkout", "-q", "-b", f"f{i}", "staging")
+        fx.write(f"f{i}.txt", "x\n")
+        git(fx.work, "commit", "-qm", f"f{i}")
+    git(fx.work, "push", "-q", "origin", *[f"f{i}" for i in range(n)])
+    for i in range(n):
+        fx.pr(f"f{i}", i + 1)
+        fx.item(f"I{i}", [f"f{i}"])
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    real, counts = subprocess.run, collections.Counter()
+
+    def counting(cmd, *a, **kw):
+        if cmd[0] == "git" and cmd[1] == "-C":
+            counts[cmd[3]] += 1
+        return real(cmd, *a, **kw)
+
+    def one_round():
+        counts.clear()
+        monkeypatch.setattr(subprocess, "run", counting)
+        try:
+            gitfacts.on_round(fx.root)
+        finally:
+            monkeypatch.setattr(subprocess, "run", real)
+        return dict(counts)
+
+    cold = one_round()
+    assert cold["rev-list"] <= n and cold["diff"] <= n and sum(cold.values()) <= 6 * n
+    idle = one_round()
+    assert "rev-list" not in idle and "diff" not in idle
+    git(fx.work, "push", "-q", "origin", "staging:unrelated-bot-branch")
+    assert "rev-list" not in one_round()
+    fx.commit("f3", "more.txt", "y\n")
+    moved = one_round()
+    assert moved["rev-list"] == 1 and moved["diff"] == 1
+
+
+def test_a_branch_added_after_its_dependency_moved_on_is_ambiguous(fx):
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    a = fx.item("Alpha", ["feat/a"])
+    fx.refresh()
+    fx.branch("feat/b", "feat/a")
+    fx.commit("feat/b", "b.txt", "b\n")
+    fx.commit("feat/a", "a2.txt", "more\n")
+    b = fx.item("Beta", ["feat/b"])
+    fx.refresh()
+    assert ev(fx, a) == ([], []) and ev(fx, b) == ([], [])
+    assert shares(fx, b) == [(a, "feat/a")]
+
+
+def test_a_recreated_parent_that_both_moved_past_is_ambiguous(fx):
+    a, b = stacked(fx)
+    fx.refresh()
+    fx.delete("feat/a")
+    fx.branch("feat/a", "feat/b")
+    fx.commit("feat/a", "a3.txt", "new a\n")
+    fx.commit("feat/b", "b2.txt", "b2\n")
+    fx.refresh()
+    assert ev(fx, a) == ([], []) and ev(fx, b) == ([], [])
+    assert shares(fx, a) == [(b, "feat/b")]

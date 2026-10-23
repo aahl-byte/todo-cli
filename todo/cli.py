@@ -122,8 +122,11 @@ def _check_edges(root: Path, it, status: str, force: bool) -> list:
     edges = gitfacts.unresolved(root, it)
     if edges and not force:
         lines = "\n".join(f"  needs {gitfacts.describe(e)}" for e in edges)
+        unknown = any(e["state"] == "unknown" for e in edges)
         die(f'{it["id"]} waits on {len(edges)} unresolved dependenc{"y" if len(edges) == 1 else "ies"}:\n{lines}\n'
-            "Land each one in its target first, or pass --force.", 2)
+            + ("Facts marked unknown couldn't be checked: run `todo refresh` once git and GitHub answer, "
+               "or pass --force.\n" if unknown else "")
+            + "Land each one in its target first, or pass --force.", 2)
     return edges
 
 
@@ -1483,7 +1486,7 @@ def _mark_changes(root: Path, named, existing: set) -> None:
             sync.mark_changed(root, d.name)
 
 
-READ_ONLY = {"list", "ls", "deploy-plan", "deps", "refresh"}
+READ_ONLY = {"list", "ls", "deploy-plan", "deps"}
 
 
 def _lock_keys(args, named) -> list | None:

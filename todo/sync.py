@@ -634,6 +634,7 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     pushed_status: set = set()
     try:
         ensure_uids(root, project, ids)
+        _git_facts(root, remote, project)       # before the push: the server's guard reads them
         if adopt and not snap["entities"]:
             # First link: the server's state wins over the clone, and every
             # field it replaces is reported.
@@ -667,7 +668,6 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             checkout.report(sync_dir(root), remote, project)
         except RemoteError:
             pass                    # a server without checkout reports, or a blip; the next round retries
-        _git_facts(root, remote, project)
     except RemoteError as e:
         report.error = str(e)
     finally:

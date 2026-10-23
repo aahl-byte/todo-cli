@@ -5,7 +5,7 @@ or redirected output stays plain."""
 import re
 import sys
 
-from .gitfacts import HINT, describe
+from .gitfacts import HINT, SHARES_HINT, describe
 from .status import COMPLETE, PAST_TRIAGE, colorize
 
 
@@ -87,11 +87,14 @@ def git_lines(facts: dict) -> list:
     out = ["git:"]
     for b in facts.get("branches") or []:
         line = "  " + b["name"] + ("  (deleted)" if b.get("gone") else "")
+        mark = {True: "✓", False: "✗"}
         pr = b.get("pr")
         if pr:
             line += f'  PR #{pr.get("number")} {pr.get("state")} → {pr.get("base") or b.get("target")}'
         if b.get("in"):
-            line += " · " + " · ".join(f'in {t} {"✓" if ok else "✗"}' for t, ok in b["in"].items())
+            line += " · " + " · ".join(f'in {t} {mark.get(ok, "?")}' for t, ok in b["in"].items())
+        if b.get("unknown"):
+            line += f'  (unknown: {b["unknown"]})'
         out.append(line)
     return out + dep_lines(facts)
 
@@ -103,6 +106,11 @@ def dep_lines(facts: dict) -> list:
         if facts.get(key):
             out.append(f"  {label}:")
             out += [f"    {describe(e)}" for e in facts[key]]
+    if facts.get("shares"):
+        out.append("  shares unlanded commits with:")
+        out += [f'    {s["id"]} ({s["branch"]}) via {s["via"]}: {s.get("shared", "?")} commit(s)'
+                + (f' (unknown: {s["reason"]})' if s.get("state") == "unknown" else "") for s in facts["shares"]]
+        out.append(f"  hint: {SHARES_HINT}")
     for key in ("conflicts", "overlaps"):
         if facts.get(key):
             out.append(f"  {key}:")
