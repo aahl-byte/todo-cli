@@ -2,6 +2,9 @@
 import jmespath from "jmespath";
 import { fillExpr, type Scope } from "./template";
 
+/** jmespath ships compile, which its types leave out. */
+const { compile } = jmespath as typeof jmespath & { compile(expr: string): unknown };
+
 /** JMESPath's truthiness: empty lists, empty objects, "", false and null are false. */
 export function truthy(v: unknown): boolean {
   if (v === null || v === undefined || v === false || v === "") return false;
@@ -21,7 +24,7 @@ export function test(expr: string, scope: Scope): boolean {
 /** A syntax error in an expression, found without running it; null when it parses. */
 export function exprError(expr: string): string | null {
   try {
-    jmespath.compile(fillExpr(expr, {}));
+    compile(fillExpr(expr, {}));
     return null;
   } catch (e) {
     return `bad expression ${JSON.stringify(expr)}: ${(e as Error).message}`;

@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadPlugins, PluginsFileError } from "@/lib/plugins/load";
+import { runInstance } from "@/lib/plugins/host";
+import type { PluginEvent, PluginItem, ResolvedConnection, RunInput } from "@/lib/plugins/types";
+import { fakeServer, type FakeServer, type Recorded } from "./plugin-fakes";
 import { fillExpr, fillJson, fillString, fillUrl, lookup, templateErrors } from "@/lib/plugins/template";
 import { search, test as holds, truthy } from "@/lib/plugins/expr";
 
@@ -57,5 +61,254 @@ describe("plugin expressions", () => {
     expect(holds("!contains(settings.never, settings.to)", scope)).toBe(true);
     expect(holds("settings.flag", scope)).toBe(false);
     expect(search("item.links[?type=='pr'].url | [0]", scope)).toBe("https://x/1");
+  });
+});
+
+const ITEM: PluginItem = {
+  id: "fix-login", uid: "U1", title: "Fix login", type: "bug", status: "in-progress", priority: "high",
+  repo: "o/r", repo_owner: "o", repo_name: "r", branches: ["feat/x", "feat/y"], jira: ["SR-1"], app: null,
+  section: null, developer: "alice", qa_assignee: null, dir: "/src/r", links: [],
+};
+
+const servers: FakeServer[] = [];
+afterEach(async () => { await Promise.all(servers.splice(0).map((s) => s.close())); });
+
+async function serve(responses: Recorded[]) {
+  const s = await fakeServer(responses);
+  servers.push(s);
+  return s;
+}
+
+/** Run the one plugin in a plugins.yaml body against recorded HTTP responses. */
+async function runYaml(yaml: string, responses: Recorded[], over: Partial<RunInput> = {}) {
+  const file = loadPlugins(yaml);
+  const [name, plugin] = Object.entries(file.plugins!)[0];
+  const server = await serve(responses);
+  const connections: Record<string, ResolvedConnection> = {};
+  for (const c of plugin.connections ?? []) connections[c] = { kind: "http", url: server.url };
+  const result = await runInstance({
+    plugin, name, instance: { id: "i1", name: "default" }, item: ITEM,
+    event: { type: "push", branch: "feat/x" } as PluginEvent, connections, dryRun: false, ...over,
+  });
+  return { result, server };
+}
+
+const PR_LINK = `
+plugins:
+  pr-link:
+    connections: [github]
+    on: [push, pr]
+    per: branch
+    steps:
+      - name: prs
+        http:
+          method: GET
+          path: "/repos/{{item.repo_owner}}/{{item.repo_name}}/pulls"
+          query: {head: "{{item.repo_owner}}:{{branch}}", state: all}
+    attach:
+      - each: prs
+        link: {type: pr, url: "{{each.html_url}}", label: "#{{each.number}} · {{each.title}}"}
+`;
+
+describe("YAML plugins", () => {
+  it("runs once per branch with {{branch}} set", async () => {
+    const { result, server } = await runYaml(PR_LINK, [
+      { method: "GET", path: "/repos/o/r/pulls?head=o%3Afeat%2Fx&state=all", body: [{ html_url: "https://gh/o/r/pull/1", number: 1, title: "X" }] },
+      { method: "GET", path: "/repos/o/r/pulls?head=o%3Afeat%2Fy&state=all", body: [] },
+    ]);
+    expect(result.error).toBeUndefined();
+    expect(result.attached).toEqual([
+      { kind: "link", key: "link:https://gh/o/r/pull/1", type: "pr", url: "https://gh/o/r/pull/1", label: "#1 · X" }]);
+    expect(server.received.map((r) => r.path)).toEqual([
+      "/repos/o/r/pulls?head=o%3Afeat%2Fx&state=all", "/repos/o/r/pulls?head=o%3Afeat%2Fy&state=all"]);
+  });
+
+  it("skips a run, a step or an attachment whose when is false", async () => {
+    const { result, server } = await runYaml(`
+plugins:
+  gated:
+    connections: [api]
+    per: branch
+    when: "branch != 'feat/y'"
+    steps:
+      - {name: never, when: "item.status == 'done'", http: {method: GET, path: /never}}
+      - {name: one, http: {method: GET, path: "/one/{{branch}}"}}
+    attach:
+      - {when: never, log: "never ran"}
+      - {when: "one.ok", log: "one ok on {{branch}}"}
+      - {each: one.list, when: "each.keep", key: "k-{{each.n}}", log: {text: "kept {{each.n}}"}}
+`, [{ method: "GET", path: "/one/feat%2Fx", body: { ok: true, list: [{ n: 1, keep: true }, { n: 2, keep: false }] } }]);
+    expect(server.received.map((r) => r.path)).toEqual(["/one/feat%2Fx"]);
+    expect(result.attached).toEqual([
+      { kind: "log", key: "log:one ok on feat/x", text: "one ok on feat/x" },
+      { kind: "log", key: "k-1", text: "kept 1" },
+    ]);
+  });
+
+  it("reports a run skipped when its when is false on every pass", async () => {
+    const { result } = await runYaml(`
+plugins:
+  off:
+    when: "item.status == 'done'"
+    attach: [{log: "x"}]
+`, []);
+    expect(result).toMatchObject({ attached: [], skipped: "when is false: item.status == 'done'" });
+  });
+
+  it("hands named results to later steps and attachments", async () => {
+    const { result, server } = await runYaml(`
+plugins:
+  chain:
+    connections: [api]
+    steps:
+      - name: list
+        http: {method: GET, path: /list}
+      - name: pick
+        value: "list.items[?name=={{item.developer}}] | [0]"
+      - name: detail
+        when: pick
+        http: {method: GET, path: "/detail/{{pick.id}}", query: {n: "{{pick.n}}"}}
+      - name: empty
+        http: {method: GET, path: /empty}
+    attach:
+      - doc: {name: "{{pick.name}}.json", content: "{{detail}}"}
+      - {when: "!empty", log: "empty result kept going"}
+`, [
+      { method: "GET", path: "/list", body: { items: [{ name: "bob", id: "b" }, { name: "alice", id: "a/1", n: 2 }] } },
+      { method: "GET", path: "/detail/a%2F1?n=2", body: { deep: true } },
+      { method: "GET", path: "/empty", body: [] },
+    ]);
+    expect(result.error).toBeUndefined();
+    expect(server.received.map((r) => r.path)).toEqual(["/list", "/detail/a%2F1?n=2", "/empty"]);
+    expect(result.attached).toEqual([
+      { kind: "doc", key: "doc:alice.json", name: "alice.json", content: '{\n  "deep": true\n}' },
+      { kind: "log", key: "log:empty result kept going", text: "empty result kept going" },
+    ]);
+  });
+
+  it("keeps a hostile branch name a string inside expressions", async () => {
+    const { result } = await runYaml(`
+plugins:
+  inject:
+    per: branch
+    steps:
+      - {name: same, value: "{{branch}}"}
+    attach:
+      - {when: "{{branch}} == 'main'", log: "injected"}
+      - {when: "same == {{branch}}", log: "{{same}}"}
+`, [], { item: { ...ITEM, branches: ["x' || true || '"] } });
+    expect(result.attached).toEqual([{ kind: "log", key: "log:x' || true || '", text: "x' || true || '" }]);
+  });
+
+  it("records a POST in dry-run and still sends the GET", async () => {
+    const { result, server } = await runYaml(`
+plugins:
+  poster:
+    connections: [api]
+    steps:
+      - {name: got, http: {method: GET, path: /state}}
+      - {name: posted, http: {method: POST, path: "/notes/{{item.id}}", body: {text: "{{got.text}}", n: "{{got.n}}"}}}
+    attach:
+      - {when: "!posted", log: "nothing posted"}
+`, [{ method: "GET", path: "/state", body: { text: "hi", n: 4 } }], { dryRun: true });
+    expect(server.received.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /state"]);
+    expect(result.wouldSend).toEqual([{ connection: "api", method: "POST", path: "/notes/fix-login", input: { text: "hi", n: 4 } }]);
+    expect(result.attached).toEqual([{ kind: "log", key: "log:nothing posted", text: "nothing posted" }]);
+  });
+
+  it("drops everything gathered when a call fails", async () => {
+    const { result } = await runYaml(PR_LINK, [
+      { method: "GET", path: "/repos/o/r/pulls?head=o%3Afeat%2Fx&state=all", body: [{ html_url: "https://gh/1", number: 1, title: "X" }] },
+      { method: "GET", path: "/repos/o/r/pulls?head=o%3Afeat%2Fy&state=all", status: 502, text: "bad gateway" },
+    ]);
+    expect(result.attached).toEqual([]);
+    expect(result.error).toBe("branch feat/y: github: GET /repos/o/r/pulls?head=o%3Afeat%2Fy&state=all answered 502: bad gateway");
+  });
+
+  it("needs a connection named on each call step when it has several", async () => {
+    const { result } = await runYaml(`
+plugins:
+  two:
+    connections: [a, b]
+    steps:
+      - {name: x, connection: b, http: {method: GET, path: /x}}
+    attach:
+      - {log: "{{x.v}}"}
+`, [{ method: "GET", path: "/x", body: { v: "from b" } }]);
+    expect(result.attached).toEqual([{ kind: "log", key: "log:from b", text: "from b" }]);
+    expect(() => loadPlugins(`
+plugins:
+  two:
+    connections: [a, b]
+    steps: [{http: {method: GET, path: /x}}]
+`)).toThrow("plugin two: steps[0]: name its connection, the plugin has several");
+  });
+
+  it("skips a plugin whose connection this host lacks", async () => {
+    const file = loadPlugins(PR_LINK);
+    const result = await runInstance({ plugin: file.plugins!["pr-link"], name: "pr-link", instance: { id: "i", name: "d" },
+      item: ITEM, event: { type: "push", branch: "feat/x" }, connections: {}, dryRun: false });
+    expect(result).toEqual({ attached: [], wouldSend: [], log: [], skipped: "`github` not authorized here" });
+  });
+
+  it("reports bad plugins at load, with the plugin's name", () => {
+    const errors = (yaml: string) => {
+      try { loadPlugins(yaml); return []; } catch (e) { return (e as PluginsFileError).errors; }
+    };
+    expect(errors(`
+plugins:
+  bad:
+    connections: [api]
+    until: x
+    steps:
+      - {http: {method: GET, path: /x}, value: "a"}
+      - {name: t, tool: "x", input: {a: "{{item.id | upper}}"}}
+    attach:
+      - {link: {type: pr}}
+`)).toEqual([
+      'plugin bad: unknown key "until"',
+      "plugin bad: steps[0]: a step is exactly one of tool, http or value",
+      "plugin bad: steps[1]: {{item.id | upper}} is not a path",
+      "plugin bad: attach[0]: link needs url",
+    ]);
+    expect(errors(`plugins: {x: {code: a.js, steps: []}}`)).toEqual(["plugin x: a code plugin has no per, steps or attach"]);
+    expect(errors(`plugins: {x: {attach: [{request: "r"}]}}`)).toEqual(["plugin x: attach[0]: request needs the post-request capability"]);
+    expect(errors(`plugins: {x: {when: "a ==", attach: []}}`)[0]).toMatch(/^plugin x: bad expression "a =="/);
+  });
+
+  it("fills settings from defaults and instance values", async () => {
+    const { result } = await runYaml(`
+plugins:
+  s:
+    settings:
+      prompt: {label: Prompt, type: long-text, default: "/todo {{item.id}}"}
+      dir: {label: Folder, type: text, default: "{{item.dir}}"}
+      model: {label: Model, type: choice, options: [opus, sonnet], optional: true}
+    attach:
+      - {log: "{{settings.prompt}} in {{settings.dir}} as {{settings.model}}"}
+`, [], { instance: { id: "i", name: "d", settings: { model: "opus" } } });
+    expect(result.attached).toEqual([{ kind: "log", key: "log:/todo fix-login in /src/r as opus", text: "/todo fix-login in /src/r as opus" }]);
+    const missing = await runYaml(`
+plugins:
+  s:
+    settings: {project: {label: Project, type: text}}
+    attach: [{log: x}]
+`, []);
+    expect(missing.result.skipped).toBe("setting project is not set");
+  });
+
+  it("parses a whole plugins.yaml", () => {
+    const file = loadPlugins(`
+track: [staging, main]
+connections:
+  github: {http: {url: "https://api.github.com", auth: bearer}}
+  db: {mcp: {command: node, args: [srv.js]}}
+plugins:
+  p: {connections: [github], on: [push, {status: {from: "*", to: review}}], every: 15m, attach: [{log: x}]}
+instances:
+  p: [{id: a, name: A}, {id: b, name: B, enabled: false, on: [manual]}]
+`);
+    expect(file.track).toEqual(["staging", "main"]);
+    expect(file.instances!.p.map((i) => i.id)).toEqual(["a", "b"]);
   });
 });
