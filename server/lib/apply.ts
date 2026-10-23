@@ -11,6 +11,7 @@ import { queueAutoActions } from "./actions/runs";
 import { jiraReadOnly } from "./jira/config";
 import { inboundRules, jiraStatusFor } from "./jira/rules";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
+import { GUARDED, unresolvedEdges } from "./gitfacts";
 
 export interface Op {
   op_id: string;
@@ -634,6 +635,7 @@ async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<stri
       [item.uid, ctx.project]);
     if (Number(c.n) > 0) return "checks-pending";
   }
+  if (GUARDED.includes(to) && !op.force && (await unresolvedEdges(ctx.t, ctx.project, item.uid)).length) return "waits-on";
   return null;
 }
 
@@ -645,6 +647,7 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
       [item.uid, ctx.project]);
     forced = Number(c.n) > 0;
   }
+  if (GUARDED.includes(to) && op.force && !forced) forced = (await unresolvedEdges(ctx.t, ctx.project, item.uid)).length > 0;
   const [m] = await ctx.t.query(
     "select coalesce(max(n), 0) as n from status_history where project = $2 and item_uid = $1", [item.uid, ctx.project]);
   const uid = ulid();

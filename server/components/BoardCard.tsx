@@ -80,6 +80,7 @@ export function BoardCard({ c, project, who, led, current, base = `/p/${project}
         {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
         {untriaged(c) && <span className="tag hot" data-tip="the request being worked on never went through triage">v{c.request_meta!.version} untriaged</span>}
         {c.pending_pre > 0 && <span className="tag" data-tip="pending pre-deploy checks">checks {c.pending_pre}</span>}
+        {!!c.waits_on?.length && <span className="tag hot" data-tip={`waits on ${c.waits_on.join(", ")}, which hasn't landed`}>waits on {c.waits_on[0]}{c.waits_on.length > 1 && ` +${c.waits_on.length - 1}`}</span>}
         {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
         <Glance c={c} />
       </div>

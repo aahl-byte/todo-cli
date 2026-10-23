@@ -659,3 +659,9 @@ input.big { font-size: 15px; padding: 7px 9px; }
 @keyframes wt-churn { from { background-position: 0 0; } to { background-position: 0 300%; } }
 .actions-settings .check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--dim); }
 .popup .check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--dim); flex: 1; }
+.git-facts .label.sub { margin: 8px 0 2px; font-size: 9px; }
+.git-facts .rrow + .rrow { margin-top: 4px; }
+.git-in { font: 10px var(--mono); color: var(--faint); white-space: nowrap; }
+.git-in.yes { color: var(--s-ready-to-deploy); }
+.git-hint { font-size: 11px; margin-top: 6px; }
+.git-facts .mono { font-family: var(--mono); font-size: 11px; }

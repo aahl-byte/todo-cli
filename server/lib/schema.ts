@@ -351,4 +351,16 @@ create table if not exists device_logins (
   last_poll   timestamptz,
   created     timestamptz not null default now()
 );
+
+-- Each item's git facts, derived and never set by hand: what a CLI posted, or
+-- what the server computed through GitHub (keeping the CLI's conflicts).
+create table if not exists git_facts (
+  project     text not null,
+  item_uid    text not null,
+  data        jsonb not null default '{}'::jsonb,
+  computed_by text not null,
+  at          timestamptz not null default now(),
+  primary key (project, item_uid),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
+);
 `;

@@ -35,7 +35,7 @@ export function ticked(check: { envs?: unknown; status?: string }): string[] {
   return !envs.length && check.status === "done" ? Object.keys(ENVIRONMENTS) : envs;
 }
 
-export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
+export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation", "dependency"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
 export const ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion", "performance", "decoration", "spin-off"];
 export const LINK_TYPES = ["pr", "preview", "qa-handoff", "external-ticket", "bug-ticket", "documentation", "design", "wt-file", "other"];

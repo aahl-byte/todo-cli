@@ -28,6 +28,7 @@ export function safeNext(next: string): string {
 
 const REASONS: Record<string, string> = {
   "checks-pending": "pre-deploy checks are still pending",
+  "waits-on": "it waits on a dependency that hasn't landed",
   "agent-handoff": "an agent can't hand work to QA",
   "group-rolled-back": "nothing was applied",
   removed: "it was removed",

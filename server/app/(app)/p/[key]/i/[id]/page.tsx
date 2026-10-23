@@ -3,6 +3,7 @@ import { ItemView } from "@/components/item/ItemView";
 import { projectActions } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { filesEnabled } from "@/lib/files";
+import { itemGitFacts } from "@/lib/gitfacts";
 import { linkPrStatuses } from "@/lib/github";
 import { isPinned } from "@/lib/pins";
 import { requireUser } from "@/lib/session";
@@ -26,6 +27,6 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
     pinned: await isPinned(d, user.handle, key, data.item.uid),
     actions: (await projectActions(d, key)).map(({ id, name, runner }) => ({ id, name, runner })),
   };
-  const prs = await linkPrStatuses(data.links);
-  return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs }))} ctx={ctx} />;
+  const [prs, git] = await Promise.all([linkPrStatuses(data.links), itemGitFacts(d, key, data.item.uid).catch(() => ({}))]);
+  return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs, git }))} ctx={ctx} />;
 }

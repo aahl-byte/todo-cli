@@ -3,6 +3,7 @@
 import type { Db, Row } from "./db";
 import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches } from "./model";
 import { matchEntries, matches, type Entry } from "./filters";
+import type { GitFacts } from "./gitfacts";
 import type { PrStatus } from "./github";
 
 export interface Project {
@@ -51,6 +52,8 @@ export interface Card extends Row {
   last_to: string | null;
   request_meta: { version: number; triaged: boolean } | null;
   extra: Record<string, any> | null;
+  /** Ids of the items whose unlanded work this one waits on, from its git facts. */
+  waits_on: string[] | null;
   /** For the viewer passed to cards(): open questions they asked themself, which wait on someone else. */
   my_open_questions?: number;
   /** For the viewer: answers to their questions that arrived since they last opened the item, and comments they
@@ -96,7 +99,8 @@ export async function cards(d: Db, key: string, where = "", params: unknown[] = 
        (select jsonb_build_object('version', coalesce((n.meta->>'version')::int, 1), 'triaged', coalesce((n.meta->>'triaged')::boolean, false))
           from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'ticket-request'
           order by coalesce((n.meta->>'version')::int, 1) desc, n.n desc limit 1) as request_meta,
-       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to${viewer}
+       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to,
+       (select g.data->'waits_on' from git_facts g where g.project = i.project and g.item_uid = i.uid) as waits_on${viewer}
      from items i
      where i.project = $1 ${where}
      order by i.created, i.id`, [key, ...params, ...(me ? [me] : [])]);
@@ -259,7 +263,7 @@ export async function choices(d: Db, key: string) {
 }
 
 /** The page adds live PR statuses, keyed by link uid. */
-export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus> };
+export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts };
 
 const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
 
