@@ -26,13 +26,14 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 from . import actions as actions_mod
 from . import identity
 from . import init as init_mod
 from . import link as link_mod
-from . import checkout, filecache, migrate, remote, render, store, sync
+from . import checkout, docs, filecache, migrate, remote, render, store, sync
 from .status import ACTIVE, COMPLETE, REASONED, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
@@ -326,6 +327,70 @@ def cmd_branch_add(root: Path, args) -> None:
 def cmd_branch_rm(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _set_branches(root, it, [b for b in it["branches"] if b != args.name])
+
+
+def _item_dir(root: Path, it) -> Path:
+    return root / it["folder"] / it["id"]
+
+
+def _doc_url(root: Path, it, name: str) -> str | None:
+    """The doc's dashboard page on a synced store."""
+    cfg = remote.sync_config(root)
+    if cfg is None:
+        return None
+    q = urllib.parse.quote
+    return f'{cfg["url"].rstrip("/")}/p/{q(cfg["project"])}/i/{q(it["id"])}/docs/{q(name)}'
+
+
+def cmd_doc_add(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    if args.file == "-":
+        if not args.name:
+            die("A doc read from stdin (-) needs --name.", 2)
+        name, data = args.name, sys.stdin.buffer.read()
+    else:
+        src = Path(args.file)
+        if not src.is_file():
+            die(f"No such file: {args.file}", 2)
+        name, data = (args.name if args.name is not None else src.name), src.read_bytes()
+    err = docs.name_error(name)
+    if err:
+        die(err, 2)
+    if len(data) > docs.MAX_BYTES:
+        die(f"{name} is {docs.human_size(len(data))}; a doc is at most {docs.human_size(docs.MAX_BYTES)}.", 2)
+    docs.add(_item_dir(root, it), it["uid"], name, data, now())
+    print(f'{it["id"]}: doc {name} added ({docs.human_size(len(data))})')
+
+
+def _find_doc(root: Path, it, name: str) -> Path:
+    path = _item_dir(root, it) / docs.DOCS_DIR / name
+    if docs.name_error(name) or not path.is_file():
+        die(f'{it["id"]} has no doc "{name}". See `todo docs {it["id"]}`.', 2)
+    return path
+
+
+def cmd_doc_path(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    print(_find_doc(root, it, args.name).resolve())
+
+
+def cmd_doc_rm(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _find_doc(root, it, args.name)
+    docs.remove(_item_dir(root, it), it["uid"], args.name, now())
+    print(f'{it["id"]}: doc {args.name} removed')
+
+
+def cmd_docs(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    if not it["docs"]:
+        print("(no docs)")
+        return
+    w = max(len(d["name"]) for d in it["docs"])
+    for d in it["docs"]:
+        where = _doc_url(root, it, d["name"]) or str(d["path"].resolve())
+        when = render._stamp(d["at"]) if d["at"] else "—"
+        print(f'{d["name"]:<{w}}  {docs.human_size(d["size"]):>9}  {d["by"] or "?"}  {when}  {where}')
 
 
 def cmd_phase(root: Path, args) -> None:
@@ -1267,6 +1332,24 @@ def build_parser() -> argparse.ArgumentParser:
         bl.add_argument("name", help="the branch, e.g. feat/login")
         bl.set_defaults(func=func)
 
+    dp = sub.add_parser("doc", parents=[common], help="add, remove or locate an item's docs")
+    dsub = dp.add_subparsers(dest="doccmd", metavar="<doccmd>")
+    da = dsub.add_parser("add", parents=[common], help="copy a file in as a doc (replaces one of the same name)")
+    da.add_argument("query", help="id or part of a title")
+    da.add_argument("file", help='the file, or "-" for stdin (needs --name)')
+    da.add_argument("--name", default=None, help="the doc's name (default: the file's)")
+    da.set_defaults(func=cmd_doc_add)
+    for name, func, helptext in (("rm", cmd_doc_rm, "delete a doc"),
+                                 ("path", cmd_doc_path, "print a doc's path, for editing in place")):
+        dl = dsub.add_parser(name, parents=[common], help=helptext)
+        dl.add_argument("query", help="id or part of a title")
+        dl.add_argument("name", help="the doc's name")
+        dl.set_defaults(func=func)
+
+    p = sub.add_parser("docs", parents=[common], help="list an item's docs: name, size, who and when, and where")
+    p.add_argument("query", help="id or part of a title")
+    p.set_defaults(func=cmd_docs)
+
     jp = sub.add_parser("jira", parents=[common], help="link an item to Jira tickets")
     jsub = jp.add_subparsers(dest="jiracmd", metavar="<jiracmd>")
     for name, func, helptext in (("link", cmd_jira_link, "link Jira tickets to an item"),
@@ -1360,7 +1443,7 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    if args.command in ("task", "check", "jira", "branch") and not getattr(args, "func", None):
+    if args.command in ("task", "check", "jira", "branch", "doc") and not getattr(args, "func", None):
         parser.parse_args([args.command, "--help"])
         sys.exit(0)
     if getattr(args, "via", None):

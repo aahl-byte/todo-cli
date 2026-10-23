@@ -141,6 +141,13 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
         print("checks:")
         for line in _check_lines(it["checks"]):
             print(line)
+    if it.get("docs"):
+        from .docs import human_size
+
+        print("docs:")
+        for d in it["docs"]:
+            who = f' · {d["by"]}' if d.get("by") else ""
+            print(f'  {d["name"]}  ({human_size(d["size"])}{who})')
     if it.get("history"):
         print("history:")
         entries = it["history"][-LOG_PREVIEW:]
