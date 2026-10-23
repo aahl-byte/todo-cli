@@ -63,7 +63,7 @@ export async function moveItem(a: { project: string; uid: string; versions: Vers
             previous: cur.status === "blocked" ? cur.blocked_from : null }), user.handle, d);
 }
 
-const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.repo", "extra.branch"];
+const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.repo", "extra.branches", "extra.branch"];
 
 export async function editItem(a: { project: string; uid: string; versions: Versions; data: Record<string, unknown> }) {
   const user = await requireUser();

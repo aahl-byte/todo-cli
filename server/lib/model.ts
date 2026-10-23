@@ -102,6 +102,12 @@ export function deriveCalcStatus(statuses: string[]): string | null {
   return "todo";
 }
 
+/** An item's branches from its extra; a legacy single `branch` reads as a one-branch list. */
+export function itemBranches(extra: Record<string, any> | null | undefined): string[] {
+  const raw = Array.isArray(extra?.branches) ? extra.branches : extra?.branch ? [extra.branch] : [];
+  return [...new Set(raw.filter((b: unknown): b is string => typeof b === "string" && b.trim() !== ""))];
+}
+
 export function nowIso(): string {
   return new Date().toISOString();
 }

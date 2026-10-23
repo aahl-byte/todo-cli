@@ -1,7 +1,7 @@
 // Read models for the dashboard pages. Every entity carries its `versions`
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
-import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus } from "./model";
+import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches } from "./model";
 import { matchEntries, matches, type Entry } from "./filters";
 import type { PrStatus } from "./github";
 
@@ -111,14 +111,14 @@ export interface BoardFilters {
   type?: string;
   app?: string;
   parked?: boolean;
-  /** Text in the title, id, branch or a linked Jira key. */
+  /** Text in the title, id, any branch or a linked Jira key. */
   search?: string;
 }
 
 export function searchMatches(c: Card, search: string): boolean {
   const s = search.trim().toLowerCase();
   if (!s) return true;
-  return [c.title, c.id, c.extra?.branch, ...c.jira.map((j) => j.key)]
+  return [c.title, c.id, ...itemBranches(c.extra), ...c.jira.map((j) => j.key)]
     .some((v) => typeof v === "string" && v.toLowerCase().includes(s));
 }
 

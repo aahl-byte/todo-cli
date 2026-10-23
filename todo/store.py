@@ -246,8 +246,29 @@ def jira_keys(raw) -> list:
     return out
 
 
+def branch_list(meta) -> list:
+    """The item's branches, in order, without duplicates; a legacy single
+    `branch` reads as a one-branch list."""
+    raw = meta.get("branches")
+    if raw is None and meta.get("branch") not in (None, ""):
+        raw = [meta.get("branch")]
+    out = []
+    for b in raw if isinstance(raw, list) else []:
+        b = to_str(b).strip()
+        if b and b not in out:
+            out.append(b)
+    return out
+
+
 def _load_meta(item_dir: Path):
-    return yamlio.load(item_dir / ITEM_FILE)
+    """The item's YAML for a write, with a legacy `branch` rewritten as `branches`."""
+    y, meta = yamlio.load(item_dir / ITEM_FILE)
+    if "branch" in meta:
+        branches = branch_list(meta)
+        del meta["branch"]
+        if branches:
+            meta["branches"] = branches
+    return y, meta
 
 
 def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
@@ -269,7 +290,7 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "app": to_str(meta.get("app")) or None,
         "section": to_str(meta.get("section")) or None,
         "repo": to_str(meta.get("repo")) or None,
-        "branch": to_str(meta.get("branch")) or None,
+        "branches": branch_list(meta),
         "jira": jira_keys(meta.get("jira")),
         "jira_status": {to_str(k): to_str(v) for k, v in (meta.get("jira_status") or {}).items()}
                        if isinstance(meta.get("jira_status"), dict) else {},
@@ -401,9 +422,14 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     for key in ("priority", "type", "title"):
         if isinstance(patch.get(key), str):
             meta[key] = patch[key]
-    for key in PEOPLE + ("app", "section", "repo", "branch"):
+    for key in PEOPLE + ("app", "section", "repo"):
         if key in patch:
             meta[key] = patch[key] or None
+    if "branches" in patch:
+        if patch["branches"]:
+            meta["branches"] = list(patch["branches"])
+        else:
+            meta.pop("branches", None)
     if "jira" in patch:
         if patch["jira"]:
             meta["jira"] = list(patch["jira"])

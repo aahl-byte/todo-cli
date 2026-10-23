@@ -650,6 +650,14 @@ describe("role filters", () => {
     expect(await ids("s2")).toEqual(["s2"]);
     expect(await ids("  ")).toEqual(["s1", "s2", "s3"]);
   });
+  it("searches every branch, and a legacy single branch", async () => {
+    await w.one("alice", item("B1", { status: "todo", extra: { branches: ["feat/one", "feat/two-sso"] } }));
+    await w.one("alice", item("B2", { status: "todo", extra: { branch: "feat/legacy-sso" } }));
+    const p = (await project(w.d, "p"))!;
+    const ids = async (search: string) => (await board(w.d, p, { search }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
+    expect(await ids("two-sso")).toEqual(["b1"]);
+    expect(await ids("sso")).toEqual(["b1", "b2"]);
+  });
 });
 
 describe("archiving shipped items", () => {

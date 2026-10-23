@@ -3,7 +3,7 @@
 // values are click-to-pick; adds open a popup.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
-import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
+import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES, itemBranches } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { ChecksState, PrStatus } from "@/lib/github";
 import { safeUrl } from "@/lib/url";
@@ -56,7 +56,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
         <div className="kv">
           <span className="k">app</span>
           <AppValue data={data} ctx={ctx} />
-          <span className="k">branch</span>
+          <span className="k">branches</span>
           <BranchValue data={data} ctx={ctx} />
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
@@ -210,23 +210,25 @@ function BranchValue({ data, ctx }: { data: Data; ctx: Ctx }) {
   const it = data.item;
   const [open, setOpen] = useState(false);
   const pinned = useRef(it.versions);
-  const repo = it.extra?.repo ?? "", branch = it.extra?.branch ?? "";
+  const repo = it.extra?.repo ?? "", branches = itemBranches(it.extra).join(", ");
   const save = async (fd: FormData) => {
     const v = (k: string) => String(fd.get(k) ?? "").trim() || null;
+    const list = itemBranches({ branches: String(fd.get("branches") ?? "").split(",").map((b) => b.trim()) });
     const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
-                                   data: { "extra.repo": v("repo"), "extra.branch": v("branch") } });
+                                   data: { "extra.repo": v("repo"), "extra.branches": list.length ? list : null,
+                                           ...(it.extra?.branch != null ? { "extra.branch": null } : {}) } });
     if (report(r)) setOpen(false);
   };
   return (
     <>
       <Editable readOnly={!!ctx.readOnly} onOpen={() => { pinned.current = it.versions; setOpen(true); }}>
-        {repo || branch ? <>{repo && <span className="faint">{repo} · </span>}{branch || "—"}</> : <span className="faint">—</span>}
+        {repo || branches ? <>{repo && <span className="faint">{repo} · </span>}{branches || "—"}</> : <span className="faint">—</span>}
       </Editable>
       {open && (
-        <Popup title="Repo and branch" onClose={() => setOpen(false)}>
+        <Popup title="Repo and branches" onClose={() => setOpen(false)}>
           <form className="row" action={(fd) => void save(fd)}>
             <input name="repo" defaultValue={repo} aria-label="repo" placeholder="repo" autoComplete="off" />
-            <input name="branch" defaultValue={branch} aria-label="branch" placeholder="branch" autoComplete="off" />
+            <input name="branches" defaultValue={branches} aria-label="branches" placeholder="branches, comma-separated" autoComplete="off" />
             <div className="actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
               <button className="btn primary">Save</button>

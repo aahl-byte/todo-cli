@@ -43,7 +43,7 @@ def item_vars(project: str, it: dict, frm: str, actor: str, server_url: str = ""
         "item.id": it["id"], "item.title": it["title"], "item.status": it["status"], "item.from": frm,
         "item.type": it.get("type") or "", "item.priority": it.get("priority") or "",
         "item.app": it.get("app") or "", "item.section": it.get("section") or "",
-        "item.repo": repo, "item.repo_name": repo.rsplit("/", 1)[-1], "item.branch": it.get("branch") or "",
+        "item.repo": repo, "item.repo_name": repo.rsplit("/", 1)[-1], "item.branch": (it.get("branches") or [""])[0],
         "item.developer": it.get("developer") or "", "item.qa": it.get("qa_assignee") or "",
         "item.url": f'{server_url.rstrip("/")}/p/{project}/i/{it["id"]}' if server_url else "",
         "item.dir": item_dir, "project.dir": here["dir"], "project.repo": here["repo"],

@@ -82,11 +82,12 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
                 _run_cli_action(root, store.resolve_item(root, it["id"]), action, it["status"], f'{it["status"]} → {status}')
 
 
-TRACKED_FIELDS = ("app", "section", "repo", "branch")
+# `todo set` field → the item key it fills.
+TRACKED_FIELDS = {"app": "app", "section": "section", "repo": "repo", "branch": "branches"}
 
 
 def _warn_empty_fields(it) -> None:
-    empty = [f for f in TRACKED_FIELDS if not it[f]]
+    empty = [f for f, key in TRACKED_FIELDS.items() if not it[key]]
     if empty:
         print(f'warning: {it["id"]} has no {", ".join(empty)}. '
               f'Set each with `todo set {it["id"]} <field> <value>`.', file=sys.stderr)
@@ -300,8 +301,27 @@ def cmd_set(root: Path, args) -> None:
         die(f"Unknown type {value!r}; one of: {', '.join(store.ITEM_TYPES)}", 2)
     if args.field == "priority" and value not in store.PRIORITIES:
         die(f"Unknown priority {value!r}; one of: {', '.join(store.PRIORITIES)}", 2)
+    if args.field == "branch":
+        _set_branches(root, it, [value] if value else [])
+        return
     store.update_todo(root, it["id"], {args.field: value})
     print(f'{it["id"]}: {args.field} = {value or "—"}')
+
+
+def _set_branches(root: Path, it, branches: list) -> None:
+    store.update_todo(root, it["id"], {"branches": branches})
+    print(f'{it["id"]}: branches = {", ".join(branches) or "—"}')
+
+
+def cmd_branch_add(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    branches = it["branches"]
+    _set_branches(root, it, branches if args.name in branches else branches + [args.name])
+
+
+def cmd_branch_rm(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    _set_branches(root, it, [b for b in it["branches"] if b != args.name])
 
 
 def cmd_phase(root: Path, args) -> None:
@@ -1209,7 +1229,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_add)
 
     p = sub.add_parser("set", parents=[common], help="set an item's title, type, priority, app, section, repo or branch "
-                            "(none clears all but title, type and priority)")
+                            "(branch replaces the list; none clears all but title, type and priority)")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("field", choices=["title", "type", "priority", "app", "section", "repo", "branch"])
     p.add_argument("value", nargs="+", help="the value, or none")
@@ -1230,6 +1250,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.add_argument("other", help="the related item")
     p.set_defaults(func=cmd_unrelate)
+
+    bp = sub.add_parser("branch", parents=[common], help="list an item's branches")
+    bsub = bp.add_subparsers(dest="branchcmd", metavar="<branchcmd>")
+    for name, func, helptext in (("add", cmd_branch_add, "add a branch to an item"),
+                                 ("rm", cmd_branch_rm, "remove a branch from an item")):
+        bl = bsub.add_parser(name, parents=[common], help=helptext)
+        bl.add_argument("query", help="id or part of a title")
+        bl.add_argument("name", help="the branch, e.g. feat/login")
+        bl.set_defaults(func=func)
 
     jp = sub.add_parser("jira", parents=[common], help="link an item to Jira tickets")
     jsub = jp.add_subparsers(dest="jiracmd", metavar="<jiracmd>")
@@ -1324,7 +1353,7 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    if args.command in ("task", "check", "jira") and not getattr(args, "func", None):
+    if args.command in ("task", "check", "jira", "branch") and not getattr(args, "func", None):
         parser.parse_args([args.command, "--help"])
         sys.exit(0)
     if getattr(args, "via", None):

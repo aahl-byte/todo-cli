@@ -273,10 +273,10 @@ def test_repo_and_branch_set_show_and_clear(root, capsys):
     run_cli(root, ["set", "beta", "repo", "aahl-byte/todo-cli"])
     run_cli(root, ["set", "beta", "branch", "feat/branch-field"])
     it = store.resolve_item(root, "beta")
-    assert (it["repo"], it["branch"]) == ("aahl-byte/todo-cli", "feat/branch-field")
+    assert (it["repo"], it["branches"]) == ("aahl-byte/todo-cli", ["feat/branch-field"])
     capsys.readouterr()
     run_cli(root, ["get", "beta"])
-    assert "branch:    aahl-byte/todo-cli · feat/branch-field" in capsys.readouterr().out
+    assert "branches:  aahl-byte/todo-cli · feat/branch-field" in capsys.readouterr().out
     run_cli(root, ["set", "beta", "repo", "none"])
     assert store.resolve_item(root, "beta")["repo"] is None
 

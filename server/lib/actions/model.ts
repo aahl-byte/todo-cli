@@ -1,6 +1,7 @@
 // A project's Actions: what they are, how they're checked, and how a template
 // is filled from an item. Mirrors todo/actions.py in the CLI.
 import { BASE } from "../base";
+import { itemBranches } from "../model";
 import type { Problem } from "../jira/rules";
 
 export const ACTION_KINDS = ["rest", "watchtower"] as const;
@@ -50,7 +51,7 @@ export const TEMPLATE_GROUPS: { label: string; names: [string, string][] }[] = [
   { label: "Code", names: [
     ["item.repo", "its repo, e.g. owner/name"],
     ["item.repo_name", "the repo's last part, e.g. name"],
-    ["item.branch", "its branch"],
+    ["item.branch", "its first branch"],
     ["item.dir", "the folder its repo is checked out in, as the todo CLI last reported it (yours first); project.dir when it has no repo"],
     ["project.dir", "the folder the todo CLI last ran in for this project (yours first)"],
     ["project.repo", "that folder's git remote, e.g. owner/name"],
@@ -164,7 +165,7 @@ export function itemVars(project: string, it: ItemLike, from: string, actor: str
     "item.id": it.id, "item.title": it.title, "item.status": it.status, "item.from": from,
     "item.type": it.type ?? "", "item.priority": it.priority ?? "",
     "item.app": String(x.app ?? ""), "item.section": String(x.section ?? ""),
-    "item.repo": repo, "item.repo_name": repo.split("/").pop() ?? "", "item.branch": String(x.branch ?? ""),
+    "item.repo": repo, "item.repo_name": repo.split("/").pop() ?? "", "item.branch": itemBranches(x)[0] ?? "",
     "item.developer": it.developer ?? "", "item.qa": it.qa_assignee ?? "",
     "item.url": publicUrl ? `${publicUrl.replace(/\/+$/, "")}${BASE}/p/${project}/i/${it.id}` : "",
     "item.dir": places.itemDir, "project.dir": places.projectDir, "project.repo": places.projectRepo,
