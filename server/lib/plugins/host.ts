@@ -38,7 +38,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise<RunResult> {
   const result: RunResult = { attached: [], wouldSend: [], log: [] };
   const { plugin, instance, item, event } = input;
-  const errors = pluginErrors(input.name ?? "plugin", plugin);
+  const errors = pluginErrors(input.name ?? "(unnamed)", plugin);
   if (errors.length) return { ...result, error: errors.join("; ") };
   const absent = (plugin.connections ?? []).find((c) => !input.connections?.[c]);
   if (absent) return { ...result, skipped: `\`${absent}\` not authorized here` };
