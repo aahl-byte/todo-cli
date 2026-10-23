@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPlugins, PluginsFileError } from "@/lib/plugins/load";
 import { runInstance } from "@/lib/plugins/host";
@@ -398,5 +400,156 @@ plugins:
       { connection: "jira", tool: "transition", input: { issueIdOrKey: "SR-1", transition: { id: "31" } } },
       { connection: "jira", tool: "transition", input: { issueIdOrKey: "SR-2", transition: { id: "31" } } },
     ]);
+  });
+});
+
+const FIXTURES = path.join(import.meta.dirname, "fixtures/plugins");
+const WATCHTOWER = loadPlugins(readFileSync(path.join(FIXTURES, "watchtower.yaml"), "utf8"));
+const WATCHTOWER_JS = readFileSync(path.join(FIXTURES, "watchtower-session.js"), "utf8");
+const NAME = "todo: fix-login";
+const fast = { sleep: async () => {} };
+
+async function watchtower(instanceId: string, responses: Recorded[]) {
+  const server = await serve(responses);
+  const instance = WATCHTOWER.instances!["watchtower-session"].find((i) => i.id === instanceId)!;
+  const result = await runInstance({
+    plugin: WATCHTOWER.plugins!["watchtower-session"], name: "watchtower-session", code: WATCHTOWER_JS, instance, item: ITEM,
+    event: { type: "manual", instance: instanceId }, connections: { watchtower: { kind: "http", url: server.url } }, dryRun: false,
+  }, fast);
+  return { result, sent: server.received.filter((r) => r.method !== "GET").map((r) => [r.method, r.path, r.body]) };
+}
+
+/** Run a code plugin with no connections. */
+function runJs(code: string, over: Partial<RunInput> = {}) {
+  return runInstance({ plugin: { code: "p.js" }, name: "p", code, instance: { id: "i", name: "d" }, item: ITEM,
+                       event: { type: "refresh" }, connections: {}, dryRun: false, ...over }, fast);
+}
+
+describe("code plugins", () => {
+  it("sends to a live session, retrying while its input isn't visible", async () => {
+    const { result, sent } = await watchtower("start", [
+      { method: "GET", path: "/api/roster", body: { sessions: [
+        { id: "old", name: NAME, state: "stopped" }, { id: "s1", name: NAME, state: "active", managed: true }] } },
+      { method: "POST", path: "/api/sessions/s1/message", status: 409, text: '{"error":"input isn\'t visible yet"}' },
+      { method: "POST", path: "/api/sessions/s1/message", body: { delivered: "typed" } },
+    ]);
+    expect(result).toEqual({ attached: [{ kind: "log", key: `log:sent to Watchtower session ${NAME}: s1`, text: `sent to Watchtower session ${NAME}: s1` }],
+                             wouldSend: [], log: [] });
+    expect(sent).toEqual([
+      ["POST", "/api/sessions/s1/message", { text: "/todo fix-login", from: "todo" }],
+      ["POST", "/api/sessions/s1/message", { text: "/todo fix-login", from: "todo" }],
+    ]);
+  });
+
+  it("resumes the newest stopped session and waits for it to go idle", async () => {
+    const { result, sent } = await watchtower("review", [
+      { method: "GET", path: "/api/roster", body: { sessions: [
+        { id: "s0", name: NAME, state: "stopped", lastActivity: 1 }, { id: "s2", name: NAME, state: "stopped", lastActivity: 5 }] } },
+      { method: "POST", path: "/api/sessions/s2/resume", body: {} },
+      { method: "GET", path: "/api/sessions/s2", body: { state: "stopped", status: "starting" } },
+      { method: "GET", path: "/api/sessions/s2", body: { state: "active", status: "busy" } },
+      { method: "GET", path: "/api/sessions/s2", body: { state: "active", status: "idle" } },
+      { method: "POST", path: "/api/sessions/s2/message", body: {} },
+    ]);
+    expect(result.error).toBeUndefined();
+    expect(result.attached.map((a) => (a as { text: string }).text)).toEqual([`resumed Watchtower session ${NAME}: s2`]);
+    expect(sent).toEqual([
+      ["POST", "/api/sessions/s2/resume", undefined],
+      ["POST", "/api/sessions/s2/message", { text: "/review fix-login again", from: "todo" }],
+    ]);
+  });
+
+  it("starts a new session when none is live or resumable", async () => {
+    const { result, sent } = await watchtower("start", [
+      { method: "GET", path: "/api/roster", body: { sessions: [{ id: "x", name: "todo: other", state: "active", managed: true }] } },
+      { method: "POST", path: "/api/sessions", body: { id: "s9" } },
+      { method: "GET", path: "/api/sessions/s9", body: { state: "active", status: "idle" } },
+      { method: "POST", path: "/api/sessions/s9/message", body: {} },
+    ]);
+    expect(result.attached.map((a) => (a as { text: string }).text)).toEqual([`started Watchtower session ${NAME}: s9`]);
+    expect(sent).toEqual([
+      ["POST", "/api/sessions", { dir: "/src/r", name: NAME }],
+      ["POST", "/api/sessions/s9/message", { text: "/todo fix-login", from: "todo" }],
+    ]);
+  });
+
+  it("errors when the session is waiting on a person, keeping nothing", async () => {
+    const { result, sent } = await watchtower("review", [
+      { method: "GET", path: "/api/roster", body: { sessions: [{ id: "s2", name: NAME, state: "stopped", lastActivity: 5 }] } },
+      { method: "POST", path: "/api/sessions/s2/resume", body: {} },
+      { method: "GET", path: "/api/sessions/s2", body: { state: "active", status: "waiting", waitingFor: "a permission prompt" } },
+    ]);
+    expect(result).toEqual({ attached: [], wouldSend: [], log: [], error: "session is waiting on a permission prompt" });
+    expect(sent).toEqual([["POST", "/api/sessions/s2/resume", undefined]]);
+  });
+
+  it("stops a plugin that loops forever at the deadline", async () => {
+    const t = Date.now();
+    const spin = await runJs("export function run() { for (;;) {} }", { limits: { deadlineMs: 200 } });
+    expect(spin.error).toBe("the run passed its deadline");
+    const waits = await runInstance({ plugin: { code: "p.js" }, name: "p", instance: { id: "i", name: "d" }, item: ITEM, event: { type: "refresh" },
+      connections: {}, dryRun: false, limits: { deadlineMs: 200 },
+      code: "export async function run({ wait }) { for (;;) { try { await wait.until(() => false, { every: '20ms', timeout: '1h' }); } catch {} } }" });
+    expect(waits.error).toBe("the run passed its deadline");
+    expect(Date.now() - t).toBeLessThan(2_000);
+  });
+
+  it("keeps the sandbox free of I/O and its inputs read-only", async () => {
+    const r = await runJs(`export async function run({ item, attach }) {
+      attach.log([typeof fetch, typeof setTimeout, typeof require, typeof process, typeof __host, typeof __main].join(" "));
+      try { item.title = "changed"; } catch (e) { attach.log("item is " + (Object.isFrozen(item) ? "frozen" : "open")); }
+    }`);
+    expect(r.error).toBeUndefined();
+    expect(r.attached.map((a) => (a as { text: string }).text)).toEqual(["undefined undefined undefined undefined undefined undefined", "item is frozen"]);
+  });
+
+  it("turns a thrown error into the run's error, with its message", async () => {
+    const r = await runJs(`export async function run({ attach }) {
+      attach.link({ type: "pr", url: "https://gh/1" });
+      throw Object.assign(new Error("not today"), { waiting: true });
+    }`);
+    expect(r).toEqual({ attached: [], wouldSend: [], log: [], error: "not today" });
+    expect((await runJs("export const x = 1;")).error).toBe("the plugin exports no run function");
+    expect((await runJs("export function run( {")).error).toMatch(/SyntaxError|expecting|unexpected/i);
+    expect((await runJs("export function run({ attach }) { attach.link({ type: 'pr' }); }")).error).toBe("link has no url");
+  });
+
+  it("attaches every kind with derived or given keys", async () => {
+    const r = await runInstance({ plugin: { code: "p.js", capabilities: ["post-request"] }, name: "p", instance: { id: "i", name: "d" },
+      item: ITEM, event: { type: "refresh" }, connections: {}, dryRun: false, code: `export function run({ attach, item }) {
+        attach.link({ type: "preview", url: "https://p/" + item.id, label: "Preview" });
+        attach.edge({ needs: "branch:feat/base", in: "staging", because: "shares commits" });
+        attach.doc({ name: "notes.md", content: "# hi", key: "doc-1" });
+        attach.log("ran");
+        attach.request({ text: "new request" });
+      }` });
+    expect(r.attached).toEqual([
+      { kind: "link", key: "link:https://p/fix-login", type: "preview", url: "https://p/fix-login", label: "Preview" },
+      { kind: "edge", key: "edge:branch:feat/base", needs: "branch:feat/base", in: "staging", because: "shares commits" },
+      { kind: "doc", key: "doc-1", name: "notes.md", content: "# hi" },
+      { kind: "log", key: "log:ran", text: "ran" },
+      { kind: "request", key: "request:new request", text: "new request" },
+    ]);
+    expect((await runJs("export function run({ attach }) { attach.request('x'); }")).error).toBe("attach.request needs the post-request capability");
+  });
+
+  it("holds back a code plugin's writes in dry-run", async () => {
+    const server = await serve([{ method: "GET", path: "/api/roster?q=a%20b", body: { sessions: [] } }]);
+    const r = await runInstance({ plugin: { code: "p.js", connections: ["wt"] }, name: "p", instance: { id: "i", name: "d" }, item: ITEM,
+      event: { type: "refresh" }, connections: { wt: { kind: "http", url: server.url } }, dryRun: true, code: `export async function run({ wt, attach }) {
+        const { sessions } = await wt.get("/api/roster", { q: "a b" });
+        const made = await wt.post("/api/sessions", { n: sessions.length });
+        attach.log("made " + JSON.stringify(made));
+      }` }, fast);
+    expect(r.error).toBeUndefined();
+    expect(r.wouldSend).toEqual([{ connection: "wt", method: "POST", path: "/api/sessions", input: { n: 0 } }]);
+    expect(r.attached.map((a) => (a as { text: string }).text)).toEqual(["made null"]);
+    expect(server.received.map((x) => x.method)).toEqual(["GET"]);
+  });
+
+  it("refuses to grow past its memory limit", async () => {
+    const r = await runJs("export function run() { const a = []; for (;;) a.push('x'.repeat(1 << 16) + a.length); }",
+                          { limits: { memoryBytes: 8 * 1024 * 1024 } });
+    expect(r.error).toMatch(/out of memory/i);
   });
 });
