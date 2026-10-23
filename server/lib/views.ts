@@ -52,8 +52,8 @@ export interface Card extends Row {
   last_to: string | null;
   request_meta: { version: number; triaged: boolean } | null;
   extra: Record<string, any> | null;
-  /** Ids of the items whose unlanded work this one waits on, from its git facts. */
-  waits_on: string[] | null;
+  /** Ids of the items whose unlanded work this one waits on, from its git facts (a stored value, so checked before use). */
+  waits_on: unknown;
   /** For the viewer passed to cards(): open questions they asked themself, which wait on someone else. */
   my_open_questions?: number;
   /** For the viewer: answers to their questions that arrived since they last opened the item, and comments they
