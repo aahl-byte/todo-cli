@@ -18,7 +18,8 @@
     "user:jira": "tsx scripts/user-jira.ts",
     "jira:project": "tsx scripts/jira-project.ts",
     "jira:sync": "tsx scripts/jira-sync.ts",
-    "jira:mode": "tsx scripts/jira-mode.ts"
+    "jira:mode": "tsx scripts/jira-mode.ts",
+    "build:plugin-host": "node scripts/build-plugin-host.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

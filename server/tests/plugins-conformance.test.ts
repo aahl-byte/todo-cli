@@ -1,6 +1,7 @@
 // Plugin conformance: each case in fixtures/plugins/cases runs a plugin from
-// fixtures/plugins/plugins.yaml against recorded connection answers and must
-// give the expected result.
+// fixtures/plugins/plugins.yaml against recorded connection answers, in-process
+// and through the CLI's bundled host, and both must give the expected result.
+import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +13,7 @@ import type { InstanceDef, PluginEvent, ResolvedConnection, RunInput, RunResult 
 import { fakeServer, type FakeServer, type Recorded, type RecordedTool } from "./plugin-fakes";
 
 const DIR = path.join(import.meta.dirname, "fixtures/plugins");
+const BUNDLE = path.join(import.meta.dirname, "../../todo/plugin_host.mjs");
 const FAKE_MCP = path.join(DIR, "fake-mcp.mjs");
 const FILE = loadPlugins(readFileSync(path.join(DIR, "plugins.yaml"), "utf8"));
 const ITEM = JSON.parse(readFileSync(path.join(DIR, "item.json"), "utf8"));
@@ -36,8 +38,26 @@ const CASES = readdirSync(path.join(DIR, "cases")).filter((f) => f.endsWith(".ya
 
 type Host = (input: RunInput) => Promise<RunResult>;
 
+/** The bundled host, as the CLI runs it: the input as JSON on stdin, the result as JSON on stdout. */
+function bundled(stdin: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((done, fail) => {
+    const child = spawn(process.execPath, [BUNDLE], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("error", fail);
+    child.on("close", (code) => done({ code, stdout, stderr }));
+    child.stdin.end(stdin);
+  });
+}
+
 const HOSTS: [string, Host][] = [
   ["in-process", (input) => runInstance(input)],
+  ["bundle", async (input) => {
+    const { code, stdout, stderr } = await bundled(JSON.stringify(input));
+    expect(code, stderr).toBe(0);
+    return JSON.parse(stdout);
+  }],
 ];
 
 const servers: FakeServer[] = [];
@@ -78,5 +98,24 @@ describe.each(HOSTS)("plugin conformance (%s)", (_, host) => {
         [k, k === "method" ? r.method : k === "path" ? r.path : k === "body" ? r.body : r.headers[k]])));
       expect(got).toEqual(want);
     }
+  });
+});
+
+describe("bundled plugin host", () => {
+  it("exits 2 on input it can't read", async () => {
+    for (const stdin of ["", "not json", "[]", '{"plugin": {}}']) {
+      const { code, stderr } = await bundled(stdin);
+      expect(code).toBe(2);
+      expect(stderr).toMatch(/^plugin host: /);
+    }
+  });
+
+  it("exits 0 with the error in the result when the run fails", async () => {
+    const { code, stdout } = await bundled(JSON.stringify({
+      plugin: { code: "p.js" }, code: "export function run() { throw new Error('boom'); }",
+      instance: { id: "i", name: "d" }, item: ITEM, event: { type: "refresh" }, connections: {}, dryRun: false,
+    }));
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ attached: [], wouldSend: [], log: [], error: "boom" });
   });
 });
