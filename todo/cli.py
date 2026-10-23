@@ -64,8 +64,10 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
     if status in REASONED and status != it["status"] and not reason:
         verb = {v: k for k, v in SHORTCUTS.items()}[status]
         die(f'Moving to {status} needs a reason: todo {verb} {it["id"]} "<why>"', 2)
-    forced = (status == "deployed" and it["status"] != status
-              and bool(store.pending_pre_deploy(it)))
+    changed = it["status"] != status
+    forced_deploy = status == "deployed" and changed and bool(store.pending_pre_deploy(it))
+    forced_handoff = status == "ready-for-qa" and changed and identity.via() == "agent"
+    forced = forced_deploy or forced_handoff
     patch = {"status": status}
     if status == "in-progress" and not it["developer"]:
         patch["developer"] = identity.user()
@@ -73,7 +75,8 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
     note = ""
     if reason and status in REASONED:
         note = f"  (comment [{store.add_note(root, it['id'], reason, now(), kind='comment', extra={'with_status': status})}])"
-    print(f'{it["id"]}: {it["status"]} → {status}' + ("  (forced past pending checks)" if forced else "") + note)
+    flag = "  (forced past pending checks)" if forced_deploy else "  (forced by an agent)" if forced_handoff else ""
+    print(f'{it["id"]}: {it["status"]} → {status}' + flag + note)
     if status in ("in-progress", "review") and sync.enabled(root):
         _warn_empty_fields(it)
     if status != it["status"]:
@@ -94,10 +97,11 @@ def _warn_empty_fields(it) -> None:
 
 
 def _check_transition(it, status: str, force: bool) -> None:
-    """The two rules on a status change: an agent can't hand work to QA, and an
-    item can't deploy while a pre-deploy check is pending (unless forced)."""
-    if status == "ready-for-qa" and identity.via() == "agent" and it["status"] != status:
+    """The two rules on a status change, each lifted by --force: an agent can't
+    hand work to QA, and an item can't deploy while a pre-deploy check is pending."""
+    if status == "ready-for-qa" and identity.via() == "agent" and it["status"] != status and not force:
         die("An agent parks finished work in `review`; a person hands it to QA.\n"
+            "Pass --force only when a person asked you to hand it to QA.\n"
             "(Run with --human if you are that person.)", 2)
     if status == "deployed" and it["status"] != status and not force:
         pending = store.pending_pre_deploy(it)
@@ -1019,7 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.add_argument("status", choices=STATUSES, help="new status")
     p.add_argument("--force", action="store_true",
-                   help="deploy even with pending pre-deploy checks")
+                   help="deploy even with pending pre-deploy checks; as an agent, hand to QA when a person asked")
     p.add_argument("--reason", default=None, help=f"why; required for {' and '.join(REASONED)}")
     p.set_defaults(func=cmd_status)
 
@@ -1037,6 +1041,9 @@ def build_parser() -> argparse.ArgumentParser:
         if SHORTCUTS[name] == "deployed":
             p.add_argument("--force", action="store_true",
                            help="deploy even with pending pre-deploy checks")
+        if SHORTCUTS[name] == "ready-for-qa":
+            p.add_argument("--force", action="store_true",
+                           help="as an agent, hand to QA when a person asked")
         if SHORTCUTS[name] in REASONED:
             p.add_argument("reason", nargs="*", help="why (required; posted as a comment)")
         p.set_defaults(func=cmd_shortcut)
@@ -1338,7 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
         # of the listed commands (SUPPRESS would print a literal "==SUPPRESS==").
         p = sub.add_parser(status, parents=[common])
         p.add_argument("query", help="id or part of a title")
-        if status == "deployed":
+        if status in ("deployed", "ready-for-qa"):
             p.add_argument("--force", action="store_true")
         if status in REASONED:
             p.add_argument("reason", nargs="*")

@@ -53,6 +53,29 @@ def test_agent_cannot_hand_to_qa(root, monkeypatch):
     assert status(root) == "review"
 
 
+def test_agent_refusal_mentions_force(root, monkeypatch, capsys):
+    monkeypatch.setenv("TODO_VIA", "agent")
+    with pytest.raises(SystemExit):
+        run_cli(root, ["ready-qa", "beta"])
+    assert "--force" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["ready-qa", "beta", "--force"],
+                                  ["status", "beta", "ready-for-qa", "--force"],
+                                  ["ready-for-qa", "beta", "--force"]])
+def test_agent_hands_to_qa_with_force(root, monkeypatch, argv):
+    monkeypatch.setenv("TODO_VIA", "agent")
+    run_cli(root, argv)
+    assert status(root) == "ready-for-qa"
+    last = store.resolve_item(root, "beta")["history"][-1]
+    assert (last["via"], last["forced"]) == ("agent", True)
+
+
+def test_a_person_handing_to_qa_is_not_forced(root):
+    run_cli(root, ["ready-qa", "beta", "--force"])
+    assert store.resolve_item(root, "beta")["history"][-1]["forced"] is False
+
+
 def test_human_flag_overrides_claudecode(root, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.delenv("TODO_VIA")

@@ -186,6 +186,14 @@ describe("status rules", () => {
     expect(ok.rejected).toBeUndefined();
   });
 
+  it("lets an agent hand work to QA with force, and records the history row forced", async () => {
+    const v = (await w.one("alice", item("I1", { status: "review" }))).versions!;
+    const r = await w.one("alice", set("item", "I1", "I1", { status: "ready-for-qa" }, { status: v.status }, { via: "agent", force: true }));
+    expect(r.rejected).toBeUndefined();
+    const [h] = await w.d.query("select to_status, via, forced from status_history where item_uid = 'I1'");
+    expect(h).toEqual({ to_status: "ready-for-qa", via: "agent", forced: true });
+  });
+
   it("writes history only for applied status changes", async () => {
     const v = (await w.one("alice", item("I1", { status: "review" }))).versions!;
     await w.one("carol", set("item", "I1", "I1", { status: "in-qa" }, { status: v.status }));
@@ -382,6 +390,11 @@ describe("third pass", () => {
   it("refuses an agent creating an item straight into QA", async () => {
     const r = await w.one("alice", { ...item("I1", { status: "ready-for-qa" }), via: "agent" });
     expect(r).toMatchObject({ status: "rejected", reason: "agent-handoff" });
+  });
+
+  it("lets an agent create an item straight into QA with force", async () => {
+    const r = await w.one("alice", { ...item("I1", { status: "ready-for-qa" }), via: "agent", force: true });
+    expect(r.status).toBe("applied");
   });
 
   it("stores a non-database error as a rejection", async () => {

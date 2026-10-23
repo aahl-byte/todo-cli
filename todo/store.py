@@ -400,7 +400,8 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     """Patch status/priority/type/title or a people field on an item. `now_iso`
     stamps `completed` when status becomes complete and clears it when status
     leaves complete. A real status change appends a history entry (`forced`
-    marks a deploy past the check gate), then moves the item into its folder.
+    marks a deploy past the check gate or an agent's hand-off to QA), then moves
+    the item into its folder.
     A people field set to None is cleared."""
     item_dir = _find_dir(root, item_id)
     if item_dir is None:

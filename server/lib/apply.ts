@@ -266,7 +266,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   for (const f of Object.keys(row)) {
     if (row[f] !== undefined && row[f] !== null && invalid(entity, f, row[f])) return reject(op, `invalid-${f}`);
   }
-  if (entity === "item" && row.status === "ready-for-qa" && op.via === "agent") return reject(op, "agent-handoff");
+  if (entity === "item" && row.status === "ready-for-qa" && op.via === "agent" && !op.force) return reject(op, "agent-handoff");
   const result: Result = { op_id: op.op_id, status: "applied" };
 
   let itemUid = op.item_uid;
@@ -627,7 +627,7 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
 
 async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<string | null> {
   if (op.override && !(op.reason ?? "").trim()) return "reason-required";
-  if (to === "ready-for-qa" && op.via === "agent") return "agent-handoff";
+  if (to === "ready-for-qa" && op.via === "agent" && !op.force) return "agent-handoff";
   if (to === "deployed" && !op.force) {
     const [c] = await ctx.t.query(
       "select count(*)::int as n from checks where project = $2 and item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
@@ -638,7 +638,7 @@ async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<stri
 }
 
 async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<void> {
-  let forced = false;
+  let forced = to === "ready-for-qa" && op.via === "agent" && !!op.force;
   if (to === "deployed" && op.force) {
     const [c] = await ctx.t.query(
       "select count(*)::int as n from checks where project = $2 and item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
