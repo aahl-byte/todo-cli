@@ -2,6 +2,7 @@
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
 import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches } from "./model";
+import { listDocs } from "./docs";
 import { matchEntries, matches, type Entry } from "./filters";
 import type { PrStatus } from "./github";
 
@@ -183,12 +184,13 @@ function columns(all: Card[], p: Project, f: BoardFilters, cutoff: number) {
 export async function item(d: Db, key: string, id: string) {
   const [it] = await cards(d, key, "and i.id = $2", [id]);
   if (!it) return null;
-  const [tasks, notes, logs, checks, history] = await Promise.all([
+  const [tasks, notes, logs, checks, history, docs] = await Promise.all([
     d.query("select * from tasks where project = $2 and item_uid = $1 order by phase nulls last, position, n", [it.uid, key]),
     d.query("select * from notes where project = $2 and item_uid = $1 order by n", [it.uid, key]),
     d.query("select * from logs where project = $2 and item_uid = $1 order by n", [it.uid, key]),
     d.query("select * from checks where project = $2 and item_uid = $1 order by timing = 'post-deploy', n", [it.uid, key]),
     d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [it.uid, key]),
+    listDocs(d, key, it.uid),
   ]);
   const by = (k: string) => notes.filter((n) => n.kind === k);
   const lastBlock = [...history].reverse().find((h) => h.to_status === "blocked");
@@ -208,6 +210,7 @@ export async function item(d: Db, key: string, id: string) {
     tasks,
     checks,
     history,
+    docs,
     bounces: bounceCount(history),
     related: await related(d, key, it.uid),
     files: it.jira.length ? await d.query(

@@ -7,17 +7,9 @@ import type { Db, Row } from "./db";
 import { DOC_MAX_BYTES, docType, getObject, inProject, isDocKey } from "./files";
 import { nowIso } from "./model";
 import { hashUid } from "./ulid";
+import { docNameError } from "./doc-view";
 
-export const MAX_NAME = 120;
-
-/** Why `name` isn't a plain file name a doc can have, or null. Mirrors docs.name_error. */
-export function docNameError(name: unknown): string | null {
-  if (typeof name !== "string" || !name) return "a doc needs a name";
-  if (/[/\\\u0000-\u001f\u007f]/.test(name)) return "a doc name is a plain file name, without \"/\"";
-  if (name.startsWith(".")) return "a doc name can't start with \".\"";
-  if (name.length > MAX_NAME) return `a doc name is at most ${MAX_NAME} characters`;
-  return null;
-}
+export * from "./doc-view";
 
 /** The same uid the CLI gives the doc, so a name is one doc everywhere. */
 export const docUid = (itemUid: string, name: string) => hashUid("doc", itemUid, name);
@@ -119,48 +111,3 @@ export async function removeDoc(d: Db, project: string, handle: string, uid: str
     return { status: "applied", doc: null };
   });
 }
-
-// ── rendering ────────────────────────────────────────────────────────────────
-export type DocKind = "markdown" | "html" | "json" | "code" | "text" | "image" | "pdf" | "audio" | "video" | "download";
-
-/** highlight.js languages by extension. */
-export const LANGUAGES: Record<string, string> = {
-  yaml: "yaml", yml: "yaml", css: "css", ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-  mjs: "javascript", py: "python", sql: "sql", sh: "bash", bash: "bash", json: "json", toml: "ini", ini: "ini",
-  xml: "xml", go: "go", rs: "rust", rb: "ruby", java: "java", c: "c", h: "c", cpp: "cpp", cs: "csharp", php: "php",
-  swift: "swift", kt: "kotlin", md: "markdown",
-};
-
-const KINDS: [DocKind, string[]][] = [
-  ["markdown", ["md", "markdown"]],
-  ["html", ["html", "htm"]],
-  ["json", ["json"]],
-  ["text", ["txt", "log", "csv", "tsv"]],
-  ["image", ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"]],
-  ["pdf", ["pdf"]],
-  ["audio", ["mp3", "wav", "ogg", "oga", "m4a", "aac", "flac", "opus"]],
-  ["video", ["mp4", "m4v", "webm", "mov", "ogv"]],
-];
-
-export function docExtOf(name: string): string {
-  const m = /\.([A-Za-z0-9]+)$/.exec(name);
-  return m ? m[1].toLowerCase() : "";
-}
-
-/** How the doc page shows a doc, from its name. */
-export function docKind(name: string): DocKind {
-  const ext = docExtOf(name);
-  for (const [kind, exts] of KINDS) if (exts.includes(ext)) return kind;
-  return LANGUAGES[ext] ? "code" : "download";
-}
-
-/** Text larger than this is offered as a download instead of rendered. */
-export const RENDER_MAX_BYTES = 2 * 1024 * 1024;
-
-/** The dashboard page of a doc. */
-export const docPath = (project: string, itemId: string, name: string) =>
-  `/p/${encodeURIComponent(project)}/i/${encodeURIComponent(itemId)}/docs/${encodeURIComponent(name)}`;
-
-/** The doc's bytes for the browser; `download` asks to save rather than show. */
-export const docRawPath = (project: string, uid: string, download = false) =>
-  `/api/projects/${encodeURIComponent(project)}/docs/${uid}${download ? "?download=1" : ""}`;
