@@ -226,3 +226,25 @@ describe("POST /api/projects/:key/git-facts", () => {
     expect((await factsPOST(req(w.tokens.bob, { facts: [] }), params("nope"))).status).toBe(404);
   });
 });
+
+describe("two branches that each carry the other's commits", () => {
+  it("keeps only the edge from the branch cut later, by first-seen heads", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    for (const [uid, name, first] of [["A", "feat/a", sha("a")], ["B", "feat/b", sha("b")]]) {
+      await w.d.query("insert into git_facts (project, item_uid, data, computed_by) values ('p', $1, $2::jsonb, 'alice')",
+        [uid, JSON.stringify({ branches: [{ name, head: first, first, target: "main" }] })]);
+    }
+    const gh = fakeGitHub(repo({
+      ...branch("feat/a", sha("c")), ...branch("feat/b", sha("b")), ...noPr("feat/a"), ...noPr("feat/b"),
+      ...compare(sha("c"), sha("b"), { status: "diverged", merge_base_commit: { sha: sha("a") } }),
+      ...compare(sha("b"), sha("c"), { status: "diverged", merge_base_commit: { sha: sha("a") } }),
+      ...compare(sha("a"), sha("m"), { status: "diverged" }),
+      ...compare(sha("m"), sha("a"), { status: "ahead", ahead_by: 1, commits: [{ sha: sha("a") }] }),
+      ...compare(sha("b"), sha("a"), { status: "diverged" }),
+      ...compare(sha("a"), sha("b"), { status: "ahead" }),
+    }));
+    await computeProject(w.d, "p", gh.impl);
+    expect((await storedFacts(w.d, "p", "B")).needs).toMatchObject([{ id: "a" }]);
+    expect((await storedFacts(w.d, "p", "A")).needs).toEqual([]);
+  });
+});

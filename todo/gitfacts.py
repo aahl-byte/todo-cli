@@ -21,7 +21,7 @@ from itertools import combinations
 from pathlib import Path
 
 from . import checkout, store, yamlio
-from .remote import RemoteError, sync_config, sync_dir
+from .remote import RemoteError, remote_for, sync_config, sync_dir
 from .util import now, to_str
 
 FACTS_FILE = "git.yaml"
@@ -347,6 +347,7 @@ def _branch_facts(repo: Repo, it: dict, old: dict, default: str, track: list, fe
         b = {"name": name}
         if head:
             b["head"] = head
+            b["first"] = o.get("first") or head
         if gone:
             b["gone"] = True
         if pr:
@@ -404,14 +405,16 @@ def _git_edges(repo: Repo, items: list, facts: dict) -> list:
                         "target": bb["target"], "state": state, "source": "git", "evidence": evidence,
                         "shared": n, "commits": sh["commits"]}))
     pairs = {(b["id"], bb["name"], a["id"], ab["name"]) for b, bb, a, ab, _ in edges}
-    kept = []
-    for b, bb, a, ab, e in edges:
-        if (a["id"], ab["name"], b["id"], bb["name"]) in pairs:
-            # Both carry the other's commits: a PR based on the other branch says which way it runs.
-            if (ab.get("pr") or {}).get("base") == bb["name"] and (bb.get("pr") or {}).get("base") != ab["name"]:
-                continue
-        kept.append((b, bb, a, ab, e))
-    return kept
+    return [(b, bb, a, ab, e) for b, bb, a, ab, e in edges
+            if (a["id"], ab["name"], b["id"], bb["name"]) not in pairs or _cut_from(repo, bb, ab)]
+
+
+def _cut_from(repo: Repo, bb: dict, ab: dict) -> bool:
+    """For two branches that each carry the other's unlanded commits, whether
+    B was cut from A, so not A from B: B's first-seen head isn't in A's. When
+    neither is in the other, both edges stay."""
+    fa, fb = ab.get("first"), bb.get("first")
+    return not (fa and fb and fa != fb and repo.is_ancestor(fb, fa))
 
 
 def _note_edges(root: Path, repo: Repo, it: dict, notes: list, items: list, facts: dict, default: str) -> list:
@@ -627,6 +630,18 @@ def refresh(root: Path, items=None) -> list:
     if items is not None:
         repos = set(_groups(root, [it for it in items if not _archived(root, it)]))
     return on_round(root, force=True, repos=repos)
+
+
+def post_pending(root: Path) -> None:
+    """Post the facts a synced store hasn't sent yet."""
+    cfg = sync_config(root)
+    r = remote_for(root) if cfg else None
+    f = _state_file(root, TIPS_FILE)
+    state = _read_json(f)
+    if r is None or not state.get("unposted"):
+        return
+    state["unposted"] = sorted(_post(root, r, cfg.get("project"), set(state["unposted"])))
+    _write_json(f, state)
 
 
 def maybe_local(root: Path) -> None:

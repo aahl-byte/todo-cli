@@ -10,7 +10,8 @@ import { itemBranches } from "./model";
 export type Fetch = typeof fetch;
 export type EdgeState = "waiting" | "landed" | "stale";
 export interface PrFact { number: number; state: "draft" | "open" | "merged" | "closed"; base: string | null; merge_commit?: string; url?: string }
-export interface BranchFact { name: string; head?: string; gone?: boolean; pr?: PrFact; target: string; landed?: string; in?: Record<string, boolean> }
+/** `first` is the head todo first saw, which tells a stack's parent from its child. */
+export interface BranchFact { name: string; head?: string; first?: string; gone?: boolean; pr?: PrFact; target: string; landed?: string; in?: Record<string, boolean> }
 /** `id`/`item` name the other item; `branch` is its branch and `via` this item's. A plugin edge also carries `needs`. */
 export interface Edge {
   id?: string; item?: string; branch?: string | null; via?: string | null; target?: string; state: EdgeState;
@@ -153,7 +154,8 @@ async function branchFacts(gh: GitHubRepo, it: ItemRow, old: GitFacts, def: stri
       const got = await gh.pr(name);
       if (got !== undefined) pr = got ?? undefined;
     }
-    const b: BranchFact = { name, ...(head ? { head } : {}), ...(live ? {} : { gone: true }), ...(pr ? { pr } : {}), target: pr?.base ?? def };
+    const b: BranchFact = { name, ...(head ? { head, first: o?.first ?? head } : {}), ...(live ? {} : { gone: true }),
+                            ...(pr ? { pr } : {}), target: pr?.base ?? def };
     const landed = pr?.merge_commit ?? head;
     if (landed) {
       b.landed = landed;
@@ -196,9 +198,15 @@ async function gitEdges(gh: GitHubRepo, items: ItemRow[], facts: Map<string, Fac
     }
   }
   const pairs = new Set(edges.map(({ b, bb, a, ab }) => `${b.uid}\x1f${bb.name}\x1f${a.uid}\x1f${ab.name}`));
-  // Both carry the other's commits: a PR based on the other branch says which way it runs.
-  return edges.filter(({ b, bb, a, ab }) => !(pairs.has(`${a.uid}\x1f${ab.name}\x1f${b.uid}\x1f${bb.name}`)
-    && ab.pr?.base === bb.name && bb.pr?.base !== ab.name));
+  const kept = [];
+  for (const edge of edges) {
+    const { b, bb, a, ab } = edge;
+    // Both carry the other's commits: B was cut from A unless B's first-seen head is in A's.
+    const mutual = pairs.has(`${a.uid}\x1f${ab.name}\x1f${b.uid}\x1f${bb.name}`);
+    if (mutual && ab.first && bb.first && ab.first !== bb.first && (await gh.contains(ab.first, bb.first))) continue;
+    kept.push(edge);
+  }
+  return kept;
 }
 
 async function noteEdges(gh: GitHubRepo, it: ItemRow, notes: Row[], items: ItemRow[], all: ItemRow[], facts: Map<string, Facts>,

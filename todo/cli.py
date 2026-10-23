@@ -579,6 +579,7 @@ def cmd_refresh(root: Path, args) -> None:
     _require_root(root)
     items = [store.resolve_item(root, args.query)] if args.query else None
     changed = gitfacts.refresh(root, items)
+    gitfacts.post_pending(root)
     print(f'git facts: {len(changed)} item(s) changed' + (f' ({", ".join(changed)})' if changed else ""))
 
 
@@ -1106,7 +1107,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("note", parents=[common], help="append a note")
     p.add_argument("query", help="id or part of a title")
     p.add_argument("text", nargs="+", help="the note text")
-    p.add_argument("--kind", choices=store.NOTE_KINDS, default="context",
+    p.add_argument("--kind", choices=[k for k in store.NOTE_KINDS if k != "dependency"], default="context",
                    help="note kind (default: context)")
     p.set_defaults(func=cmd_note)
 

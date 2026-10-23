@@ -489,3 +489,35 @@ def test_forced_stage_op_carries_force(fx, synced):
     sync.run_round(fx.root, synced.client("alice"))
     ops = [op for push in synced.pushes for op in push if (op.get("data") or {}).get("status") == "ready-to-deploy"]
     assert ops and ops[-1].get("force") is True
+
+
+def test_refresh_command_posts_right_away(fx, synced, monkeypatch):
+    stacked(fx)
+    monkeypatch.setattr(gitfacts, "remote_for", lambda root: synced.client("alice"))
+    sync.run_round(fx.root, synced.client("alice"))
+    synced.git_facts.clear()
+    fx.commit("feat/a", "a2.txt", "more\n")
+    run_cli(fx.root, ["refresh"])
+    assert store.resolve_item(fx.root, "alpha")["uid"] in {f["item_uid"] for f in synced.git_facts}
+
+
+def test_a_person_cant_hand_enter_a_dependency_note(fx):
+    b = fx.item("Beta", [])
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["note", b, "x", "--kind", "dependency"])
+
+
+def test_new_commits_on_a_dependency_dont_turn_the_edge_around(fx):
+    a, b = stacked(fx)
+    fx.refresh()
+    fx.commit("feat/a", "a2.txt", "more\n")
+    fx.refresh()
+    assert edge_view(fx.facts(b)["needs"]) == [(a, "feat/a", "feat/b", "waiting")]
+    assert fx.facts(a)["needs"] == []
+
+
+def test_a_pr_based_on_the_dependency_targets_it_so_no_edge(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8, base="feat/a")
+    fx.refresh()
+    assert fx.facts(b)["needs"] == [] and fx.facts(b)["branches"][0]["target"] == "feat/a"
