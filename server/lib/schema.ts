@@ -340,6 +340,27 @@ create table if not exists api_tokens (
 );
 create index if not exists api_tokens_handle on api_tokens (handle);
 
+-- An item's docs: files it keeps on purpose. The bytes live in the files
+-- store under file_key; sha256 is what a client's base is checked against, and
+-- versions.sha256 is the change seq of the current content.
+create table if not exists docs (
+  project      text not null,
+  uid          text not null,
+  item_uid     text not null,
+  name         text not null,
+  size         bigint not null,
+  sha256       text not null,
+  file_key     text not null,
+  content_type text not null,
+  by           text,
+  via          text,
+  at           text not null,
+  versions     jsonb not null default '{}'::jsonb,
+  primary key (project, uid),
+  unique (project, item_uid, name),
+  foreign key (project, item_uid) references items (project, uid) on delete cascade
+);
+
 -- A CLI waiting for a browser to approve it. The token is minted when the CLI
 -- collects it, so it is never stored.
 create table if not exists device_logins (

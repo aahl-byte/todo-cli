@@ -10,13 +10,17 @@ export interface Change {
   data: Row | null;
 }
 
+const TABLES: Record<string, string> = { ...TABLE, doc: "docs" };
+
 /** Changes after `since`, each carrying its entity's current row. A uid that
  * changed more than once in the page appears once, at its first position, so
- * an item always precedes the children created after it. */
-export async function changesSince(db: Db, project: string, since: number, limit = 500):
+ * an item always precedes the children created after it. Doc changes come
+ * only to a client that asks for them with `docs`. */
+export async function changesSince(db: Db, project: string, since: number, limit = 500, docs = false):
     Promise<{ changes: Change[]; cursor: number; more: boolean }> {
   const rows = await db.query(
-    "select seq, entity, uid, item_uid, deleted from changes where project = $1 and seq > $2 order by seq limit $3",
+    `select seq, entity, uid, item_uid, deleted from changes where project = $1 and seq > $2 ${docs ? "" : "and entity <> 'doc'"}
+      order by seq limit $3`,
     [project, since, limit]);
   const latest = new Map<string, Row>();
   for (const r of rows) {
@@ -25,7 +29,7 @@ export async function changesSince(db: Db, project: string, since: number, limit
   }
   const changes: Change[] = [];
   for (const r of latest.values()) {
-    const table = TABLE[r.entity as keyof typeof TABLE];
+    const table = TABLES[r.entity];
     const [data] = await db.query(`select * from ${table} where uid = $1 and project = $2`, [r.uid, project]);
     changes.push({
       seq: Number(r.seq), entity: r.entity, uid: r.uid, item_uid: r.item_uid,
