@@ -265,9 +265,10 @@ Prefer YAML whenever a plugin is a fixed sequence of calls. PR auto-link:
     per: branch
     steps:
       - name: prs
-        tool: list_pull_requests
-        input: {owner: "{{item.repo_owner}}", repo: "{{item.repo_name}}",
-                head: "{{item.repo_owner}}:{{branch}}", state: all}
+        http:
+          method: GET
+          path: "/repos/{{item.repo_owner}}/{{item.repo_name}}/pulls"
+          query: {head: "{{item.repo_owner}}:{{branch}}", state: all}
     attach:
       - each: prs
         link: {type: pr, url: "{{each.html_url}}", label: "#{{each.number}} · {{each.title}}"}
@@ -371,6 +372,10 @@ dashboard. The Jira plugin is its one user (§5).
 | `watchtower-session` | code over `watchtower` | opt-in | `watchtower` Actions |
 | `jira-transition` | YAML over `jira` | opt-in | Jira outbound triggers |
 | `jira-issue` | YAML over `jira` | opt-in | links-mode inbound polling |
+
+The shipped plugins call GitHub, Vercel and Jira through `http` connections to
+their REST APIs, so a host needs only a token for each, not an MCP server. MCP
+connections stay available for repo plugins.
 
 **`db-request`** attaches each submission's migrations PR as a link and an edge
 ("needs moneyball PR #560 in staging"), so the edge resolves through landed-in
@@ -519,8 +524,8 @@ handoff or instructions. Notes stay short and refer to docs by name.
 
 1. **Tool names.** Confirm the parameters of Vercel's `list_deployments`
    (whether it filters by branch), GitHub's MCP `list_pull_requests`, and
-   Atlassian's `getTransitionsForJiraIssue` / `transitionJiraIssue` and a
-   status-list tool before writing the shipped plugins.
+   Jira's REST endpoints before writing the shipped plugins (they use REST,
+   so the `jira-transition` example's tool names become HTTP paths).
 2. **db-request endpoint.** db-request is a CLI over Postgres. The plugin
    needs an MCP or HTTP endpoint from the db-request repo.
 3. **Watchtower credentials.** Watchtower's API has no authentication, so a
