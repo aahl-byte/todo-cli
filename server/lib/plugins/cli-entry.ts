@@ -1,5 +1,7 @@
 // The CLI's way into the plugin host: a run's input as JSON on stdin, its
 // RunResult as JSON on stdout. A failed run still exits 0; unreadable input exits 2.
+// This process is the sandbox's isolation, so code plugins run in it directly.
+import { hostFailure } from "./sandbox.mjs";
 import { runInstance } from "./host";
 import type { RunInput, RunResult } from "./types";
 
@@ -26,19 +28,25 @@ export function parseInput(text: string): RunInput | string {
   return { ...input, connections: input.connections ?? {}, dryRun: input.dryRun === true } as RunInput;
 }
 
+const failed = (e: unknown): RunResult => ({ attached: [], wouldSend: [], log: [], error: `the plugin host failed: ${hostFailure(e)}` });
+
+/** Whatever goes wrong, the CLI reads one result and this process ends. */
+let answered = false;
+function answer(result: RunResult): void {
+  if (answered) return;
+  answered = true;
+  process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(0));
+}
+
 async function main() {
+  process.on("uncaughtException", (e) => answer(failed(e)));
+  process.on("unhandledRejection", (e) => answer(failed(e)));
   const input = parseInput(await readStdin());
   if (typeof input === "string") {
     process.stderr.write(`plugin host: ${input}\n`);
     process.exit(2);
   }
-  let result: RunResult;
-  try {
-    result = await runInstance(input);
-  } catch (e) {
-    result = { attached: [], wouldSend: [], log: [], error: (e as Error).message };
-  }
-  process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(0));
+  answer(await runInstance(input, { isolation: "inline" }).catch(failed));
 }
 
 void main();

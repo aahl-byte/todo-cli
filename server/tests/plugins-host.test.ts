@@ -32,8 +32,8 @@ describe("plugin templates", () => {
   });
 
   it("URL-encodes each filled value in url mode", () => {
-    expect(fillUrl("/repos/{{item.id}}/pulls/{{branch}}", { item: { id: "a b" }, branch: "feat/x?y" }))
-      .toBe("/repos/a%20b/pulls/feat%2Fx%3Fy");
+    expect(fillUrl("/repos/{{item.id}}/pulls/{{n}}", { item: { id: "a b" }, n: "x?y#z" }))
+      .toBe("/repos/a%20b/pulls/x%3Fy%23z");
     expect(fillUrl("/x/{{missing}}", {})).toBe("/x/");
   });
 
@@ -136,13 +136,13 @@ plugins:
     when: "branch != 'feat/y'"
     steps:
       - {name: never, when: "item.status == 'done'", http: {method: GET, path: /never}}
-      - {name: one, http: {method: GET, path: "/one/{{branch}}"}}
+      - {name: one, http: {method: GET, path: "/one", query: {b: "{{branch}}"}}}
     attach:
       - {when: never, log: "never ran"}
       - {when: "one.ok", log: "one ok on {{branch}}"}
       - {each: one.list, when: "each.keep", key: "k-{{each.n}}", log: {text: "kept {{each.n}}"}}
-`, [{ method: "GET", path: "/one/feat%2Fx", body: { ok: true, list: [{ n: 1, keep: true }, { n: 2, keep: false }] } }]);
-    expect(server.received.map((r) => r.path)).toEqual(["/one/feat%2Fx"]);
+`, [{ method: "GET", path: "/one?b=feat%2Fx", body: { ok: true, list: [{ n: 1, keep: true }, { n: 2, keep: false }] } }]);
+    expect(server.received.map((r) => r.path)).toEqual(["/one?b=feat%2Fx"]);
     expect(result.attached).toEqual([
       { kind: "log", key: "log:one ok on feat/x", text: "one ok on feat/x" },
       { kind: "log", key: "k-1", text: "kept 1" },
@@ -156,7 +156,7 @@ plugins:
     when: "item.status == 'done'"
     attach: [{log: "x"}]
 `, []);
-    expect(result).toMatchObject({ attached: [], skipped: "when is false: item.status == 'done'" });
+    expect(result).toMatchObject({ attached: [], skipped: "off: when is false: item.status == 'done'" });
   });
 
   it("hands named results to later steps and attachments", async () => {
@@ -178,12 +178,12 @@ plugins:
       - doc: {name: "{{pick.name}}.json", content: "{{detail}}"}
       - {when: "!empty", log: "empty result kept going"}
 `, [
-      { method: "GET", path: "/list", body: { items: [{ name: "bob", id: "b" }, { name: "alice", id: "a/1", n: 2 }] } },
-      { method: "GET", path: "/detail/a%2F1?n=2", body: { deep: true } },
+      { method: "GET", path: "/list", body: { items: [{ name: "bob", id: "b" }, { name: "alice", id: "a 1", n: 2 }] } },
+      { method: "GET", path: "/detail/a%201?n=2", body: { deep: true } },
       { method: "GET", path: "/empty", body: [] },
     ]);
     expect(result.error).toBeUndefined();
-    expect(server.received.map((r) => r.path)).toEqual(["/list", "/detail/a%2F1?n=2", "/empty"]);
+    expect(server.received.map((r) => r.path)).toEqual(["/list", "/detail/a%201?n=2", "/empty"]);
     expect(result.attached).toEqual([
       { kind: "doc", key: "doc:alice.json", name: "alice.json", content: '{\n  "deep": true\n}' },
       { kind: "log", key: "log:empty result kept going", text: "empty result kept going" },
@@ -252,7 +252,7 @@ plugins:
     const file = loadPlugins(PR_LINK);
     const result = await runInstance({ plugin: file.plugins!["pr-link"], name: "pr-link", instance: { id: "i", name: "d" },
       item: ITEM, event: { type: "push", branch: "feat/x" }, connections: {}, dryRun: false });
-    expect(result).toEqual({ attached: [], wouldSend: [], log: [], skipped: "`github` not authorized here" });
+    expect(result).toEqual({ attached: [], wouldSend: [], log: [], skipped: "pr-link: `github` not authorized here" });
   });
 
   it("reports bad plugins at load, with the plugin's name", () => {
@@ -277,6 +277,8 @@ plugins:
     ]);
     expect(errors(`plugins: {x: {code: a.js, steps: []}}`)).toEqual(["plugin x: a code plugin has no per, steps or attach"]);
     expect(errors(`plugins: {x: {attach: [{request: "r"}]}}`)).toEqual(["plugin x: attach[0]: request needs the post-request capability"]);
+    expect(errors(`plugins: {x: {capabilities: [post-request], attach: [{request: "r"}]}}`))
+      .toEqual(["plugin x: only plugins shipped with todo may declare post-request"]);
     expect(errors(`plugins: {x: {when: "a ==", attach: []}}`)[0]).toMatch(/^plugin x: bad expression "a =="/);
   });
 
@@ -298,7 +300,7 @@ plugins:
     settings: {project: {label: Project, type: text}}
     attach: [{log: x}]
 `, []);
-    expect(missing.result.skipped).toBe("setting project is not set");
+    expect(missing.result.skipped).toBe("s: setting project is not set");
   });
 
   it("parses a whole plugins.yaml", () => {
@@ -517,7 +519,7 @@ describe("code plugins", () => {
 
   it("attaches every kind with derived or given keys", async () => {
     const r = await runInstance({ plugin: { code: "p.js", capabilities: ["post-request"] }, name: "p", instance: { id: "i", name: "d" },
-      item: ITEM, event: { type: "refresh" }, connections: {}, dryRun: false, code: `export function run({ attach, item }) {
+      item: ITEM, event: { type: "refresh" }, connections: {}, dryRun: false, grants: ["post-request"], code: `export function run({ attach, item }) {
         attach.link({ type: "preview", url: "https://p/" + item.id, label: "Preview" });
         attach.edge({ needs: "branch:feat/base", in: "staging", because: "shares commits" });
         attach.doc({ name: "notes.md", content: "# hi", key: "doc-1" });
@@ -526,12 +528,15 @@ describe("code plugins", () => {
       }` });
     expect(r.attached).toEqual([
       { kind: "link", key: "link:https://p/fix-login", type: "preview", url: "https://p/fix-login", label: "Preview" },
-      { kind: "edge", key: "edge:branch:feat/base", needs: "branch:feat/base", in: "staging", because: "shares commits" },
+      { kind: "edge", key: "edge:branch:feat/base in staging", needs: "branch:feat/base", in: "staging", because: "shares commits" },
       { kind: "doc", key: "doc-1", name: "notes.md", content: "# hi" },
       { kind: "log", key: "log:ran", text: "ran" },
       { kind: "request", key: "request:new request", text: "new request" },
     ]);
-    expect((await runJs("export function run({ attach }) { attach.request('x'); }")).error).toBe("attach.request needs the post-request capability");
+    const ungranted = await runJs("export function run({ attach }) { attach.request('x'); attach.log('after'); }");
+    expect(ungranted.error).toBeUndefined();
+    expect(ungranted.attached.map((a) => a.kind)).toEqual(["log"]);
+    expect(ungranted.log).toEqual(["dropped a request: p hasn't been granted post-request"]);
   });
 
   it("holds back a code plugin's writes in dry-run", async () => {
@@ -582,9 +587,10 @@ describe("triggers", () => {
     expect(ids(plugin, instances, { type: "manual", instance: "default" })).toEqual([]);
   });
 
-  it("refreshes every enabled instance that runs without a person asking", () => {
-    expect(ids(plugin, instances, { type: "refresh" })).toEqual(["default", "start", "qa", "deploys"]);
+  it("refreshes git-triggered instances and every: floors, never status moves or buttons", () => {
+    expect(ids(plugin, instances, { type: "refresh" })).toEqual(["default", "deploys"]);
     expect(ids({ on: ["manual"], every: "5m" }, [{ id: "a", name: "A" }], { type: "refresh" })).toEqual(["a"]);
+    expect(ids({ on: [{ status: { to: "review" } }] }, [{ id: "a", name: "A" }], { type: "refresh" })).toEqual([]);
   });
 
   it("fires only the first match when exclusive", () => {

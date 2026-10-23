@@ -71,7 +71,7 @@ async function connectionsFor(name: string, c: Case) {
     if (def.kind === "mcp") {
       const tools = path.join(scratch, `${name}-${conn}.json`);
       writeFileSync(tools, JSON.stringify(c.tools?.[conn] ?? []));
-      connections[conn] = { ...def, kind: "mcp", command: process.execPath, args: [FAKE_MCP, tools] };
+      connections[conn] = { ...def, kind: "mcp", command: process.execPath, args: [FAKE_MCP, tools], origin: "host" };
     } else {
       fakes[conn] = await fakeServer(c.responses?.[conn] ?? []);
       servers.push(fakes[conn]);

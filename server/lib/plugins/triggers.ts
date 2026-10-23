@@ -27,9 +27,11 @@ export function triggersOf(plugin: PluginDef, instance: InstanceDef): Trigger[] 
   return instance.on ?? plugin.on ?? [];
 }
 
-/** A refresh fires anything that runs without a person asking: a non-manual trigger or an every: floor. */
+const GIT_TRIGGERS: Trigger[] = ["push", "pr", "deployment"];
+
+/** A refresh rechecks state that can change on its own: git-triggered instances and every: floors, never status moves or buttons. */
 function firesOnRefresh(plugin: PluginDef, instance: InstanceDef): boolean {
-  return !!plugin.every || triggersOf(plugin, instance).some((t) => t !== "manual");
+  return !!plugin.every || triggersOf(plugin, instance).some((t) => GIT_TRIGGERS.includes(t));
 }
 
 /** The enabled instances this event fires, in order; with exclusive, only the first. */

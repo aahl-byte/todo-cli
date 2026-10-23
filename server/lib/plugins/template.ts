@@ -21,13 +21,37 @@ export function templateErrors(value: unknown): string[] {
   return [];
 }
 
+/** A dotted path's value, reading only the data's own properties. */
 export function lookup(scope: unknown, path: string): unknown {
   let at: unknown = scope;
   for (const part of path.trim().split(".")) {
-    if (at === null || typeof at !== "object") return undefined;
+    if (at === null || typeof at !== "object" || !Object.hasOwn(at, part)) return undefined;
     at = (at as Record<string, unknown>)[part];
   }
   return at;
+}
+
+/** Every template sitting inside a '…', "…" or `…` token of an expression, where it could change the expression. */
+export function quotedTemplates(expr: string): string[] {
+  const found: string[] = [];
+  let quote: string | null = null;
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+      else if (expr.startsWith("{{", i)) {
+        const end = expr.indexOf("}}", i);
+        found.push(expr.slice(i, end < 0 ? undefined : end + 2));
+        if (end >= 0) i = end + 1;
+      }
+    } else if (c === "'" || c === '"' || c === "`") quote = c;
+    else if (expr.startsWith("{{", i)) {
+      const end = expr.indexOf("}}", i);
+      if (end >= 0) i = end + 1;
+    }
+  }
+  return found;
 }
 
 function text(v: unknown): string {
@@ -54,9 +78,33 @@ export function fillJson(value: unknown, scope: Scope): unknown {
   return value;
 }
 
-/** For HTTP paths: each value URL-encoded. */
+export class TemplateError extends Error {}
+
+function decoded(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** A path segment a value filled in, if it would step out of its place in the path. */
+function leavesSegment(segment: string): boolean {
+  const plain = decoded(decoded(segment));
+  return plain === "." || plain === ".." || /[/\\]/.test(plain);
+}
+
+/** For HTTP paths: each value URL-encoded; a value that would make a segment ., .. or more than one segment is refused. */
 export function fillUrl(s: string, scope: Scope): string {
-  return s.replace(TEMPLATE, (_, path) => encodeURIComponent(text(lookup(scope, path))));
+  const q = s.indexOf("?");
+  const [path, query] = q < 0 ? [s, ""] : [s.slice(0, q), s.slice(q)];
+  const fill = (part: string) => part.replace(TEMPLATE, (_, p) => encodeURIComponent(text(lookup(scope, p))));
+  const segments = path.split("/").map((seg) => {
+    const filled = fill(seg);
+    if (filled !== seg && leavesSegment(filled)) throw new TemplateError(`${seg} fills as ${JSON.stringify(decoded(filled))}, which would change the path`);
+    return filled;
+  });
+  return segments.join("/") + fill(query);
 }
 
 /** A JMESPath literal that is always the string itself; backticks are escaped so it can't end early. */

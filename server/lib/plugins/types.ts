@@ -34,10 +34,13 @@ export type ConnectionDef =
   | { http: { url: string; auth?: HttpAuth } }
   | { mcp: { url: string } | { command: string; args?: string[] } };
 
-/** A connection as a host hands it to a run: its endpoint plus this host's secret for it. */
+/** Where a connection was declared: the repo's plugins.yaml, or the host itself. */
+export type ConnectionOrigin = "repo" | "host";
+
+/** A connection as a host hands it to a run: its endpoint plus this host's secret for it. Without an origin it counts as the repo's. */
 export type ResolvedConnection =
-  | { kind: "http"; url: string; auth?: HttpAuth; secret?: string }
-  | { kind: "mcp"; url?: string; command?: string; args?: string[]; secret?: string };
+  | { kind: "http"; url: string; auth?: HttpAuth; secret?: string; origin?: ConnectionOrigin }
+  | { kind: "mcp"; url?: string; command?: string; args?: string[]; secret?: string; origin?: ConnectionOrigin };
 
 export type Trigger =
   | "push" | "pr" | "deployment" | "manual"
@@ -83,6 +86,8 @@ export interface PluginDef {
   steps?: StepDef[];
   attach?: AttachDef[];
   code?: string;
+  /** Where to get the plugin instead of a body here, e.g. shipped; resolved before a run. */
+  use?: string;
 }
 
 export interface InstanceDef {
@@ -148,7 +153,23 @@ export interface RunInput {
   connections: Record<string, ResolvedConnection>;
   dryRun: boolean;
   limits?: Limits;
+  /** Capabilities a person granted this plugin, e.g. post-request. */
+  grants?: string[];
+  /** Let a repo-declared MCP connection start a local command. */
+  allowRepoCommands?: boolean;
 }
 
-export const DEFAULT_DEADLINE_MS = 60_000;
+export const POST_REQUEST = "post-request";
+export const DEFAULT_DEADLINE_MS = 5 * 60_000;
 export const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
+
+const KB = 1024;
+export const MAX_ATTACHMENTS = 200;
+export const MAX_FIELD = 8 * KB;
+export const MAX_DOC_CONTENT = 1024 * KB;
+export const MAX_ATTACHED_BYTES = 4 * 1024 * KB;
+export const MAX_WOULD_SEND = 100;
+export const MAX_WOULD_SEND_INPUT = 2 * KB;
+export const MAX_LOG_LINES = 200;
+export const MAX_LOG_LINE = KB;
+export const MAX_ERROR = 2 * KB;

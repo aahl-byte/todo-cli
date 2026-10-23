@@ -17,6 +17,6 @@ expect:
   attached:
     - {kind: link, key: "link:https://github.com/acme/moneyball/pull/560", type: db-request, url: "https://github.com/acme/moneyball/pull/560", label: migrations for feat/login}
     - {kind: link, key: "link:https://github.com/acme/moneyball/pull/561", type: db-request, url: "https://github.com/acme/moneyball/pull/561", label: migrations for feat/login}
-    - {kind: edge, key: "edge:https://github.com/acme/moneyball/pull/560", needs: "https://github.com/acme/moneyball/pull/560", in: staging, because: db-request 12 migrations}
+    - {kind: edge, key: "edge:https://github.com/acme/moneyball/pull/560 in staging", needs: "https://github.com/acme/moneyball/pull/560", in: staging, because: db-request 12 migrations}
     - {kind: doc, key: "doc:db-request-12.md", name: db-request-12.md, content: adds the sessions table}
   wouldSend: []

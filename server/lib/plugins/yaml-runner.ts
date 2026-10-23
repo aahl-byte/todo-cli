@@ -3,16 +3,21 @@
 import { AttachError, makeAttachment } from "./attachments";
 import { withQuery, type Calls } from "./connections";
 import { search, test } from "./expr";
+import { addLog, type Attached } from "./limits";
 import { fillJson, fillString, fillUrl, type Scope } from "./template";
 import { ATTACHMENT_KINDS, type Attachment, type Call, type PluginDef, type PluginItem, type PluginEvent, type RunResult, type StepDef } from "./types";
 
 export interface YamlRun {
+  name: string;
   plugin: PluginDef;
   item: PluginItem;
   event: PluginEvent;
   settings: Record<string, unknown>;
   calls: Calls;
   result: RunResult;
+  attached: Attached;
+  /** The plugin declares post-request and the host granted it. */
+  mayRequest: boolean;
 }
 
 /** The item's Jira keys, whether it holds one or a list. */
@@ -51,8 +56,13 @@ function withLabel(label: string, e: unknown): Error {
 }
 
 function attachAll(run: YamlRun, scope: Scope, label: string, out: Attachment[]) {
+  const where = label ? `${label}: ` : "";
   for (const entry of run.plugin.attach ?? []) {
     const kind = ATTACHMENT_KINDS.find((k) => k in entry)!;
+    if (kind === "request" && !run.mayRequest) {
+      addLog(run.result, `${where}dropped a request: ${run.name} hasn't been granted post-request`);
+      continue;
+    }
     const each = entry.each === undefined ? [undefined] : asList(search(entry.each, scope));
     for (const one of each) {
       const s = entry.each === undefined ? scope : { ...scope, each: one };
@@ -61,18 +71,17 @@ function attachAll(run: YamlRun, scope: Scope, label: string, out: Attachment[])
         out.push(makeAttachment(kind, fillJson(entry[kind], s), entry.key === undefined ? undefined : fillString(entry.key, s)));
       } catch (e) {
         if (!(e instanceof AttachError)) throw e;
-        run.result.log.push(`${label ? `${label}: ` : ""}skipped a ${kind}: ${e.message}`);
+        addLog(run.result, `${where}skipped a ${kind}: ${e.message}`);
       }
     }
   }
 }
 
-/** Run every pass; any error ends the run and nothing it gathered is kept. */
-export async function runYaml(run: YamlRun): Promise<{ attached: Attachment[]; skipped?: string }> {
+/** Run every pass into run.attached; any error ends the run. */
+export async function runYaml(run: YamlRun): Promise<{ skipped?: string }> {
   const { plugin, item } = run;
   const all = passes(plugin, item);
-  if (!all.length) return { attached: [], skipped: plugin.per === "branch" ? "the item has no branches" : "the item has no Jira issues" };
-  const attached: Attachment[] = [];
+  if (!all.length) return { skipped: plugin.per === "branch" ? "the item has no branches" : "the item has no Jira issues" };
   let gated = 0;
   for (const { label, extra } of all) {
     const scope: Scope = { item, event: run.event, settings: run.settings, ...extra };
@@ -90,11 +99,13 @@ export async function runYaml(run: YamlRun): Promise<{ attached: Attachment[]; s
         const value = step.value !== undefined ? search(step.value, scope) : await run.calls.send(callFor(step, plugin, scope));
         if (step.name) scope[step.name] = value ?? null;
       }
+      const attached: Attachment[] = [];
       attachAll(run, scope, label, attached);
+      for (const a of attached) run.attached.add(a, run.result);
     } catch (e) {
       throw withLabel(label, e);
     }
   }
-  if (gated === all.length) return { attached: [], skipped: `when is false: ${plugin.when}` };
-  return { attached };
+  if (gated === all.length) return { skipped: `when is false: ${plugin.when}` };
+  return {};
 }

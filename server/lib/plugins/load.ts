@@ -3,9 +3,9 @@
 import { parse } from "yaml";
 import { ATTACH_FIELDS } from "./attachments";
 import { exprError } from "./expr";
-import { templateErrors } from "./template";
+import { quotedTemplates, templateErrors } from "./template";
 import { parseDuration } from "./triggers";
-import { ATTACHMENT_KINDS, type AttachmentKind, type PluginsFile } from "./types";
+import { ATTACHMENT_KINDS, POST_REQUEST, type AttachmentKind, type PluginsFile } from "./types";
 
 export class PluginsFileError extends Error {
   constructor(readonly errors: string[]) {
@@ -24,11 +24,17 @@ const ATTACH_KEYS = ["each", "when", "key"];
 const SETTING_KEYS = ["label", "type", "default", "optional", "options", "options_from", "scope"];
 const SETTING_TYPES = ["text", "long-text", "choice", "toggle", "number", "list", "secret"];
 const INSTANCE_KEYS = ["id", "name", "enabled", "on", "button", "dry_run", "settings"];
-const CAPABILITIES = ["post-request"];
+const CAPABILITIES = [POST_REQUEST];
 const TRIGGERS = ["push", "pr", "deployment", "manual"];
-/** Names a step can't take, because the scope already has them. */
-const RESERVED = ["item", "event", "settings", "branch", "issue", "each"];
+/** Names a step can't take, because the scope already has them or they'd reach an object's prototype. */
+const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "__proto__", "constructor", "prototype"];
+/** Names a connection can't take, because a code plugin's run() argument already has them. */
+const RESERVED_CONNECTIONS = ["item", "event", "settings", "attach", "wait"];
 const STEP_NAME = /^[A-Za-z_]\w*$/;
+const takenConnection = (name: string) => `the name "${name}" is taken by the plugin's run() argument`;
+
+/** Where a plugin comes from: only plugins shipped with todo may declare capabilities. */
+export interface LoadOptions { shipped?: boolean; extraPlugins?: string[] }
 const CODE_FILE = /^(?!.*(^|\/)\.\.(\/|$))[\w./-]+\.m?js$/;
 
 const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -42,6 +48,8 @@ function exprProblems(expr: unknown, what: string): string[] {
   if (typeof expr !== "string") return [`${what} must be an expression string`];
   const bad = templateErrors(expr);
   if (bad.length) return bad;
+  const quoted = quotedTemplates(expr);
+  if (quoted.length) return quoted.map((t) => `${what}: ${t} sits inside a quoted string`);
   const err = exprError(expr);
   return err ? [err] : [];
 }
@@ -130,7 +138,7 @@ function settingErrors(key: string, s: unknown): string[] {
 }
 
 /** Everything wrong with one plugin definition, each line naming the plugin. */
-export function pluginErrors(name: string, def: unknown): string[] {
+export function pluginErrors(name: string, def: unknown, opts: LoadOptions = {}): string[] {
   if (!isMap(def)) return [`plugin ${name}: must be a map`];
   const errors = unknownKeys(def, PLUGIN_KEYS);
   if ("use" in def) {
@@ -139,6 +147,7 @@ export function pluginErrors(name: string, def: unknown): string[] {
   }
   const connections = def.connections ?? [];
   if (!isStrings(connections)) errors.push("connections must be a list of names");
+  else errors.push(...connections.filter((c) => RESERVED_CONNECTIONS.includes(c)).map((c) => `connection name "${c}" is taken by the plugin's run() argument`));
   if ("on" in def) errors.push(...triggerErrors(def.on));
   if ("every" in def) {
     try { parseDuration(def.every as string); } catch (e) { errors.push(`every: ${(e as Error).message}`); }
@@ -146,7 +155,10 @@ export function pluginErrors(name: string, def: unknown): string[] {
   if ("exclusive" in def && typeof def.exclusive !== "boolean") errors.push("exclusive is true or false");
   if ("capabilities" in def) {
     if (!isStrings(def.capabilities)) errors.push("capabilities must be a list");
-    else errors.push(...def.capabilities.filter((c) => !CAPABILITIES.includes(c)).map((c) => `unknown capability "${c}"`));
+    else {
+      errors.push(...def.capabilities.filter((c) => !CAPABILITIES.includes(c)).map((c) => `unknown capability "${c}"`));
+      if (!opts.shipped && def.capabilities.includes(POST_REQUEST)) errors.push(`only plugins shipped with todo may declare ${POST_REQUEST}`);
+    }
   }
   if ("settings" in def) {
     if (!isMap(def.settings)) errors.push("settings must be a map");
@@ -183,6 +195,7 @@ export function pluginErrors(name: string, def: unknown): string[] {
 
 function connectionErrors(name: string, c: unknown): string[] {
   const fail = (e: string) => [`connection ${name}: ${e}`];
+  if (RESERVED_CONNECTIONS.includes(name)) return fail(takenConnection(name));
   if (!isMap(c) || Object.keys(c).length !== 1) return fail("is {http: {url, auth?}} or {mcp: {url} | {command, args?}}");
   if (isMap(c.http)) {
     const bad = unknownKeys(c.http, ["url", "auth"]);
@@ -222,7 +235,7 @@ function instanceErrors(plugin: string, list: unknown, known: boolean): string[]
 }
 
 /** Every problem in a parsed plugins file. */
-export function fileErrors(file: unknown): string[] {
+export function fileErrors(file: unknown, opts: LoadOptions = {}): string[] {
   if (!isMap(file)) return ["plugins.yaml must be a map"];
   const errors = unknownKeys(file, FILE_KEYS);
   if ("track" in file && !isStrings(file.track)) errors.push("track must be a list of branch names");
@@ -233,20 +246,20 @@ export function fileErrors(file: unknown): string[] {
   const plugins = isMap(file.plugins) ? file.plugins : {};
   const instances = isMap(file.instances) ? file.instances : {};
   errors.push(...Object.entries(connections).flatMap(([n, c]) => connectionErrors(n, c)));
-  errors.push(...Object.entries(plugins).flatMap(([n, p]) => pluginErrors(n, p)));
-  errors.push(...Object.entries(instances).flatMap(([n, l]) => instanceErrors(n, l, n in plugins)));
+  errors.push(...Object.entries(plugins).flatMap(([n, p]) => pluginErrors(n, p, opts)));
+  errors.push(...Object.entries(instances).flatMap(([n, l]) => instanceErrors(n, l, n in plugins || !!opts.extraPlugins?.includes(n))));
   return errors;
 }
 
 /** Parse and check a plugins.yaml; throws PluginsFileError listing every problem. */
-export function loadPlugins(text: string): PluginsFile {
+export function loadPlugins(text: string, opts: LoadOptions = {}): PluginsFile {
   let file: unknown;
   try {
     file = parse(text) ?? {};
   } catch (e) {
     throw new PluginsFileError([`plugins.yaml isn't YAML: ${(e as Error).message}`]);
   }
-  const errors = fileErrors(file);
+  const errors = fileErrors(file, opts);
   if (errors.length) throw new PluginsFileError(errors);
   return file as PluginsFile;
 }

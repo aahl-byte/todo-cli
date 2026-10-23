@@ -3,4 +3,4 @@ plugin: pr-link
 instance: {id: default, name: (default)}
 event: {type: push, branch: feat/login}
 connections: {}
-expect: {attached: [], wouldSend: [], log: [], skipped: "`github` not authorized here"}
+expect: {attached: [], wouldSend: [], log: [], skipped: "pr-link: `github` not authorized here"}
