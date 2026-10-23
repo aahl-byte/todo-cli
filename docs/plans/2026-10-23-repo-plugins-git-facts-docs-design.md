@@ -104,27 +104,44 @@ A branch that never had a PR uses its last recorded head commit instead.
 
 ### Depends on
 
-Branch B **depends on** branch A when B carries commits of A that haven't
-landed in B's target:
+Each item branch B has a **target**, T(B): where its work is headed.
 
-1. `mb = merge-base(A, B)`.
-2. If the target (`staging`) already holds `mb`, B shares only landed history,
-   so there is no dependency.
-3. Otherwise B needs A.
+- With an open PR, follow the PR's base. A base that another open item's
+  branch owns hands off to that branch's own target; stop at a branch no open
+  item owns.
+- With no PR, the first tracked branch, else the default branch.
 
-It holds with or without a PR, whatever the PR's base. The CLI runs it with
-local git; the server with two compare calls per pair, cached by head commits.
+B's **unlanded commits** are those in `T(B)..B`. Two branches are related only
+when their unlanded commits overlap, which one `rev-list` per branch finds
+without comparing every pair.
 
-An edge **resolves** through landed-in: once A's merge commit is in B's target.
-Using the graph for resolution would keep the edge forever after A
-squash-merges, because B still holds A's original commits.
+When they overlap, the direction comes from facts git or GitHub records:
+
+- B's PR base chain passes through A's branch: **B needs A**. That's a stacked
+  branch, the case that matters most.
+- A's head is an ancestor of B's head: **B needs A**.
+- Neither: an **ambiguous** relation, "shares unlanded commits", shown on both
+  items with the fix (base the dependent PR on the other branch, or merge one
+  into the other). It blocks nothing, since the graph alone can't say which
+  branch builds on which.
+
+An edge **lands** once the shared commits are in T(B), or once a merged PR of
+A's branch whose head held them has its merge commit in T(B). The second case
+covers squash merges and branches reused after a merge; todo keeps every
+merged PR of a branch for it.
 
 An edge goes **stale** when A can't land: its item is cancelled or deferred,
-or its PR closed unmerged. A stale edge is flagged and never clears itself.
+or its latest PR closed unmerged with nothing merged covering the shared
+commits. A dependency on an item with no branches lands when that item is
+complete. A stale edge never clears itself.
+
+**Unknown is never "no edge".** A failed fetch, a GitHub error, a shallow
+clone or a missing tracked branch keeps the previous state and marks it
+unknown, and the guard treats an unknown edge as unresolved.
 
 `todo get` lists `needs:` and `needed by:` with each edge's state (waiting,
-landed, stale) and its evidence, the shared commits. `todo list` and the board
-show "waits on X".
+landed, stale, unknown) and its evidence, the shared commits. `todo list` and
+the board show "waits on X".
 
 ### Conflicts with, overlaps with
 
