@@ -68,6 +68,48 @@ def test_set_branch_replaces_the_list_and_none_clears_it(root, capsys):
     assert store.resolve_item(root, "beta")["branches"] == []
 
 
+def test_branch_alone_prints_the_list(root, capsys):
+    run_cli(root, ["branch", "add", "beta", "feat/x"])
+    capsys.readouterr()
+    run_cli(root, ["branch", "beta"])
+    assert capsys.readouterr().out == "beta: branches = feat/x\n"
+
+
+def test_branch_names_are_stripped_on_write(root):
+    run_cli(root, ["branch", "add", "beta", " feat/x "])
+    run_cli(root, ["branch", "add", "beta", "feat/x"])
+    assert store.resolve_item(root, "beta")["branches"] == ["feat/x"]
+    run_cli(root, ["branch", "rm", "beta", " feat/x"])
+    assert store.resolve_item(root, "beta")["branches"] == []
+    run_cli(root, ["set", "beta", "branch", "  feat/y  "])
+    assert meta(root)["branches"] == ["feat/y"]
+
+
+@pytest.mark.parametrize("argv", [["branch", "add", "beta", "  "], ["branch", "add", "beta", ""],
+                                  ["set", "beta", "branch", " "]])
+def test_an_empty_branch_name_is_refused(root, capsys, argv):
+    run_cli(root, ["branch", "add", "beta", "feat/x"])
+    with pytest.raises(SystemExit) as e:
+        run_cli(root, argv)
+    assert e.value.code == 2
+    assert "branch name" in capsys.readouterr().err
+    assert store.resolve_item(root, "beta")["branches"] == ["feat/x"]
+
+
+def test_branches_read_tolerantly(root):
+    it = store.resolve_item(root, "beta")
+    f = root / it["folder"] / it["id"] / store.ITEM_FILE
+    body = f.read_text()
+    f.write_text(body + "branches: ' feat/x '\n")
+    assert store.resolve_item(root, "beta")["branches"] == ["feat/x"]
+    run_cli(root, ["branch", "add", "beta", "feat/y"])
+    assert store.resolve_item(root, "beta")["branches"] == ["feat/x", "feat/y"]
+    f.write_text(body + "branches: [' feat/x', '', '  ', 'feat/x ', feat/y]\n")
+    assert store.resolve_item(root, "beta")["branches"] == ["feat/x", "feat/y"]
+    f.write_text(body + "branch: '  '\n")
+    assert store.resolve_item(root, "beta")["branches"] == []
+
+
 def test_get_lists_every_branch(root, capsys):
     run_cli(root, ["set", "beta", "repo", "o/r"])
     run_cli(root, ["branch", "add", "beta", "feat/x"])
@@ -132,3 +174,16 @@ def test_a_rewritten_legacy_branch_drops_extra_branch(tmp_path, server, monkeypa
     assert rnd(b, server, "bob").error is None
     assert store.resolve_item(b, "login-bug")["branches"] == ["feat/old", "feat/new"]
     assert "branch" not in meta(b, "login-bug")
+
+
+def test_a_dashboard_branches_edit_reaches_the_cli(tmp_path, server, monkeypatch):
+    a = make(tmp_path, "a", server)
+    monkeypatch.setenv("TODO_USER", "alice")
+    run_cli(a, ["add", "Login bug"])
+    run_cli(a, ["branch", "add", "login-bug", "feat/x"])
+    assert rnd(a, server, "alice").error is None
+    row = next(r for r in server.rows.values() if r["_entity"] == "item")
+    server.apply([{"op_id": "D1", "op": "set", "entity": "item", "uid": row["uid"], "item_uid": row["uid"],
+                   "data": {"extra.branches": ["feat/x", "feat/dash"]}, "base": dict(row["versions"])}], "carol")
+    assert rnd(a, server, "alice").error is None
+    assert store.resolve_item(a, "login-bug")["branches"] == ["feat/x", "feat/dash"]

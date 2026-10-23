@@ -236,6 +236,10 @@ function invalid(entity: Entity, field: string, value: unknown): boolean {
   return false;
 }
 
+function legacyBranch(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function slug(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "item";
 }
@@ -311,6 +315,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
     row.meta[SEEN] = [...new Set([...given, party(row.author, row.via)])];
   }
   if (entity === "item" && row.extra.jira != null && !validJiraKeys(row.extra.jira)) return reject(op, "invalid-jira");
+  if (entity === "item" && !("branches" in row.extra) && legacyBranch(row.extra.branch)) row.extra.branches = [legacyBranch(row.extra.branch)];
   if (entity === "note") {
     const bad = await badNoteMeta(ctx, itemUid, row.kind, row.meta);
     if (bad) return reject(op, bad);
@@ -579,6 +584,12 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
   const reopened = accepted.find(([f, v]) => f === "status" && !TERMINAL.includes(String(v)));
   if (entity === "item" && reopened && row.extra?.archived && !accepted.some(([f]) => f === "extra.archived")) {
     accepted.push(["extra.archived", null]);
+  }
+
+  // An older CLI writes a single `extra.branch`; it replaces the list.
+  const branch = accepted.find(([f]) => f === "extra.branch");
+  if (entity === "item" && branch && legacyBranch(branch[1]) && !("extra.branches" in (op.data ?? {}))) {
+    accepted.push(["extra.branches", [legacyBranch(branch[1])]]);
   }
 
   if (accepted.length) {

@@ -298,6 +298,8 @@ def _url(raw) -> str | None:
 def cmd_set(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     value = " ".join(args.value).strip()
+    if args.field == "branch" and not value:
+        die(_EMPTY_BRANCH, 2)
     value = None if value.lower() in ("", "none", "-") else value
     if args.field in ("title", "type", "priority") and not value:
         die(f"A {args.field} can't be cleared.", 2)
@@ -317,15 +319,27 @@ def _set_branches(root: Path, it, branches: list) -> None:
     print(f'{it["id"]}: branches = {", ".join(branches) or "—"}')
 
 
-def cmd_branch_add(root: Path, args) -> None:
-    it = store.resolve_item(root, args.query)
+_EMPTY_BRANCH = "A branch name can't be empty."
+_BRANCH_USAGE = "usage: todo branch <query> | todo branch add|rm <query> <name>"
+
+
+def cmd_branch(root: Path, args) -> None:
+    words = args.words
+    if len(words) == 1:
+        it = store.resolve_item(root, words[0])
+        print(f'{it["id"]}: branches = {", ".join(it["branches"]) or "—"}')
+        return
+    if len(words) != 3 or words[0] not in ("add", "rm"):
+        die(_BRANCH_USAGE, 2)
+    verb, query, name = words[0], words[1], words[2].strip()
+    if not name:
+        die(_EMPTY_BRANCH, 2)
+    it = store.resolve_item(root, query)
     branches = it["branches"]
-    _set_branches(root, it, branches if args.name in branches else branches + [args.name])
-
-
-def cmd_branch_rm(root: Path, args) -> None:
-    it = store.resolve_item(root, args.query)
-    _set_branches(root, it, [b for b in it["branches"] if b != args.name])
+    if verb == "add":
+        _set_branches(root, it, branches if name in branches else branches + [name])
+    else:
+        _set_branches(root, it, [b for b in branches if b != name])
 
 
 def cmd_phase(root: Path, args) -> None:
@@ -1258,14 +1272,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("other", help="the related item")
     p.set_defaults(func=cmd_unrelate)
 
-    bp = sub.add_parser("branch", parents=[common], help="list an item's branches")
-    bsub = bp.add_subparsers(dest="branchcmd", metavar="<branchcmd>")
-    for name, func, helptext in (("add", cmd_branch_add, "add a branch to an item"),
-                                 ("rm", cmd_branch_rm, "remove a branch from an item")):
-        bl = bsub.add_parser(name, parents=[common], help=helptext)
-        bl.add_argument("query", help="id or part of a title")
-        bl.add_argument("name", help="the branch, e.g. feat/login")
-        bl.set_defaults(func=func)
+    p = sub.add_parser("branch", parents=[common], usage=_BRANCH_USAGE[len("usage: "):],
+                       help="show an item's branches, or add or remove one")
+    p.add_argument("words", nargs="+", metavar="[add|rm] <query> [<name>]",
+                   help="an item to show; or add|rm, the item, and the branch, e.g. feat/login")
+    p.set_defaults(func=cmd_branch)
 
     jp = sub.add_parser("jira", parents=[common], help="link an item to Jira tickets")
     jsub = jp.add_subparsers(dest="jiracmd", metavar="<jiracmd>")
@@ -1360,7 +1371,7 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    if args.command in ("task", "check", "jira", "branch") and not getattr(args, "func", None):
+    if args.command in ("task", "check", "jira") and not getattr(args, "func", None):
         parser.parse_args([args.command, "--help"])
         sys.exit(0)
     if getattr(args, "via", None):

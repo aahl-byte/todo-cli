@@ -247,14 +247,14 @@ def jira_keys(raw) -> list:
 
 
 def branch_list(meta) -> list:
-    """The item's branches, in order, without duplicates; a legacy single
-    `branch` reads as a one-branch list."""
+    """The item's branches, trimmed, in order, without blanks or duplicates.
+    A single name, or a legacy `branch`, reads as a one-branch list."""
     raw = meta.get("branches")
-    if raw is None and meta.get("branch") not in (None, ""):
-        raw = [meta.get("branch")]
+    if raw is None:
+        raw = meta.get("branch")
     out = []
-    for b in raw if isinstance(raw, list) else []:
-        b = to_str(b).strip()
+    for b in raw if isinstance(raw, list) else [raw]:
+        b = to_str(b).strip() if b is not None else ""
         if b and b not in out:
             out.append(b)
     return out

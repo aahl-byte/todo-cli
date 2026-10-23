@@ -104,8 +104,9 @@ export function deriveCalcStatus(statuses: string[]): string | null {
 
 /** An item's branches from its extra; a legacy single `branch` reads as a one-branch list. */
 export function itemBranches(extra: Record<string, any> | null | undefined): string[] {
-  const raw = Array.isArray(extra?.branches) ? extra.branches : extra?.branch ? [extra.branch] : [];
-  return [...new Set(raw.filter((b: unknown): b is string => typeof b === "string" && b.trim() !== ""))];
+  const raw = extra?.branches ?? extra?.branch;
+  const names = (Array.isArray(raw) ? raw : [raw]).filter((b): b is string => typeof b === "string").map((b) => b.trim());
+  return [...new Set(names.filter(Boolean))];
 }
 
 export function nowIso(): string {
