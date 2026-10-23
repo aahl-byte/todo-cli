@@ -1509,8 +1509,9 @@ def _push_doc(root, remote, project, d: Path, item_uid: str, name: str, meta: di
     if size > docs.MAX_BYTES:
         report.messages.append(f"{d.name}: doc {name} is over {docs.human_size(docs.MAX_BYTES)}; not synced")
         return None
-    if e.get("sha256") != sha or not e.get("by") or e.get("uid") != uid:
+    if e.get("sha256") != sha or not e.get("by"):
         e = meta[name] = docs._mine(item_uid, name, sha, size, _now(), e.get("base"))
+    e["uid"] = uid
     data = path.read_bytes()
     if docs.sha256_bytes(data) != sha:
         return None                 # still being written; the next round has it

@@ -83,14 +83,14 @@ class Remote:
         self.token = token
         self.timeout = timeout
 
-    def request(self, method: str, path: str, body=None) -> dict:
+    def request(self, method: str, path: str, body=None, timeout: float | None = None) -> dict:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.url + path, data=data, method=method)
         req.add_header("content-type", "application/json")
         if self.token:
             req.add_header("authorization", f"Bearer {self.token}")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:
@@ -133,8 +133,9 @@ class Remote:
         return t["key"]
 
     def doc_record(self, project: str, record: dict) -> dict:
-        """`{status: applied|conflict, doc}`: the doc as the server has it now."""
-        return self.request("PUT", self._docs_path(project), record)
+        """`{status: applied|conflict, doc}`: the doc as the server has it now.
+        The server hashes the stored bytes first, so this gets a transfer's time."""
+        return self.request("PUT", self._docs_path(project), record, max(self.timeout, TRANSFER_TIMEOUT))
 
     def doc_remove(self, project: str, uid: str, base: str) -> dict:
         query = urllib.parse.urlencode({"base": base})
