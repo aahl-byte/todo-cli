@@ -1,0 +1,21 @@
+about: in dry-run, read-only MCP tools run and the transition per issue is only recorded
+plugin: jira-transition
+instance: {id: wont-do, name: Won't do, on: [{status: {to: cancelled}}], settings: {to: "Won't Do", never: [Done]}}
+event: {type: status, from: in-progress, to: cancelled}
+dry_run: true
+connections:
+  jira: {kind: mcp}
+tools:
+  jira:
+    - name: getTransitionsForJiraIssue
+      readOnly: true
+      results:
+        - structuredContent: {transitions: [{id: "11", to: {name: In Progress}}, {id: "41", to: {name: "Won't Do"}}]}
+    - name: transitionJiraIssue
+      readOnly: false
+      results: [{content: [{type: text, text: "{}"}]}]
+expect:
+  attached: []
+  wouldSend:
+    - {connection: jira, tool: transitionJiraIssue, input: {issueIdOrKey: SR-101, transition: {id: "41"}}}
+    - {connection: jira, tool: transitionJiraIssue, input: {issueIdOrKey: SR-102, transition: {id: "41"}}}

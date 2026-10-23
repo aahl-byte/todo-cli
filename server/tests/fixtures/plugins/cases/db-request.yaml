@@ -1,0 +1,22 @@
+about: each, when and every attachment kind a YAML plugin can make, per branch
+plugin: db-request
+instance: {id: default, name: (default)}
+event: {type: push, branch: feat/login}
+connections:
+  api: {kind: http}
+responses:
+  api:
+    - method: GET
+      path: /submissions?branch=feat%2Flogin
+      body:
+        - {id: 12, state: open, migrations_pr: "https://github.com/acme/moneyball/pull/560", notes: "adds the sessions table"}
+        - {id: 13, state: merged, migrations_pr: "https://github.com/acme/moneyball/pull/561"}
+        - {id: 14, state: open}
+    - {method: GET, path: /submissions?branch=feat%2Flogin-api, body: []}
+expect:
+  attached:
+    - {kind: link, key: "link:https://github.com/acme/moneyball/pull/560", type: db-request, url: "https://github.com/acme/moneyball/pull/560", label: migrations for feat/login}
+    - {kind: link, key: "link:https://github.com/acme/moneyball/pull/561", type: db-request, url: "https://github.com/acme/moneyball/pull/561", label: migrations for feat/login}
+    - {kind: edge, key: "edge:https://github.com/acme/moneyball/pull/560", needs: "https://github.com/acme/moneyball/pull/560", in: staging, because: db-request 12 migrations}
+    - {kind: doc, key: "doc:db-request-12.md", name: db-request-12.md, content: adds the sessions table}
+  wouldSend: []

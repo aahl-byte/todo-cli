@@ -1,0 +1,24 @@
+about: pr-link links each branch's PR, querying with the owner-qualified, URL-encoded branch
+plugin: pr-link
+instance: {id: default, name: (default)}
+event: {type: push, branch: feat/login}
+connections:
+  github: {kind: http, auth: bearer, secret: ghp_test}
+responses:
+  github:
+    - method: GET
+      path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all
+      body: [{html_url: "https://github.com/acme/web/pull/7", number: 7, title: Fix login}]
+    - method: GET
+      path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin-api&state=all
+      body: [{html_url: "https://github.com/acme/web/pull/9", number: 9, title: Login API}, {html_url: "https://github.com/acme/web/pull/7", number: 7, title: Fix login}]
+expect:
+  attached:
+    - {kind: link, key: "link:https://github.com/acme/web/pull/7", type: pr, url: "https://github.com/acme/web/pull/7", label: "#7 · Fix login"}
+    - {kind: link, key: "link:https://github.com/acme/web/pull/9", type: pr, url: "https://github.com/acme/web/pull/9", label: "#9 · Login API"}
+  wouldSend: []
+  log: ["dropped a second link with key link:https://github.com/acme/web/pull/7"]
+received:
+  github:
+    - {method: GET, path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all, authorization: Bearer ghp_test}
+    - {method: GET, path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin-api&state=all, authorization: Bearer ghp_test}

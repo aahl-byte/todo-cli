@@ -1,0 +1,44 @@
+// The CLI's way into the plugin host: a run's input as JSON on stdin, its
+// RunResult as JSON on stdout. A failed run still exits 0; unreadable input exits 2.
+import { runInstance } from "./host";
+import type { RunInput, RunResult } from "./types";
+
+const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+async function readStdin(): Promise<string> {
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
+}
+
+/** The input, or what's wrong with it. */
+export function parseInput(text: string): RunInput | string {
+  let input: unknown;
+  try {
+    input = JSON.parse(text);
+  } catch (e) {
+    return `input isn't JSON: ${(e as Error).message}`;
+  }
+  if (!isMap(input)) return "input must be a JSON object";
+  for (const k of ["plugin", "instance", "item", "event"]) if (!isMap(input[k])) return `input needs ${k} as an object`;
+  if (input.connections !== undefined && !isMap(input.connections)) return "connections must be an object";
+  return { ...input, connections: input.connections ?? {}, dryRun: input.dryRun === true } as RunInput;
+}
+
+async function main() {
+  const input = parseInput(await readStdin());
+  if (typeof input === "string") {
+    process.stderr.write(`plugin host: ${input}\n`);
+    process.exit(2);
+  }
+  let result: RunResult;
+  try {
+    result = await runInstance(input);
+  } catch (e) {
+    result = { attached: [], wouldSend: [], log: [], error: (e as Error).message };
+  }
+  process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(0));
+}
+
+void main();
