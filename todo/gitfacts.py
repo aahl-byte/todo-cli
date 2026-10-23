@@ -443,7 +443,7 @@ def _targets(repo: Repo, facts: dict, open_ids: set, owners: dict, track: list) 
 
 def _relate(x: tuple, y: tuple, ux: set, uy: set):
     """Who needs whom between two related branches: (dependent, dependency), or None when it's ambiguous."""
-    (xi, xb), (yi, yb) = x, y
+    xb, yb = x[1], y[1]
     if yb["name"] in (xb.get("chain") or []):
         return x, y
     if xb["name"] in (yb.get("chain") or []):
