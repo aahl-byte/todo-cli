@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadPlugins, PluginsFileError } from "@/lib/plugins/load";
 import { runInstance } from "@/lib/plugins/host";
 import { openConnection } from "@/lib/plugins/connections";
-import type { PluginEvent, PluginItem, ResolvedConnection, RunInput } from "@/lib/plugins/types";
+import { parseDuration, pickInstances } from "@/lib/plugins/triggers";
+import type { InstanceDef, PluginDef, PluginEvent, PluginItem, ResolvedConnection, RunInput } from "@/lib/plugins/types";
 import { fakeMcp, fakeServer, type FakeServer, type Recorded } from "./plugin-fakes";
 import { fillExpr, fillJson, fillString, fillUrl, lookup, templateErrors } from "@/lib/plugins/template";
 import { search, test as holds, truthy } from "@/lib/plugins/expr";
@@ -551,5 +552,54 @@ describe("code plugins", () => {
     const r = await runJs("export function run() { const a = []; for (;;) a.push('x'.repeat(1 << 16) + a.length); }",
                           { limits: { memoryBytes: 8 * 1024 * 1024 } });
     expect(r.error).toMatch(/out of memory/i);
+  });
+});
+
+describe("triggers", () => {
+  const ids = (plugin: PluginDef, instances: InstanceDef[], event: PluginEvent) => pickInstances(plugin, instances, event).map((i) => i.id);
+  const plugin: PluginDef = { on: ["push", { status: { to: "review" } }] };
+  const instances: InstanceDef[] = [
+    { id: "default", name: "Default" },
+    { id: "off", name: "Off", enabled: false },
+    { id: "start", name: "Start", on: ["manual", { status: { from: "*", to: "in-progress" } }] },
+    { id: "qa", name: "QA", on: [{ status: { from: "review", to: "ready-for-qa" } }] },
+    { id: "button", name: "Button", on: ["manual"] },
+    { id: "deploys", name: "Deploys", on: ["deployment", "pr"] },
+  ];
+
+  it("matches status moves by from and to, with * as any", () => {
+    expect(ids(plugin, instances, { type: "status", from: "todo", to: "review" })).toEqual(["default"]);
+    expect(ids(plugin, instances, { type: "status", from: "todo", to: "in-progress" })).toEqual(["start"]);
+    expect(ids(plugin, instances, { type: "status", from: "review", to: "ready-for-qa" })).toEqual(["qa"]);
+    expect(ids(plugin, instances, { type: "status", from: "in-qa", to: "ready-for-qa" })).toEqual([]);
+  });
+
+  it("matches git events by type and manual runs by instance id", () => {
+    expect(ids(plugin, instances, { type: "push", branch: "feat/x" })).toEqual(["default"]);
+    expect(ids(plugin, instances, { type: "pr", branch: "feat/x" })).toEqual(["deploys"]);
+    expect(ids(plugin, instances, { type: "deployment", branch: "feat/x" })).toEqual(["deploys"]);
+    expect(ids(plugin, instances, { type: "manual", instance: "button" })).toEqual(["button"]);
+    expect(ids(plugin, instances, { type: "manual", instance: "default" })).toEqual([]);
+  });
+
+  it("refreshes every enabled instance that runs without a person asking", () => {
+    expect(ids(plugin, instances, { type: "refresh" })).toEqual(["default", "start", "qa", "deploys"]);
+    expect(ids({ on: ["manual"], every: "5m" }, [{ id: "a", name: "A" }], { type: "refresh" })).toEqual(["a"]);
+  });
+
+  it("fires only the first match when exclusive", () => {
+    const jira: PluginDef = { exclusive: true };
+    const rules: InstanceDef[] = [
+      { id: "to-review", name: "a", on: [{ status: { to: "review" } }] },
+      { id: "any", name: "b", on: [{ status: { from: "*", to: "*" } }] },
+    ];
+    expect(ids(jira, rules, { type: "status", from: "todo", to: "review" })).toEqual(["to-review"]);
+    expect(ids(jira, rules, { type: "status", from: "todo", to: "done" })).toEqual(["any"]);
+    expect(ids({ ...jira, exclusive: false }, rules, { type: "status", from: "todo", to: "review" })).toEqual(["to-review", "any"]);
+  });
+
+  it("parses durations", () => {
+    expect([parseDuration("2s"), parseDuration("3m"), parseDuration("1h"), parseDuration("250ms"), parseDuration(5)]).toEqual([2_000, 180_000, 3_600_000, 250, 5]);
+    expect(() => parseDuration("soon")).toThrow('not a duration: "soon"');
   });
 });
