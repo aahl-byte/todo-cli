@@ -487,7 +487,7 @@ def archive_todos(root: Path):
 
 
 # ── notes and dev log (one file per entry) ────────────────────────────────────
-def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict):
+def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict, uid: str | None = None):
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return None
@@ -495,7 +495,7 @@ def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dic
     d.mkdir(exist_ok=True)
     ids = [e["id"] for e in _read_entries(d)]
     new_id = max(ids) + 1 if ids else 1
-    full = {"uid": ulid.new(), **meta, "author": identity.user(), "via": identity.via(),
+    full = {"uid": uid or ulid.new(), **meta, "author": identity.user(), "via": identity.via(),
             SEEN: [identity.party()]}
     yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.md",
                         frontmatter.join(full, text + "\n"))
@@ -525,7 +525,7 @@ def mentions(text: str) -> list:
 
 
 def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "context",
-             extra: dict | None = None):
+             extra: dict | None = None, uid: str | None = None):
     """Append a note of `kind` with a fresh per-item id. `comment` and
     `qa-rejection` notes record their @mentions; `clarification` notes start
     open. Returns the id, or None if the item is missing."""
@@ -536,7 +536,7 @@ def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "con
             meta["mentions"] = found
     if kind == "clarification":
         meta.setdefault("state", "open")
-    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta)
+    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta, uid)
 
 
 def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: str) -> bool:
@@ -571,10 +571,23 @@ def remove_note(root: Path, item_id: str, note_id: int) -> bool:
     return _remove_entry(root, item_id, NOTES_DIR, note_id)
 
 
-def add_log(root: Path, item_id: str, text: str, now_iso: str):
+def add_log(root: Path, item_id: str, text: str, now_iso: str, extra: dict | None = None,
+            uid: str | None = None):
     """Append a dated log entry with a fresh per-item id. Returns the id, or None
     if the item is missing."""
-    return _add_entry(root, item_id, LOG_DIR, text, now_iso, {})
+    return _add_entry(root, item_id, LOG_DIR, text, now_iso, dict(extra or {}), uid)
+
+
+def rewrite_entry(root: Path, item_id: str, sub: str, entry_id: int, text: str, meta: dict) -> bool:
+    """Replace a note's or log entry's text and front matter as given, keeping its file and id."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return False
+    for e in _read_entries(item_dir / sub):
+        if e["id"] == entry_id:
+            yamlio.write_atomic(e["file"], frontmatter.join(meta, text + "\n"))
+            return True
+    return False
 
 
 def remove_log(root: Path, item_id: str, log_id: int) -> bool:

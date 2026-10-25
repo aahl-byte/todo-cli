@@ -1028,13 +1028,15 @@ def _merged_into(repo: Repo, root: Path, group: list, moved_tracked: set) -> set
 
 
 def on_round(root: Path, remote=None, project: str | None = None, *, force: bool = False,
-             repos: set | None = None, fetch_prs=True, prs_for: set | None = None) -> list:
+             repos: set | None = None, fetch_prs=True, prs_for: set | None = None,
+             seen: dict | None = None) -> list:
     """Recompute the repos whose relevant branches moved (one ls-remote each)
     or whose items' branches changed; with `force`, every repo asked for. PRs
     are refetched for branches whose head moved since their last fetch, and
     for the items in `prs_for`; when a tracked branch moved, one list of the
     PRs closed into it stands in for refetching each open one. Posts what
-    changed when given a server.
+    changed when given a server. Each repo's ls-remote answer goes into `seen`
+    as `{tips, default, dir}`.
     Returns the ids of changed items."""
     all_items = [it for it in store.list_todos(root) if not _archived(root, it)]
     groups = _groups(root, all_items)
@@ -1059,6 +1061,8 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
         tips = repo.ls_remote()
         if tips is None:
             continue
+        if seen is not None:
+            seen[key] = {"tips": tips, "default": repo.default, "dir": d}
         old_tips = saved.get("tips") or {}
         moved = {n for n in set(tips) | set(old_tips) if tips.get(n) != old_tips.get(n)}
         if saved.get("default") not in (None, repo.default):
@@ -1146,9 +1150,9 @@ def post_pending(root: Path) -> None:
     _write_json(f, state)
 
 
-def maybe_local(root: Path) -> None:
+def maybe_local(root: Path, seen: dict | None = None) -> None:
     """A local-only store's recompute, at most every LOCAL_EVERY seconds, from
-    local git alone: PRs wait for `todo refresh`."""
+    local git alone: PRs wait for `todo refresh`. `seen` gets each repo's tips."""
     if sync_config(root) is not None or not root.is_dir():
         return
     f = _state_file(root, TIPS_FILE)
@@ -1158,7 +1162,7 @@ def maybe_local(root: Path) -> None:
     state["local_at"] = time.time()
     _write_json(f, state)
     try:
-        on_round(root, fetch_prs=False)
+        on_round(root, fetch_prs=False, seen=seen)
     except Exception as e:  # noqa: BLE001 — facts must never break a command
         print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
 

@@ -39,6 +39,8 @@ class FakeServer:
         self.doc_tombs = {}      # deleted doc uid → its last sha256
         self.git_facts = []
         self.git_facts_offline = False
+        self.plugin_config = {}  # repo → {instances, grants}; None answers 404, like an older server
+        self.plugin_creds = []   # (repo, connection, secret) per credential posted
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -365,6 +367,29 @@ class FakeServer:
                 server.git_facts.extend(copy.deepcopy(known))
                 return {"ok": True, "stored": len(known),
                         "skipped": [f["item_uid"] for f in facts if f["item_uid"] not in server.rows]}
+
+            def plugins(self, project, repo):
+                from todo.remote import RemoteError
+                if server.offline:
+                    raise RemoteError("fake offline")
+                if server.plugin_config is None:
+                    raise RemoteError("no such route", 404)
+                got = server.plugin_config.get(repo) or {}
+                return {"instances": copy.deepcopy(got.get("instances") or {}),
+                        "grants": copy.deepcopy(got.get("grants") or {}), "plugins": [],
+                        "secrets": [c for r, c, _ in server.plugin_creds if r == repo], "runs": {}}
+
+            def put_plugins(self, project, repo, plugin, instances=None, grants=None):
+                got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
+                if instances is not None:
+                    got["instances"][plugin] = copy.deepcopy(instances)
+                if grants is not None:
+                    got["grants"][plugin] = list(grants)
+                return {"ok": True}
+
+            def plugin_credential(self, project, repo, connection, secret):
+                server.plugin_creds.append((repo, connection, secret))
+                return {"ok": True}
 
             def changes(self, project, since, limit=500):
                 if server.offline:
