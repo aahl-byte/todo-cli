@@ -529,6 +529,9 @@ class Flaky:
     def changes(self, project, since, limit=500):
         return self.inner.changes(project, since, limit)
 
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
     def checkout(self, project, dir_, repo):
         return self.inner.checkout(project, dir_, repo)
 

@@ -26,3 +26,44 @@ describe("markdown", () => {
     expect(html("## **Big** news\n\nmore", true)).toBe('<span class="md"><strong>Big</strong> news</span>');
   });
 });
+
+describe("doc references", () => {
+  const withDocs = (text: string) => renderToStaticMarkup(<Markdown text={text} docs="/p/p/i/login/docs" />);
+
+  it("link doc:<name> to the doc on its item", () => {
+    const out = withDocs("See doc:plan.md, then doc:mock.html.");
+    expect(out).toContain('<a href="/p/p/i/login/docs/plan.md" class="doc-ref">doc:plan.md</a>,');
+    expect(out).toContain('<a href="/p/p/i/login/docs/mock.html" class="doc-ref">doc:mock.html</a>.');
+  });
+
+  it("take a written link to doc:, and encode the name", () => {
+    expect(withDocs("[the design](<doc:design v2.md>)")).toContain('<a href="/p/p/i/login/docs/design%20v2.md" class="doc-ref">the design</a>');
+  });
+
+  it("leave code and other words alone", () => {
+    const out = withDocs("`doc:plan.md` and nodoc:x and https://x.test/doc:y");
+    expect(out).not.toContain("doc-ref");
+  });
+
+  it("stay text where there is no item to link to", () => {
+    const out = html("See doc:plan.md");
+    expect(out).toContain('<span class="doc-ref">doc:plan.md</span>');
+    expect(out).not.toContain("<a");
+  });
+});
+
+describe("doc references, whatever their case", () => {
+  const withDocs = (text: string) => renderToStaticMarkup(<Markdown text={text} docs="/p/k/i/i1/docs" />);
+
+  it("link DOC: like doc:, and never leave a dead DOC: href", () => {
+    expect(withDocs("see DOC:plan.md")).toContain('<a href="/p/k/i/i1/docs/plan.md" class="doc-ref">DOC:plan.md</a>');
+    expect(withDocs("[x](DOC:plan.md)")).toContain('href="/p/k/i/i1/docs/plan.md"');
+    expect(withDocs("[x](DOC:javascript:alert(1))")).not.toMatch(/href="DOC:/i);
+  });
+
+  it("link only names a doc could have", () => {
+    for (const text of ["[x](doc:javascript:alert(1))", "[x](doc:..)", "see doc:../../api/x", "[x](doc:%2e%2e%2f%2e%2e%2fapi)"]) {
+      expect([text, withDocs(text)]).not.toEqual([text, expect.stringContaining("<a")]);
+    }
+  });
+});

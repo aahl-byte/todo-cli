@@ -7,6 +7,7 @@
         devlogs/{ts}-{id}.md    one dev-log entry per file
         history/{ts}-{id}.yaml  one status transition per file
         checks/CHECKS.yaml      deployment checks, in order
+        docs/{name}             the item's docs; docs/.meta.yaml says who wrote each
 
 An item's `status:` decides its folder; changing status moves the directory.
 Every write is atomic and touches only the files it changes. See
@@ -19,7 +20,7 @@ import os
 import re
 from pathlib import Path
 
-from . import filecache, frontmatter, identity, ulid, yamlio
+from . import docs, filecache, frontmatter, identity, ulid, yamlio
 from .status import COMPLETE, TERMINAL, derive_calc_status
 from .util import die, to_str
 
@@ -301,6 +302,7 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
                    if full else [],
         "tasks": _read_tasks(item_dir),
         "checks": _read_checks(item_dir),
+        "docs": docs.list_docs(item_dir) if full else [],
         "calc_status": to_str(calc) if calc not in (None, "") else None,
         "created": to_str(created) if created not in (None, "") else None,
         "completed": to_str(completed) if completed not in (None, "") else None,

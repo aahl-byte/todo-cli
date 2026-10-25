@@ -33,6 +33,10 @@ class FakeServer:
         self.offline = False
         self.pushes = []
         self.checkouts = []
+        self.blobs = {}          # file key → bytes
+        self.uploads = []        # file keys, in upload order
+        self.doc_lists = []      # (item, after) per doc list request
+        self.doc_tombs = {}      # deleted doc uid → its last sha256
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -223,6 +227,80 @@ class FakeServer:
         self.tombs[op["uid"]] = (seq, author)
         return {"op_id": op["op_id"], "status": "applied", "versions": {}}
 
+    # ── docs (server/lib/docs.ts) ────────────────────────────────────────────
+    def _doc(self, item_uid, name):
+        from todo import docs
+        return next((r for r in self.rows.values() if r["_entity"] == "doc" and r["item_uid"] == item_uid
+                     and docs.name_key(r["name"]) == docs.name_key(name)), None)
+
+    def list_docs(self, item=None, after=None, limit=2):
+        """A page of doc rows by uid; a small page, so tests page through."""
+        self.doc_lists.append((item, after))
+        rows = sorted((r for r in self.rows.values() if r["_entity"] == "doc"
+                       and (item is None or r["item_uid"] == item) and (after is None or r["uid"] > after)),
+                      key=lambda r: r["uid"])
+        page = rows[:limit]
+        return {"docs": [self._public(r) for r in page],
+                "next": page[-1]["uid"] if len(rows) > limit else None}
+
+    def _upload(self, data):
+        key = f"{self.project}/docs/{len(self.blobs) + 1:026d}.bin"
+        self.blobs[key] = data
+        self.uploads.append(key)
+        return key
+
+    def _public(self, row):
+        return None if row is None else {k: copy.deepcopy(v) for k, v in row.items() if k != "_entity"}
+
+    def record_doc(self, rec, author):
+        """A doc record: applied when `base` is the server's current sha256, else a conflict."""
+        import hashlib
+        from todo import docs
+        if rec["item_uid"] not in self.rows:
+            from todo.remote import RemoteError
+            raise RemoteError("no such item", 422)
+        data = self.blobs[rec["file_key"]]
+        sha = hashlib.sha256(data).hexdigest()
+        row = self._doc(rec["item_uid"], rec["name"])
+        if row and row["name"] != rec["name"]:
+            from todo.remote import RemoteError
+            raise RemoteError(f'409 a doc named {row["name"]} already exists', 409)
+        current = row["sha256"] if row else None
+        if sha == current:
+            return {"status": "applied", "doc": self._public(row)}
+        if rec.get("base") != current:
+            return {"status": "conflict", "doc": self._public(row)}
+        uid = docs.doc_uid(rec["item_uid"], rec["name"])
+        seq = self._bump("doc", uid, rec["item_uid"], author=author)
+        self.doc_tombs.pop(uid, None)
+        self.rows[uid] = {"_entity": "doc", "uid": uid, "item_uid": rec["item_uid"], "name": rec["name"],
+                          "size": len(data), "sha256": sha, "file_key": rec["file_key"],
+                          "content_type": "application/octet-stream", "by": author,
+                          "via": rec.get("via") or "human", "at": f"2026-10-02T12:{seq % 60:02d}:00.000Z",
+                          "versions": {"sha256": seq}}
+        return {"status": "applied", "doc": self._public(self.rows[uid])}
+
+    def remove_doc(self, uid, base, author):
+        row = self.rows.get(uid)
+        if row is None or row["_entity"] != "doc":
+            return {"status": "applied", "doc": None}
+        if row["sha256"] != base:
+            return {"status": "conflict", "doc": self._public(row)}
+        self._bump("doc", uid, row["item_uid"], deleted=True, author=author)
+        del self.rows[uid]
+        self.doc_tombs[uid] = row["sha256"]
+        return {"status": "applied", "doc": None}
+
+    def dashboard_put(self, item_uid, name, data, author):
+        """An upload or replace from the dashboard, which always knows the current version."""
+        row = self._doc(item_uid, name)
+        return self.record_doc({"item_uid": item_uid, "name": name, "file_key": self._upload(data),
+                                "base": row["sha256"] if row else None}, author)
+
+    def dashboard_delete(self, item_uid, name):
+        row = self._doc(item_uid, name)
+        return self.remove_doc(row["uid"], row["sha256"], "carol")
+
     # ── the Remote interface ─────────────────────────────────────────────────
     def client(self, author):
         server = self
@@ -234,6 +312,31 @@ class FakeServer:
                     raise RemoteError("fake offline")
                 server.pushes.append(copy.deepcopy(ops))
                 return server.apply(copy.deepcopy(ops), author)
+
+            def doc_upload(self, project, item_uid, name, data):
+                if server.offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                return server._upload(bytes(data))
+
+            def doc_record(self, project, rec):
+                return server.record_doc(copy.deepcopy(rec), author)
+
+            def doc_list(self, project, item=None, after=None):
+                if server.offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                return server.list_docs(item, after)
+
+            def doc_remove(self, project, uid, base):
+                return server.remove_doc(uid, base, author)
+
+            def doc_bytes(self, project, uid):
+                row = server.rows.get(uid)
+                if row is None:
+                    from todo.remote import RemoteError
+                    raise RemoteError("no such doc", 404)
+                return server.blobs[row["file_key"]]
 
             def checkout(self, project, dir_, repo):
                 server.checkouts.append((author, project, dir_, repo))
@@ -253,6 +356,8 @@ class FakeServer:
                     data = None if row is None else {k: copy.deepcopy(v) for k, v in row.items() if k != "_entity"}
                     out.append({"seq": seq, "entity": e, "uid": uid, "item_uid": item_uid,
                                 "deleted": row is None, "data": data})
+                    if e == "doc" and row is None and uid in server.doc_tombs:
+                        out[-1]["last_sha256"] = server.doc_tombs[uid]
                 return {"changes": out, "cursor": rows[-1][0] if rows else since,
                         "more": len(rows) == limit, "deploy_step": server.deploy_step,
                         "actions": server.actions}
