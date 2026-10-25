@@ -180,7 +180,11 @@ class FakeServer:
                 continue
             if f == "status" and row["_entity"] == "item" and v in ("ready-to-deploy", "deployed") \
                     and cur != v and not op.get("force") and self._waits(row["uid"]):
-                rejected.append({"field": f, "reason": "waits-on", "server_value": cur, "version": ver})
+                seen = self._waits(row["uid"])
+                rejected.append({"field": f, "reason": "waits-on", "server_value": cur, "version": ver,
+                                 "edges": [f'{e.get("id")} ({e.get("branch")}) {e["state"]}' for e in seen.get("needs") or []
+                                           if e["state"] in ("waiting", "stale", "unknown")],
+                                 "facts_at": seen.get("at")})
                 continue
             if cur == v:
                 out[f] = ver or 0
@@ -210,7 +214,7 @@ class FakeServer:
     def _waits(self, item_uid):
         """Like the server's guard: the item's latest posted git facts wait on something."""
         posted = [f["data"] for f in self.git_facts if f["item_uid"] == item_uid]
-        return bool(posted and posted[-1].get("waits_on"))
+        return posted[-1] if posted and posted[-1].get("waits_on") else None
 
     def _history(self, item, frm, to, author, op):
         import uuid

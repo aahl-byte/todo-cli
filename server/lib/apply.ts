@@ -11,7 +11,7 @@ import { queueAutoActions } from "./actions/runs";
 import { jiraReadOnly } from "./jira/config";
 import { inboundRules, jiraStatusFor } from "./jira/rules";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
-import { GUARDED, unresolvedEdges } from "./gitfacts";
+import { GUARDED, refusal, unresolvedEdges } from "./gitfacts";
 
 export interface Op {
   op_id: string;
@@ -45,6 +45,9 @@ export interface Rejection {
   version?: number;
   by?: string | null;
   at?: string | null;
+  /** A `waits-on` refusal: the unresolved edges the server saw, and when its facts were computed. */
+  edges?: string[];
+  facts_at?: string | null;
 }
 
 export interface Result {
@@ -559,7 +562,8 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     if (entity === "item" && field === "status") {
       const why = await statusRule(ctx, op, row, String(value));
       if (why) {
-        rejected.push({ field, reason: why, server_value: current, version });
+        rejected.push({ field, reason: why, server_value: current, version,
+                        ...(why === "waits-on" ? await refusal(ctx.t, ctx.project, row.uid) : {}) });
         continue;
       }
     }

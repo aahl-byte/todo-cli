@@ -769,12 +769,17 @@ def _relevant(root: Path, group: list) -> set:
     return names
 
 
+def _open_pr_items(root: Path, group: list) -> set:
+    return {it["id"] for it in group
+            if any((b.get("pr") or {}).get("state") in OPEN_PR for b in load(root, it).get("branches") or [])}
+
+
 def on_round(root: Path, remote=None, project: str | None = None, *, force: bool = False,
              repos: set | None = None, fetch_prs=True, prs_for: set | None = None) -> list:
     """Recompute the repos whose relevant branches moved (one ls-remote each)
     or whose items' branches changed; with `force`, every repo asked for. PRs
-    are refetched for branches whose head moved since their last fetch, and
-    for the items in `prs_for`. Posts what changed when given a server.
+    are refetched for branches whose head moved since their last fetch, for
+    open PRs when a tracked branch moved, and for the items in `prs_for`. Posts what changed when given a server.
     Returns the ids of changed items."""
     all_items = [it for it in store.list_todos(root) if not _archived(root, it)]
     groups = _groups(root, all_items)
@@ -817,7 +822,9 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
                 failure = "fetching from origin didn't bring every branch's commits"
             elif repo.missing(heads):
                 repo.fetch_if_needed(heads)
-        want = prs_for or set()
+        want = set(prs_for or ())
+        if fetch_prs and moved & set(repo.track()):
+            want |= _open_pr_items(root, group)           # a squash merge leaves the head where it was
         fresh = _compute(root, repo, group, lambda it: "force" if it["id"] in want else fetch_prs, all_items, failure)
         incomplete = failure is not None or any("unknown" in b for f in fresh.values() for b in f.get("branches") or [])
         if not incomplete:

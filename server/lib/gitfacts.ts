@@ -6,7 +6,7 @@
 // target; pairs are related by intersecting those sets in memory. A failure
 // never reads as "no edge": the stored facts stay, marked unknown.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
-import type { Db, Row } from "./db";
+import { db as appDb, type Db, type Row } from "./db";
 import { repoKey } from "./checkouts";
 import { later } from "./http";
 import { itemBranches } from "./model";
@@ -57,11 +57,13 @@ class NotFound extends Error {}
 const cache = new Map<string, unknown>();
 const inflight = new Map<string, Promise<void>>();
 const signatures = new Map<string, string>();
+const trackedTips = new Map<string, Record<string, string | undefined>>();
 
 export function resetGitFactsCache(): void {
   cache.clear();
   inflight.clear();
   signatures.clear();
+  trackedTips.clear();
 }
 
 async function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
@@ -176,7 +178,8 @@ class GitHubRepo {
 // ── computing ─────────────────────────────────────────────────────────────────
 interface ItemRow { uid: string; id: string; status: string; extra: Row | null }
 type Facts = Required<Pick<GitFacts, "repo" | "branches" | "needs" | "needed_by" | "shares" | "overlaps">> & GitFacts;
-interface Ctx { gh: GitHubRepo; tips: Record<string, string>; def: string; track: string[] }
+/** `refetchOpen`: a tracked branch moved, so an open PR may have merged without its head moving. */
+interface Ctx { gh: GitHubRepo; tips: Record<string, string>; def: string; track: string[]; refetchOpen?: boolean }
 type Key = string;
 const keyOf = (uid: string, branch: string): Key => `${uid}\x1f${branch}`;
 
@@ -188,7 +191,7 @@ async function branchFacts(c: Ctx, it: ItemRow, old: GitFacts): Promise<BranchFa
     const live = c.tips[name];
     const head = live ?? o?.head;
     let pr = o?.pr, prs = o?.prs ?? [], prHead = o?.pr_head;
-    if (head && prHead !== head) {
+    if (head && (prHead !== head || (c.refetchOpen && pr && OPEN_PR.includes(pr.state)))) {
       const [cur, all] = await c.gh.prs(name);
       pr = cur ?? undefined;
       prs = all;
@@ -486,8 +489,11 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
       const sig = signature(items, notes, stored, tips, def);
       if (signatures.get(`${project}\x1f${key}`) === sig) continue;
       const track = tips[def] ? await gh.track(def, tips[def]) : [];
-      facts = await computeRepo({ gh, tips, def, track }, items, all, stored, notes, fetchImpl);
+      const last = trackedTips.get(`${project}\x1f${key}`);
+      const refetchOpen = !last || track.some((t) => last[t] !== tips[t]);
+      facts = await computeRepo({ gh, tips, def, track, refetchOpen }, items, all, stored, notes, fetchImpl);
       signatures.set(`${project}\x1f${key}`, sig);
+      trackedTips.set(`${project}\x1f${key}`, Object.fromEntries(track.map((t) => [t, tips[t]])));
     } catch (e) {
       const why = `GitHub: ${e instanceof Error ? e.message : String(e)}`;
       for (const it of items) if (stored.has(it.uid)) await saveFacts(d, project, it.uid, failed(stored.get(it.uid)!, why), "server");
@@ -608,6 +614,24 @@ export async function recomputeAll(d: Db, fetchImpl: Fetch = fetch): Promise<str
   const rows = await d.query("select distinct project from items where jsonb_array_length(coalesce(extra->'branches', '[]'::jsonb)) > 0");
   for (const r of rows) await scheduleRecompute(d, r.project, fetchImpl);
   return rows.map((r) => r.project);
+}
+
+export function describeEdge(e: Edge): string {
+  return `${e.id ?? e.needs ?? "?"}${e.branch ? ` (${e.branch})` : ""} ${e.state}`;
+}
+
+/** For a stage the guard refused: the edges it saw and when its facts were computed. It schedules a
+ * recheck of the item's repo, since a CLI may have seen the dependency land first. */
+export async function refusal(d: Pick<Db, "query">, project: string, itemUid: string): Promise<{ edges: string[]; facts_at: string | null }> {
+  const [row] = await d.query("select at from git_facts where project = $1 and item_uid = $2", [project, itemUid]);
+  const edges = (await unresolvedEdges(d, project, itemUid)).map(describeEdge);
+  later(async () => {
+    const fresh = await appDb();
+    const [it] = await fresh.query("select extra from items where project = $1 and uid = $2", [project, itemUid]);
+    signatures.delete(`${project}\x1f${repoKey(it?.extra?.repo)}`);
+    await scheduleRecompute(fresh, project);
+  });
+  return { edges, facts_at: row?.at ? new Date(row.at).toISOString() : null };
 }
 
 /** What stops the item staging: waiting, stale or unknown edges, its own branches that couldn't be read, and dependency notes not checked yet. */

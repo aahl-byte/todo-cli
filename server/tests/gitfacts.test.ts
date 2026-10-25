@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as factsPOST } from "@/app/api/projects/[key]/git-facts/route";
+import { describe as describeResults } from "@/lib/action-helpers";
 import { computeProject, itemGitFacts, recomputing, resetGitFactsCache, storedFacts, trackList, type Fetch } from "@/lib/gitfacts";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -242,6 +243,25 @@ describe("computeProject", () => {
   });
 });
 
+describe("a tracked branch moving", () => {
+  it("refetches open PRs only, so a squash merge that left the head alone is seen", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]], ["C", ["feat/c"]]);
+    const tips = { main: M, staging: S, "feat/a": A, "feat/b": B, "feat/c": C };
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ tips, prs: { "feat/a": [open(7, A)], "feat/b": [open(8, B)], "feat/c": [merged(6, C, C)] },
+                                                            u: { ...u(S, A, [A]), ...u(S, B, [A, B]), ...u(S, C, []) } })).impl);
+    expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "waiting" }]);
+    const after = fakeGitHub({
+      tips: { ...tips, staging: Q }, track: TRACK,
+      prs: { "feat/a": [merged(7, A, Q)], "feat/b": [open(8, B)], "feat/c": [merged(6, C, C)] },
+      u: { ...u(Q, A, [A]), ...u(Q, B, [A, B]), ...u(Q, C, []) },
+    });
+    await computeProject(w.d, "p", after.impl);
+    expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "landed" }]);
+    const fetched = after.calls.filter((c) => c.includes("/pulls?")).map((c) => decodeURIComponent(c.split("head=acme%3A")[1].split("&")[0]));
+    expect(fetched.sort()).toEqual(["feat/a", "feat/b"]);
+  });
+});
+
 describe("itemGitFacts", () => {
   it("renders the stored row at once and recomputes after, one compute per project at a time", async () => {
     await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
@@ -285,6 +305,24 @@ describe("the stage and deploy guard", () => {
     expect((await stage(v)).rejected![0]).toMatchObject({ field: "status", reason: "waits-on" });
     const d = await w.one("alice", set("item", "B", "B", { status: "deployed" }, { status: v }));
     expect(d.rejected![0].reason).toBe("waits-on");
+  });
+
+  it("says what it saw and when, and rechecks, when it refuses a stage", async () => {
+    const gh = fakeGitHub(stackedSpec());
+    vi.stubGlobal("fetch", gh.impl);
+    await items(["A", ["feat/a"]]);
+    await w.one("alice", item("B", { id: "b", status: "qa-approved", extra: { repo: "acme/web", branches: ["feat/b"] } }));
+    const v = (await w.d.query("select versions from items where uid = 'B'"))[0].versions.status;
+    await w.d.query("insert into git_facts (project, item_uid, data, computed_by, at) values ('p', 'B', $1::jsonb, 'server', '2026-10-23T23:05:09Z')",
+      [JSON.stringify({ needs: [{ id: "a", branch: "feat/a", state: "waiting", source: "git" }], waits_on: ["a"] })]);
+    const r = await stage(v);
+    expect(r.rejected![0]).toMatchObject({ reason: "waits-on", edges: ["a (feat/a) waiting"], facts_at: "2026-10-23T23:05:09.000Z" });
+    expect(describeResults([r]).message).toBe(
+      "Not applied: the server still sees a (feat/a) waiting (facts from 2026-10-23 23:05); it's rechecking — retry in a minute, or use --force.");
+    for (let i = 0; i < 50 && !gh.calls.length; i++) await new Promise((ok) => setTimeout(ok, 5));
+    await recomputing("p");
+    expect(gh.calls).toContain("/repos/acme/web/branches?per_page=100&page=1");
+    vi.unstubAllGlobals();
   });
 
   it("refuses on an unknown edge and on an unknown branch of its own", async () => {

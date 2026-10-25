@@ -930,6 +930,10 @@ def _log_rejection(root, op, x, local, report) -> None:
         at = f' at {x["at"][:16].replace("T", " ")}' if x.get("at") else ""
         text = (f'offline {label}{x["field"]} → {value} not applied; '
                 f'{who} set {x.get("server_value")}{at}')
+    elif x.get("reason") == "waits-on" and x.get("edges"):
+        at = f' (facts from {x["facts_at"][:16].replace("T", " ")})' if x.get("facts_at") else ""
+        text = (f'{label}{x["field"]} → {value} not applied; the server still sees {", ".join(x["edges"])}{at}; '
+                "it's rechecking — retry in a minute, or use --force")
     else:
         text = f'{label}{x["field"]} → {value} not applied ({x.get("reason")})'
     report.messages.append(f"{item_id}: {text}")

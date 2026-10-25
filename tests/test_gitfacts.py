@@ -804,3 +804,44 @@ def test_a_recreated_parent_that_both_moved_past_is_ambiguous(fx):
     fx.refresh()
     assert ev(fx, a) == ([], []) and ev(fx, b) == ([], [])
     assert shares(fx, a) == [(b, "feat/b")]
+
+
+def test_a_tracked_branch_moving_refetches_open_prs_only(fx, monkeypatch):
+    a, b = stacked(fx)
+    fx.branch("feat/c")
+    fx.commit("feat/c", "c.txt", "c\n")
+    c = fx.item("Gamma", ["feat/c"])
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8)
+    fx.pr("feat/c", 6, state="merged", merge_commit=fx.sha("feat/c"))
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["needs"][0]["state"] == "waiting"
+    sq = fx.squash("feat/a", "staging")            # the merge leaves feat/a's head where it was
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    fetched = []
+    real = gitfacts.gh_get
+    monkeypatch.setattr(gitfacts, "gh_get", lambda path: fetched.append(path) or real(path))
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["needs"][0]["state"] == "landed"
+    heads = {p.split("head=")[1].split("&")[0].split(":")[1] for p in fetched if "/pulls?" in p}
+    assert heads == {"feat%2Fa", "feat%2Fb"} and c
+
+
+def test_a_stage_the_server_refuses_on_older_facts_says_so_in_the_sync_log(fx, synced, monkeypatch):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8)
+    store.update_todo(fx.root, b, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+    sync.run_round(fx.root, synced.client("alice"))
+    sync.run_round(fx.root, synced.client("alice"))
+    seen_at = synced._waits(store.resolve_item(fx.root, b)["uid"])["at"]
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    monkeypatch.setattr(gitfacts, "remote_for", lambda root: None)
+    run_cli(fx.root, ["stage", b])
+    synced.git_facts_offline = True                         # the CLI's newer facts don't reach it
+    report = sync.run_round(fx.root, synced.client("alice"))
+    want = (f"status → ready-to-deploy not applied; the server still sees {a} (feat/a) waiting "
+            f"(facts from {seen_at[:16].replace('T', ' ')}); it's rechecking — retry in a minute, or use --force")
+    assert any(want in m for m in report.messages)
+    assert any(want in e["text"] for e in store.get_item(fx.root, b)["log"])
