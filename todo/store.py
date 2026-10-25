@@ -397,6 +397,18 @@ def add_todo(root: Path, title: str, now_iso: str, status: str = "todo"):
     return get_item(root, item_id)
 
 
+def ensure_uid(root: Path, item_id: str) -> str | None:
+    """The item's uid, written into its TODO.yaml first when it has none."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return None
+    y, meta = _load_meta(item_dir)
+    if not to_str(meta.get("uid")):
+        meta["uid"] = ulid.new()
+        yamlio.save(y, item_dir / ITEM_FILE, meta)
+    return to_str(meta["uid"])
+
+
 def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
                 forced: bool = False) -> bool:
     """Patch status/priority/type/title or a people field on an item. `now_iso`

@@ -92,5 +92,4 @@ def _plugins_off(monkeypatch):
     from todo import plugins
 
     monkeypatch.setenv(plugins.OFF_ENV, "0")
-    plugins._said.clear()
-    plugins._queue.clear()
+    plugins.reset()

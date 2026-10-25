@@ -2,14 +2,18 @@
 under Node) runs a repo's `.todo-plugins/` for an item and an event, and what
 it attaches is written into the store, so the next sync round carries it.
 
-- Definitions come from the repo's default branch in its local checkout; a
-  repo without a plugins file still gets the shipped defaults.
+- Definitions come from the repo's default branch in its local checkout, never
+  its working tree (except `todo plugin test --local`); a repo without a
+  plugins file still gets the shipped defaults.
 - Instances and grants come from the server on a synced store (cached in
   `.sync/plugins.json`) and from `.TODO/.plugins.yaml` on a local-only one.
-- A run replaces the instance's previous attachments by key; each written note
-  or log entry carries `plugin` and `plugin_key` and a uid derived from both.
-- Failures never stop a command: they go to the run record and one line on
-  stderr.
+  On a synced store the CLI runs only the instances the server leaves to it.
+- Links and edges replace what the instance attached before; logs and
+  requests only add. Each written note or log entry carries `plugin` and
+  `plugin_key` and a uid derived from both. One a person removed is never
+  made again.
+- Every job of a command or round runs in one host process. Failures never
+  stop a command: they go to the run record and one line on stderr.
 
 See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §4.
 """
@@ -26,10 +30,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
-from . import checkout, connections, docs, gitfacts, store, sync, yamlio
+from . import checkout, connections, docs, gitfacts, render, store, sync, yamlio
 from .remote import RemoteError, remote_for, sync_config
 from .uids import hash_uid
 from .util import now, to_str
@@ -44,14 +51,17 @@ CACHE_FILE = "plugins.json"
 RUNS_FILE = "plugin-runs.json"
 TIPS_FILE = "plugin-tips.json"
 DEFS_FILE = "plugin-defs.json"
+LOCK_FILE = "plugins.lock"
 CACHE_EVERY = 60                    # seconds a synced store trusts its cached instances
+RETRY_EVERY = 60                    # seconds before a failed fetch of them is tried again
 FLOOR_EVERY = 60                    # seconds between checks for due `every:` floors
 DEFS_KEPT = 32
 LOG_KEPT = 50
-REMOVED = "~removed"                # in the runs file: item → plugin uids never to make again
+REMOVED = "~removed"                # in the runs file: item → plugin uids a person removed
 REMOVED_KEPT = 500
 REPLACED = ("link", "dependency")   # note kinds a run replaces; logs and requests only add
 GIT_TRIGGERS = ("push", "pr", "deployment")
+HOST_FAILED = "the plugin host failed"
 NO_NODE = "plugins skipped: node isn't installed"
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)$")
 _UNITS = {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -71,6 +81,12 @@ def off() -> bool:
     return os.environ.get(OFF_ENV, "").strip().lower() in ("0", "off", "no", "false")
 
 
+def reset() -> None:
+    """Forget this process's queued events and the notices already given."""
+    _queue.clear()
+    _said.clear()
+
+
 def notice(msg: str) -> None:
     """One line on stderr, once per command."""
     if msg not in _said:
@@ -84,9 +100,20 @@ def queue(item_id: str, event: dict) -> None:
 
 
 def _take_queue() -> list:
-    jobs = list(_queue)
+    jobs = [Job(item_id, event) for item_id, event in _queue]
     _queue.clear()
     return jobs
+
+
+class Job:
+    """An event to run for an item. `only` narrows it to those instance ids;
+    `anywhere` runs instances the server would otherwise run (a person asked)."""
+
+    def __init__(self, item_id: str, event: dict, only=None, anywhere: bool = False):
+        self.item_id, self.event, self.only, self.anywhere = item_id, event, only, anywhere
+
+    def sig(self) -> tuple:
+        return self.item_id, json.dumps(self.event, sort_keys=True), tuple(sorted(self.only or ())), self.anywhere
 
 
 # ── the host ──────────────────────────────────────────────────────────────────
@@ -132,8 +159,37 @@ def call_host(payload: dict) -> dict:
 
 
 # ── state files ───────────────────────────────────────────────────────────────
+_locks = threading.local()
+
+
 def _state(root: Path, name: str) -> Path:
     return gitfacts.state_file(root, name)
+
+
+@contextlib.contextmanager
+def state_lock(root: Path):
+    """The one lock every read-modify-write of the plugin state files takes. Re-entrant per thread."""
+    depth = getattr(_locks, "depth", 0)
+    try:
+        import fcntl
+    except ImportError:              # Windows: no flock
+        fcntl = None
+    if depth or fcntl is None:
+        _locks.depth = depth + 1
+        try:
+            yield
+        finally:
+            _locks.depth = depth
+        return
+    f = _state(root, LOCK_FILE)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with open(f, "a+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        _locks.depth = 1
+        try:
+            yield
+        finally:
+            _locks.depth = 0
 
 
 def _read(f: Path) -> dict:
@@ -142,7 +198,25 @@ def _read(f: Path) -> dict:
 
 def _write(f: Path, data: dict) -> None:
     f.parent.mkdir(parents=True, exist_ok=True)
-    yamlio.write_atomic(f, json.dumps(data, sort_keys=True, indent=1))
+    fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump(data, out, sort_keys=True, indent=1)
+        os.replace(tmp, f)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+@contextlib.contextmanager
+def _updating(root: Path, name: str):
+    """The state file's data, written back atomically on the way out, under the state lock."""
+    f = _state(root, name)
+    with state_lock(root):
+        data = _read(f)
+        yield data
+        _write(f, data)
 
 
 def _plain(v):
@@ -153,39 +227,39 @@ def _plain(v):
     return v
 
 
-# ── where an item's plugins come from ─────────────────────────────────────────
-def repo_key(root: Path, it: dict) -> str:
-    """owner/name of the item's repo: its repo field, else the store's own repo."""
-    return checkout.repo_key(it.get("repo")) or gitfacts.store_repo(root)[0]
-
-
 def is_open(root: Path, it: dict) -> bool:
     return it["folder"] in (store.OPEN, store.DEFERRED) and not gitfacts.is_archived(root, it)
 
 
 def _git(d: Path, *args: str, timeout: float = 30):
-    return gitfacts._git(d, *args, timeout=timeout)
+    try:
+        return subprocess.run(["git", "-C", str(d), *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
-def _default_ref(d: Path, info: dict | None) -> str | None:
-    """The default branch's tip as a ref this checkout can read: the tip
-    ls-remote saw (fetched when missing), else origin/<default>."""
+def _ok(r) -> bool:
+    return r is not None and r.returncode == 0
+
+
+# ── where an item's plugins come from ─────────────────────────────────────────
+def default_ref(d: Path, info: dict | None) -> tuple:
+    """(ref, None) for the default branch's tip as this checkout has it, or
+    (None, why). The default comes from ls-remote --symref, else origin/HEAD;
+    nothing is fetched."""
     default = (info or {}).get("default")
-    tip = ((info or {}).get("tips") or {}).get(default) if default else None
-    if tip:
-        if _git(d, "cat-file", "-e", f"{tip}^{{commit}}").returncode != 0:
-            _git(d, "fetch", "--quiet", "origin", default, timeout=120)
-        if _git(d, "cat-file", "-e", f"{tip}^{{commit}}").returncode == 0:
-            return tip
     if not default:
         r = _git(d, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-        head = r.stdout.strip() if r is not None and r.returncode == 0 else ""
+        head = r.stdout.strip() if _ok(r) else ""
         default = head.split("/", 1)[1] if head.startswith("origin/") else None
-    for name in [default] if default else ["main", "master"]:
-        r = _git(d, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{name}")
-        if r is not None and r.returncode == 0:
-            return f"origin/{name}"
-    return None
+    if not default:
+        return None, "default"
+    tip = ((info or {}).get("tips") or {}).get(default)
+    if tip and _ok(_git(d, "cat-file", "-e", f"{tip}^{{commit}}")):
+        return tip, None
+    if _ok(_git(d, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{default}")):
+        return f"refs/remotes/origin/{default}", None
+    return None, default
 
 
 def _code_names(text: str) -> list:
@@ -201,17 +275,7 @@ def _code_names(text: str) -> list:
     return sorted(n for n in names if _CODE_NAME.match(n) and ".." not in n.split("/"))
 
 
-def read_repo(d: Path, ref: str | None = None) -> dict | None:
-    """`{text, files}` from `.todo-plugins/` at `ref`, or from the working tree when `ref` is None;
-    None when the repo has no plugins file."""
-    def show(name: str) -> str | None:
-        if ref is None:
-            f = d / PLUGINS_DIR / name
-            return f.read_text() if f.is_file() else None
-        r = _git(d, "show", f"{ref}:{PLUGINS_DIR}/{name}")
-        return r.stdout if r is not None and r.returncode == 0 else None
-
-    text = show("plugins.yaml")
+def _payload(text: str | None, show) -> dict | None:
     if text is None:
         return None
     files = {}
@@ -222,23 +286,42 @@ def read_repo(d: Path, ref: str | None = None) -> dict | None:
     return {"text": text, "files": files}
 
 
+def read_repo(d: Path, ref: str) -> dict | None:
+    """`{text, files}` from `.todo-plugins/` at `ref`; None when the repo has no plugins file there."""
+    def show(name: str) -> str | None:
+        r = _git(d, "show", f"{ref}:{PLUGINS_DIR}/{name}")
+        return r.stdout if _ok(r) else None
+    return _payload(show("plugins.yaml"), show)
+
+
+def read_worktree(d: Path) -> dict | None:
+    """`{text, files}` from the working tree's `.todo-plugins/`, for `todo plugin test --local` alone."""
+    def show(name: str) -> str | None:
+        f = d / PLUGINS_DIR / name
+        return f.read_text() if f.is_file() else None
+    return _payload(show("plugins.yaml"), show)
+
+
 def describe(root: Path, payload: dict | None) -> dict | None:
-    """What the repo file declares, as the host reads it; None without a host. Cached by content."""
+    """What the repo file declares, as the host reads it; None without a host.
+    Cached by content, unless the host itself failed."""
     key = hashlib.sha1((_host_stamp() + "\x1f" + json.dumps(payload, sort_keys=True)).encode()).hexdigest()
-    f = _state(root, DEFS_FILE)
-    cache = _read(f)
-    if key in cache:
-        return cache[key]
+    cached = _read(_state(root, DEFS_FILE)).get(key)
+    if cached is not None:
+        return cached
     if host_command() is None:
         return None
     out = call_host({"mode": "describe", **({"repo": payload} if payload else {})})
     if not isinstance(out.get("plugins"), list):
         raise HostError("the plugin host's describe answer has no plugins")
-    cache.pop(key, None)
-    cache[key] = out
-    while len(cache) > DEFS_KEPT:
-        cache.pop(next(iter(cache)))
-    _write(f, cache)
+    failed = next((e for e in out.get("errors") or [] if str(e).startswith(HOST_FAILED)), None)
+    if failed:
+        raise HostError(failed)
+    with _updating(root, DEFS_FILE) as cache:
+        cache.pop(key, None)
+        cache[key] = out
+        while len(cache) > DEFS_KEPT:
+            cache.pop(next(iter(cache)))
     return out
 
 
@@ -259,23 +342,19 @@ def _read_local(root: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_local(root: Path, data: dict) -> None:
-    yamlio.write_atomic(_local_file(root), yamlio.dump(yamlio.yaml(), data))
-
-
 def _norm_stored(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     inst = raw.get("instances") if isinstance(raw.get("instances"), dict) else {}
     grants = raw.get("grants") if isinstance(raw.get("grants"), dict) else {}
     return {"instances": {str(k): [i for i in v if isinstance(i, dict)] for k, v in inst.items() if isinstance(v, list)},
             "grants": {str(k): [str(g) for g in v] for k, v in grants.items() if isinstance(v, list)},
-            "plugins": raw.get("plugins") if isinstance(raw.get("plugins"), list) else [],
+            "plugins": [p for p in raw.get("plugins") or [] if isinstance(p, dict)],
             "secrets": [str(s) for s in raw.get("secrets") or [] if isinstance(s, str)],
             "runs": raw.get("runs") if isinstance(raw.get("runs"), dict) else {}}
 
 
 class Context:
-    """One command's view of plugins: repo files, definitions and instances, each read once."""
+    """One command's view of plugins: repo files, definitions, instances and repo keys, each read once."""
 
     def __init__(self, root: Path, remote=None, project: str | None = None, seen: dict | None = None,
                  local: bool = False, fresh: bool = False):
@@ -285,30 +364,64 @@ class Context:
         self._remote = remote
         self._repos: dict = {}
         self._stored: dict = {}
+        self._own: str | None = None
+        self._tips: dict | None = None
+
+    @property
+    def synced(self) -> bool:
+        return self.cfg is not None
 
     def remote(self):
         if self._remote is None and self.cfg and not sync.offline():
             self._remote = remote_for(self.root)
         return self._remote
 
+    def repo_key(self, it: dict) -> str:
+        """owner/name of the item's repo: its repo field, else the store's own repo."""
+        key = checkout.repo_key(it.get("repo"))
+        if key:
+            return key
+        if self._own is None:
+            self._own = gitfacts.store_repo(self.root)[0]
+        return self._own
+
     def checkout(self, key: str) -> Path | None:
         d = (self.seen.get(key) or {}).get("dir")
         return Path(d) if d else gitfacts.repo_dir(self.root, key)
 
+    def tips(self, key: str) -> dict:
+        """The repo's last ls-remote answer: this command's, else the one git facts saved."""
+        if key in self.seen:
+            return self.seen[key]
+        if self._tips is None:
+            self._tips = _read(gitfacts.state_file(self.root, gitfacts.TIPS_FILE))
+        return self._tips.get(key) or {}
+
     def repo(self, key: str) -> dict:
-        """`{dir, payload, described}` for the repo; `described` is None without a host."""
+        """`{dir, payload, described}` for the repo; `described` is None when its plugins can't run here."""
         if key not in self._repos:
-            d = self.checkout(key)
-            payload = None
-            if d is not None:
-                payload = read_repo(d) if self.local else read_repo(d, _default_ref(d, self.seen.get(key)))
-            try:
-                described = describe(self.root, payload)
-            except HostError as e:
-                notice(f"plugins: {key}: {e}")
-                described = None
-            self._repos[key] = {"dir": d, "payload": payload, "described": described}
+            self._repos[key] = self._load_repo(key)
         return self._repos[key]
+
+    def _load_repo(self, key: str) -> dict:
+        d = self.checkout(key)
+        payload = None
+        if d is not None and self.local:
+            payload = read_worktree(d)
+        elif d is not None:
+            ref, why = default_ref(d, self.tips(key))
+            if ref is None:
+                notice(f"plugins: can't tell {key}'s default branch; run git remote set-head origin -a"
+                       if why == "default" else f"plugins: {key}'s default branch {why} isn't fetched here; "
+                                                "run git fetch origin")
+                return {"dir": d, "payload": None, "described": None}
+            payload = read_repo(d, ref)
+        try:
+            described = describe(self.root, payload)
+        except HostError as e:
+            notice(f"plugins: {key}: {e}")
+            described = None
+        return {"dir": d, "payload": payload, "described": described}
 
     def stored(self, key: str) -> dict:
         if key not in self._stored:
@@ -318,25 +431,26 @@ class Context:
     def _load_stored(self, key: str) -> dict:
         if not self.cfg:
             return _norm_stored(_read_local(self.root).get(key))
-        f = _state(self.root, CACHE_FILE)
-        cache = _read(f)
-        got = cache.get(key) or {}
+        got = _read(_state(self.root, CACHE_FILE)).get(key) or {}
+        if time.time() - got.get("failed_at", 0) < RETRY_EVERY:
+            return _norm_stored(got)
         if not self.fresh and time.time() - got.get("at", 0) < CACHE_EVERY:
             return _norm_stored(got)
         r = self.remote()
-        if r is None:
+        fetch = getattr(r, "plugins", None)
+        if fetch is None:
             return _norm_stored(got)
         try:
-            answer = r.plugins(self.project, key)
+            answer = _norm_stored(fetch(self.project, key))
         except RemoteError as e:
             if e.status != 404:
+                with _updating(self.root, CACHE_FILE) as cache:
+                    cache[key] = {**(cache.get(key) or {}), "failed_at": time.time()}
                 return _norm_stored(got)
-            answer = {}
-        except AttributeError:
-            answer = {}
-        cache[key] = {**_norm_stored(answer), "at": time.time()}
-        _write(f, cache)
-        return _norm_stored(answer)
+            answer = _norm_stored({})
+        with _updating(self.root, CACHE_FILE) as cache:
+            cache[key] = {**answer, "at": time.time()}
+        return answer
 
     def save_stored(self, key: str, plugin: str, instances: list) -> None:
         if self.cfg:
@@ -344,19 +458,30 @@ class Context:
             if r is None:
                 raise RemoteError("this store's server can't be reached (offline)")
             r.put_plugins(self.project, key, plugin, instances=instances)
-            cache = _read(_state(self.root, CACHE_FILE))
-            got = _norm_stored(cache.get(key))
-            got["instances"][plugin] = instances
-            cache[key] = {**got, "at": time.time()}
-            _write(_state(self.root, CACHE_FILE), cache)
+            with _updating(self.root, CACHE_FILE) as cache:
+                got = {**(cache.get(key) or {}), **_norm_stored(cache.get(key))}
+                got["instances"][plugin] = instances
+                cache[key] = {**got, "at": time.time()}
         else:
-            data = _read_local(self.root)
-            entry = data.setdefault(key, {})
-            entry.setdefault("instances", {})[plugin] = instances
-            if not instances:
-                del entry["instances"][plugin]
-            _write_local(self.root, data)
+            with state_lock(self.root):
+                data = _read_local(self.root)
+                entry = data.setdefault(key, {})
+                entry.setdefault("instances", {})[plugin] = instances
+                if not instances:
+                    del entry["instances"][plugin]
+                yamlio.write_atomic(_local_file(self.root), yamlio.dump(yamlio.yaml(), data))
         self._stored.pop(key, None)
+
+    def runs_here(self, key: str, plugin: str, inst: dict) -> bool:
+        """Whether this host runs the instance on its own: always on a local-only
+        store; on a synced one only when the server says it leaves it to the CLI."""
+        if not self.cfg:
+            return True
+        for p in self.stored(key)["plugins"]:
+            if p.get("name") == plugin:
+                return any(i.get("id") == inst.get("id") and i.get("server_runs") is False
+                           for i in p.get("instances") or [] if isinstance(i, dict))
+        return False
 
 
 def _needs_no_settings(plugin: dict) -> bool:
@@ -428,7 +553,7 @@ def item_json(it: dict, key: str, d: Path | None) -> dict:
     owner, _, name = key.partition("/")
     links = [{"type": to_str((n.get("meta") or {}).get("type")) or "link", "url": to_str((n.get("meta") or {}).get("url"))}
              for n in it.get("notes") or [] if n.get("kind") == "link" and (n.get("meta") or {}).get("url")]
-    return {"id": it["id"], "uid": it.get("uid") or it["id"], "title": it["title"], "type": it.get("type"),
+    return {"id": it["id"], "uid": it["uid"], "title": it["title"], "type": it.get("type"),
             "status": it["status"], "priority": it.get("priority"), "repo": key or None,
             "repo_owner": owner or None, "repo_name": name or None, "branches": list(it.get("branches") or []),
             "jira": list(it.get("jira") or []), "app": it.get("app"), "section": it.get("section"),
@@ -441,62 +566,102 @@ def instance_id(plugin: str, inst: dict) -> str:
     return f'{plugin}/{inst.get("id")}'
 
 
-def run(ctx: Context, it: dict, event: dict, *, dry_run: bool = False, only: str | None = None,
-        lock: bool = True) -> list | None:
-    """Run what `event` fires for the item and, unless dry-run, apply it.
-    `[{plugin, instance, result, changes}]`; None when there's no host to run it."""
+def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
+    """The host input for a job, with the instances it may run; None when nothing fires."""
     root = ctx.root
-    key = repo_key(root, it)
+    it = store.get_item(root, job.item_id)
+    if it is None:
+        return None
+    key = ctx.repo_key(it)
     if not key:
-        return []
+        return None
+    repo = ctx.repo(key)
+    if repo["described"] is None:
+        return None
+    view = plugin_view(ctx, key)
+
+    def allowed(p, i) -> bool:
+        iid = instance_id(p["name"], i)
+        return (job.only is None or iid in job.only) and (job.anywhere or ctx.runs_here(key, p["name"], i))
+
+    wanted = [(p, i) for p, insts in view for i in insts if allowed(p, i) and fires(p, i, job.event)]
+    if not wanted:
+        return None
+    if not it.get("uid"):
+        store.ensure_uid(root, it["id"])
+        it = store.get_item(root, it["id"])
+    stored = copy.deepcopy(ctx.stored(key)["instances"])
+    for p, insts in view:
+        for i in insts:
+            if not allowed(p, i):
+                rows = stored.setdefault(p["name"], [])
+                rows[:] = [r for r in rows if r.get("id") != i.get("id")]
+                rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
+    payload = {"hostConnections": connections.host_connections(), "secrets": connections.secrets_for(key),
+               "storedInstances": stored, "grants": ctx.stored(key)["grants"],
+               "item": item_json(it, key, repo["dir"]), "event": job.event, "repoKey": key,
+               "dryRun": dry_run, "allowRepoCommands": True}
+    if repo["payload"]:
+        payload["repo"] = repo["payload"]
+    return {"job": job, "item": it, "wanted": wanted, "payload": payload}
+
+
+def _execute(ctx: Context, plans: list, *, dry_run: bool, lock: bool) -> list:
+    """Run every plan in one host process and apply what comes back. `(item, runs)` per plan."""
+    try:
+        out = call_host({"mode": "events", "runs": [p["payload"] for p in plans]})
+        answers = out.get("runs")
+        if not isinstance(answers, list) or len(answers) != len(plans):
+            raise HostError(next(iter(out.get("errors") or []), "the plugin host's answer has the wrong runs"))
+    except HostError as e:
+        done = []
+        for p in plans:
+            if not dry_run:
+                _record_failure(ctx.root, p["item"], [instance_id(x["name"], i) for x, i in p["wanted"]],
+                                p["job"].event, str(e), lock)
+            done.append((p["item"], [{"plugin": x["name"], "instance": i, "changes": {},
+                                      "result": {"attached": [], "wouldSend": [], "log": [], "error": str(e)}}
+                                     for x, i in p["wanted"]]))
+        notice(f"plugins: {e}")
+        return done
+    done = []
+    for p, answer in zip(plans, answers):
+        it, key = p["item"], ctx.repo_key(p["item"])
+        for err in (answer or {}).get("errors") or []:
+            notice(f"plugins: {key}: {err}")
+        runs = [r for r in (answer or {}).get("results") or [] if isinstance(r, dict) and isinstance(r.get("result"), dict)]
+        if not dry_run:
+            with _locked(ctx.root, it, lock):
+                fresh = store.get_item(ctx.root, it["id"])
+                for r in runs if fresh is not None else []:
+                    inst = r.get("instance") or {}
+                    r["changes"] = apply(ctx.root, fresh, instance_id(r["plugin"], inst), r["result"], p["job"].event,
+                                         dry_run=bool(inst.get("dry_run")))
+                    fresh = store.get_item(ctx.root, it["id"]) or fresh
+        for r in runs:
+            if r["result"].get("error"):
+                notice(f'plugins: {instance_id(r["plugin"], r.get("instance") or {})} on {it["id"]}: {r["result"]["error"]}')
+        done.append((it, runs))
+    return done
+
+
+def run(ctx: Context, it: dict, event: dict, *, dry_run: bool = False, only: str | None = None,
+        anywhere: bool = False, lock: bool = True) -> list | None:
+    """Run what `event` fires for the item and, unless dry-run, apply it. `only`
+    is a plugin or `<plugin>/<id>`. `[{plugin, instance, result, changes}]`;
+    None when there's no host to run it."""
     if host_command() is None:
         notice(NO_NODE)
         return None
-    repo = ctx.repo(key)
-    view = plugin_view(ctx, key)
-    plugin, _, inst_id = (only or "").partition("/")
-    wanted = [(p, i) for p, insts in view for i in insts
-              if (not plugin or p["name"] == plugin) and (not inst_id or i.get("id") == inst_id) and fires(p, i, event)]
-    if not wanted:
-        return []
-    stored = copy.deepcopy(ctx.stored(key)["instances"])
+    sel = None
     if only:
-        for p, insts in view:
-            for i in insts:
-                if p["name"] != plugin or (inst_id and i.get("id") != inst_id):
-                    rows = stored.setdefault(p["name"], [])
-                    rows[:] = [r for r in rows if r.get("id") != i.get("id")]
-                    rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
-    payload = {"mode": "event", "hostConnections": connections.host_connections(),
-               "secrets": connections.secrets_for(key), "storedInstances": stored,
-               "grants": ctx.stored(key)["grants"], "item": item_json(it, key, repo["dir"]), "event": event,
-               "repoKey": key, "dryRun": dry_run, "allowRepoCommands": True}
-    if repo["payload"]:
-        payload["repo"] = repo["payload"]
-    try:
-        out = call_host(payload)
-    except HostError as e:
-        if not dry_run:
-            _record_failure(root, it, [instance_id(p["name"], i) for p, i in wanted], event, str(e), lock)
-        notice(f"plugins: {it['id']}: {e}")
-        return [{"plugin": p["name"], "instance": i, "result": {"attached": [], "wouldSend": [], "log": [],
-                                                                "error": str(e)}, "changes": {}} for p, i in wanted]
-    for err in out.get("errors") or []:
-        notice(f"plugins: {key}: {err}")
-    runs = [r for r in out.get("results") or [] if isinstance(r, dict) and isinstance(r.get("result"), dict)]
-    if not dry_run:
-        with _locked(root, it, lock):
-            fresh = store.get_item(root, it["id"])
-            if fresh is not None:
-                for r in runs:
-                    inst = r.get("instance") or {}
-                    r["changes"] = apply(root, fresh, instance_id(r["plugin"], inst), r["result"], event,
-                                         dry_run=bool(inst.get("dry_run")))
-                    fresh = store.get_item(root, it["id"]) or fresh
-    for r in runs:
-        res = r["result"]
-        if res.get("error"):
-            notice(f'plugins: {instance_id(r["plugin"], r.get("instance") or {})} on {it["id"]}: {res["error"]}')
+        key = ctx.repo_key(it)
+        sel = {instance_id(p["name"], i) for p, insts in plugin_view(ctx, key) for i in insts
+               if only in (p["name"], instance_id(p["name"], i))} if key else set()
+    plan = _plan(ctx, Job(it["id"], event, sel, anywhere), dry_run)
+    if plan is None:
+        return []
+    [(_, runs)] = _execute(ctx, [plan], dry_run=dry_run, lock=lock)
     return runs
 
 
@@ -510,19 +675,18 @@ def _locked(root: Path, it: dict, lock: bool):
 
 
 def _record_failure(root: Path, it: dict, iids: list, event: dict, error: str, lock: bool) -> None:
-    with _locked(root, it, lock):
-        runs = _read(_state(root, RUNS_FILE))
-        mine = runs.setdefault(_item_key(it), {})
+    with _locked(root, it, lock), _updating(root, RUNS_FILE) as runs:
+        mine = runs.setdefault(item_key(it), {})
         for iid in iids:
-            mine[iid] = {**_carried(mine.get(iid)), "at": now(), "event": _event_label(event), "error": error[:2000]}
-        _write(_state(root, RUNS_FILE), runs)
+            mine[iid] = {**_carried(mine.get(iid)), "at": now(), "event": event_label(event), "error": error[:2000]}
 
 
-def _item_key(it: dict) -> str:
-    return it.get("uid") or it["id"]
+def item_key(it: dict) -> str | None:
+    """What the run state files key an item by: its uid, which every item gets before its first run."""
+    return it.get("uid")
 
 
-def _event_label(event: dict) -> str:
+def event_label(event: dict) -> str:
     t = event.get("type")
     if t == "status":
         return f'status {event.get("from")} → {event.get("to")}'
@@ -535,14 +699,10 @@ def _event_label(event: dict) -> str:
 
 def _carried(prev: dict | None) -> dict:
     """What a run that changes nothing keeps from the previous record: what the instance owns."""
-    return {k: prev[k] for k in ("docs", "uids") if prev and prev.get(k)}
+    return {"uids": prev["uids"]} if prev and prev.get("uids") else {}
 
 
 # ── applying a result ─────────────────────────────────────────────────────────
-def _norm_url(u: str) -> str:
-    return to_str(u).strip().rstrip("/").lower()
-
-
 def _note_fields(a: dict) -> tuple:
     """(note kind, text, meta fields) for a link or edge attachment."""
     if a["kind"] == "link":
@@ -563,91 +723,104 @@ def _summary(a: dict) -> dict:
 
 def apply(root: Path, it: dict, iid: str, result: dict, event: dict, *, dry_run: bool = False) -> dict:
     """Write one instance's result into the store: links and edges replace what
-    it attached before, logs and requests only add, and a plugin entity once
-    removed is never made again. An error, a skip or a dry-run instance changes
-    nothing but the run record. Returns counts of what changed."""
-    runs_file = _state(root, RUNS_FILE)
-    runs = _read(runs_file)
-    ikey = _item_key(it)
+    it attached before, logs and requests only add, docs never touch one a
+    person wrote or edited, and what a person removed is never made again. An
+    error, a skip or a dry-run instance changes nothing but the run record.
+    Returns counts of what changed."""
+    with state_lock(root):
+        runs = _read(_state(root, RUNS_FILE))
+        changes = _apply(root, it, iid, result, event, dry_run, runs)
+        _write(_state(root, RUNS_FILE), runs)
+    if any(changes.values()) and sync.enabled(root):
+        sync.mark_changed(root, it["id"])
+        sync.flag_changes(root)
+    return changes
+
+
+def _apply(root: Path, it: dict, iid: str, result: dict, event: dict, dry_run: bool, runs: dict) -> dict:
+    ikey = item_key(it)
     mine = runs.setdefault(ikey, {})
     prev = mine.get(iid)
-    rec = {"at": now(), "event": _event_label(event)}
+    rec = {"at": now(), "event": event_label(event)}
     log = [to_str(x) for x in result.get("log") or []]
     if result.get("wouldSend"):
         rec["would_send"] = len(result["wouldSend"])
-    item_uid = it.get("uid") or it["id"]
     item_dir = root / it["folder"] / it["id"]
     notes = store.read_entries(item_dir / store.NOTES_DIR)
     logs = store.read_entries(item_dir / store.LOG_DIR)
     present = {e["meta"].get("uid") for e in notes + logs if e["meta"].get("uid")}
     gone = runs.setdefault(REMOVED, {}).setdefault(ikey, [])
-    gone += [u for u in (prev or {}).get("uids") or [] if u not in present and u not in gone]   # removed by a person
+    gone += [u for u in (prev or {}).get("uids") or [] if u not in present and u not in gone]
+    changes = {"added": 0, "updated": 0, "removed": 0}
     if result.get("error") or result.get("skipped") or dry_run:
-        rec.update({k: to_str(result[k])[:2000] for k in ("error", "skipped") if result.get(k)}, **_carried(prev))
+        rec.update({k: to_str(result[k])[:2000] for k in ("error", "skipped") if result.get(k)})
         if dry_run and not (result.get("error") or result.get("skipped")):
             rec["dry_run"] = True
             rec["attached"] = [_summary(a) for a in result.get("attached") or [] if isinstance(a, dict)]
-        if (prev or {}).get("uids"):
-            rec["uids"] = [u for u in prev["uids"] if u in present]
-        if log:
-            rec["log"] = log[-LOG_KEPT:]
-        mine[iid] = rec
-        _trim(runs, ikey)
-        _write(runs_file, runs)
-        return {}
-    changes = {"added": 0, "updated": 0, "removed": 0}
+        owned = [u for u in (prev or {}).get("uids") or [] if u in present]
+    else:
+        adds = {e["meta"].get("uid") for e in notes + logs
+                if e["meta"].get("plugin") == iid and e["meta"].get("kind") not in REPLACED}
+        kept, attached = _attach(root, it, iid, result, item_dir, notes, present, gone, log, changes)
+        owned = sorted((kept | adds) - set(gone) - {None})
+        rec["attached"] = attached
+    if owned:
+        rec["uids"] = sorted(owned)
+    if log:
+        rec["log"] = log[-LOG_KEPT:]
+    mine[iid] = rec
+    runs[REMOVED][ikey] = gone[-REMOVED_KEPT:]
+    if not runs[REMOVED][ikey]:
+        del runs[REMOVED][ikey]
+    if not runs[REMOVED]:
+        del runs[REMOVED]
+    return changes
+
+
+def _attach(root: Path, it: dict, iid: str, result: dict, item_dir: Path, notes: list, present: set,
+            gone: list, log: list, changes: dict) -> tuple:
+    item_uid = it["uid"]
     by_uid = {e["meta"].get("uid"): e for e in notes if e["meta"].get("uid")}
     kept: set = set()
     linked: set = set()
-    owned_docs: list = []
+    wrote_docs: set = set()
     attached = []
     for a in result.get("attached") or []:
         if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc") or not a.get("key"):
             continue
-        uid = hash_uid("plugin", iid, item_uid, a["key"])
-        tag = {"plugin": iid, "plugin_key": a["key"]}
         kind = a["kind"]
+        key = a["key"]
+        if kind == "request":
+            key = _request_key(it, a, log)
+            if key is None:
+                continue
+        uid = hash_uid("plugin", iid, item_uid, key)
+        tag = {"plugin": iid, "plugin_key": a["key"]}
         if kind != "doc" and uid in gone:
-            log.append(f'skipped {kind} {a["key"]}: it was removed from the item')
+            log.append(f'skipped {kind} {a["key"]}: someone removed it from the item')
             continue
         if kind == "link":
-            url = _norm_url(a.get("url"))
-            elsewhere = any(e["meta"].get("kind") == "link" and _norm_url(e["meta"].get("url")) == url
-                            and e["meta"].get("uid") != uid and e["meta"].get("plugin") != iid for e in notes)
-            if elsewhere or url in linked:
-                log.append(f'skipped link {a.get("url")}: already linked on the item')
+            url = to_str(a.get("url"))
+            if url in linked or any(e["meta"].get("kind") == "link" and to_str(e["meta"].get("url")) == url
+                                    and e["meta"].get("uid") != uid for e in notes):
+                log.append(f"skipped link {url}: already linked on the item")
                 continue
             linked.add(url)
         if kind in ("link", "edge"):
-            note_kind, text, fields = _note_fields(a)
-            fields = {**fields, **tag}
-            e = by_uid.get(uid)
-            if e is None:
-                store.add_note(root, it["id"], text, now(), kind=note_kind, extra=fields, uid=uid)
-                changes["added"] += 1
-            elif e["text"] != text or e["meta"].get("kind") != note_kind or \
-                    any(e["meta"].get(k) != v for k, v in fields.items()) or \
-                    any(k in e["meta"] for k in ("label", "in") if k not in fields):
-                meta = {k: v for k, v in e["meta"].items() if k not in ("label", "in")}
-                store.rewrite_entry(root, it["id"], store.NOTES_DIR, e["id"], text, {**meta, "kind": note_kind, **fields})
-                changes["updated"] += 1
+            _put_note(root, it, uid, a, tag, by_uid.get(uid), changes)
         elif kind == "log":
             if uid not in present:
                 store.add_log(root, it["id"], to_str(a.get("text")), now(), extra=tag, uid=uid)
                 changes["added"] += 1
         elif kind == "request":
-            if uid not in present and _post_request(root, it, to_str(a.get("text")), {**tag}, uid):
+            if uid not in present:
+                _post_request(root, it, to_str(a.get("text")).strip(), tag, uid)
                 changes["added"] += 1
         elif kind == "doc":
-            name = to_str(a.get("name"))
-            why = docs.name_error(name)
-            if why or a.get("content") is None:
-                log.append(f"skipped doc {name}: " + (why or "the host returned no content for it"))
+            name = _put_doc(it, iid, item_dir, a, log, changes)
+            if name is None:
                 continue
-            name, how = _write_doc(root, it, item_dir, name, a["content"])
-            owned_docs.append(name)
-            if how in changes:
-                changes[how] += 1
+            wrote_docs.add(name)
         if kind != "doc":
             kept.add(uid)
         attached.append(_summary(a))
@@ -655,69 +828,103 @@ def apply(root: Path, it: dict, iid: str, result: dict, event: dict, *, dry_run:
         m = e["meta"]
         if m.get("plugin") == iid and m.get("kind") in REPLACED and m.get("uid") not in kept:
             store.remove_note(root, it["id"], e["id"])
-            gone.append(m.get("uid"))
             changes["removed"] += 1
-    for name in (prev or {}).get("docs") or []:
-        if docs.find(owned_docs, name) is None and docs.remove(item_dir, it.get("uid"), name, now()):
-            changes["removed"] += 1
-    rec["attached"] = attached
-    owned = {u for u in (prev or {}).get("uids") or [] if u in present} | kept
-    rec["uids"] = sorted(u for u in owned if u not in gone)
-    if owned_docs:
-        rec["docs"] = owned_docs
-    if log:
-        rec["log"] = log[-LOG_KEPT:]
-    mine[iid] = rec
-    _trim(runs, ikey)
-    _write(runs_file, runs)
-    if any(changes.values()) and sync.enabled(root):
-        sync.mark_changed(root, it["id"])
-        sync.flag_changes(root)
-    return changes
+    _drop_docs(it, iid, item_dir, wrote_docs, log, changes)
+    return kept, attached
 
 
-def _trim(runs: dict, ikey: str) -> None:
-    gone = runs.get(REMOVED, {}).get(ikey)
-    if gone is not None:
-        if gone:
-            runs[REMOVED][ikey] = gone[-REMOVED_KEPT:]
-        else:
-            del runs[REMOVED][ikey]
+def _put_note(root: Path, it: dict, uid: str, a: dict, tag: dict, e: dict | None, changes: dict) -> None:
+    note_kind, text, fields = _note_fields(a)
+    fields = {**fields, **tag}
+    if e is None:
+        store.add_note(root, it["id"], text, now(), kind=note_kind, extra=fields, uid=uid)
+        changes["added"] += 1
+    elif e["text"] != text or e["meta"].get("kind") != note_kind or \
+            any(e["meta"].get(k) != v for k, v in fields.items()) or \
+            any(k in e["meta"] for k in ("label", "in") if k not in fields):
+        meta = {k: v for k, v in e["meta"].items() if k not in ("label", "in")}
+        store.rewrite_entry(root, it["id"], store.NOTES_DIR, e["id"], text, {**meta, "kind": note_kind, **fields})
+        changes["updated"] += 1
+
+
+def _request_key(it: dict, a: dict, log: list) -> str | None:
+    """`<key>#v<n>`, n the version the request would make; None when it repeats the current request."""
+    text = to_str(a.get("text")).strip()
+    requests = [n for n in it.get("notes") or [] if n.get("kind") == "ticket-request"]
+    current = render.current_request(requests) if requests else None
+    if not text or (current is not None and str(current["text"]).strip() == text):
+        if text:
+            log.append(f'skipped request {a["key"]}: it repeats the current request')
+        return None
+    version = int((current.get("meta") or {}).get("version") or 1) + 1 if current is not None else 1
+    return f'{a["key"]}#v{version}'
+
+
+def _post_request(root: Path, it: dict, text: str, extra: dict, uid: str) -> None:
+    """A new request version, as `todo request --text` posts it."""
+    store.add_note(root, it["id"], text, now(), kind="ticket-request", extra=extra, uid=uid)
+    if it["status"] != "requested" and not sync.enabled(root):
+        store.update_todo(root, it["id"], {"status": "requested"}, now())
+        queue(it["id"], {"type": "status", "from": it["status"], "to": "requested"})
+
+
+def _doc_state(item_dir: Path, iid: str, name: str) -> tuple:
+    """(the doc's name if it exists, whether this instance wrote it, whether it's unchanged since)."""
+    meta = docs.read_meta(item_dir)
+    present = docs.files(item_dir)
+    found = docs.find(set(present) | set(meta), name)
+    if found is None or found not in present:
+        return None, False, False
+    e = meta.get(found) or {}
+    ours = e.get("plugin") == iid
+    return found, ours, ours and docs.sha256_file(present[found]) == e.get("sha256")
+
+
+def _put_doc(it: dict, iid: str, item_dir: Path, a: dict, log: list, changes: dict) -> str | None:
+    name = to_str(a.get("name"))
+    why = docs.name_error(name)
+    if why or a.get("content") is None:
+        log.append(f"skipped doc {name}: " + (why or "the host returned no content for it"))
+        return None
+    data = to_str(a["content"]).encode()
+    found, ours, unchanged = _doc_state(item_dir, iid, name)
+    if found is not None and not ours:
+        log.append(f"skipped doc {name}: a doc by that name isn't this plugin's")
+        return None
+    if found is not None and not unchanged:
+        log.append(f"skipped doc {name}: edited since the plugin wrote it")
+        return found
+    if found is not None and docs.sha256_file(item_dir / docs.DOCS_DIR / found) == docs.sha256_bytes(data):
+        return found
+    written = docs.add(item_dir, it["uid"], name, data, now(), plugin=iid)
+    changes["updated" if found else "added"] += 1
+    return written
+
+
+def _drop_docs(it: dict, iid: str, item_dir: Path, wrote: set, log: list, changes: dict) -> None:
+    for name, e in docs.read_meta(item_dir).items():
+        if e.get("plugin") != iid or docs.find(wrote, name) is not None:
+            continue
+        found, ours, unchanged = _doc_state(item_dir, iid, name)
+        if found is None:
+            continue
+        if not unchanged:
+            log.append(f"kept doc {name}: edited since the plugin wrote it")
+        elif docs.remove(item_dir, it["uid"], found, now()):
+            changes["removed"] += 1
 
 
 def forget(root: Path, item_uid: str, uid: str) -> None:
-    """Never make this plugin entity again on the item: the server refused it as removed."""
-    f = _state(root, RUNS_FILE)
-    runs = _read(f)
-    gone = runs.setdefault(REMOVED, {}).setdefault(item_uid, [])
-    if uid not in gone:
-        gone.append(uid)
-    _trim(runs, item_uid)
-    _write(f, runs)
+    """Never make this plugin entity again on the item: a person removed it."""
+    with _updating(root, RUNS_FILE) as runs:
+        gone = runs.setdefault(REMOVED, {}).setdefault(item_uid, [])
+        if uid not in gone:
+            gone.append(uid)
+        runs[REMOVED][item_uid] = gone[-REMOVED_KEPT:]
 
 
 def removed(root: Path, it: dict) -> list:
-    return (_read(_state(root, RUNS_FILE)).get(REMOVED) or {}).get(_item_key(it)) or []
-
-
-def _write_doc(root: Path, it: dict, item_dir: Path, name: str, content: str) -> tuple:
-    """(the name it went under, added|updated|same)."""
-    data = content.encode()
-    present = docs.files(item_dir)
-    found = docs.find(present, name)
-    if found is not None and docs.sha256_file(present[found]) == docs.sha256_bytes(data):
-        return found, "same"
-    return docs.add(item_dir, it.get("uid"), name, data, now()), "updated" if found else "added"
-
-
-def _post_request(root: Path, it: dict, text: str, extra: dict, uid: str) -> bool:
-    """A new request version, as `todo request --text` posts it."""
-    if not text.strip():
-        return False
-    store.add_note(root, it["id"], text.strip(), now(), kind="ticket-request", extra=extra, uid=uid)
-    if it["status"] != "requested" and not sync.enabled(root):
-        store.update_todo(root, it["id"], {"status": "requested"}, now())
-    return True
+    return (_read(_state(root, RUNS_FILE)).get(REMOVED) or {}).get(item_key(it)) or []
 
 
 # ── when plugins run ──────────────────────────────────────────────────────────
@@ -725,52 +932,67 @@ def _open_items(root: Path) -> list:
     return [it for it in store.list_todos(root, [store.OPEN, store.DEFERRED]) if is_open(root, it)]
 
 
-def push_jobs(root: Path, seen: dict | None) -> list:
-    """`(item id, push event)` for each open item branch whose tip moved since plugins last saw it."""
-    if not seen:
-        return []
-    f = _state(root, TIPS_FILE)
-    state = _read(f)
+def push_jobs(ctx: Context, seen: dict | None, queued: list) -> tuple:
+    """(jobs, tips to save once they ran): a push for each open item branch whose
+    tip moved since plugins last saw it. A repo seen for the first time only
+    records its tips; a branch a queued push already covers fires once."""
+    root = ctx.root
+    tips_now = {}
     jobs = []
-    items = _open_items(root)
-    for key, info in seen.items():
+    state = _read(_state(root, TIPS_FILE))
+    items = _open_items(root) if seen or queued else []
+    covered = {(j.item_id, j.event.get("branch")) for j in queued if j.event.get("type") == "push"}
+    for key, info in (seen or {}).items():
         tips = info.get("tips") or {}
-        before = state.get(key) or {}
+        before = state.get(key)
         after = {}
         for it in items:
-            if repo_key(root, it) != key:
+            if ctx.repo_key(it) != key:
                 continue
             for b in it["branches"]:
                 sha = tips.get(b)
                 if sha:
                     after[b] = sha
-                if sha != before.get(b) and (sha or before.get(b)):
-                    jobs.append((it["id"], {"type": "push", "branch": b}))
-        state[key] = after
-    _write(f, state)
-    return jobs
+                if before is not None and sha != before.get(b) and (sha or before.get(b)) \
+                        and (it["id"], b) not in covered:
+                    jobs.append(Job(it["id"], {"type": "push", "branch": b}))
+        tips_now[key] = after
+    for item_id, b in covered:
+        it = next((x for x in items if x["id"] == item_id), None)
+        key = ctx.repo_key(it) if it else ""
+        sha = (ctx.tips(key).get("tips") or {}).get(b) if key else None
+        if sha and (key in state or key in tips_now):
+            tips_now.setdefault(key, dict(state.get(key) or {}))[b] = sha
+    return jobs, tips_now
+
+
+def _save_tips(root: Path, tips_now: dict) -> None:
+    if tips_now:
+        with _updating(root, TIPS_FILE) as state:
+            state.update(tips_now)
 
 
 def floor_jobs(ctx: Context) -> list:
-    """`(item id, refresh)` for each open item with an instance whose `every:` has passed since it last ran there."""
+    """A refresh, narrowed to the due instances, for each open item with an
+    instance whose `every:` has passed since it last ran there."""
     root = ctx.root
-    f = _state(root, TIPS_FILE)
-    state = _read(f)
-    if time.time() - state.get("floors_at", 0) < FLOOR_EVERY:
-        return []
-    state["floors_at"] = time.time()
-    _write(f, state)
+    with _updating(root, TIPS_FILE) as state:
+        if time.time() - state.get("floors_at", 0) < FLOOR_EVERY:
+            return []
+        state["floors_at"] = time.time()
     runs = _read(_state(root, RUNS_FILE))
     jobs = []
     for it in _open_items(root):
-        key = repo_key(root, it)
+        key = ctx.repo_key(it)
         if not key:
             continue
-        mine = runs.get(_item_key(it)) or {}
-        if any(duration(p.get("every")) is not None and i.get("enabled") is not False
-               and _since(mine.get(instance_id(p["name"], i))) >= duration(p["every"])
-               for p, insts in plugin_view(ctx, key) for i in insts):
-            jobs.append((it["id"], {"type": "refresh"}))
+        mine = runs.get(item_key(it)) or {}
+        due = {instance_id(p["name"], i) for p, insts in plugin_view(ctx, key) for i in insts
+               if duration(p.get("every")) is not None and i.get("enabled") is not False
+               and ctx.runs_here(key, p["name"], i)
+               and _since(mine.get(instance_id(p["name"], i))) >= duration(p["every"])}
+        if due:
+            jobs.append(Job(it["id"], {"type": "refresh"}, due))
     return jobs
 
 
@@ -778,7 +1000,6 @@ def _since(rec: dict | None) -> float:
     if not rec or not rec.get("at"):
         return float("inf")
     try:
-        from datetime import datetime
         at = datetime.fromisoformat(str(rec["at"]).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return float("inf")
@@ -786,25 +1007,38 @@ def _since(rec: dict | None) -> float:
 
 
 def run_jobs(ctx: Context, jobs: list, *, lock: bool = True, report: bool = False) -> list:
-    """Run each `(item id, event)` once, never raising. `(item, runs)` per job that ran."""
-    done, out = set(), []
-    for item_id, event in jobs:
-        sig = (item_id, json.dumps(event, sort_keys=True))
-        if sig in done:
-            continue
-        done.add(sig)
-        it = store.get_item(ctx.root, item_id)
-        if it is None or not is_open(ctx.root, it):
-            continue
-        try:
-            runs = run(ctx, it, event, lock=lock)
-        except Exception as e:  # noqa: BLE001 — plugins must never break a command
-            notice(f"plugins: {item_id}: skipped ({type(e).__name__}: {e})")
-            continue
-        if runs is None:
+    """Run the jobs in one host process, never raising; then once more for the
+    events those runs set off. `(item, runs)` per job that ran."""
+    sys.stdout.flush()
+    if host_command() is None:
+        if any(_has_repo(ctx, j if isinstance(j, Job) else Job(*j)) for j in jobs):
+            notice(NO_NODE)
+        return []
+    out, done = [], set()
+    for _ in range(2):
+        plans = []
+        for job in [j if isinstance(j, Job) else Job(*j) for j in jobs]:
+            if job.sig() in done:
+                continue
+            done.add(job.sig())
+            it = store.get_item(ctx.root, job.item_id)
+            if it is None or not is_open(ctx.root, it):
+                continue
+            try:
+                plan = _plan(ctx, job, False)
+            except Exception as e:  # noqa: BLE001 — plugins must never break a command
+                notice(f"plugins: {job.item_id}: skipped ({type(e).__name__}: {e})")
+                continue
+            if plan is not None:
+                plans.append(plan)
+        if plans:
+            try:
+                out += [(it, runs) for it, runs in _execute(ctx, plans, dry_run=False, lock=lock) if runs]
+            except Exception as e:  # noqa: BLE001
+                notice(f"plugins: skipped ({type(e).__name__}: {e})")
+        jobs = _take_queue()
+        if not jobs:
             break
-        if runs:
-            out.append((it, runs))
     if report:
         for it, runs in out:
             for line in run_lines(it, runs):
@@ -812,7 +1046,12 @@ def run_jobs(ctx: Context, jobs: list, *, lock: bool = True, report: bool = Fals
     return out
 
 
-def run_lines(it: dict, runs: list) -> list:
+def _has_repo(ctx: Context, job: Job) -> bool:
+    it = store.get_item(ctx.root, job.item_id)
+    return it is not None and is_open(ctx.root, it) and bool(ctx.repo_key(it))
+
+
+def run_lines(it: dict, runs: list, where: str = "") -> list:
     out = []
     for r in runs:
         res, iid = r["result"], instance_id(r["plugin"], r.get("instance") or {})
@@ -823,33 +1062,45 @@ def run_lines(it: dict, runs: list) -> list:
         else:
             c = r.get("changes") or {}
             what = ", ".join(f"{n} {k}" for k, n in c.items() if n) or "no change"
-        out.append(f'{it["id"]}: {iid}: {what}')
+        out.append(f'{it["id"]}: {iid}{where}: {what}')
     return out
+
+
+def _round_jobs(ctx: Context, seen: dict | None, queued: list) -> list:
+    jobs, tips_now = push_jobs(ctx, seen, queued)
+    jobs = queued + jobs
+    if not off():
+        jobs += floor_jobs(ctx)
+        run_jobs(ctx, jobs)
+    _save_tips(ctx.root, tips_now)
+    return jobs
 
 
 def after_command(root: Path, seen: dict | None = None) -> None:
     """The plugins a command set off: its status moves and new branches, and on
-    a local-only store the pushes and floors since the last check."""
-    if root is None or not root.is_dir() or off():
+    a local-only store the pushes and floors since the last check. Tips advance
+    even with plugins off, so turning them on later doesn't replay old pushes."""
+    if root is None or not root.is_dir():
         _take_queue()
         return
     try:
-        jobs = _take_queue()
+        queued = _take_queue()
+        if off():
+            queued = []
         ctx = Context(root, seen=seen)
-        if not sync.enabled(root):
-            jobs += push_jobs(root, seen) + floor_jobs(ctx)
-        run_jobs(ctx, jobs)
+        if sync.enabled(root):
+            if queued:
+                _round_jobs(ctx, None, queued)
+        else:
+            _round_jobs(ctx, seen, queued)
     except Exception as e:  # noqa: BLE001
         notice(f"plugins: skipped ({type(e).__name__}: {e})")
 
 
 def after_round(root: Path, remote, project: str | None, seen: dict | None) -> None:
     """A synced store's plugins after a round: pushes the round's ls-remote saw, and due floors."""
-    if off():
-        return
     try:
-        ctx = Context(root, remote=remote, project=project, seen=seen)
-        run_jobs(ctx, push_jobs(root, seen) + floor_jobs(ctx))
+        _round_jobs(Context(root, remote=remote, project=project, seen=seen), seen, [])
     except Exception as e:  # noqa: BLE001
         notice(f"plugins: skipped ({type(e).__name__}: {e})")
 
@@ -857,7 +1108,7 @@ def after_round(root: Path, remote, project: str | None, seen: dict | None) -> N
 # ── reading results ───────────────────────────────────────────────────────────
 def records(root: Path, it: dict) -> dict:
     """The item's last run per instance id."""
-    return _read(_state(root, RUNS_FILE)).get(_item_key(it)) or {}
+    return _read(_state(root, RUNS_FILE)).get(item_key(it)) or {}
 
 
 def notices(root: Path, it: dict) -> list:

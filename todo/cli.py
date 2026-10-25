@@ -694,8 +694,9 @@ def cmd_refresh(root: Path, args) -> None:
         return
     targets = items if items is not None else [it for it in store.list_todos(root, [store.OPEN, store.DEFERRED])
                                                if plugins_mod.is_open(root, it)]
+    # A store-wide refresh holds each item only while writing it; a named item is held by the command.
     ran = plugins_mod.run_jobs(plugins_mod.Context(root, fresh=True), [(it["id"], {"type": "refresh"}) for it in targets],
-                               lock=False, report=True)
+                               lock=items is None, report=True)
     if not ran and plugins_mod.host_command() is not None:
         print("plugins: nothing to run")
 
@@ -1239,22 +1240,29 @@ def _read_secret(name: str) -> str:
 
 def cmd_connection_auth(root: Path, args) -> None:
     repo = checkout.repo_key(args.repo) if args.repo else None
-    if repo is None and args.name not in connections_mod.host_connections():
-        declared_here = _repo_declared(root, _here_repo(root))
-        if args.name in declared_here:
+    cfg = None
+    if args.server:
+        cfg = remote.sync_config(root) if root is not None and root.is_dir() else None
+        if not cfg:
+            die("--server needs a synced store (todo link --remote URL).", 2)
+        repo = repo or _here_repo(root)
+        if not repo:
+            die("--server needs the repo: pass --repo owner/name.", 2)
+        if args.name not in _repo_declared(root, repo):
+            die(f"{repo}'s plugins file declares no connection {args.name}, so this would be a host-wide secret, "
+                "and those stay on this host. Declare the connection in the repo, or drop --server.", 2)
+    elif repo is None and args.name not in connections_mod.host_connections():
+        if args.name in _repo_declared(root, _here_repo(root)):
             repo = _here_repo(root)
     secret = _read_secret(args.name)
-    key = connections_mod.cred_key(args.name, repo)
-    connections_mod.save_credential(key, secret)
+    try:
+        connections_mod.save_credential(connections_mod.cred_key(args.name, repo), secret)
+    except connections_mod.CredentialsError as e:
+        die(str(e), 1)
     print(f"connection {args.name}: secret saved for {repo or 'this host'} (~/.todo/{connections_mod.CREDENTIALS_FILE})")
     if not args.server:
         return
-    cfg = remote.sync_config(root) if root is not None and root.is_dir() else None
-    if not cfg:
-        die("--server needs a synced store (todo link --remote URL).", 2)
-    target = repo or _here_repo(root)
-    if not target:
-        die("--server needs the repo: pass --repo owner/name.", 2)
+    target = repo
     try:
         remote.remote_for(root).plugin_credential(cfg["project"], target, args.name, secret)
     except remote.RemoteError as e:
@@ -1267,21 +1275,28 @@ def cmd_connection_auth(root: Path, args) -> None:
 def _trigger_text(t) -> str:
     if isinstance(t, dict):
         st = t.get("status") or {}
-        return "status " + (f'{st["from"]}→' if st.get("from") else "") + (st.get("to") or "*")
+        return f'status:{st.get("from") or "*"}:{st.get("to") or "*"}'
     return str(t)
 
 
+_TRIGGERS = "push, pr, deployment, manual or status:<from>:<to> (* for any)"
+
+
+def _status_pair(raw: str) -> tuple:
+    """(from, to) from `status:<from>:<to>`, or None."""
+    parts = raw.split(":")
+    if len(parts) != 3 or parts[0] != "status" or not parts[1] or not parts[2]:
+        return None
+    return parts[1], parts[2]
+
+
 def _parse_trigger(raw: str):
-    """push | pr | deployment | manual | status:<to> | status:<from>><to>"""
     if raw in ("push", "pr", "deployment", "manual"):
         return raw
-    if raw.startswith("status:"):
-        frm, sep, to = raw[len("status:"):].rpartition(">")
-        st = {"to": to} if to else {}
-        if sep and frm:
-            st["from"] = frm
-        return {"status": st}
-    die(f"Unknown trigger {raw!r}: push, pr, deployment, manual, status:<to> or status:<from>><to>.", 2)
+    pair = _status_pair(raw)
+    if pair is None:
+        die(f"Unknown trigger {raw!r}: {_TRIGGERS}.", 2)
+    return {"status": {"from": pair[0], "to": pair[1]}}
 
 
 def _parse_settings(pairs) -> dict:
@@ -1305,7 +1320,7 @@ def cmd_plugin_list(root: Path, args) -> None:
     _plugins_on()
     ctx = plugins_mod.Context(root, fresh=True)
     keys = [checkout.repo_key(args.repo)] if args.repo else sorted(
-        {plugins_mod.repo_key(root, it) for it in store.list_todos(root, [store.OPEN, store.DEFERRED])} - {""}
+        {ctx.repo_key(it) for it in store.list_todos(root, [store.OPEN, store.DEFERRED])} - {""}
         | ({_here_repo(root)} - {""}))
     if not keys:
         print("(no repos: give --repo owner/name)")
@@ -1441,7 +1456,7 @@ def cmd_plugin_rm(root: Path, args) -> None:
 
 
 def _parse_event(raw: str | None, it) -> dict:
-    """refresh | push[:branch] | pr[:branch] | deployment[:branch] | status:<from>><to> | manual:<instance>"""
+    """refresh | push[:branch] | pr[:branch] | deployment[:branch] | status:<from>:<to> | manual:<instance>"""
     raw = raw or "refresh"
     kind, _, rest = raw.partition(":")
     if kind == "refresh" and not rest:
@@ -1452,12 +1467,14 @@ def _parse_event(raw: str | None, it) -> dict:
             die(f"{it['id']} has no branch; give one as {kind}:<branch>.", 2)
         return {"type": kind, "branch": branch}
     if kind == "status":
-        frm, sep, to = rest.rpartition(">")
-        return {"type": "status", "from": frm if sep else it["status"], "to": to or it["status"]}
+        pair = _status_pair(raw)
+        if pair is None or "*" in pair:
+            die(f"An event names both statuses: status:<from>:<to>, not {raw!r}.", 2)
+        return {"type": "status", "from": pair[0], "to": pair[1]}
     if kind == "manual" and rest:
         return {"type": "manual", "instance": rest}
     die(f"Unknown event {raw!r}: refresh, push[:branch], pr[:branch], deployment[:branch], "
-        "status:<from>><to> or manual:<instance>.", 2)
+        "status:<from>:<to> or manual:<instance>.", 2)
 
 
 def _item_on_branch(root: Path):
@@ -1475,10 +1492,10 @@ def cmd_plugin_test(root: Path, args) -> None:
     it = store.resolve_item(root, args.query) if args.query else _item_on_branch(root)
     event = _parse_event(args.event, it)
     ctx = plugins_mod.Context(root, local=args.local, fresh=True)
-    runs = plugins_mod.run(ctx, it, event, dry_run=True, only=args.plugin)
+    runs = plugins_mod.run(ctx, it, event, dry_run=True, only=args.plugin, anywhere=True)
     if runs is None:
         sys.exit(1)
-    print(f'{it["id"]}: {args.plugin} on {plugins_mod._event_label(event)}'
+    print(f'{it["id"]}: {args.plugin} on {plugins_mod.event_label(event)}'
           + (" (working tree)" if args.local else "") + " — dry run")
     if not runs:
         print("  fires no instance for this event")
@@ -1491,15 +1508,21 @@ def cmd_plugin_run(root: Path, args) -> None:
     _require_root(root)
     _plugins_on()
     it = store.resolve_item(root, args.query)
-    only = args.instance if "/" in args.instance else None
-    inst = args.instance.partition("/")[2] if only else args.instance
+    inst = args.instance.rpartition("/")[2]
+    event = {"type": "manual", "instance": inst}
     ctx = plugins_mod.Context(root, fresh=True)
-    runs = plugins_mod.run(ctx, it, {"type": "manual", "instance": inst}, only=only, lock=False)
+    key = ctx.repo_key(it)
+    candidates = [plugins_mod.instance_id(p["name"], i) for p, insts in (plugins_mod.plugin_view(ctx, key) if key else [])
+                  for i in insts if plugins_mod.fires(p, i, event)
+                  and args.instance in (i.get("id"), plugins_mod.instance_id(p["name"], i))]
+    if not candidates:
+        die(f"No manual instance {args.instance} for {it['id']} (see `todo plugin list`).", 2)
+    if len(candidates) > 1:
+        die(f"{args.instance} names more than one manual instance: {', '.join(candidates)}; give one of them.", 2)
+    runs = plugins_mod.run(ctx, it, event, only=candidates[0], anywhere=True, lock=False)
     if runs is None:
         sys.exit(1)
-    if not runs:
-        die(f"No manual instance {args.instance} for {it['id']} (see `todo plugin list`).", 2)
-    for line in plugins_mod.run_lines(it, runs):
+    for line in plugins_mod.run_lines(it, runs, " (ran on this host)"):
         print(line)
 
 
@@ -1757,7 +1780,7 @@ def build_parser() -> argparse.ArgumentParser:
         q.add_argument("--repo", help="owner/name (default: the repo here)")
         q.add_argument("--name", dest="label", help="the instance's display name")
         q.add_argument("--on", action="append", metavar="TRIGGER",
-                       help="push, pr, deployment, manual, status:<to> or status:<from>><to>; repeat for more "
+                       help="push, pr, deployment, manual or status:<from>:<to> (* for any); repeat for more "
                             "(overrides the plugin's own; `none` for no triggers)")
         q.add_argument("--set", action="append", metavar="KEY=VALUE", help="a setting; repeat for more")
         q.add_argument("--button", help="the label of its manual button")
@@ -1786,7 +1809,7 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("query", nargs="?", help="id or part of a title (default: the item on the current branch)")
     pt.add_argument("--local", action="store_true", help="read .todo-plugins/ from the working tree, not the default branch")
     pt.add_argument("--event", help="refresh (default), push[:branch], pr[:branch], deployment[:branch], "
-                                    "status:<from>><to> or manual:<instance>")
+                                    "status:<from>:<to> or manual:<instance>")
     pt.set_defaults(func=cmd_plugin_test)
     pn = psub.add_parser("run", parents=[common], help="run a manual instance on an item now")
     pn.add_argument("query", help="id or part of a title")
@@ -2112,7 +2135,7 @@ def _named_items(root: Path, args) -> list | None:
         return []
     queries = [q for q in (getattr(args, "query", None), getattr(args, "other", None)) if q]
     if not queries:
-        return [] if args.command in READ_ONLY else None
+        return [] if args.command in READ_ONLY or args.command == "refresh" else None
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             items = [store.resolve_item(root, q) for q in queries]

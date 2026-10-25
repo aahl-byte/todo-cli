@@ -13,8 +13,10 @@ the host's. A repo connection only ever gets its repo's secret.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -23,6 +25,7 @@ from . import identity, yamlio
 
 CONNECTIONS_FILE = "connections.yaml"
 CREDENTIALS_FILE = "credentials.json"
+CREDENTIALS_LOCK = ".credentials.lock"
 HOST = "*"
 GITHUB = "github"
 BUILT_IN = {GITHUB: {"http": {"url": "https://api.github.com", "auth": "bearer"}}}
@@ -91,28 +94,61 @@ def cred_key(name: str, repo: str | None = None) -> str:
     return f"{repo or HOST}/{name}"
 
 
-def _cred_file() -> Path:
+class CredentialsError(Exception):
+    """The credentials file can't be read, so it isn't written either."""
+
+
+def cred_file() -> Path:
     return _home() / CREDENTIALS_FILE
 
 
-def load_credentials() -> dict:
+def load_credentials(strict: bool = False) -> dict:
+    """The stored secrets; a damaged file reads as none, or raises with `strict`."""
+    f = cred_file()
     try:
-        data = json.loads(_cred_file().read_text())
-    except (OSError, ValueError):
+        data = json.loads(f.read_text())
+    except FileNotFoundError:
         return {}
-    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)} if isinstance(data, dict) else {}
+    except (OSError, ValueError) as e:
+        if strict:
+            raise CredentialsError(f"{f} can't be read ({e}); fix or remove it first") from None
+        return {}
+    if not isinstance(data, dict):
+        if strict:
+            raise CredentialsError(f"{f} isn't a JSON object; fix or remove it first")
+        return {}
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+
+
+@contextlib.contextmanager
+def _cred_lock():
+    try:
+        import fcntl
+    except ImportError:              # Windows: no flock
+        yield
+        return
+    lock = _home() / CREDENTIALS_LOCK
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
 
 
 def save_credential(key: str, secret: str) -> None:
-    creds = {**load_credentials(), key: secret}
-    f = _cred_file()
+    f = cred_file()
     f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_name(f".{f.name}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as out:
-        json.dump(creds, out, indent=2, sort_keys=True)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, f)
+    with _cred_lock():
+        creds = {**load_credentials(strict=True), key: secret}
+        fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as out:
+                json.dump(creds, out, indent=2, sort_keys=True)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, f)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
 
 def _github_fallback() -> str | None:

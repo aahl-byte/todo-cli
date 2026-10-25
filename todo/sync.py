@@ -1469,7 +1469,7 @@ def _trouble(e: RemoteError, name: str, report: Report) -> None:
 
 def _from_row(row: dict) -> dict:
     return {"uid": row["uid"], "sha256": row["sha256"], "size": row["size"], "by": row.get("by"),
-            "via": row.get("via"), "at": row.get("at"), "base": row["sha256"]}
+            "via": row.get("via"), "at": row.get("at"), "base": row["sha256"], "plugin": row.get("plugin")}
 
 
 def _queue_doc(snap: dict, item_uid: str, row: dict, keep: bool = False) -> None:
@@ -1674,8 +1674,11 @@ def _push_doc(root, remote, project, d: Path, item_uid: str, name: str, meta: di
         return None                 # still being written; the next round has it
     try:
         key = remote.doc_upload(project, item_uid, name, data)
-        r = remote.doc_record(project, {"item_uid": item_uid, "name": name, "sha256": sha, "size": size,
-                                        "file_key": key, "base": e.get("base"), "via": e.get("via")})
+        record = {"item_uid": item_uid, "name": name, "sha256": sha, "size": size,
+                  "file_key": key, "base": e.get("base"), "via": e.get("via")}
+        if e.get("plugin"):
+            record["plugin"] = e["plugin"]
+        r = remote.doc_record(project, record)
     except RemoteError as err:
         if err.status != 409:
             raise
