@@ -5,6 +5,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { withBase } from "@/lib/base";
+import { docNameError } from "@/lib/doc-view";
 
 const FILE_SRC = /^\/api\/files\/[\w-]+\/[\w-]+\/[0-9A-Z]{26}\.(?:png|jpe?g|gif|webp)$/;
 const INLINE = ["a", "code", "em", "strong", "del", "img", "br"];
@@ -14,7 +15,7 @@ export function safeUrl(url: string, key: string): string {
   return /^(https?:|mailto:|doc:)/i.test(url) ? url : "";
 }
 
-const DOC_REF = /(?<![\w:/.-])doc:([^\s<>()[\]"'`]+)/g;
+const DOC_REF = /(?<![\w:/.-])doc:([^\s<>()[\]"'`]+)/gi;
 
 type MdNode = { type: string; value?: string; url?: string; children?: MdNode[] };
 
@@ -31,7 +32,7 @@ function docRefs() {
         const name = m[1].replace(/[.,;:!?]+$/, "");
         if (!name) continue;
         if (m.index! > last) out.push({ type: "text", value: text.slice(last, m.index) });
-        out.push({ type: "link", url: `doc:${name}`, children: [{ type: "text", value: `doc:${name}` }] });
+        out.push({ type: "link", url: `doc:${name}`, children: [{ type: "text", value: m[0].slice(0, 4) + name }] });
         last = m.index! + 4 + name.length;
       }
       if (!out.length) return [child];
@@ -58,9 +59,11 @@ const fileUrl = (src: string, files?: string) => withBase(files ? files + src.sl
 
 const components = (files?: string, docs?: string): Components => ({
   a: ({ node: _node, href, children, ...rest }) => {
-    if (href?.startsWith("doc:")) {
-      return docs
-        ? <a href={withBase(`${docs}/${encodeURIComponent(docName(href))}`)} className="doc-ref">{children}</a>
+    if (href && /^doc:/i.test(href)) {
+      // Only a name a doc could have links; anything else stays text.
+      const name = docName(href);
+      return docs && !docNameError(name)
+        ? <a href={withBase(`${docs}/${encodeURIComponent(name)}`)} className="doc-ref">{children}</a>
         : <span className="doc-ref">{children}</span>;
     }
     return href ? <a {...rest} href={href} target="_blank" rel="noreferrer">{children}</a> : <>{children}</>;

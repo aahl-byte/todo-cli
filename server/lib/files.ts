@@ -3,7 +3,7 @@
 // presigned form, and reads go through a short-lived presigned URL, so the
 // bucket stays private. Without S3 (local dev) the files live under
 // `TODO_FILES_DIR`.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ulid } from "./ulid";
 import { withBase } from "@/lib/base";
@@ -144,11 +144,26 @@ export async function readLocal(key: string): Promise<Buffer | null> {
   }
 }
 
+/** Delete a stored file; a missing one is no error. */
+export async function deleteObject(key: string): Promise<void> {
+  if (!s3()) {
+    await unlink(localPath(key)).catch((e) => { if (e?.code !== "ENOENT") throw e; });
+    return;
+  }
+  const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+  await (await client()).send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET!, Key: key }));
+}
+
+/** Types that run script when a browser opens them. */
+const ACTIVE = /^(text\/html|image\/svg|application\/xml|text\/xml)/;
+
 /** A stored file for the browser: a short-lived S3 link, or the bytes when the
  * app serves them. A doc passes its own type and `content-disposition`. */
 export async function fileResponse(key: string, doc?: { type: string; disposition: string }): Promise<Response> {
   if (!viaApp()) {
-    return new Response(null, { status: 302, headers: { location: await readUrl(key, doc?.disposition), "cache-control": "private, max-age=240" } });
+    // The bucket sets no CSP, so an active type only ever leaves it as a download.
+    const disposition = doc && ACTIVE.test(doc.type) ? doc.disposition.replace(/^inline/, "attachment") : doc?.disposition;
+    return new Response(null, { status: 302, headers: { location: await readUrl(key, disposition), "cache-control": "private, max-age=240" } });
   }
   const bytes = await getObject(key);
   if (!bytes) return new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "content-type": "application/json" } });
@@ -167,6 +182,6 @@ export async function fileResponse(key: string, doc?: { type: string; dispositio
  * none, as a sandbox stops browsers' PDF viewers. */
 function cspFor(type: string): string | null {
   if (type === "application/pdf") return null;
-  if (/^(text\/html|image\/svg|application\/xml|text\/xml)/.test(type)) return "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";
+  if (ACTIVE.test(type)) return "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox";
   return "default-src 'none'";
 }

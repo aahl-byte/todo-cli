@@ -1,16 +1,26 @@
 // The pure side of docs, shared by the server and the browser: names, how each
 // kind of doc renders, and the paths that show one.
 
-export const MAX_NAME = 120;
+export const MAX_NAME_BYTES = 200;
 
-/** Why `name` isn't a plain file name a doc can have, or null. Mirrors docs.name_error. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const BAD_CHARS = /[<>:"/\\|?*\u0000-\u001f\u007f]/;
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/** Why `name` isn't a name a doc can have on every system, or null. Mirrors docs.name_error. */
 export function docNameError(name: unknown): string | null {
   if (typeof name !== "string" || !name) return "a doc needs a name";
-  if (/[/\\\u0000-\u001f\u007f]/.test(name)) return "a doc name is a plain file name, without \"/\"";
+  if (LONE_SURROGATE.test(name)) return "a doc name must be valid UTF-8";
+  if (new TextEncoder().encode(name).length > MAX_NAME_BYTES) return `a doc name is at most ${MAX_NAME_BYTES} bytes`;
+  if (BAD_CHARS.test(name)) return "a doc name can't hold control characters or any of <>:\"/\\|?*";
   if (name.startsWith(".")) return "a doc name can't start with \".\"";
-  if (name.length > MAX_NAME) return `a doc name is at most ${MAX_NAME} characters`;
+  if (/[. ]$/.test(name)) return "a doc name can't end with \".\" or a space";
+  if (RESERVED.test(name.split(".")[0])) return "that name is reserved on Windows";
   return null;
 }
+
+/** What makes two names one doc: NFC, lowercased. Mirrors docs.name_key. */
+export const docNameKey = (name: string) => name.normalize("NFC").toLowerCase();
 
 export type DocKind = "markdown" | "html" | "json" | "code" | "text" | "image" | "pdf" | "audio" | "video" | "download";
 

@@ -1,16 +1,16 @@
-import { DocError, listDocs, recordDoc } from "@/lib/docs";
+import { DocError, docPage, recordDoc } from "@/lib/docs";
 import { authed, json } from "@/lib/http";
 
 type Ctx = { params: Promise<{ key: string }> };
 
-/** An item's docs: `?item=<uid>`. */
+/** A page of the project's docs, or with `?item=<uid>` one item's: `{docs, next}`;
+ * pass `next` back as `?after=` for the page after. */
 export async function GET(req: Request, ctx: Ctx) {
   const a = await authed(req);
   if (a instanceof Response) return a;
   const { key } = await ctx.params;
-  const item = new URL(req.url).searchParams.get("item");
-  if (!item) return json({ error: "which item? (?item=<uid>)" }, 400);
-  return json({ docs: await listDocs(a.d, key, item) });
+  const q = new URL(req.url).searchParams;
+  return json(await docPage(a.d, key, { item: q.get("item"), after: q.get("after"), limit: Number(q.get("limit")) || undefined }));
 }
 
 /** Record an uploaded file as a doc: `{item_uid, name, file_key, sha256, base, via}` →

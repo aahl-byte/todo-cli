@@ -1,18 +1,23 @@
 // An item's docs: files it keeps on purpose (designs, plans, handoffs). A doc
-// is one row per (item, name); its bytes sit in the files store. A write names
-// `base`, the sha256 the writer last saw, and is a conflict unless that is the
-// current one. Each write is a change in the feed, so CLIs pull it.
+// is one row per (item, name key); its bytes sit in the files store. Bytes go
+// up under a key this server issued for that item and name; a write then
+// names `base`, the sha256 the writer last saw, and is a conflict unless that
+// is the current one. Each write is a change in the feed, so CLIs pull it.
 import crypto from "node:crypto";
 import type { Db, Row } from "./db";
-import { DOC_MAX_BYTES, docType, getObject, inProject, isDocKey } from "./files";
+import { DOC_MAX_BYTES, deleteObject, docExt, docType, getObject, inProject, isDocKey, newDocKey } from "./files";
 import { nowIso } from "./model";
 import { hashUid } from "./ulid";
-import { docNameError } from "./doc-view";
+import { docNameError, docNameKey } from "./doc-view";
 
 export * from "./doc-view";
 
-/** The same uid the CLI gives the doc, so a name is one doc everywhere. */
-export const docUid = (itemUid: string, name: string) => hashUid("doc", itemUid, name);
+/** The same uid the CLI gives the doc, so a name key is one doc everywhere. */
+export const docUid = (itemUid: string, name: string) => hashUid("doc", itemUid, docNameKey(name));
+
+/** How long an issued upload key can be recorded, and when an unrecorded one is swept. */
+const UPLOAD_HOURS = 1;
+const SWEEP_HOURS = 24;
 
 export class DocError extends Error {
   constructor(public status: number, message: string) {
@@ -30,9 +35,21 @@ const COLUMNS = "uid, item_uid, name, size, sha256, file_key, content_type, by, 
 
 const clean = (row: Row | undefined): Row | null => (row ? { ...row, size: Number(row.size) } : null);
 
+/** An item's docs, by name. */
 export async function listDocs(d: Db, project: string, itemUid: string): Promise<Row[]> {
   const rows = await d.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 order by name`, [project, itemUid]);
   return rows.map((r) => clean(r)!);
+}
+
+/** A page of the project's docs (or one item's) in uid order; `next` is the uid to continue after. */
+export async function docPage(d: Db, project: string, opts: { item?: string | null; after?: string | null; limit?: number }):
+    Promise<{ docs: Row[]; next: string | null }> {
+  const limit = Math.min(Math.max(opts.limit ?? 500, 1), 1000);
+  const rows = await d.query(
+    `select ${COLUMNS} from docs where project = $1 and ($2::text is null or item_uid = $2) and uid > $3
+      order by uid limit $4`, [project, opts.item ?? null, opts.after ?? "", limit + 1]);
+  const page = rows.slice(0, limit).map((r) => clean(r)!);
+  return { docs: page, next: rows.length > limit ? page[page.length - 1].uid : null };
 }
 
 export async function getDoc(d: Db, project: string, uid: string): Promise<Row | null> {
@@ -41,8 +58,33 @@ export async function getDoc(d: Db, project: string, uid: string): Promise<Row |
 }
 
 export async function docByName(d: Db, project: string, itemUid: string, name: string): Promise<Row | null> {
-  const [row] = await d.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 and name = $3`, [project, itemUid, name]);
+  const [row] = await d.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 and name_key = $3`,
+    [project, itemUid, docNameKey(name)]);
   return clean(row);
+}
+
+/** A 409 when another spelling of `name` is already a doc of the item. */
+function refuseTwin(existing: Row | null, name: string): void {
+  if (existing && existing.name !== name) {
+    throw new DocError(409, `a doc named ${existing.name} already exists; names differing only in case or accents are one doc`);
+  }
+}
+
+/** Issue a key to upload the doc `name` of an item under, after checking the name. */
+export async function issueUpload(d: Db, project: string, itemUid: string, name: unknown, size: unknown): Promise<string> {
+  const bad = docNameError(name);
+  if (bad) throw new DocError(422, bad);
+  const n = Number(size);
+  if (!Number.isInteger(n) || n < 0 || n > DOC_MAX_BYTES) throw new DocError(413, "docs are limited to 25 MB");
+  const [p] = await d.query("select 1 from projects where key = $1", [project]);
+  if (!p) throw new DocError(404, "no such project");
+  const [item] = await d.query("select 1 from items where project = $1 and uid = $2", [project, itemUid]);
+  if (!item) throw new DocError(422, "no such item");
+  refuseTwin(await docByName(d, project, itemUid, name as string), name as string);
+  const key = newDocKey(project, name as string);
+  await d.query("insert into doc_uploads (project, file_key, item_uid, name_key) values ($1, $2, $3, $4)",
+    [project, key, itemUid, docNameKey(name as string)]);
+  return key;
 }
 
 async function lockProject(t: Db, project: string): Promise<void> {
@@ -59,55 +101,83 @@ async function bump(t: Db, project: string, uid: string, itemUid: string, delete
   return seq;
 }
 
-/** Record an uploaded file as the doc `name` of an item. The size and sha256
- * come from the stored bytes; a claimed sha256 must match them. */
+/** Delete bytes nothing points to any more; a failure is only logged. */
+async function discard(key: string | null | undefined): Promise<void> {
+  if (!key) return;
+  try {
+    await deleteObject(key);
+  } catch (e) {
+    console.error(`docs: couldn't delete ${key}:`, e);
+  }
+}
+
+/** Record an uploaded file as the doc `name` of an item. The file key must be
+ * one issued for this item and name within the hour; size and sha256 come
+ * from the stored bytes, and a claimed sha256 must match them. */
 export async function recordDoc(d: Db, project: string, handle: string, input: {
   item_uid: string; name: string; file_key: string; base?: string | null; sha256?: string; via?: string;
 }): Promise<DocWrite> {
   const name = input.name;
   const bad = docNameError(name);
   if (bad) throw new DocError(422, bad);
-  if (typeof input.file_key !== "string" || !isDocKey(input.file_key) || !inProject(input.file_key, project)) {
+  const key = input.file_key;
+  if (typeof key !== "string" || !isDocKey(key) || !inProject(key, project) || !key.endsWith(`.${docExt(name)}`)) {
     throw new DocError(422, "not a doc upload of this project");
   }
-  const [item] = await d.query("select 1 from items where project = $1 and uid = $2", [project, input.item_uid]);
-  if (!item) throw new DocError(422, "no such item");
-  const bytes = await getObject(input.file_key);
+  const [issued] = await d.query(
+    `select 1 from doc_uploads where project = $1 and file_key = $2 and item_uid = $3 and name_key = $4
+        and created > now() - make_interval(hours => $5)`, [project, key, input.item_uid, docNameKey(name), UPLOAD_HOURS]);
+  if (!issued) throw new DocError(422, "that upload wasn't issued for this doc, or has expired");
+  const bytes = await getObject(key);
   if (!bytes) throw new DocError(422, "the upload is missing");
   if (bytes.length > DOC_MAX_BYTES) throw new DocError(413, "docs are limited to 25 MB");
   const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
   if (input.sha256 != null && input.sha256 !== sha256) throw new DocError(422, "the upload doesn't match its sha256");
   const via = input.via === "agent" ? "agent" : "human";
-  return d.tx(async (t) => {
+  const { result, superseded } = await d.tx(async (t) => {
     await lockProject(t, project);
-    const [row] = await t.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 and name = $3`,
-      [project, input.item_uid, name]);
+    const [row] = await t.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 and name_key = $3`,
+      [project, input.item_uid, docNameKey(name)]);
+    refuseTwin(row ?? null, name);
+    await t.query("delete from doc_uploads where project = $1 and file_key = $2", [project, key]);
     const current = row?.sha256 ?? null;
-    if (sha256 === current) return { status: "applied", doc: clean(row) };
-    if ((input.base ?? null) !== current) return { status: "conflict", doc: clean(row) };
+    if (sha256 === current) return { result: { status: "applied" as const, doc: clean(row) }, superseded: key };
+    if ((input.base ?? null) !== current) return { result: { status: "conflict" as const, doc: clean(row) }, superseded: key };
     const uid = docUid(input.item_uid, name);
     const seq = await bump(t, project, uid, input.item_uid, false, handle);
     const [saved] = await t.query(
-      `insert into docs (project, uid, item_uid, name, size, sha256, file_key, content_type, by, via, at, versions)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+      `insert into docs (project, uid, item_uid, name, name_key, size, sha256, file_key, content_type, by, via, at, versions)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
        on conflict (project, uid) do update set size = excluded.size, sha256 = excluded.sha256, file_key = excluded.file_key,
          content_type = excluded.content_type, by = excluded.by, via = excluded.via, at = excluded.at, versions = excluded.versions
        returning ${COLUMNS}`,
-      [project, uid, input.item_uid, name, bytes.length, sha256, input.file_key, docType(name), handle, via, nowIso(),
+      [project, uid, input.item_uid, name, docNameKey(name), bytes.length, sha256, key, docType(name), handle, via, nowIso(),
        JSON.stringify({ sha256: seq })]);
-    return { status: "applied", doc: clean(saved) };
+    return { result: { status: "applied" as const, doc: clean(saved) }, superseded: row?.file_key as string | undefined };
   });
+  await discard(superseded);
+  return result;
 }
 
 /** Delete a doc, unless it changed since `base`. */
 export async function removeDoc(d: Db, project: string, handle: string, uid: string, base: string | null): Promise<DocWrite> {
-  return d.tx(async (t) => {
+  const { result, gone } = await d.tx(async (t) => {
     await lockProject(t, project);
     const [row] = await t.query(`select ${COLUMNS} from docs where project = $1 and uid = $2`, [project, uid]);
-    if (!row) return { status: "applied", doc: null };
-    if (row.sha256 !== base) return { status: "conflict", doc: clean(row) };
+    if (!row) return { result: { status: "applied" as const, doc: null }, gone: null };
+    if (row.sha256 !== base) return { result: { status: "conflict" as const, doc: clean(row) }, gone: null };
     await bump(t, project, uid, row.item_uid, true, handle);
     await t.query("delete from docs where project = $1 and uid = $2", [project, uid]);
-    return { status: "applied", doc: null };
+    return { result: { status: "applied" as const, doc: null }, gone: row.file_key as string };
   });
+  await discard(gone);
+  return result;
+}
+
+/** Drop upload keys never recorded within a day, with their bytes. Returns how many. */
+export async function sweepDocUploads(d: Db): Promise<number> {
+  const rows = await d.query(
+    "delete from doc_uploads where created < now() - make_interval(hours => $1) returning file_key", [SWEEP_HOURS]);
+  for (const r of rows) await discard(r.file_key);
+  return rows.length;
 }

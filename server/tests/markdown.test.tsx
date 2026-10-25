@@ -51,3 +51,19 @@ describe("doc references", () => {
     expect(out).not.toContain("<a");
   });
 });
+
+describe("doc references, whatever their case", () => {
+  const withDocs = (text: string) => renderToStaticMarkup(<Markdown text={text} docs="/p/k/i/i1/docs" />);
+
+  it("link DOC: like doc:, and never leave a dead DOC: href", () => {
+    expect(withDocs("see DOC:plan.md")).toContain('<a href="/p/k/i/i1/docs/plan.md" class="doc-ref">DOC:plan.md</a>');
+    expect(withDocs("[x](DOC:plan.md)")).toContain('href="/p/k/i/i1/docs/plan.md"');
+    expect(withDocs("[x](DOC:javascript:alert(1))")).not.toMatch(/href="DOC:/i);
+  });
+
+  it("link only names a doc could have", () => {
+    for (const text of ["[x](doc:javascript:alert(1))", "[x](doc:..)", "see doc:../../api/x", "[x](doc:%2e%2e%2f%2e%2e%2fapi)"]) {
+      expect([text, withDocs(text)]).not.toEqual([text, expect.stringContaining("<a")]);
+    }
+  });
+});

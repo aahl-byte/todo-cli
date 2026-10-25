@@ -342,12 +342,14 @@ create index if not exists api_tokens_handle on api_tokens (handle);
 
 -- An item's docs: files it keeps on purpose. The bytes live in the files
 -- store under file_key; sha256 is what a client's base is checked against, and
--- versions.sha256 is the change seq of the current content.
+-- versions.sha256 is the change seq of the current content. name_key (the name
+-- NFC-normalized and lowercased, set by the app) is what makes two names one doc.
 create table if not exists docs (
   project      text not null,
   uid          text not null,
   item_uid     text not null,
   name         text not null,
+  name_key     text not null,
   size         bigint not null,
   sha256       text not null,
   file_key     text not null,
@@ -357,8 +359,19 @@ create table if not exists docs (
   at           text not null,
   versions     jsonb not null default '{}'::jsonb,
   primary key (project, uid),
-  unique (project, item_uid, name),
+  unique (project, item_uid, name_key),
   foreign key (project, item_uid) references items (project, uid) on delete cascade
+);
+
+-- Doc upload keys the server issued and nothing has recorded yet. A record
+-- takes only one of these; keys left over a day are swept with their bytes.
+create table if not exists doc_uploads (
+  project  text not null,
+  file_key text not null,
+  item_uid text not null,
+  name_key text not null,
+  created  timestamptz not null default now(),
+  primary key (project, file_key)
 );
 
 -- A CLI waiting for a browser to approve it. The token is minted when the CLI

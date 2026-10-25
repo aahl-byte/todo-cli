@@ -9,7 +9,8 @@ import { DELETE as docDELETE, GET as docGET } from "@/app/api/projects/[key]/doc
 import { GET as changesGET } from "@/app/api/projects/[key]/changes/route";
 import { GET as fileGET, POST as filePOST } from "@/app/api/files/[...key]/route";
 import { addProject } from "@/lib/auth";
-import { docKind, docNameError, docUid } from "@/lib/docs";
+import { docKind, docNameError, docNameKey, docUid, sweepDocUploads } from "@/lib/docs";
+import { newDocKey, readLocal, saveLocal } from "@/lib/files";
 import { hashUid } from "@/lib/ulid";
 import { item, world, type World } from "./helpers";
 
@@ -55,9 +56,18 @@ describe("doc uids", () => {
     expect(docUid("I1", "plan.md")).toBe("ZXRFVMMM2LHBM4A75CY5IY7VSU");
   });
 
-  it("refuse names that aren't plain file names", () => {
-    for (const bad of ["a/b", ".meta.yaml", "x".repeat(121), "", "a\\b", "a\nb"]) expect(docNameError(bad)).not.toBeNull();
-    expect(docNameError("design v2.md")).toBeNull();
+  it("refuse names some system can't hold, by the CLI's rule", () => {
+    const bad = ["a/b", ".meta.yaml", ".hidden", "x".repeat(201), "設".repeat(66) + ".md", "", "a\\b", "a\nb", "a:b.md", "a<b.md",
+      "a>b.md", 'a"b.md', "a|b.md", "a?.md", "a*.md", "trailing.", "trailing ", "con", "CON.md", "nul.txt", "Aux", "prn.tar.gz",
+      "com1.md", "LPT9.txt", "a\uD800.md"];
+    for (const name of bad) expect([name, docNameError(name)]).not.toEqual([name, null]);
+    for (const name of ["設".repeat(65) + ".md", "design v2.md", "console.md", "com10.md", "lpt.md", "a.b.c"]) expect(docNameError(name)).toBeNull();
+  });
+
+  it("make a name one doc whatever its case or Unicode form", () => {
+    expect(docNameKey("Cafe\u0301.MD")).toBe("café.md");
+    expect(docUid("I1", "Cafe\u0301.md")).toBe("ZPOF2JXTNOB7HXR3BXTCM7NVE6");
+    expect(docUid("I1", "PLAN.md")).toBe(docUid("I1", "plan.md"));
   });
 });
 
@@ -162,5 +172,79 @@ describe("doc kinds", () => {
       "demo.webm": "video", "bundle.zip": "download", "Makefile": "download",
     };
     for (const [name, kind] of Object.entries(cases)) expect([name, docKind(name)]).toEqual([name, kind]);
+  });
+});
+
+describe("doc identity and uploads", () => {
+  it("refuses a second doc whose name differs only in case or Unicode form", async () => {
+    const t = w.tokens.alice;
+    const ask = (name: string) => uploadPOST(jsonReq("http://x/api/projects/p/docs/upload", "POST", t, { item_uid: "I1", name, size: 3 }), proj("p"));
+    const early = await (await ask("CAFÉ.md")).json();
+    await saveLocal(early.key, new TextEncoder().encode("two"));
+    await put(t, "café.md", "one", null);
+    for (const twin of ["CAFÉ.md", "cafe\u0301.md"]) {
+      const r = await ask(twin);
+      expect(r.status).toBe(409);
+      expect((await r.json()).error).toContain("a doc named café.md already exists");
+    }
+    const late = await recordPUT(jsonReq("http://x/api/projects/p/docs", "PUT", t, { item_uid: "I1", name: "CAFÉ.md", file_key: early.key, base: null }), proj("p"));
+    expect(late.status).toBe(409);
+    expect((await w.d.query("select name from docs")).map((r) => r.name)).toEqual(["café.md"]);
+  });
+
+  it("records only a key it issued for that project, item and name, within the hour", async () => {
+    const t = w.tokens.alice;
+    const record = (file_key: string, name = "a.md") =>
+      recordPUT(jsonReq("http://x/api/projects/p/docs", "PUT", t, { item_uid: "I1", name, file_key, base: null }), proj("p"));
+    const forged = newDocKey("p", "a.md");
+    await saveLocal(forged, new TextEncoder().encode("x"));
+    expect((await record(forged)).status).toBe(422);
+    const target = await (await uploadPOST(jsonReq("http://x/api/projects/p/docs/upload", "POST", t, { item_uid: "I1", name: "a.md", size: 1 }), proj("p"))).json();
+    await saveLocal(target.key, new TextEncoder().encode("x"));
+    expect((await record(target.key, "b.md")).status).toBe(422);
+    await w.d.query("update doc_uploads set created = now() - interval '2 hours'");
+    expect((await record(target.key)).status).toBe(422);
+    await w.d.query("update doc_uploads set created = now()");
+    await w.d.query("update doc_uploads set name_key = 'a.txt'");
+    expect((await record(target.key, "a.txt")).status).toBe(422);
+    await w.d.query("update doc_uploads set name_key = 'a.md'");
+    expect((await record(target.key)).status).toBe(200);
+    expect((await record(target.key)).status).toBe(422);
+  });
+
+  it("deletes the blob a replace or delete leaves behind", async () => {
+    const t = w.tokens.alice;
+    const first = (await (await put(t, "plan.md", "v1", null)).json()).doc;
+    const second = (await (await put(t, "plan.md", "v2", first.sha256)).json()).doc;
+    expect(await readLocal(first.file_key)).toBeNull();
+    expect(await readLocal(second.file_key)).not.toBeNull();
+    await docDELETE(new Request(`http://x/api/projects/p/docs/${second.uid}?base=${second.sha256}`, { method: "DELETE", headers: auth(t) }), one("p", second.uid));
+    expect(await readLocal(second.file_key)).toBeNull();
+  });
+
+  it("lists every doc of the project in pages", async () => {
+    const t = w.tokens.alice;
+    await w.apply("alice", item("I2"));
+    for (const [name, itemUid] of [["a.md", "I1"], ["b.md", "I1"], ["c.md", "I2"]]) await put(t, name, name, null, "p", itemUid);
+    const seen: string[] = [];
+    let after = "";
+    for (;;) {
+      const page = await (await listGET(new Request(`http://x/api/projects/p/docs?limit=2${after ? `&after=${after}` : ""}`, { headers: auth(t) }), proj("p"))).json();
+      seen.push(...page.docs.map((d: any) => d.name));
+      if (!page.next) break;
+      after = page.next;
+    }
+    expect(seen.sort()).toEqual(["a.md", "b.md", "c.md"]);
+  });
+
+  it("sweeps upload keys never recorded within a day, with their blobs", async () => {
+    const t = w.tokens.alice;
+    const target = await (await uploadPOST(jsonReq("http://x/api/projects/p/docs/upload", "POST", t, { item_uid: "I1", name: "a.md", size: 1 }), proj("p"))).json();
+    await saveLocal(target.key, new TextEncoder().encode("x"));
+    expect(await sweepDocUploads(w.d)).toBe(0);
+    await w.d.query("update doc_uploads set created = now() - interval '25 hours'");
+    expect(await sweepDocUploads(w.d)).toBe(1);
+    expect(await readLocal(target.key)).toBeNull();
+    expect(await w.d.query("select * from doc_uploads")).toEqual([]);
   });
 });

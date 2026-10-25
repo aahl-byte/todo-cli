@@ -6,8 +6,8 @@
 import { revalidatePath } from "next/cache";
 import type { ActionState } from "@/lib/action-helpers";
 import { db } from "@/lib/db";
-import { DocError, docNameError, recordDoc, removeDoc } from "@/lib/docs";
-import { DOC_MAX_BYTES, docType, filesEnabled, newDocKey, uploadTarget } from "@/lib/files";
+import { DocError, issueUpload, recordDoc, removeDoc } from "@/lib/docs";
+import { docType, filesEnabled, uploadTarget } from "@/lib/files";
 import { requireUser } from "@/lib/session";
 
 const fail = (message: string): ActionState => ({ ok: false, message, at: Date.now() });
@@ -16,13 +16,13 @@ export async function docUploadTarget(a: { project: string; itemUid: string; nam
     Promise<ActionState & { key?: string; url?: string; fields?: Record<string, string> }> {
   await requireUser();
   if (!filesEnabled()) return fail("Uploads need S3 here.");
-  const bad = docNameError(a.name);
-  if (bad) return fail(`Not uploaded: ${bad}.`);
-  if (!(a.size >= 0 && a.size <= DOC_MAX_BYTES)) return fail("Not uploaded: docs are limited to 25 MB.");
-  const [item] = await (await db()).query("select 1 from items where project = $1 and uid = $2", [a.project, a.itemUid]);
-  if (!item) return fail("No such item.");
-  const key = newDocKey(a.project, a.name);
-  return { ok: true, key, ...(await uploadTarget(key, docType(a.name))) };
+  try {
+    const key = await issueUpload(await db(), a.project, a.itemUid, a.name, a.size);
+    return { ok: true, key, ...(await uploadTarget(key, docType(a.name))) };
+  } catch (e) {
+    if (e instanceof DocError) return fail(`Not uploaded: ${e.message}.`);
+    throw e;
+  }
 }
 
 const CONFLICT = (name: string) => `Not saved: ${name} changed since this page loaded. Reload to see it.`;
