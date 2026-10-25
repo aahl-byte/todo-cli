@@ -10,8 +10,8 @@ export function validJiraKeys(value: unknown): value is string[] {
     && new Set(value).size === value.length;
 }
 
-/** Make the item's 'field' links match `keys`. A key the bridge already
- * linked by import keeps that link. */
+/** Make the item's 'field' links match `keys`. A key that already has a row
+ * of another source keeps that row. */
 export async function syncFieldLinks(t: Db, project: string, itemUid: string, keys: string[]): Promise<void> {
   await t.query(
     `delete from jira_links where project = $1 and item_uid = $2 and source = 'field' and not (jira_key = any($3::text[]))`,
