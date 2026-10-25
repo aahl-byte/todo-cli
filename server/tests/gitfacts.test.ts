@@ -300,6 +300,46 @@ describe("PR base chains and other edge cases", () => {
     expect(e.evidence).toContain("rewritten");
   });
 
+  it("demotes a rewritten parent's edge to a hint once its current work lands, and keeps the hint", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec()).impl);
+    const rewrittenSpec = (status: string) => fakeGitHub({ tips: { main: M, staging: S, "feat/a": A2, "feat/b": B }, track: TRACK,
+      u: { ...u(S, A2, [A2]), ...u(S, B, [A, B]) }, anc: { [`${n(A2)}...${n(S)}`]: status } });
+    resetGitFactsCache();
+    await computeProject(w.d, "p", rewrittenSpec("diverged").impl);
+    expect((await facts("B")).waits_on).toEqual(["a"]);
+    resetGitFactsCache();
+    await computeProject(w.d, "p", rewrittenSpec("ahead").impl);
+    for (let i = 0; i < 2; i++) {
+      const b = await facts("B");
+      expect(b.needs).toEqual([]);
+      expect(b.waits_on).toEqual([]);
+      expect(b.shares).toMatchObject([{ id: "a", rewritten: true }]);
+      expect(b.shares![0].evidence).toContain("still carries its old commits");
+      expect(b.shares![0].evidence).toContain("merge staging into feat/b");
+      resetGitFactsCache();
+      await computeProject(w.d, "p", rewrittenSpec("ahead").impl);
+    }
+  });
+
+  it("lands a chain dependency merged without a PR", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: { "feat/b": [open(8, B, "feat/a")] },
+      u: { ...u(S, A, []), ...u(S, B, [B]) }, anc: { [`${n(A)}...${n(S)}`]: "ahead" } })).impl);
+    expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "landed", chain: true }]);
+  });
+
+  it("lands a chain onto an archived dependency that already reached the target", async () => {
+    await items(["A", ["feat/a"], "done"], ["B", ["feat/b"]]);
+    await w.d.query("update items set extra = extra || '{\"archived\": true}'::jsonb where uid = 'A'");
+    const pr = { number: 7, state: "merged", base: "staging", head: A, merge_commit: Q };
+    await w.d.query("insert into git_facts (project, item_uid, data, computed_by) values ('p', 'A', $1::jsonb, 'server')",
+      [JSON.stringify({ branches: [{ name: "feat/a", head: A, pr, prs: [pr], target: "staging" }] })]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: { "feat/a": [merged(7, A, Q)], "feat/b": [open(8, B, "feat/a")] },
+      u: u(S, B, [B]), anc: { [`${n(Q)}...${n(S)}`]: "identical" } })).impl);
+    expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "landed" }]);
+  });
+
   it("names the cycle when items wait on each other", async () => {
     const [A1, B1, B2, A3] = ["1", "2", "3", "4"].map(sha);
     await items(["A", ["a1", "a2"]], ["B", ["b1", "b2"]]);

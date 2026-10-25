@@ -31,7 +31,11 @@ export interface Edge {
   /** These items wait on each other in a ring. */
   cycle?: string;
 }
-export interface Share { id: string; item?: string; branch: string; via: string; shared: number; commits: string[]; evidence: string; state?: "unknown"; reason?: string }
+/** `rewritten`: B still carries commits A dropped, after A's current work landed; `mb` is the newest of them. */
+export interface Share {
+  id: string; item?: string; branch: string; via: string; shared: number; commits: string[]; evidence: string; state?: "unknown"; reason?: string;
+  rewritten?: boolean; mb?: string;
+}
 export interface Hint { id: string; item?: string; branch: string; via: string; files: string[] }
 export interface GitFacts {
   repo?: string; branches?: BranchFact[]; needs?: Edge[]; needed_by?: Edge[]; shares?: Share[]; conflicts?: Hint[]; overlaps?: Hint[];
@@ -266,14 +270,25 @@ function targets(c: Ctx, facts: Map<string, Facts>, owners: Map<string, string>)
 }
 
 /** "B needs A" through B's PR base chain: landed once a merged PR of A's branch carried its head into T(B). */
-async function chainState(c: Ctx, dep: ItemRow, ab: BranchFact, tip: string | undefined): Promise<[EdgeState, string]> {
-  if (!tip) return ["unknown", "T(B) isn't on the remote"];
+/** Whether A's current work reached T(B): through a merged PR that carried A's head, A's head itself, or A's finished
+ * item landed-in. Null when it couldn't be checked. */
+async function reached(c: Ctx, dep: ItemRow, ab: BranchFact, tip: string, target: string): Promise<[boolean | null, string]> {
   for (const p of ab.prs ?? []) {
     if (p.state !== "merged" || p.head !== ab.head || !p.merge_commit) continue;
-    const reached = await c.gh.contains(tip, p.merge_commit);
-    if (reached === null) return ["unknown", `couldn't check PR #${p.number}`];
-    if (reached) return ["landed", `${ab.name} landed through PR #${p.number} (${p.merge_commit.slice(0, 7)})`];
+    const got = await c.gh.contains(tip, p.merge_commit);
+    if (got === null) return [null, `couldn't check PR #${p.number}`];
+    if (got) return [true, `${ab.name} landed through PR #${p.number} (${p.merge_commit.slice(0, 7)})`];
   }
+  if (ab.head && (await c.gh.contains(tip, ab.head))) return [true, `${ab.name} is in ${target}`];
+  if (COMPLETE.includes(dep.status) && ab.in?.[target] === true) return [true, `${dep.id} is ${dep.status} and landed in ${target}`];
+  return [false, ""];
+}
+
+async function chainState(c: Ctx, dep: ItemRow, ab: BranchFact, tip: string | undefined, target: string): Promise<[EdgeState, string]> {
+  if (!tip) return ["unknown", "T(B) isn't on the remote"];
+  const [got, why] = await reached(c, dep, ab, tip, target);
+  if (got === null) return ["unknown", why];
+  if (got) return ["landed", why];
   if (CANT_LAND.includes(dep.status)) return ["stale", `${dep.id} is ${dep.status}`];
   if (ab.pr?.state === "closed") return ["stale", `its PR #${ab.pr.number} closed unmerged`];
   return ["waiting", ""];
@@ -322,7 +337,8 @@ const pairKey = (x: Key, y: Key) => [x, y].sort().join("\x1e");
 
 /** B needs every item whose branch B's PR base chain runs through, shared commits or not; a chain ending at a branch no
  * open item owns needs that item (stale) or, owned by nobody, can't be checked. The chained pairs. */
-async function chainEdges(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, u: Map<Key, string[]>, others: Map<string, ItemRow>) {
+async function chainEdges(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, u: Map<Key, string[]>, others: Map<string, ItemRow>,
+                          stored: Map<string, GitFacts>) {
   const owner = new Map<string, ItemRow>();
   for (const it of items) if (it.status !== "cancelled") for (const b of itemBranches(it.extra)) if (!c.fixed.has(b)) owner.set(b, it);
   const chained = new Set<string>();
@@ -336,15 +352,19 @@ async function chainEdges(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, u
         chained.add(pairKey(keyOf(bi.uid, bb.name), keyOf(ai.uid, name)));
         const ub = u.get(keyOf(bi.uid, bb.name)), ua = new Set(u.get(keyOf(ai.uid, name)) ?? []);
         const common = ub && u.has(keyOf(ai.uid, name)) ? ub.filter((s) => ua.has(s)) : [];
-        const [state, why] = common.length && tip ? await resolve(c, ai, ab, tip, common[0]) : await chainState(c, ai, ab, tip);
+        const [state, why] = common.length && tip ? await resolve(c, ai, ab, tip, common[0]) : await chainState(c, ai, ab, tip, bb.target!);
         addPair(facts, bi, ai, { ...commitEdge(ai, ab, bb, state, why || `${bb.name}'s PR is based on ${name}`, common), chain: true });
       }
       const name = bb.orphan;
       if (!name) continue;
       const dep = others.get(name);
       if (dep) {
-        addPair(facts, bi, dep, { id: dep.id, item: dep.uid, branch: name, via: bb.name, target: bb.target, state: "stale", source: "git", chain: true,
-                                  evidence: `${bb.name}'s PR is based on ${name}, whose item ${dep.id} is ${dep.extra?.archived ? "archived" : dep.status}` });
+        const ab = facts.get(dep.uid)?.branches.find((b) => b.name === name) ?? stored.get(dep.uid)?.branches?.find((b) => b.name === name) ?? { name };
+        let [state, why] = await chainState(c, dep, ab, tip, bb.target!);
+        if (state !== "landed" && state !== "unknown") {
+          [state, why] = ["stale", `${bb.name}'s PR is based on ${name}, whose item ${dep.id} is ${dep.extra?.archived ? "archived" : dep.status}`];
+        }
+        addPair(facts, bi, dep, { id: dep.id, item: dep.uid, branch: name, via: bb.name, target: bb.target, state, source: "git", chain: true, evidence: why });
         if (facts.has(dep.uid)) chained.add(pairKey(keyOf(bi.uid, bb.name), keyOf(dep.uid, name)));
       } else {
         facts.get(bi.uid)!.needs.push({ needs: `branch:${name}`, branch: name, via: bb.name, target: bb.target, state: "unknown", source: "git", chain: true,
@@ -368,7 +388,7 @@ async function relations(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, st
       files.set(keyOf(it.uid, b.name), got.files);
     }
   }
-  const chained = await chainEdges(c, items, facts, u, others);
+  const chained = await chainEdges(c, items, facts, u, others, stored);
   const index = new Map<string, Key[]>();
   for (const [k, shas] of u) for (const s of shas) index.set(s, [...(index.get(s) ?? []), k]);
   const pairs = new Set<string>();
@@ -422,8 +442,7 @@ async function carry(c: Ctx | null, items: ItemRow[], facts: Map<string, Facts>,
       if (why || !c) { addPair(facts, it, dep, { ...e, state: "unknown", reason: why ?? "not checked" }); continue; }
       const target = branch.get(me)!.target!, tip = c.tips[target], dependency = branch.get(other)!;
       if (!dependency.merged_gone && e.mb && u.get(me)?.includes(e.mb)) {
-        addPair(facts, it, dep, { ...e, state: "waiting", target,
-                                  evidence: `${e.branch} was rewritten, and ${e.via} still carries its old commits (${e.mb.slice(0, 7)})` });
+        await rewritten(c, facts, it, dep, e, dependency, target, tip);
         continue;
       }
       const landed = !tip ? false : dependency.merged_gone ? await c.gh.contains(tip, dependency.landed!)
@@ -436,9 +455,24 @@ async function carry(c: Ctx | null, items: ItemRow[], facts: Map<string, Facts>,
       if (!other) continue;
       const me = keyOf(it.uid, s.via), them = keyOf(other.uid, s.branch);
       if (!branch.has(me) || !branch.has(them) || related.has([me, them].sort().join("\x1e"))) continue;
+      if (s.rewritten && s.mb && u.get(me)?.includes(s.mb)) { facts.get(it.uid)!.shares.push(s); continue; }
       const why = failure ?? branch.get(me)!.unknown ?? branch.get(them)!.unknown;
       if (why) facts.get(it.uid)!.shares.push({ ...s, state: "unknown", reason: why });
     }
+  }
+}
+
+/** B still carries commits A dropped when it was rewritten: B waits until A's current work reaches T(B), then keeps only a hint to merge it in. */
+async function rewritten(c: Ctx, facts: Map<string, Facts>, b: ItemRow, a: ItemRow, e: Edge, ab: BranchFact, target: string, tip: string | undefined) {
+  const mb = e.mb!, old = `${e.via} still carries its old commits (${mb.slice(0, 7)})`;
+  const [got, why] = tip ? await reached(c, a, ab, tip, target) : [null, "T(B) isn't on the remote"] as const;
+  if (got) {
+    facts.get(b.uid)!.shares.push({ id: a.id, item: a.uid, branch: e.branch ?? ab.name, via: e.via ?? "", shared: 1, commits: [mb.slice(0, 7)], mb, rewritten: true,
+                                    evidence: `${e.branch} was rewritten and has landed in ${target}, but ${old}: merge ${target} into ${e.via}` });
+  } else if (got === null) {
+    addPair(facts, b, a, { ...e, state: "unknown", reason: why, target });
+  } else {
+    addPair(facts, b, a, { ...e, state: "waiting", target, evidence: `${e.branch} was rewritten, and ${old}` });
   }
 }
 
