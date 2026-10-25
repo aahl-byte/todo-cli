@@ -128,7 +128,7 @@ interface EventCase {
   /** The repo's code files: name in .todo-plugins/ → fixture file. */
   files?: Record<string, string>;
   hostConnections?: Record<string, ConnectionDef>;
-  secrets?: Record<string, string>;
+  secrets?: { repo?: Record<string, string>; host?: Record<string, string> };
   storedInstances?: Record<string, InstanceDef[]>;
   grants?: Record<string, string[]>;
   event: PluginEvent;

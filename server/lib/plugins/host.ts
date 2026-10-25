@@ -4,7 +4,7 @@ import { Calls, type ConnectionOptions } from "./connections";
 import { runCode, type Isolation } from "./code-runner";
 import { test } from "./expr";
 import { Attached, finish } from "./limits";
-import { loadPlugins, pluginErrors, PluginsFileError } from "./load";
+import { parsePlugins, pluginErrors } from "./load";
 import { ALWAYS_ON, SHIPPED } from "./shipped";
 import { pickInstances } from "./triggers";
 import { fillJson } from "./template";
@@ -21,6 +21,8 @@ export interface HostDeps extends ConnectionOptions {
   isolation?: Isolation;
   /** The worker script, for hosts whose bundler moves it. */
   workerUrl?: URL;
+  /** Code plugins run at once across the host; more wait their turn within their deadline. Defaults to 4. */
+  codeRunLimit?: number;
 }
 
 /** The instance's settings over the plugin's defaults, templates filled from the item and event. */
@@ -72,7 +74,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
   const name = input.name ?? "(unnamed)";
   const skip = (why: string) => finish({ ...result, skipped: input.name ? `${input.name}: ${why}` : why }, secretsOf(input));
   if (plugin.use !== undefined) return { ...result, error: `plugin ${name}: use: ${plugin.use} must be resolved before it runs` };
-  const errors = pluginErrors(name, plugin, { shipped: true });
+  const errors = pluginErrors(name, plugin, { shipped: input.shipped === true });
   if (errors.length) return { ...result, error: errors.join("; ") };
   const problem = connectionProblem(input);
   if (problem) return skip(problem);
@@ -88,7 +90,8 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
     if (plugin.code) {
       if (plugin.when !== undefined && !test(plugin.when, { item, event, settings })) return skip(`when is false: ${plugin.when}`);
       await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline,
-                      memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl });
+                      memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl,
+                      runLimit: deps.codeRunLimit });
       result.attached = attached.list;
     } else {
       const { skipped } = await runYaml({ name, plugin, item, event, settings, calls, result, attached, mayRequest });
@@ -109,8 +112,8 @@ export interface EventInput {
   repo?: { text: string; files: Record<string, string> };
   /** Host-wide connections; a repo's connection of the same name overrides one. */
   hostConnections?: Record<string, ConnectionDef>;
-  /** This host's secrets for this repo, by connection name. */
-  secrets?: Record<string, string>;
+  /** This host's secrets for this repo by connection name, kept apart by where the connection was declared. */
+  secrets?: { repo?: Record<string, string>; host?: Record<string, string> };
   /** Instances the host keeps: one with a repo instance's id overrides it, the rest are added. */
   storedInstances?: Record<string, InstanceDef[]>;
   /** Capabilities granted, by plugin. */
@@ -134,12 +137,12 @@ function resolveConnection(def: ConnectionDef, origin: ConnectionOrigin, secret:
   return null;
 }
 
-/** The host's connections, then the repo's over them, each with this host's secret. */
+/** The host's connections, then the repo's over them, each with only the secret stored for its own origin. */
 function connectionsFor(input: EventInput, file: PluginsFile): Record<string, ResolvedConnection> {
   const out: Record<string, ResolvedConnection> = {};
   const add = (defs: Record<string, ConnectionDef> | undefined, origin: ConnectionOrigin) => {
     for (const [name, def] of Object.entries(defs ?? {})) {
-      const c = resolveConnection(def, origin, input.secrets?.[name]);
+      const c = resolveConnection(def, origin, input.secrets?.[origin]?.[name]);
       if (c) out[name] = c;
     }
   };
@@ -148,24 +151,26 @@ function connectionsFor(input: EventInput, file: PluginsFile): Record<string, Re
   return out;
 }
 
+interface Resolved { name: string; def: PluginDef; code?: string; shipped: boolean }
+
 /** The repo file's plugins with shipped ones resolved, after the always-on shipped plugins. */
-function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): [string, PluginDef, string | undefined][] {
-  const out = new Map<string, [PluginDef, string | undefined]>();
-  for (const name of ALWAYS_ON) out.set(name, [SHIPPED[name].def, SHIPPED[name].code]);
+function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): Resolved[] {
+  const out = new Map<string, Resolved>();
+  const fromRegistry = (name: string) => out.set(name, { name, def: SHIPPED[name].def, code: SHIPPED[name].code, shipped: true });
+  for (const name of ALWAYS_ON) fromRegistry(name);
   for (const [name, def] of Object.entries(file.plugins ?? {})) {
     if (def.use !== undefined) {
-      const shipped = def.use === "shipped" ? SHIPPED[name] : undefined;
-      if (shipped) out.set(name, [shipped.def, shipped.code]);
+      if (def.use === "shipped" && SHIPPED[name]) fromRegistry(name);
       else errors.push(def.use === "shipped" ? `plugin ${name}: no plugin named ${name} ships with todo` : `plugin ${name}: use: ${def.use} isn't a source todo knows`);
     } else if (name in SHIPPED) {
       errors.push(`plugin ${name}: ships with todo, so the repo can only enable it with use: shipped`);
     } else if (def.code && !(def.code in (input.repo?.files ?? {}))) {
       errors.push(`plugin ${name}: ${def.code} isn't in .todo-plugins/`);
     } else {
-      out.set(name, [def, def.code ? input.repo!.files[def.code] : undefined]);
+      out.set(name, { name, def, code: def.code ? input.repo!.files[def.code] : undefined, shipped: false });
     }
   }
-  return [...out].map(([name, [def, code]]) => [name, def, code]);
+  return [...out.values()];
 }
 
 const needsNoSettings = (def: PluginDef) => Object.values(def.settings ?? {})
@@ -187,20 +192,18 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<
   const errors: string[] = [];
   let file: PluginsFile = {};
   if (input.repo) {
-    try {
-      file = loadPlugins(input.repo.text, { extraPlugins: ALWAYS_ON });
-    } catch (e) {
-      errors.push(...(e instanceof PluginsFileError ? e.errors : [message(e)]));
-    }
+    const loaded = parsePlugins(input.repo.text, { extraPlugins: ALWAYS_ON });
+    file = loaded.file;
+    errors.push(...loaded.errors);
   }
   const connections = connectionsFor(input, file);
   const results: EventRun[] = [];
-  for (const [name, def, code] of pluginsFor(input, file, errors)) {
+  for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
     const instances = instancesFor(def, file.instances?.[name] ?? [], input.storedInstances?.[name] ?? []);
     for (const instance of pickInstances(def, instances, input.event)) {
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
-        limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands,
+        limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
       }, deps);
       results.push({ plugin: name, instance, result });
     }

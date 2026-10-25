@@ -216,51 +216,81 @@ function connectionErrors(name: string, c: unknown): string[] {
   return fail("is http or mcp");
 }
 
-function instanceErrors(plugin: string, list: unknown, known: boolean): string[] {
-  const fail = (e: string) => `instances.${plugin}: ${e}`;
-  if (!known) return [fail("no plugin by that name")];
-  if (!Array.isArray(list)) return [fail("must be a list")];
-  const ids = new Set<string>();
-  return list.flatMap((inst, i) => {
-    if (!isMap(inst)) return [fail(`[${i}] must be a map`)];
-    const errors = unknownKeys(inst, INSTANCE_KEYS);
-    if (typeof inst.id !== "string" || !inst.id) errors.push("needs an id");
-    else if (ids.has(inst.id)) errors.push(`a second instance with id "${inst.id}"`);
-    else ids.add(inst.id);
-    if (typeof inst.name !== "string") errors.push("needs a name");
-    if ("on" in inst) errors.push(...triggerErrors(inst.on));
-    if ("settings" in inst && !isMap(inst.settings)) errors.push("settings must be a map");
-    return errors.map((e) => fail(`[${i}] ${e}`));
-  });
+function instanceErrors(inst: unknown): string[] {
+  if (!isMap(inst)) return ["must be a map"];
+  const errors = unknownKeys(inst, INSTANCE_KEYS);
+  if (typeof inst.id !== "string" || !inst.id) errors.push("needs an id");
+  if (typeof inst.name !== "string") errors.push("needs a name");
+  if ("on" in inst) errors.push(...triggerErrors(inst.on));
+  if ("settings" in inst && !isMap(inst.settings)) errors.push("settings must be a map");
+  return errors;
+}
+
+/** The valid parts of a parsed plugins file, and a line for every part dropped. */
+export function checkFile(raw: unknown, opts: LoadOptions = {}): { file: PluginsFile; errors: string[] } {
+  if (!isMap(raw)) return { file: {}, errors: ["plugins.yaml must be a map"] };
+  const errors = unknownKeys(raw, FILE_KEYS);
+  const file: PluginsFile = {};
+  if ("track" in raw) {
+    if (isStrings(raw.track)) file.track = raw.track;
+    else errors.push("track must be a list of branch names");
+  }
+  const section = (k: "connections" | "plugins" | "instances") => {
+    if (!(k in raw) || raw[k] === null) return {};
+    if (isMap(raw[k])) return raw[k];
+    errors.push(`${k} must be a map`);
+    return {};
+  };
+  const connections = section("connections"), plugins = section("plugins"), instances = section("instances");
+  for (const [n, c] of Object.entries(connections)) {
+    const bad = connectionErrors(n, c);
+    if (bad.length) errors.push(...bad);
+    else (file.connections ??= {})[n] = c as never;
+  }
+  for (const [n, p] of Object.entries(plugins)) {
+    const bad = pluginErrors(n, p, opts);
+    if (bad.length) errors.push(...bad);
+    else (file.plugins ??= {})[n] = p as never;
+  }
+  for (const [n, list] of Object.entries(instances)) {
+    const fail = (e: string) => errors.push(`instances.${n}: ${e}`);
+    if (n in plugins && !file.plugins?.[n]) fail("dropped with its plugin");
+    else if (!(n in plugins) && !opts.extraPlugins?.includes(n)) fail("no plugin by that name");
+    else if (!Array.isArray(list)) fail("must be a list");
+    else {
+      const ids = new Set<string>();
+      list.forEach((inst, i) => {
+        const bad = instanceErrors(inst);
+        const id = isMap(inst) ? inst.id : undefined;
+        if (!bad.length && ids.has(id as string)) bad.push(`a second instance with id "${id}"`);
+        if (bad.length) return bad.forEach((e) => fail(`[${i}] ${e}`));
+        ids.add(id as string);
+        ((file.instances ??= {})[n] ??= []).push(inst as never);
+      });
+    }
+  }
+  return { file, errors };
 }
 
 /** Every problem in a parsed plugins file. */
-export function fileErrors(file: unknown, opts: LoadOptions = {}): string[] {
-  if (!isMap(file)) return ["plugins.yaml must be a map"];
-  const errors = unknownKeys(file, FILE_KEYS);
-  if ("track" in file && !isStrings(file.track)) errors.push("track must be a list of branch names");
-  for (const [k, kind] of [["connections", "map"], ["plugins", "map"], ["instances", "map"]] as const) {
-    if (k in file && !isMap(file[k])) errors.push(`${k} must be a ${kind}`);
+export function fileErrors(raw: unknown, opts: LoadOptions = {}): string[] {
+  return checkFile(raw, opts).errors;
+}
+
+/** Parse a plugins.yaml, keeping what's valid; only text that isn't YAML loses everything. */
+export function parsePlugins(text: string, opts: LoadOptions = {}): { file: PluginsFile; errors: string[] } {
+  let raw: unknown;
+  try {
+    raw = parse(text) ?? {};
+  } catch (e) {
+    return { file: {}, errors: [`plugins.yaml isn't YAML: ${(e as Error).message}`] };
   }
-  const connections = isMap(file.connections) ? file.connections : {};
-  const plugins = isMap(file.plugins) ? file.plugins : {};
-  const instances = isMap(file.instances) ? file.instances : {};
-  errors.push(...Object.entries(connections).flatMap(([n, c]) => connectionErrors(n, c)));
-  errors.push(...Object.entries(plugins).flatMap(([n, p]) => pluginErrors(n, p, opts)));
-  errors.push(...Object.entries(instances).flatMap(([n, l]) => instanceErrors(n, l, n in plugins || !!opts.extraPlugins?.includes(n))));
-  return errors;
+  return checkFile(raw, opts);
 }
 
 /** Parse and check a plugins.yaml; throws PluginsFileError listing every problem. */
 export function loadPlugins(text: string, opts: LoadOptions = {}): PluginsFile {
-  let file: unknown;
-  try {
-    file = parse(text) ?? {};
-  } catch (e) {
-    throw new PluginsFileError([`plugins.yaml isn't YAML: ${(e as Error).message}`]);
-  }
-  const errors = fileErrors(file, opts);
+  const { file, errors } = parsePlugins(text, opts);
   if (errors.length) throw new PluginsFileError(errors);
-  return file as PluginsFile;
+  return file;
 }
-

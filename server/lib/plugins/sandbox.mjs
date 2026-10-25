@@ -7,6 +7,8 @@ import { newQuickJSAsyncWASMModuleFromVariant } from "quickjs-emscripten-core";
 const PLUGIN_MODULE = "plugin.js";
 /** How much of a thrown value is read back; the host caps it further. */
 const MAX_THROWN = 16 * 1024;
+/** QuickJS's own stack limit, below what a worker thread or the main thread can hold, so deep recursion is a plain error. */
+const MAX_STACK_BYTES = 256 * 1024;
 
 /** Builds the run() argument from the raw host functions, before any plugin code can change a global it uses. */
 const PRELUDE = String.raw`
@@ -160,6 +162,7 @@ export async function runSandbox(job, host) {
     const wasm = await newQuickJSAsyncWASMModuleFromVariant(variant);
     rt = wasm.newRuntime();
     rt.setMemoryLimit(job.memoryBytes);
+    rt.setMaxStackSize(MAX_STACK_BYTES);
     rt.setInterruptHandler(pastDeadline);
     rt.setModuleLoader((name) => (name === PLUGIN_MODULE ? job.code : { error: new Error(`${name} can't be imported in a plugin`) }));
     ctx = rt.newContext();

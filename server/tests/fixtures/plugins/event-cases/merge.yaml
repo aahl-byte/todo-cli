@@ -2,7 +2,7 @@ about: stored instances override and extend the repo's, an implicit default appe
 repo: merge.yaml
 hostConnections:
   api: {http: {url: "http://127.0.0.1:9"}}
-secrets: {api: k1}
+secrets: {repo: {api: k1}}
 storedInstances:
   ping:
     - {id: one, name: One stored, settings: {tag: s1}}

@@ -2,6 +2,7 @@
 connections: [github]
 on: [push, pr]
 per: branch
+when: "item.repo_owner && item.repo_name"
 steps:
   - name: prs
     http:

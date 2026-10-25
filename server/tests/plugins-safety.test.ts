@@ -12,7 +12,7 @@ import { loadPlugins, PluginsFileError } from "@/lib/plugins/load";
 import { fillUrl, lookup } from "@/lib/plugins/template";
 import { search } from "@/lib/plugins/expr";
 import {
-  DEFAULT_DEADLINE_MS, MAX_ATTACHMENTS, MAX_ERROR, MAX_LOG_LINE, MAX_LOG_LINES, MAX_WOULD_SEND, MAX_WOULD_SEND_INPUT,
+  DEFAULT_DEADLINE_MS, MAX_ATTACHMENTS, MAX_ERROR, MAX_LOG_LINE, MAX_LOG_LINES, MAX_WOULD_SEND, MAX_WOULD_SEND_BYTES, MAX_WOULD_SEND_INPUT,
   type PluginDef, type PluginItem, type ResolvedConnection, type RunInput,
 } from "@/lib/plugins/types";
 import { fakeServer, type FakeServer, type Recorded } from "./plugin-fakes";
@@ -97,11 +97,13 @@ describe("a run's output is capped", () => {
   it("keeps the first wouldSend entries and log lines, truncated", async () => {
     const r = await runWithWt(`export async function run({ wt }) {
       const body = "x".repeat(3000);
-      for (let i = 0; i < 250; i++) await wt.post("/p/" + "y".repeat(1200), body);
+      for (let i = 0; i < 250; i++) await wt.post("/p/" + "y".repeat(5000), body);
     }`, { dryRun: true });
     expect(r.error).toBeUndefined();
     expect(r.wouldSend).toHaveLength(MAX_WOULD_SEND);
     expect(String(r.wouldSend[0].input).length).toBeLessThanOrEqual(MAX_WOULD_SEND_INPUT);
+    expect(r.wouldSend.every((c) => c.path!.length <= MAX_WOULD_SEND_INPUT)).toBe(true);
+    expect(JSON.stringify(r.wouldSend).length).toBeLessThanOrEqual(MAX_WOULD_SEND_BYTES);
     expect(r.log).toHaveLength(MAX_LOG_LINES);
     expect(r.log.every((l) => l.length <= MAX_LOG_LINE)).toBe(true);
   });
@@ -111,9 +113,10 @@ describe("plugin grants and sources", () => {
   const requester: PluginDef = { capabilities: ["post-request"], attach: [{ request: "new request" }, { log: "ran" }] };
 
   it("keeps a request only when the plugin declares post-request and the host grants it", async () => {
-    const granted = await run({ plugin: requester, grants: ["post-request"] });
+    const granted = await run({ plugin: requester, shipped: true, grants: ["post-request"] });
     expect(granted.attached.map((a) => a.kind)).toEqual(["request", "log"]);
-    const ungranted = await run({ plugin: requester });
+    expect((await run({ plugin: requester, grants: ["post-request"] })).error).toBe("plugin p: only plugins shipped with todo may declare post-request");
+    const ungranted = await run({ plugin: requester, shipped: true });
     expect(ungranted.attached.map((a) => a.kind)).toEqual(["log"]);
     expect(ungranted.log).toEqual(["dropped a request: p hasn't been granted post-request"]);
   });
@@ -148,6 +151,13 @@ describe("templates can't reshape a call", () => {
         .toThrow("plugin x: when: {{item.title}} sits inside a quoted string");
     }
     expect(() => loadPlugins(`plugins: {x: {when: "contains(item.labels, {{item.title}}) && a == 'b'", attach: [{log: x}]}}`)).not.toThrow();
+    const load = (when: string) => () => loadPlugins(`plugins:\n  x:\n    when: ${JSON.stringify(when)}\n    attach: [{log: x}]\n`);
+    expect(load("contains(item.labels, '\\{{item.title}}')")).toThrow("sits inside a quoted string");
+    expect(load('item.x == "\\{{item.title}}"')).toThrow("sits inside a quoted string");
+    expect(load("item.x == `\\{{item.title}}`")).toThrow("sits inside a quoted string");
+    expect(load("item.x == '\\'' || '{{item.title}}'")).toThrow("sits inside a quoted string");
+    expect(load("item.x == '\\\\' && {{item.title}} == 'a'")).not.toThrow();
+    expect(load("`\"a\"` == {{item.title}}")).not.toThrow();
   });
 
   it("round-trips hostile values through expression literals", () => {
@@ -156,11 +166,13 @@ describe("templates can't reshape a call", () => {
     }
   });
 
-  it("refuses a path value that would leave its segment", () => {
-    for (const v of [".", "..", "a/b", "%2F", "%2e%2e", "a\\b"]) {
+  it("refuses a path value with a . or .. part, and encodes any other slash", () => {
+    for (const v of [".", "..", "%2e%2e", "%252e%252e", "../x", "a/../b", "a/.", "..\\x"]) {
       expect(() => fillUrl("/repos/{{v}}/pulls", { v }), v).toThrow(/would change the path/);
     }
     expect(() => fillUrl("/x/{{a}}{{b}}", { a: ".", b: "." })).toThrow(/would change the path/);
+    expect(fillUrl("/compare/main...{{b}}", { b: "feat/x" })).toBe("/compare/main...feat%2Fx");
+    expect(fillUrl("/i/{{v}}/t", { v: "a\\b" })).toBe("/i/a%5Cb/t");
     expect(fillUrl("/x/{{a}}.json?q={{b}}", { a: "v1", b: "c/d" })).toBe("/x/v1.json?q=c%2Fd");
   });
 
@@ -249,5 +261,46 @@ describe("a plugin's thrown values are read safely", () => {
   it("allows no import but the plugin itself", async () => {
     const r = await run({ code: "import * as os from 'os'; export function run() {}" });
     expect(r.error).toMatch(/os can't be imported in a plugin/);
+  });
+});
+
+describe("secrets stay out of everything a run returns", () => {
+  it("masks secret settings in attachments", async () => {
+    const r = await run({ plugin: { settings: { tok: { label: "Token", type: "secret" } }, attach: [{ log: "token is {{settings.tok}}" }] },
+                          instance: { id: "i", name: "d", settings: { tok: "SUPERSECRET" } } });
+    expect(r.attached).toEqual([{ kind: "log", key: "log:token is ***", text: "token is ***" }]);
+  });
+});
+
+describe("the sandbox's limits", () => {
+  it("reports a stack overflow as QuickJS's own error, in a worker and inline", async () => {
+    const code = "export function run() { const f = () => f() + 1; f(); }";
+    for (const isolation of ["worker", "inline"] as const) {
+      expect((await run({ code }, { ...fast, isolation })).error, isolation).toBe("InternalError: stack overflow");
+    }
+  });
+
+  it("runs at most the host's limit of code plugins at once, queued runs keeping their deadline", async () => {
+    let inFlight = 0, peak = 0;
+    const slow = createServer(async (_req, res) => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((done) => setTimeout(done, 150));
+      inFlight--;
+      res.writeHead(200, { "content-type": "application/json" }).end("{}");
+    });
+    await new Promise<void>((done) => slow.listen(0, "127.0.0.1", done));
+    try {
+      const url = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+      const one = (deadlineMs = 30_000) => run({ plugin: { code: "p.js", connections: ["wt"] }, connections: { wt: { kind: "http", url } },
+        code: "export async function run({ wt, attach }) { await wt.get('/'); attach.log('done'); }", limits: { deadlineMs } }, { ...fast, codeRunLimit: 2 });
+      const rs = await Promise.all(Array.from({ length: 6 }, () => one()));
+      expect(rs.map((r) => r.error ?? "ok")).toEqual(Array(6).fill("ok"));
+      expect(peak).toBe(2);
+      const [, , late] = await Promise.all([one(), one(), one(100)]);
+      expect(late.error).toBe("the run passed its deadline waiting for a free sandbox");
+    } finally {
+      slow.closeAllConnections();
+      slow.close();
+    }
   });
 });

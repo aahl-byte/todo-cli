@@ -157,6 +157,8 @@ export interface RunInput {
   grants?: string[];
   /** Let a repo-declared MCP connection start a local command. */
   allowRepoCommands?: boolean;
+  /** The plugin ships with todo, so it may declare capabilities; otherwise it's checked as a repo plugin. */
+  shipped?: boolean;
 }
 
 export const POST_REQUEST = "post-request";
@@ -170,6 +172,7 @@ export const MAX_DOC_CONTENT = 1024 * KB;
 export const MAX_ATTACHED_BYTES = 4 * 1024 * KB;
 export const MAX_WOULD_SEND = 100;
 export const MAX_WOULD_SEND_INPUT = 2 * KB;
+export const MAX_WOULD_SEND_BYTES = 1024 * KB;
 export const MAX_LOG_LINES = 200;
 export const MAX_LOG_LINE = KB;
 export const MAX_ERROR = 2 * KB;

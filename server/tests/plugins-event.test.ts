@@ -23,7 +23,7 @@ async function serve(responses: Recorded[]) {
 
 async function github() {
   const gh = await serve([{ method: "GET", path: PULLS, body: [PR] }]);
-  return { gh, hostConnections: { github: { http: { url: gh.url, auth: "bearer" as const } } }, secrets: { github: "ghp_x" } };
+  return { gh, hostConnections: { github: { http: { url: gh.url, auth: "bearer" as const } } }, secrets: { host: { github: "ghp_x" } } };
 }
 
 const summary = (out: Awaited<ReturnType<typeof runEvent>>) =>
@@ -47,8 +47,24 @@ describe("shipped plugins", () => {
     expect(SHIPPED["pr-link"].def.on).toEqual(["push", "pr"]);
   });
 
-  it("skips pr-link where the host has no github connection", async () => {
+  it("skips pr-link where the host has no github connection, or the item no repo", async () => {
     expect(summary(await run({}))).toEqual([["pr-link", "default", "pr-link: `github` not authorized here"]]);
+    const { gh, ...conns } = await github();
+    expect(summary(await run({ ...conns, item: { ...ITEM, repo: null, repo_owner: null, repo_name: null } })))
+      .toEqual([["pr-link", "default", "pr-link: when is false: item.repo_owner && item.repo_name"]]);
+    expect(gh.received).toEqual([]);
+  });
+
+  it("never hands the host's secret to a repo connection of the same name", async () => {
+    const evil = await serve([{ method: "GET", path: PULLS, body: [] }]);
+    const { gh, ...conns } = await github();
+    const repo = { files: {}, text: `connections:\n  github: {http: {url: "${evil.url}", auth: bearer}}\n` };
+    expect(summary(await run({ ...conns, repo }))).toEqual([["pr-link", "default", "pr-link: `github` not authorized here"]]);
+    expect(evil.received).toEqual([]);
+    const own = await run({ ...conns, repo, secrets: { host: { github: "HOST" }, repo: { github: "REPO" } } });
+    expect(summary(own)).toEqual([["pr-link", "default", []]]);
+    expect(evil.received.map((r) => r.headers.authorization)).toEqual(["Bearer REPO"]);
+    expect(gh.received).toEqual([]);
   });
 });
 
@@ -95,11 +111,33 @@ instances:
     expect(gh.received).toEqual([]);
   });
 
-  it("reports a broken plugins file and still runs the shipped plugins", async () => {
+  it("drops only the broken parts of a plugins file", async () => {
     const { gh, ...conns } = await github();
-    const out = await run({ ...conns, repo: { files: {}, text: "plugins: {bad: {until: x, attach: [{log: x}]}}" } });
-    expect(out.errors).toEqual(['plugin bad: unknown key "until"']);
-    expect(summary(out)).toEqual([["pr-link", "default", [PR.html_url]]]);
+    const out = await run({ ...conns, repo: { files: {}, text: `
+track: [staging]
+connections:
+  broken: {ftp: {url: x}}
+plugins:
+  bad: {until: x, attach: [{log: x}]}
+  good: {on: [push], attach: [{log: good ran}]}
+  pr-link: {use: shipped}
+instances:
+  pr-link: [{id: mine, name: Mine}, {name: no id}]
+  good: [{id: g, name: G, wat: 1}, {id: h, name: H}]
+  bad: [{id: b, name: B}]
+` } });
+    expect(out.errors).toEqual([
+      "connection broken: is http or mcp",
+      'plugin bad: unknown key "until"',
+      "instances.pr-link: [1] needs an id",
+      'instances.good: [0] unknown key "wat"',
+      "instances.bad: dropped with its plugin",
+    ]);
+    expect(out.track).toEqual(["staging"]);
+    expect(summary(out)).toEqual([["pr-link", "mine", [PR.html_url]], ["good", "h", ["good ran"]]]);
+    const notYaml = await run({ ...conns, repo: { files: {}, text: "plugins: [unclosed" } });
+    expect(notYaml.errors[0]).toMatch(/^plugins.yaml isn't YAML: /);
+    expect(summary(notYaml)).toEqual([["pr-link", "default", [PR.html_url]]]);
   });
 
   it("resolves use: shipped, and refuses unknown shipped names, shadowed shipped names and missing code", async () => {

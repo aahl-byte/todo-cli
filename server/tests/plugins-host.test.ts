@@ -32,8 +32,8 @@ describe("plugin templates", () => {
   });
 
   it("URL-encodes each filled value in url mode", () => {
-    expect(fillUrl("/repos/{{item.id}}/pulls/{{n}}", { item: { id: "a b" }, n: "x?y#z" }))
-      .toBe("/repos/a%20b/pulls/x%3Fy%23z");
+    expect(fillUrl("/repos/{{item.id}}/compare/main...{{branch}}", { item: { id: "a b" }, branch: "feat/x?y" }))
+      .toBe("/repos/a%20b/compare/main...feat%2Fx%3Fy");
     expect(fillUrl("/x/{{missing}}", {})).toBe("/x/");
   });
 
@@ -136,13 +136,13 @@ plugins:
     when: "branch != 'feat/y'"
     steps:
       - {name: never, when: "item.status == 'done'", http: {method: GET, path: /never}}
-      - {name: one, http: {method: GET, path: "/one", query: {b: "{{branch}}"}}}
+      - {name: one, http: {method: GET, path: "/one/{{branch}}"}}
     attach:
       - {when: never, log: "never ran"}
       - {when: "one.ok", log: "one ok on {{branch}}"}
       - {each: one.list, when: "each.keep", key: "k-{{each.n}}", log: {text: "kept {{each.n}}"}}
-`, [{ method: "GET", path: "/one?b=feat%2Fx", body: { ok: true, list: [{ n: 1, keep: true }, { n: 2, keep: false }] } }]);
-    expect(server.received.map((r) => r.path)).toEqual(["/one?b=feat%2Fx"]);
+`, [{ method: "GET", path: "/one/feat%2Fx", body: { ok: true, list: [{ n: 1, keep: true }, { n: 2, keep: false }] } }]);
+    expect(server.received.map((r) => r.path)).toEqual(["/one/feat%2Fx"]);
     expect(result.attached).toEqual([
       { kind: "log", key: "log:one ok on feat/x", text: "one ok on feat/x" },
       { kind: "log", key: "k-1", text: "kept 1" },
@@ -178,12 +178,12 @@ plugins:
       - doc: {name: "{{pick.name}}.json", content: "{{detail}}"}
       - {when: "!empty", log: "empty result kept going"}
 `, [
-      { method: "GET", path: "/list", body: { items: [{ name: "bob", id: "b" }, { name: "alice", id: "a 1", n: 2 }] } },
-      { method: "GET", path: "/detail/a%201?n=2", body: { deep: true } },
+      { method: "GET", path: "/list", body: { items: [{ name: "bob", id: "b" }, { name: "alice", id: "a/1", n: 2 }] } },
+      { method: "GET", path: "/detail/a%2F1?n=2", body: { deep: true } },
       { method: "GET", path: "/empty", body: [] },
     ]);
     expect(result.error).toBeUndefined();
-    expect(server.received.map((r) => r.path)).toEqual(["/list", "/detail/a%201?n=2", "/empty"]);
+    expect(server.received.map((r) => r.path)).toEqual(["/list", "/detail/a%2F1?n=2", "/empty"]);
     expect(result.attached).toEqual([
       { kind: "doc", key: "doc:alice.json", name: "alice.json", content: '{\n  "deep": true\n}' },
       { kind: "log", key: "log:empty result kept going", text: "empty result kept going" },
@@ -519,7 +519,7 @@ describe("code plugins", () => {
 
   it("attaches every kind with derived or given keys", async () => {
     const r = await runInstance({ plugin: { code: "p.js", capabilities: ["post-request"] }, name: "p", instance: { id: "i", name: "d" },
-      item: ITEM, event: { type: "refresh" }, connections: {}, dryRun: false, grants: ["post-request"], code: `export function run({ attach, item }) {
+      item: ITEM, event: { type: "refresh" }, connections: {}, dryRun: false, shipped: true, grants: ["post-request"], code: `export function run({ attach, item }) {
         attach.link({ type: "preview", url: "https://p/" + item.id, label: "Preview" });
         attach.edge({ needs: "branch:feat/base", in: "staging", because: "shares commits" });
         attach.doc({ name: "notes.md", content: "# hi", key: "doc-1" });

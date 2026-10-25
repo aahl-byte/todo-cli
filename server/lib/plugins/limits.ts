@@ -1,6 +1,6 @@
 // Bounds on what one run hands back, and scrubbing secrets out of it.
 import {
-  MAX_ATTACHED_BYTES, MAX_ATTACHMENTS, MAX_ERROR, MAX_LOG_LINE, MAX_LOG_LINES, MAX_WOULD_SEND, MAX_WOULD_SEND_INPUT,
+  MAX_ATTACHED_BYTES, MAX_ATTACHMENTS, MAX_ERROR, MAX_LOG_LINE, MAX_LOG_LINES, MAX_WOULD_SEND, MAX_WOULD_SEND_BYTES, MAX_WOULD_SEND_INPUT,
   type Attachment, type Call, type RunResult,
 } from "./types";
 
@@ -17,14 +17,20 @@ export function addLog(result: RunResult, line: string): void {
   if (result.log.length < MAX_LOG_LINES) result.log.push(clip(line, MAX_LOG_LINE));
 }
 
-/** Record a call dry-run held back; past the cap only the log says so. */
+const recorded = new WeakMap<RunResult, number>();
+
+/** Record a call dry-run held back, its path and input clipped; past the caps only the log says so. */
 export function recordWouldSend(result: RunResult, call: Call): void {
   if (result.wouldSend.length >= MAX_WOULD_SEND) return;
   const kept = { ...call };
+  if (call.path !== undefined) kept.path = clip(call.path, MAX_WOULD_SEND_INPUT);
   if (call.input !== undefined) {
     const text = JSON.stringify(call.input) ?? "null";
     if (text.length > MAX_WOULD_SEND_INPUT) kept.input = clip(text, MAX_WOULD_SEND_INPUT);
   }
+  const size = (recorded.get(result) ?? 2) + JSON.stringify(kept).length + 1;
+  if (size > MAX_WOULD_SEND_BYTES) return;
+  recorded.set(result, size);
   result.wouldSend.push(kept);
 }
 
@@ -76,6 +82,7 @@ export function finish(result: RunResult, secrets: string[]): RunResult {
   const masks = forms(secrets);
   const out: RunResult = {
     ...result,
+    attached: masks.length ? result.attached.map((a) => scrubDeep(a, masks) as Attachment) : result.attached,
     log: result.log.map((l) => scrub(l, masks)),
     wouldSend: result.wouldSend.map((c) => scrubDeep(c, masks) as Call),
   };

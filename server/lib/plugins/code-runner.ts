@@ -28,7 +28,48 @@ export interface CodeRun {
   sleep?: (ms: number) => Promise<void>;
   isolation?: Isolation;
   workerUrl?: URL;
+  /** Code plugins this host runs at once. */
+  runLimit?: number;
 }
+
+export const DEFAULT_CODE_RUN_LIMIT = 4;
+
+/** A counting semaphore whose waiters give up at their own deadline. */
+export class Slots {
+  private active = 0;
+  private waiting: (() => void)[] = [];
+
+  constructor(readonly limit: number) {}
+
+  /** Take a slot, or false once the deadline passes first. */
+  take(deadline: number): Promise<boolean> {
+    if (this.active < this.limit) {
+      this.active++;
+      return Promise.resolve(true);
+    }
+    return new Promise((done) => {
+      const grant = () => {
+        clearTimeout(timer);
+        this.active++;
+        done(true);
+      };
+      const timer = setTimeout(() => {
+        this.waiting = this.waiting.filter((g) => g !== grant);
+        done(false);
+      }, Math.max(0, deadline - Date.now()));
+      this.waiting.push(grant);
+    });
+  }
+
+  give(): void {
+    this.active--;
+    this.waiting.shift()?.();
+  }
+}
+
+/** Host-wide slots, one semaphore per configured limit. */
+const slots = new Map<number, Slots>();
+const slotsFor = (limit: number) => slots.get(limit) ?? slots.set(limit, new Slots(limit)).get(limit)!;
 
 const WORKER_URL = new URL("./code-worker.mjs", import.meta.url);
 /** How long past the deadline a worker gets before it's terminated. */
@@ -118,7 +159,14 @@ export async function runCode(run: CodeRun): Promise<void> {
     kinds: ATTACHMENT_KINDS, deadline: run.deadline, memoryBytes: run.memoryBytes ?? DEFAULT_MEMORY_BYTES,
   };
   const host = hostFor(run);
-  const out = run.isolation === "inline" ? await runSandbox(job, host) : await inWorker(job, host, run.workerUrl ?? WORKER_URL);
+  const free = slotsFor(Math.max(1, run.runLimit ?? DEFAULT_CODE_RUN_LIMIT));
+  if (!(await free.take(run.deadline))) throw new DeadlineError("the run passed its deadline waiting for a free sandbox");
+  let out: { error?: string };
+  try {
+    out = run.isolation === "inline" ? await runSandbox(job, host) : await inWorker(job, host, run.workerUrl ?? WORKER_URL);
+  } finally {
+    free.give();
+  }
   if (run.attached.failure) throw new LimitError(run.attached.failure);
   if (out.error !== undefined) throw new Error(out.error);
 }

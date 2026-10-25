@@ -1,7 +1,7 @@
 about: a repo without a plugins file still gets pr-link, over the host's github connection
 hostConnections:
   github: {http: {url: "http://fake-github", auth: bearer}}
-secrets: {github: ghp_test}
+secrets: {host: {github: ghp_test}}
 event: {type: push, branch: feat/login}
 item: {branches: [feat/login]}
 responses:
