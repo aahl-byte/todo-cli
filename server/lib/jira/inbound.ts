@@ -21,7 +21,7 @@ export function jiraUid(...parts: string[]): string {
   return "J" + crypto.createHash("sha1").update(parts.join("\u001f")).digest("hex").slice(0, 25).toUpperCase();
 }
 
-export async function handleFor(db: Db, p: Person): Promise<string | null> {
+async function handleFor(db: Db, p: Person): Promise<string | null> {
   if (!p) return null;
   if (p.accountId) {
     const [u] = await db.query("select handle from users where jira_account_id = $1", [p.accountId]);
@@ -40,8 +40,6 @@ export async function commented(db: Db, link: { project: string; item_uid: strin
                                 issueKey: string, scope: string): Promise<InboundResult> {
   if (!comment?.id) return { handled: false, reason: "no comment" };
   if (adfToText(comment.body).includes(COMMENT_MARK)) return { handled: false, reason: "own comment" };
-  const ours = await db.query("select 1 from jira_outbox where result->>'comment_id' = $1", [String(comment.id)]);
-  if (ours.length) return { handled: false, reason: "own comment" };
   // Linked issues keep their files per issue, not per item.
   const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, jiraUid("item", issueKey), issueKey, jiraConfig()?.baseUrl));
   const uid = jiraUid("comment", scope, String(comment.id));

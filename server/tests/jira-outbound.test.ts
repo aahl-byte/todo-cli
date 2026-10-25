@@ -67,6 +67,14 @@ describe("jira delivery", () => {
     expect(jira.posts()).toEqual([]);
   });
 
+  it("queues nothing for a bridge-sourced move", async () => {
+    const [it] = await w.d.query("select versions from items where uid = 'A'");
+    const r = await w.one({ handle: "jira-bridge", unconditional: true, bridge: true },
+      set("item", "A", "A", { status: "in-progress" }, { status: it.versions.status }));
+    expect(r.status).toBe("applied");
+    expect(await rows()).toEqual([]);
+  });
+
   it("queues nothing for a move no trigger names, or for an unlinked item", async () => {
     await move("A", "blocked");
     await w.apply("alice", item("I9"));

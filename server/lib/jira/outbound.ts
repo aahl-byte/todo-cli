@@ -4,7 +4,7 @@ import type { Actor } from "../apply";
 import { jiraReadOnly } from "./config";
 import { outboundRules, outboundTarget } from "./rules";
 
-export interface JiraEvent { kind: "status"; project: string; itemUid: string; from: string; status: string }
+export interface JiraEvent { project: string; itemUid: string; from: string; status: string }
 
 /** A triggered status move transitions every issue the item's jira field names. */
 export async function queueJira(t: Db, actor: Actor, event: JiraEvent): Promise<void> {
@@ -36,7 +36,7 @@ export async function jiraWrites(t: Db, project: string): Promise<boolean> {
 }
 
 /** Queue a Jira call; with writes off it's recorded as done, as a dry run. */
-export async function enqueue(t: Db, project: string, itemUid: string, action: string, payload: Record<string, unknown>) {
+async function enqueue(t: Db, project: string, itemUid: string, action: string, payload: Record<string, unknown>) {
   const live = await jiraWrites(t, project);
   await t.query(
     `insert into jira_outbox (project, item_uid, action, payload, done_at, result)
