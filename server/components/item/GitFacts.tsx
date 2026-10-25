@@ -35,6 +35,7 @@ function EdgeRow({ e, base }: { e: Edge; base: string }) {
         {e.branch && <span className="faint mono"> {e.branch}</span>}
         {e.evidence && <span className="faint"> — {e.evidence}</span>}
         {e.reason && <span className="faint"> ({e.reason})</span>}
+        {e.cycle && <span className="faint"> — {e.cycle}</span>}
       </span>
     </div>
   );

@@ -43,6 +43,13 @@ function fakeGitHub(spec: Spec) {
     if (path === "/repos/acme/web/contents/.todo-plugins/plugins.yaml?ref=main") {
       return spec.track === undefined ? new Response("", { status: 404 }) : Response.json({ content: b64(spec.track) });
     }
+    const closedInto = path.match(/\/pulls\?state=closed&base=([^&]+)&/);
+    if (closedInto) {
+      const base = decodeURIComponent(closedInto[1]);
+      return Response.json(Object.entries(spec.prs ?? {}).flatMap(([ref, rows]) => rows
+        .filter((p: any) => p.state === "closed" && p.base?.ref === base)
+        .map((p: any) => ({ draft: false, html_url: "u", ...p, head: { ...p.head, ref } }))));
+    }
     const pulls = path.match(/\/pulls\?head=acme%3A([^&]+)&/);
     if (pulls) return Response.json((spec.prs?.[decodeURIComponent(pulls[1])] ?? []).map((p) => ({ draft: false, html_url: "u", ...p })));
     const cmp = path.match(/\/compare\/(\w+)\.\.\.(\w+)(\?.*)?$/);
@@ -162,7 +169,7 @@ describe("computeProject", () => {
                             anc: { [`${n(Q)}...${n(S)}`]: "ahead", [`${n(Q)}...${n(M)}`]: "behind" } });
     await computeProject(w.d, "p", gh.impl);
     expect((await facts("A")).branches).toMatchObject([{ name: "feat/a", head: A, gone: true, landed: Q, in: { staging: true, main: false } }]);
-    expect(gh.calls.some((c) => c.includes("/pulls?"))).toBe(false);
+    expect(gh.calls.some((c) => c.includes("/pulls?head="))).toBe(false);
   });
 
   it("flags files both of two unrelated branches change as an overlap, and keeps the CLI's conflicts", async () => {
@@ -238,27 +245,138 @@ describe("computeProject", () => {
     const moved = fakeGitHub({ tips: { main: M, staging: Q, "feat/a": A, "feat/b": B }, track: TRACK,
                                u: { ...u(Q, A, [A]), ...u(Q, B, [A, B]) } });
     await computeProject(w.d, "p", moved.impl);
-    expect(moved.calls.some((c) => c.includes("/pulls?"))).toBe(false);
+    expect(moved.calls.filter((c) => c.includes("/pulls?"))).toEqual([
+      "/repos/acme/web/pulls?state=closed&base=staging&sort=updated&direction=desc&per_page=100"]);
     expect(moved.calls.some((c) => c.includes(`/compare/${Q}...`))).toBe(true);
   });
 });
 
+describe("PR base chains and other edge cases", () => {
+  const chainPrs = { "feat/a": [open(7, A)], "feat/b": [open(8, B, "feat/a")] };
+
+  it("makes a PR based on a cancelled item's branch a stale edge", async () => {
+    await items(["A", ["feat/a"], "cancelled"], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: chainPrs })).impl);
+    const b = await facts("B");
+    expect(b.needs).toMatchObject([{ id: "a", branch: "feat/a", state: "stale", chain: true }]);
+    expect(b.needs![0].evidence).toContain("cancelled");
+    expect(b.waits_on).toEqual(["a"]);
+  });
+
+  it("makes a PR based on an archived item's branch a stale edge", async () => {
+    await items(["A", ["feat/a"], "done"], ["B", ["feat/b"]]);
+    await w.d.query("update items set extra = extra || '{\"archived\": true}'::jsonb where uid = 'A'");
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: chainPrs })).impl);
+    expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "stale" }]);
+    expect((await facts("B")).needs![0].evidence).toContain("archived");
+  });
+
+  it("makes a PR based on a branch no item tracks an unknown edge that blocks", async () => {
+    await items(["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: chainPrs })).impl);
+    const b = await facts("B");
+    expect(b.needs).toMatchObject([{ needs: "branch:feat/a", state: "unknown", reason: "PR based on feat/a, which no item tracks" }]);
+    expect(b.needs![0].evidence).toContain("retarget the PR");
+    expect(b.branches![0].target).toBe("staging");
+  });
+
+  it("keeps a stacked PR's edge after its parent is rebased", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: chainPrs })).impl);
+    resetGitFactsCache();
+    await computeProject(w.d, "p", fakeGitHub({ tips: { main: M, staging: S, "feat/a": A2, "feat/b": B }, track: TRACK,
+      prs: { "feat/a": [open(7, A2)], "feat/b": [open(8, B, "feat/a")] }, u: { ...u(S, A2, [A2]), ...u(S, B, [A, B]) } }).impl);
+    expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "waiting", chain: true }]);
+  });
+
+  it("holds a dependent whose parent was rewritten while it still carries the old commits", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec()).impl);
+    resetGitFactsCache();
+    await computeProject(w.d, "p", fakeGitHub({ tips: { main: M, staging: S, "feat/a": A2, "feat/b": B }, track: TRACK,
+      u: { ...u(S, A2, [A2]), ...u(S, B, [A, B]) } }).impl);
+    const [e] = (await facts("B")).needs!;
+    expect(e).toMatchObject({ id: "a", state: "waiting" });
+    expect(e.evidence).toContain("rewritten");
+  });
+
+  it("names the cycle when items wait on each other", async () => {
+    const [A1, B1, B2, A3] = ["1", "2", "3", "4"].map(sha);
+    await items(["A", ["a1", "a2"]], ["B", ["b1", "b2"]]);
+    await computeProject(w.d, "p", fakeGitHub({ tips: { main: M, staging: S, a1: A1, b1: B1, b2: B2, a2: A3 }, track: TRACK,
+      u: { ...u(S, A1, [A1]), ...u(S, B1, [A1, B1]), ...u(S, B2, [B2]), ...u(S, A3, [B2, A3]) } }).impl);
+    const want = "a and b wait on each other through b2←a2 and a1←b1: merge them in one order, or split the items";
+    for (const uid of ["A", "B"]) expect((await facts(uid)).needs!.map((e) => e.cycle)).toEqual([want]);
+  });
+
+  it("never lets an item that lists staging own it", async () => {
+    await items(["R", ["staging"]], ["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub({ tips: { main: M, staging: S, "feat/a": A, "feat/b": B }, track: TRACK,
+      prs: { staging: [open(1, S, "main")], "feat/a": [open(2, A)], "feat/b": [open(3, B)] },
+      u: { ...u(S, A, [A]), ...u(S, B, [B]), ...u(M, S, [S]) } }).impl);
+    for (const uid of ["A", "B"]) {
+      const f = await facts(uid);
+      expect(f.branches![0]).toMatchObject({ target: "staging" });
+      expect(f.branches![0].chain).toBeUndefined();
+      expect(f.waits_on).toEqual([]);
+    }
+  });
+
+  it("skips the compare for a deleted branch its merged PR landed", async () => {
+    await items(["A", ["feat/a"]]);
+    const pr = { number: 7, state: "merged", base: "staging", head: A, merge_commit: Q };
+    await w.d.query("insert into git_facts (project, item_uid, data, computed_by) values ('p', 'A', $1::jsonb, 'server')",
+      [JSON.stringify({ branches: [{ name: "feat/a", head: A, pr_head: A, pr, prs: [pr], target: "staging" }] })]);
+    const gh = fakeGitHub({ tips: { main: M, staging: S }, track: TRACK, anc: { [`${n(Q)}...${n(S)}`]: "ahead" } });
+    await computeProject(w.d, "p", gh.impl);
+    expect((await facts("A")).branches).toMatchObject([{ merged_gone: true, landed: Q }]);
+    expect((await facts("A")).branches![0].unknown).toBeUndefined();
+    expect(gh.calls.some((c) => c.includes(`/compare/${S}...`))).toBe(false);
+  });
+
+  it("recomputes when a branch a dependency note names moves", async () => {
+    const X = sha("9"), X2 = sha("8");
+    await items(["B", ["feat/b"]]);
+    await w.one("alice", child("note", "N1", "B", { kind: "dependency", text: "x", meta: { needs: "branch:feat/x", in: "staging" } }));
+    const spec = (x: string, status: string) => fakeGitHub({ tips: { main: M, staging: S, "feat/b": B, "feat/x": x }, track: TRACK,
+      u: u(S, B, [B]), anc: { [`${n(x)}...${n(S)}`]: status } });
+    await computeProject(w.d, "p", spec(X, "ahead").impl);
+    await computeProject(w.d, "p", spec(X, "ahead").impl);
+    expect((await facts("B")).needs).toMatchObject([{ state: "landed" }]);
+    await computeProject(w.d, "p", spec(X2, "diverged").impl);
+    expect((await facts("B")).needs).toMatchObject([{ state: "waiting" }]);
+  });
+
+  it("renders the page while GitHub hangs", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    const hang = (() => new Promise(() => {})) as unknown as Fetch;
+    const t = Date.now();
+    expect((await itemGitFacts(w.d, "p", "B", hang)).hints).toBeDefined();
+    expect(Date.now() - t).toBeLessThan(1000);
+    resetGitFactsCache();
+  });
+});
+
 describe("a tracked branch moving", () => {
-  it("refetches open PRs only, so a squash merge that left the head alone is seen", async () => {
-    await items(["A", ["feat/a"]], ["B", ["feat/b"]], ["C", ["feat/c"]]);
-    const tips = { main: M, staging: S, "feat/a": A, "feat/b": B, "feat/c": C };
-    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ tips, prs: { "feat/a": [open(7, A)], "feat/b": [open(8, B)], "feat/c": [merged(6, C, C)] },
-                                                            u: { ...u(S, A, [A]), ...u(S, B, [A, B]), ...u(S, C, []) } })).impl);
+  it("lists the PRs closed into it once, refetching only open PRs based elsewhere, so a squash merge that left the head alone is seen", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]], ["C", ["feat/c"]], ["D", ["feat/d"]]);
+    const D = sha("d");
+    const tips = { main: M, staging: S, "feat/a": A, "feat/b": B, "feat/c": C, "feat/d": D };
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ tips, prs: { "feat/a": [open(7, A)], "feat/b": [open(8, B)], "feat/c": [merged(6, C, C)],
+                                                                         "feat/d": [open(9, D, "main")] },
+                                                            u: { ...u(S, A, [A]), ...u(S, B, [A, B]), ...u(S, C, []), ...u(S, D, [D]) } })).impl);
     expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "waiting" }]);
     const after = fakeGitHub({
       tips: { ...tips, staging: Q }, track: TRACK,
-      prs: { "feat/a": [merged(7, A, Q)], "feat/b": [open(8, B)], "feat/c": [merged(6, C, C)] },
-      u: { ...u(Q, A, [A]), ...u(Q, B, [A, B]), ...u(Q, C, []) },
+      prs: { "feat/a": [merged(7, A, Q)], "feat/b": [open(8, B)], "feat/c": [merged(6, C, C)], "feat/d": [open(9, D, "main")] },
+      u: { ...u(Q, A, [A]), ...u(Q, B, [A, B]), ...u(Q, C, []), ...u(Q, D, [D]) },
     });
     await computeProject(w.d, "p", after.impl);
     expect((await facts("B")).needs).toMatchObject([{ id: "a", state: "landed" }]);
-    const fetched = after.calls.filter((c) => c.includes("/pulls?")).map((c) => decodeURIComponent(c.split("head=acme%3A")[1].split("&")[0]));
-    expect(fetched.sort()).toEqual(["feat/a", "feat/b"]);
+    expect((await facts("A")).branches![0].pr).toMatchObject({ number: 7, state: "merged" });
+    const pulls = after.calls.filter((c) => c.includes("/pulls?"));
+    expect(pulls.filter((c) => c.includes("state=closed"))).toEqual(["/repos/acme/web/pulls?state=closed&base=staging&sort=updated&direction=desc&per_page=100"]);
+    expect(pulls.filter((c) => c.includes("head=")).map((c) => decodeURIComponent(c.split("head=acme%3A")[1].split("&")[0]))).toEqual(["feat/d"]);
   });
 });
 
