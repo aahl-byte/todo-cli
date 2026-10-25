@@ -366,7 +366,10 @@ it can, otherwise the CLI. The server can when the repo is allowed for the
 project and it holds every connection the instance needs, with no command
 connection and no address its private-network rule refuses. It reports this per
 instance, and the CLI runs only the rest, so side effects such as starting an
-agent happen once. A local-only store runs everything in the CLI, and a manual
+agent happen once. Of the clones that could run one of the rest, only the
+item's developer's runs it automatically (its creator's when it has no
+developer). Automatic runs happen after a command prints, within a time budget;
+whatever doesn't fit waits for the next command. A local-only store runs everything in the CLI, and a manual
 `todo plugin run` runs where it was asked.
 
 ### What a plugin can do
