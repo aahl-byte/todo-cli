@@ -3,11 +3,12 @@
 import type { Db, Row } from "./db";
 import {
   CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE, TERMINAL,
-  SEEN, deriveCalcStatus, isSettable, mentions, nowIso, party, type Entity,
+  SEEN, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
 import { queueAutoActions } from "./actions/runs";
+import { PLUGIN_HANDLE, queuePluginEvent } from "./plugins/queue";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
 import { GUARDED, refusal, unresolvedEdges } from "./gitfacts";
 
@@ -25,6 +26,8 @@ export interface Op {
   /** A status move outside the dashboard's normal flow; `reason` is required. */
   override?: boolean;
   reason?: string;
+  /** On a remove: a plugin run made it, so a plugin may create the entity again. */
+  plugin?: boolean;
 }
 
 export interface Actor {
@@ -264,8 +267,9 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       ? { op_id: op.op_id, status: "applied", versions: existing.versions }
       : reject(op, "uid-exists", { data: existing });
   }
-  const [tomb] = await ctx.t.query("select 1 from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
-  if (tomb) return removedReason(ctx, op);
+  const [tomb] = await ctx.t.query("select by_plugin from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
+  if (tomb && !(tomb.by_plugin && pluginCreate(ctx, op))) return removedReason(ctx, op);
+  if (tomb) await ctx.t.query("delete from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
 
   const row: Record<string, any> = { ...DEFAULTS[entity] };
   for (const f of CREATE_FIELDS[entity]) if (f in data) row[f] = data[f];
@@ -343,6 +347,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "item" && row.extra.jira) await syncFieldLinks(ctx.t, ctx.project, itemUid, row.extra.jira);
+  if (entity === "item") await queuePluginEvent(ctx.t, ctx.project, itemUid, row.extra.repo, { type: "refresh" }, ctx.actor.handle);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
   if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
@@ -556,8 +561,8 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
 
   // An older CLI writes a single `extra.branch`; it replaces the list.
   const branch = accepted.find(([f]) => f === "extra.branch");
-  if (entity === "item" && branch && legacyBranch(branch[1]) && !("extra.branches" in (op.data ?? {}))) {
-    accepted.push(["extra.branches", [legacyBranch(branch[1])]]);
+  if (entity === "item" && branch && !("extra.branches" in (op.data ?? {}))) {
+    accepted.push(["extra.branches", legacyBranch(branch[1]) ? [legacyBranch(branch[1])] : null]);
   }
 
   if (accepted.length) {
@@ -595,6 +600,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       await syncFieldLinks(ctx.t, ctx.project, itemUid, json?.jira ?? []);
     }
     if (statusChange) await statusChanged(ctx, op, row, statusChange);
+    if (entity === "item" && json && accepted.some(([f]) => f === "extra.branches")) {
+      await branchesAdded(ctx, itemUid, json.repo, itemBranches(row.extra), itemBranches(json));
+    }
     if (entity === "task") await recalc(ctx, itemUid);
     if (entity === "note" && json && json.state === "answered" && (row.meta ?? {}).state !== "answered") {
       await ctx.notify(row.author, "answer", itemUid, row.uid);
@@ -641,6 +649,19 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
   await queueJira(ctx.t, ctx.actor, { project: ctx.project, itemUid: item.uid, from: item.status, status: to });
   await queueAutoActions(ctx.t, ctx.project, item.uid, item.status, to, ctx.actor.handle);
+  await queuePluginEvent(ctx.t, ctx.project, item.uid, item.extra?.repo, { type: "status", from: item.status, to }, ctx.actor.handle);
+}
+
+/** A plugin's own attachment: written by the server's plugin runner, or a note a CLI's runner marked with its instance. */
+function pluginCreate(ctx: Ctx, op: Op): boolean {
+  return ctx.actor.handle === PLUGIN_HANDLE || (op.entity === "note" && typeof op.data?.meta?.plugin === "string" && !!op.data.meta.plugin);
+}
+
+/** A branch an item gains runs its plugins as if the branch had been pushed. */
+async function branchesAdded(ctx: Ctx, itemUid: string, repo: unknown, before: string[], after: string[]): Promise<void> {
+  for (const branch of after.filter((b) => !before.includes(b))) {
+    await queuePluginEvent(ctx.t, ctx.project, itemUid, repo, { type: "push", branch }, ctx.actor.handle);
+  }
 }
 
 /** Status history an item gathered before it was ever synced. */
@@ -700,8 +721,8 @@ async function remove(ctx: Ctx, op: Op): Promise<Result> {
   }
   const seq = await ctx.bump(entity, op.uid, row.item_uid, true);
   await ctx.t.query(`delete from ${TABLE[entity]} where uid = $1 and project = $2`, [op.uid, ctx.project]);
-  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq, project) values ($1, $2, $3, $4, $5)",
-    [op.uid, entity, row.item_uid, seq, ctx.project]);
+  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq, project, by, by_plugin) values ($1, $2, $3, $4, $5, $6, $7)",
+    [op.uid, entity, row.item_uid, seq, ctx.project, ctx.actor.handle, ctx.actor.handle === PLUGIN_HANDLE || op.plugin === true]);
   if (entity === "task") await recalc(ctx, row.item_uid);
   return { op_id: op.op_id, status: "applied", versions: {} };
 }

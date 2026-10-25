@@ -1,11 +1,16 @@
 // Connections: named endpoints a plugin calls, over HTTP or MCP. Every call goes
 // through Calls, which holds dry-run back and keeps to the run's deadline.
+import { lookup as dnsLookup } from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
+import { Readable } from "node:stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { addLog, recordWouldSend } from "./limits";
-import type { Call, ResolvedConnection, RunResult } from "./types";
+import type { Call, ConnectionOrigin, ResolvedConnection, RunResult } from "./types";
 
 export const TIMEOUT_MS = 15_000;
 const SNIPPET = 300;
@@ -13,11 +18,26 @@ const READ_ONLY_METHODS = ["GET", "HEAD"];
 /** Pages of listTools read before deciding which tools are read-only. */
 export const MAX_TOOL_PAGES = 20;
 
+export interface Resolved { address: string; family: number }
+
+/** Keeps connections off this host's own network: loopback, private, link-local, CGNAT, unique-local and the IPv6
+ * forms that carry such an IPv4 address. Each allow list names hosts, or host:port pairs, reachable even there. */
+export interface AddressGuard {
+  /** For connections the host declared, which shipped plugins use. */
+  allow: string[];
+  /** For the repo's own connections. */
+  repoAllow?: string[];
+  /** Stands in for DNS, for tests. */
+  lookup?: (host: string) => Promise<Resolved[]>;
+}
+
 export interface ConnectionOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
   /** Stands in for the MCP transport, for tests. */
   mcpTransport?: (name: string) => Transport;
+  /** Check each connection's address before connecting, and connect to the address checked. */
+  guard?: AddressGuard;
 }
 
 export interface Connection {
@@ -27,8 +47,13 @@ export interface Connection {
 }
 
 export class CallError extends Error {
-  constructor(message: string, readonly status?: number) {
+  /** `network`: the call never got an answer. */
+  constructor(message: string, readonly status?: number, readonly network = false) {
     super(message);
+  }
+
+  get transient(): boolean {
+    return this.network || this.status === 429 || (this.status !== undefined && this.status >= 500);
   }
 }
 
@@ -46,6 +71,131 @@ export function withQuery(path: string, query?: Record<string, unknown>): string
   return `${path}${path.includes("?") ? "&" : "?"}${parts.join("&")}`;
 }
 
+const BLOCKED4 = new net.BlockList();
+for (const [net4, bits] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12],
+                            ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24],
+                            ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) {
+  BLOCKED4.addSubnet(net4, bits, "ipv4");
+}
+// IPv4-compatible, IPv4-mapped and IPv4-translated, NAT64, site-local, unique-local, link-local and multicast.
+const BLOCKED6: [string, number][] = [["::", 96], ["::ffff:0:0", 96], ["::ffff:0:0:0", 96], ["64:ff9b::", 96], ["64:ff9b:1::", 48],
+                                       ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]];
+
+/** An IPv6 address as eight 16-bit groups. */
+function groups6(address: string): number[] {
+  let text = address.split("%")[0];
+  const dotted = text.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number);
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = text.includes("::") ? text.split("::") : [text, undefined];
+  const left = head ? head.split(":") : [];
+  const right = tail === undefined ? [] : tail ? tail.split(":") : [];
+  const fill = tail === undefined ? [] : Array(8 - left.length - right.length).fill("0");
+  return [...left, ...fill, ...right].map((g) => parseInt(g, 16));
+}
+
+function inPrefix(g: number[], prefix: string, bits: number): boolean {
+  const p = groups6(prefix);
+  for (let i = 0; i < 8 && bits > 0; i++, bits -= 16) {
+    const mask = bits >= 16 ? 0xffff : (0xffff << (16 - bits)) & 0xffff;
+    if ((g[i] & mask) !== (p[i] & mask)) return false;
+  }
+  return true;
+}
+
+/** Whether an IP address is on a network a server must not reach on a plugin's behalf. */
+export function blockedAddress(address: string): boolean {
+  const family = net.isIP(address.split("%")[0]);
+  if (family === 4) return BLOCKED4.check(address, "ipv4");
+  if (family !== 6) return true;
+  const g = groups6(address);
+  if (g.length !== 8 || g.some((x) => !Number.isFinite(x))) return true;
+  if (g.slice(0, 7).every((x) => x === 0) && g[7] <= 1) return true;
+  if (BLOCKED6.some(([prefix, bits]) => inPrefix(g, prefix, bits))) return true;
+  // 6to4 carries the IPv4 address it routes to.
+  if (g[0] === 0x2002) return BLOCKED4.check(`${g[1] >> 8}.${g[1] & 255}.${g[2] >> 8}.${g[2] & 255}`, "ipv4");
+  return false;
+}
+
+const systemLookup = async (host: string): Promise<Resolved[]> => dnsLookup(host, { all: true, verbatim: true });
+
+/** Whether the allow list for the connection's origin names the URL's host or host:port. */
+function waived(url: URL, guard: AddressGuard, origin: ConnectionOrigin): boolean {
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  const list = origin === "host" ? guard.allow : guard.repoAllow ?? [];
+  const allowed = list.map((a) => a.trim().toLowerCase().replace(/^\[(.*)\](:\d+)?$/, "$1$2"));
+  return allowed.includes(host) || allowed.includes(`${host}:${port}`);
+}
+
+/** The address to connect to for `url`: resolved, and checked unless the allow list for the connection's origin names it. */
+async function checkedAddress(name: string, url: URL, guard: AddressGuard, origin: ConnectionOrigin = "repo"): Promise<Resolved> {
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const open = waived(url, guard, origin);
+  let found: Resolved[];
+  try {
+    found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
+  } catch {
+    throw new CallError(`${name}: ${url.hostname} doesn't resolve`, undefined, true);
+  }
+  if (!found.length || (!open && found.some((a) => blockedAddress(a.address)))) {
+    throw new CallError(`${name}: ${url.hostname} isn't an address this host connects to`);
+  }
+  return found[0];
+}
+
+/** Whether the guard lets a connection to `url` through, without connecting. */
+export async function addressAllowed(url: string, guard: AddressGuard, origin: ConnectionOrigin = "repo"): Promise<boolean> {
+  try {
+    if (waived(new URL(url), guard, origin)) return true;
+    await checkedAddress("check", new URL(url), guard, origin);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** fetch over node:http, connecting to `pin` whatever the URL's host resolves to now. Redirects come back as they are,
+ * or, with `refuseRedirects`, fail. */
+export function pinnedFetch(pin: Resolved, opts: { refuseRedirects?: boolean } = {}): typeof fetch {
+  return ((input: string | URL | Request, init: RequestInit = {}) => new Promise<Response>((resolve, reject) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const method = (init.method ?? "GET").toUpperCase();
+    const headers: Record<string, string> = {};
+    new Headers(init.headers).forEach((v, k) => { headers[k] = v; });
+    const lookup = ((_host: string, o: { all?: boolean }, done: (...a: unknown[]) => void) =>
+      (o?.all ? done(null, [pin]) : done(null, pin.address, pin.family))) as unknown as net.LookupFunction;
+    const req = (url.protocol === "https:" ? https : http).request(url, { method, headers, lookup, signal: init.signal ?? undefined }, (res) => {
+      const status = res.statusCode ?? 502;
+      if (opts.refuseRedirects && status >= 300 && status < 400) {
+        res.resume();
+        reject(new CallError(`${url.host} answered ${status}, a redirect, which isn't followed`, status));
+        return;
+      }
+      const out = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) for (const one of Array.isArray(v) ? v : v === undefined ? [] : [v]) out.append(k, one);
+      const empty = method === "HEAD" || status === 204 || status === 304;
+      if (empty) res.resume();
+      resolve(new Response(empty ? null : (Readable.toWeb(res) as ReadableStream), { status, statusText: res.statusMessage, headers: out }));
+    });
+    req.on("error", reject);
+    const body = init.body;
+    if (body === undefined || body === null) req.end();
+    else if (typeof body === "string" || body instanceof Uint8Array) req.end(body);
+    else reject(new TypeError("pinnedFetch sends only string or byte bodies"));
+  })) as typeof fetch;
+}
+
+/** The fetch a connection to `url` uses: checked and pinned under a guard, else as given. */
+async function fetchFor(name: string, url: string, origin: ConnectionOrigin | undefined, opts: ConnectionOptions,
+                        refuseRedirects = false): Promise<typeof fetch> {
+  if (!opts.guard) return opts.fetch ?? fetch;
+  const pin = await checkedAddress(name, new URL(url), opts.guard, origin);
+  return opts.fetch ?? pinnedFetch(pin, { refuseRedirects });
+}
+
 function authHeaders(c: Extract<ResolvedConnection, { kind: "http" }>): Record<string, string> {
   if (!c.secret || !c.auth) return {};
   if (c.auth === "bearer") return { authorization: `Bearer ${c.secret}` };
@@ -54,7 +204,7 @@ function authHeaders(c: Extract<ResolvedConnection, { kind: "http" }>): Record<s
 }
 
 function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "http" }>, opts: ConnectionOptions): Connection {
-  const f = opts.fetch ?? fetch;
+  let fetcher: Promise<typeof fetch> | null = null;
   const base = c.url.replace(/\/+$/, "");
   const secrets = c.secret ? [c.secret, Buffer.from(c.secret).toString("base64")] : [];
   /** An answer can echo the credentials back; they never reach the plugin. */
@@ -67,12 +217,13 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
       const what = `${name}: ${method} ${path}`;
       const headers: Record<string, string> = { accept: "application/json", "user-agent": "todo-plugin-host", ...authHeaders(c) };
       if (call.input !== undefined) headers["content-type"] = "application/json";
+      const f = await (fetcher ??= fetchFor(name, base, c.origin, opts));
       let res: Response;
       try {
         res = await f(base + path, { method, headers, body: call.input === undefined ? undefined : JSON.stringify(call.input),
                                      redirect: "manual", signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS) });
       } catch (e) {
-        throw new CallError(`${what} failed: ${(e as Error).message}`);
+        throw new CallError(`${what} failed: ${(e as Error).message}`, undefined, true);
       }
       if (res.status >= 300 && res.status < 400) {
         await res.body?.cancel().catch(() => {});
@@ -109,12 +260,13 @@ export function toolResult(result: { content?: unknown; structuredContent?: unkn
   }
 }
 
-function mcpTransport(name: string, c: Extract<ResolvedConnection, { kind: "mcp" }>, opts: ConnectionOptions): Transport {
+async function mcpTransport(name: string, c: Extract<ResolvedConnection, { kind: "mcp" }>, opts: ConnectionOptions): Promise<Transport> {
   if (opts.mcpTransport) return opts.mcpTransport(name);
   if (c.command) return new StdioClientTransport({ command: c.command, args: c.args ?? [], stderr: "ignore" });
   if (!c.url) throw new CallError(`${name}: an mcp connection needs a url or a command`);
+  const f = opts.guard ? await fetchFor(name, c.url, c.origin, opts, true) : undefined;
   return new StreamableHTTPClientTransport(new URL(c.url), {
-    requestInit: c.secret ? { headers: { authorization: `Bearer ${c.secret}` } } : undefined,
+    requestInit: c.secret ? { headers: { authorization: `Bearer ${c.secret}` } } : undefined, ...(f ? { fetch: f } : {}),
   });
 }
 
@@ -125,7 +277,7 @@ function mcpConnection(name: string, c: Extract<ResolvedConnection, { kind: "mcp
   let readOnly: Promise<Set<string>> | null = null;
   const connect = () => client ??= (async () => {
     const cl = new Client({ name: "todo-plugin-host", version: "1.0.0" });
-    transport = mcpTransport(name, c, opts);
+    transport = await mcpTransport(name, c, opts);
     await cl.connect(transport, { timeout });
     return cl;
   })();
@@ -217,16 +369,34 @@ export class Calls {
     }
   }
 
+  /** A call went out that may have changed something. */
+  wrote = false;
+  /** The last call that failed. */
+  failure?: CallError;
+
   /** Send a call, or in dry-run record it and answer null unless it only reads. */
   async send(call: Call): Promise<unknown> {
     this.checkDeadline();
     const c = this.connection(call.connection);
-    if (this.opts.dryRun && !(await this.withinDeadline(c.isReadOnly(call), call))) {
+    const readOnly = await this.withinDeadline(c.isReadOnly(call), call);
+    if (this.opts.dryRun && !readOnly) {
       recordWouldSend(this.result, call);
       addLog(this.result, `would send ${describeCall(call)}`);
       return null;
     }
-    return this.withinDeadline(c.send(call), call);
+    if (!readOnly) this.wrote = true;
+    try {
+      return await this.withinDeadline(c.send(call), call);
+    } catch (e) {
+      if (e instanceof CallError) this.failure = e;
+      throw e;
+    }
+  }
+
+  /** Whether the run's failure can be retried: the last failed call was transient and nothing was written. */
+  retryable(e: unknown): boolean {
+    const failure = e instanceof CallError ? e : this.failure;
+    return !!failure?.transient && !this.wrote;
   }
 
   async close(): Promise<void> {

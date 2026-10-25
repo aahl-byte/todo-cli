@@ -46,16 +46,42 @@ export function resolveSettings(plugin: PluginDef, instance: InstanceDef, scope:
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** The connections a run gets: a host connection's secret goes only to plugins shipped with todo. */
+function connectionsOf(input: RunInput): Record<string, ResolvedConnection> {
+  if (input.shipped) return input.connections ?? {};
+  const out: Record<string, ResolvedConnection> = {};
+  for (const [name, c] of Object.entries(input.connections ?? {})) {
+    if (c.origin !== "host" || c.secret === undefined) out[name] = c;
+    else {
+      const { secret: _withheld, ...rest } = c;
+      out[name] = rest as ResolvedConnection;
+    }
+  }
+  return out;
+}
+
+const hostOnly = (name: string) =>
+  `\`${name}\` is this host's connection, whose credentials only plugins shipped with todo get; declare a repo connection named ${name} and store a repo credential for it`;
+
 /** Why this host won't run the plugin, if it won't: a connection it lacks, can't authorize, or mustn't start. */
-function connectionProblem(input: RunInput): string | undefined {
+function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
   for (const name of input.plugin.connections ?? []) {
     const c = input.connections?.[name];
+    if (c?.kind === "http" && c.auth && !input.shipped && c.origin === "host") return hostOnly(name);
     if (!c || (c.kind === "http" && c.auth && !c.secret)) return `\`${name}\` not authorized here`;
     if (c.kind === "mcp" && c.command && (c.origin ?? "repo") === "repo" && !input.allowRepoCommands) {
       return `\`${name}\` runs a command, which this host doesn't allow for repo connections`;
     }
   }
   return undefined;
+}
+
+/** Why this host would skip an instance whatever the item: a connection it can't use, or a required setting with no value. */
+export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
+  const problem = connectionProblem(input);
+  if (problem) return problem;
+  const { missing } = resolveSettings(input.plugin, input.instance, { item: {}, event: {} });
+  return missing ? `setting ${missing} is not set` : undefined;
 }
 
 /** Text that must never leave the host: connection secrets and secret settings. */
@@ -84,7 +110,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
 
   const repoCode = !!plugin.code && !input.shipped;
   const deadline = Date.now() + (input.limits?.deadlineMs ?? (repoCode ? REPO_CODE_DEADLINE_MS : DEFAULT_DEADLINE_MS));
-  const calls = new Calls(input.connections, result, { ...deps, dryRun: input.dryRun || !!instance.dry_run, deadline });
+  const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun: input.dryRun || !!instance.dry_run, deadline });
   const attached = new Attached();
   const mayRequest = !!plugin.capabilities?.includes(POST_REQUEST) && !!input.grants?.includes(POST_REQUEST);
   try {
@@ -102,6 +128,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
   } catch (e) {
     result.attached = [];
     result.error = message(e);
+    if (calls.retryable(e)) result.transient = true;
   } finally {
     await calls.close();
   }
@@ -141,7 +168,7 @@ function resolveConnection(def: ConnectionDef, origin: ConnectionOrigin, secret:
 }
 
 /** The host's connections, then the repo's over them, each with only the secret stored for its own origin. */
-function connectionsFor(input: EventInput, file: PluginsFile): Record<string, ResolvedConnection> {
+export function connectionsFor(input: Pick<EventInput, "hostConnections" | "secrets">, file: PluginsFile): Record<string, ResolvedConnection> {
   const out: Record<string, ResolvedConnection> = {};
   const add = (defs: Record<string, ConnectionDef> | undefined, origin: ConnectionOrigin) => {
     for (const [name, def] of Object.entries(defs ?? {})) {
@@ -154,10 +181,10 @@ function connectionsFor(input: EventInput, file: PluginsFile): Record<string, Re
   return out;
 }
 
-interface Resolved { name: string; def: PluginDef; code?: string; shipped: boolean }
+export interface Resolved { name: string; def: PluginDef; code?: string; shipped: boolean }
 
 /** The repo file's plugins with shipped ones resolved, after the always-on shipped plugins. */
-function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): Resolved[] {
+export function pluginsFor(input: Pick<EventInput, "repo">, file: PluginsFile, errors: string[]): Resolved[] {
   const out = new Map<string, Resolved>();
   const fromRegistry = (name: string) => out.set(name, { name, def: SHIPPED[name].def, code: SHIPPED[name].code, shipped: true });
   for (const name of ALWAYS_ON) fromRegistry(name);
@@ -184,17 +211,30 @@ const needsNoSettings = (def: PluginDef) => Object.values(def.settings ?? {})
  * none, nothing must be set, and load dropped none of the repo's.
  */
 export function instancesFor(def: PluginDef, repo: InstanceDef[], stored: InstanceDef[], droppedSome = false): InstanceDef[] {
+  return allInstances(def, repo, stored, droppedSome).filter((i) => i.enabled !== false);
+}
+
+/** Like instancesFor, keeping the ones switched off. */
+export function allInstances(def: PluginDef, repo: InstanceDef[], stored: InstanceDef[], droppedSome = false): InstanceDef[] {
   const merged = repo.map((r) => {
     const s = stored.find((x) => x.id === r.id);
     return s ? { ...r, ...s, settings: { ...r.settings, ...s.settings } } : r;
   });
   merged.push(...stored.filter((s) => !repo.some((r) => r.id === s.id)));
   if (!merged.length && !droppedSome && needsNoSettings(def)) merged.push({ ...DEFAULT_INSTANCE });
-  return merged.filter((i) => i.enabled !== false);
+  return merged;
+}
+
+/** Lets a host take part between instances: skip one, or act on each result as it comes. */
+export interface EventHooks {
+  /** Called before an instance runs; false skips it. */
+  before?(plugin: string, instance: InstanceDef): Promise<boolean>;
+  /** Called with each instance's result before the next one runs. */
+  after?(run: EventRun): Promise<void>;
 }
 
 /** Given a repo's plugin file and an event on an item, run every instance the event fires, one after another. */
-export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<EventResult> {
+export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: EventHooks = {}): Promise<EventResult> {
   const errors: string[] = [];
   let file: PluginsFile = {};
   let dropped: string[] = [];
@@ -209,12 +249,14 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
     const instances = instancesFor(def, file.instances?.[name] ?? [], input.storedInstances?.[name] ?? [], dropped.includes(name));
     for (const instance of pickInstances(def, instances, input.event)) {
+      if (hooks.before && !(await hooks.before(name, instance))) continue;
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
         repoKey: input.repoKey,
       }, deps);
       results.push({ plugin: name, instance, result });
+      await hooks.after?.(results[results.length - 1]);
     }
   }
   return { results, errors, track: file.track ?? [] };

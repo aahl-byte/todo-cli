@@ -59,8 +59,16 @@ function ShareRow({ s, base }: { s: Share; base: string }) {
   );
 }
 
-export function GitFacts({ facts, base }: { facts?: Facts & { hints?: { conflict: string; shares: string } }; base: string }) {
+export function GitFacts({ facts, base }: { facts?: Facts & { hints?: { conflict: string; shares: string }; blocked?: string }; base: string }) {
   if (!facts) return null;
+  if (facts.blocked) {
+    return (
+      <section className="git-facts">
+        <div className="label">Git</div>
+        <div className="faint git-hint">{facts.blocked}</div>
+      </section>
+    );
+  }
   const list = <T,>(v: T[] | undefined) => (Array.isArray(v) ? v : []);
   const branches = list(facts.branches), needs = list(facts.needs), neededBy = list(facts.needed_by), shares = list(facts.shares);
   const conflicts = list(facts.conflicts), overlaps = list(facts.overlaps);

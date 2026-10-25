@@ -5,7 +5,8 @@ import { runEvent, type EventInput } from "@/lib/plugins/host";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import type { PluginItem } from "@/lib/plugins/types";
 // @ts-expect-error a plain-JS build script
-import { shippedSources } from "../scripts/build-plugin-host.mjs";
+import { shippedSources, workerBuild } from "../scripts/build-plugin-host.mjs";
+import { build } from "esbuild";
 import { fakeServer, type FakeServer, type Recorded } from "./plugin-fakes";
 
 const ITEM: PluginItem = { id: "fix-login", uid: "U1", title: "Fix login", status: "in-progress", repo: "acme/web", repo_owner: "acme",
@@ -36,6 +37,11 @@ function run(over: Partial<EventInput>) {
 describe("shipped plugins", () => {
   it("keeps sources.ts in step with the files beside it", () => {
     expect(readFileSync(path.join(import.meta.dirname, "../lib/plugins/shipped/sources.ts"), "utf8")).toBe(shippedSources());
+  });
+
+  it("keeps the worker bundle in step with code-worker.mjs", async () => {
+    const out = await build({ ...workerBuild, write: false });
+    expect(readFileSync(workerBuild.outfile, "utf8") === out.outputFiles![0].text, "run npm run build:plugin-host").toBe(true);
   });
 
   it("links each branch's PRs with pr-link, even for a repo without a plugins file", async () => {

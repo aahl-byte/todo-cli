@@ -77,12 +77,13 @@ async function pgPool(url: string): Promise<Db> {
         await client.query("begin");
         const out = await fn(wrap(client));
         await client.query("commit");
+        client.release();
         return out;
       } catch (e) {
-        await client.query("rollback");
+        await client.query("rollback").catch(() => undefined);
+        // A connection that failed mid-transaction may be in any state; it's dropped, not reused.
+        client.release(true);
         throw e;
-      } finally {
-        client.release();
       }
     },
   };
