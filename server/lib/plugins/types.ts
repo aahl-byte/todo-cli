@@ -26,6 +26,8 @@ export interface RunResult {
   log: string[];
   skipped?: string;
   error?: string;
+  /** The error was a network failure, a 5xx or a 429, and every call the run made only read, so running it again is safe. */
+  transient?: boolean;
 }
 
 export type HttpAuth = "bearer" | "basic" | `header:${string}`;

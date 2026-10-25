@@ -107,3 +107,33 @@ describe("the address guard", () => {
     }
   });
 });
+
+describe("retrying", () => {
+  const plugin = (steps: NonNullable<RunInput["plugin"]["steps"]>): RunInput => ({
+    plugin: { connections: ["c"], on: ["push"], steps, attach: [] }, name: "p", instance: { id: "default", name: "default" }, item: ITEM,
+    event: { type: "push", branch: "x" }, dryRun: false, connections: { c: { kind: "http", url: "https://hooks.example" } },
+  });
+  const answering = (status: number) => (async () => new Response("", { status })) as typeof globalThis.fetch;
+
+  it("marks a run transient only when the failure was a network error, 5xx or 429 and every call only read", async () => {
+    const get = [{ http: { method: "GET", path: "/a" } }];
+    const post = [{ http: { method: "POST", path: "/a" } }];
+    expect((await runInstance(plugin(get), { fetch: answering(503) })).transient).toBe(true);
+    expect((await runInstance(plugin(get), { fetch: answering(429) })).transient).toBe(true);
+    expect((await runInstance(plugin(get), { fetch: (async () => { throw new Error("ECONNRESET"); }) as typeof globalThis.fetch })).transient).toBe(true);
+    expect((await runInstance(plugin(get), { fetch: answering(404) })).transient).toBeUndefined();
+    expect((await runInstance(plugin(post), { fetch: answering(503) })).transient).toBeUndefined();
+  });
+});
+
+describe("event hooks", () => {
+  it("skip an instance when before says so, and hear each result as it comes", async () => {
+    const { fetch } = recorder();
+    const repo = { text: "plugins:\n  a: {on: [push], steps: [{name: v, value: '`1`'}], attach: [{log: a}]}\n  b: {on: [push], steps: [{name: v, value: '`1`'}], attach: [{log: b}]}\n", files: {} };
+    const heard: string[] = [];
+    const out = await runEvent({ repo, item: ITEM, event: { type: "push", branch: "feat/login" } }, { fetch },
+      { before: async (plugin) => plugin !== "a", after: async (r) => { heard.push(r.plugin); } });
+    expect(out.results.map((r) => r.plugin)).toEqual(["pr-link", "b"]);
+    expect(heard).toEqual(["pr-link", "b"]);
+  });
+});

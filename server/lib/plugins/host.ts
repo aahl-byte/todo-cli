@@ -120,6 +120,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
   } catch (e) {
     result.attached = [];
     result.error = message(e);
+    if (calls.retryable(e)) result.transient = true;
   } finally {
     await calls.close();
   }
@@ -216,8 +217,16 @@ export function allInstances(def: PluginDef, repo: InstanceDef[], stored: Instan
   return merged;
 }
 
+/** Lets a host take part between instances: skip one, or act on each result as it comes. */
+export interface EventHooks {
+  /** Called before an instance runs; false skips it. */
+  before?(plugin: string, instance: InstanceDef): Promise<boolean>;
+  /** Called with each instance's result before the next one runs. */
+  after?(run: EventRun): Promise<void>;
+}
+
 /** Given a repo's plugin file and an event on an item, run every instance the event fires, one after another. */
-export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<EventResult> {
+export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: EventHooks = {}): Promise<EventResult> {
   const errors: string[] = [];
   let file: PluginsFile = {};
   let dropped: string[] = [];
@@ -232,12 +241,14 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
     const instances = instancesFor(def, file.instances?.[name] ?? [], input.storedInstances?.[name] ?? [], dropped.includes(name));
     for (const instance of pickInstances(def, instances, input.event)) {
+      if (hooks.before && !(await hooks.before(name, instance))) continue;
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
         repoKey: input.repoKey,
       }, deps);
       results.push({ plugin: name, instance, result });
+      await hooks.after?.(results[results.length - 1]);
     }
   }
   return { results, errors, track: file.track ?? [] };

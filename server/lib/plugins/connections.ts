@@ -44,8 +44,13 @@ export interface Connection {
 }
 
 export class CallError extends Error {
-  constructor(message: string, readonly status?: number) {
+  /** `network`: the call never got an answer. */
+  constructor(message: string, readonly status?: number, readonly network = false) {
     super(message);
+  }
+
+  get transient(): boolean {
+    return this.network || this.status === 429 || (this.status !== undefined && this.status >= 500);
   }
 }
 
@@ -95,7 +100,7 @@ async function checkedAddress(name: string, url: URL, guard: AddressGuard): Prom
   try {
     found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
   } catch {
-    throw new CallError(`${name}: ${url.hostname} doesn't resolve`);
+    throw new CallError(`${name}: ${url.hostname} doesn't resolve`, undefined, true);
   }
   if (!found.length || found.some((a) => blockedAddress(a.address))) throw refused;
   return found[0];
@@ -160,7 +165,7 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
         res = await f(base + path, { method, headers, body: call.input === undefined ? undefined : JSON.stringify(call.input),
                                      redirect: "manual", signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS) });
       } catch (e) {
-        throw new CallError(`${what} failed: ${(e as Error).message}`);
+        throw new CallError(`${what} failed: ${(e as Error).message}`, undefined, true);
       }
       if (res.status >= 300 && res.status < 400) {
         await res.body?.cancel().catch(() => {});
@@ -306,16 +311,34 @@ export class Calls {
     }
   }
 
+  /** A call went out that may have changed something. */
+  wrote = false;
+  /** The last call that failed. */
+  failure?: CallError;
+
   /** Send a call, or in dry-run record it and answer null unless it only reads. */
   async send(call: Call): Promise<unknown> {
     this.checkDeadline();
     const c = this.connection(call.connection);
-    if (this.opts.dryRun && !(await this.withinDeadline(c.isReadOnly(call), call))) {
+    const readOnly = await this.withinDeadline(c.isReadOnly(call), call);
+    if (this.opts.dryRun && !readOnly) {
       recordWouldSend(this.result, call);
       addLog(this.result, `would send ${describeCall(call)}`);
       return null;
     }
-    return this.withinDeadline(c.send(call), call);
+    if (!readOnly) this.wrote = true;
+    try {
+      return await this.withinDeadline(c.send(call), call);
+    } catch (e) {
+      if (e instanceof CallError) this.failure = e;
+      throw e;
+    }
+  }
+
+  /** Whether the run's failure can be retried: the last failed call was transient and nothing was written. */
+  retryable(e: unknown): boolean {
+    const failure = e instanceof CallError ? e : this.failure;
+    return !!failure?.transient && !this.wrote;
   }
 
   async close(): Promise<void> {
