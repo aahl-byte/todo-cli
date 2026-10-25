@@ -171,9 +171,8 @@ create table if not exists applied_ops (
 );
 
 -- An item may link many Jira issues, and an issue may link items in several
--- projects. source 'import' is the link the bridge made when it imported the
--- issue (status and fields mirror); 'field' follows the item's extra.jira list
--- (request backfill and comments only).
+-- projects. Rows with source 'field' follow the item's extra.jira list, and
+-- the bridge mirrors only those.
 create table if not exists jira_links (
   project          text not null,
   item_uid         text not null,
@@ -220,9 +219,11 @@ begin
   end if;
 end $$;
 create index if not exists jira_files_issue on jira_files (project, issue_key);
--- 'import' mirrors the project's jira_project; 'links' mirrors only the issues
--- its items link, from any Jira project.
-alter table projects add column if not exists jira_mode text not null default 'import';
+-- Every project mirrors only the issues its items link, from any Jira project.
+-- projects.jira_project, jira_status_map and jira_inbound are unused.
+alter table projects add column if not exists jira_mode text not null default 'links';
+alter table projects alter column jira_mode set default 'links';
+update projects set jira_mode = 'links' where jira_mode = 'import';
 alter table projects add column if not exists jira_synced_at timestamptz;
 alter table jira_files add column if not exists size bigint;
 alter table projects add column if not exists jira_inbound jsonb;

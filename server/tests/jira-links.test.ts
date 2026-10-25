@@ -100,7 +100,20 @@ describe("jira links schema", () => {
     expect((await d.query("select project, jira_key, source from jira_links order by project, jira_key")))
       .toEqual([{ project: "a", jira_key: "CNS-1", source: "field" }, { project: "a", jira_key: "WEB-1", source: "import" },
                 { project: "b", jira_key: "WEB-1", source: "field" }]);
-    expect((await d.query("select jira_mode from projects order by key")).map((r) => r.jira_mode)).toEqual(["import", "import"]);
+    expect((await d.query("select jira_mode from projects order by key")).map((r) => r.jira_mode)).toEqual(["links", "links"]);
+    await d.close?.();
+  });
+
+  it("puts every project in links mode, idempotently", async () => {
+    const d = await pglite();
+    await migrate(d);
+    await d.exec(`alter table projects alter column jira_mode set default 'import';
+                  insert into projects (key, jira_mode) values ('a', 'import'), ('b', 'links');`);
+    await migrate(d);
+    await migrate(d);
+    await d.query("insert into projects (key) values ('c')");
+    expect((await d.query("select key, jira_mode from projects order by key")).map((r) => `${r.key}:${r.jira_mode}`))
+      .toEqual(["a:links", "b:links", "c:links"]);
     await d.close?.();
   });
 });
@@ -256,7 +269,7 @@ describe("jira links mode", () => {
 
   it("lists the links-mode projects for a poll of all of them", async () => {
     await addProject(w.d, "r");
-    expect(await linkedProjects(w.d)).toEqual(["p", "q"]);
+    expect(await linkedProjects(w.d)).toEqual(["p", "q", "r"]);
   });
 });
 
