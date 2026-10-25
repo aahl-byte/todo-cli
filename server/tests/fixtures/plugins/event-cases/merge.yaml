@@ -1,0 +1,23 @@
+about: stored instances override and extend the repo's, an implicit default appears only when nothing must be set, and the repo's connection wins
+repo: merge.yaml
+hostConnections:
+  api: {http: {url: "http://127.0.0.1:9"}}
+secrets: {repo: {api: k1}}
+storedInstances:
+  ping:
+    - {id: one, name: One stored, settings: {tag: s1}}
+    - {id: two, name: Two, enabled: false}
+    - {id: three, name: Three, settings: {tag: s3}}
+  pr-link:
+    - {id: default, name: default, enabled: false}
+event: {type: push, branch: feat/login}
+responses:
+  api:
+    - {method: GET, path: /hello, body: {from: repo}}
+expect:
+  errors: []
+  track: [staging, main]
+  results:
+    - {plugin: ping, instance: one, result: {attached: [{kind: log, key: "log:s1 keep from repo", text: s1 keep from repo}], wouldSend: [], log: []}}
+    - {plugin: ping, instance: three, result: {attached: [{kind: log, key: "log:s3  from repo", text: s3  from repo}], wouldSend: [], log: []}}
+    - {plugin: quiet, instance: default, result: {attached: [{kind: log, key: "log:quiet ran on feat/login", text: quiet ran on feat/login}], wouldSend: [], log: []}}

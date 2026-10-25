@@ -1,0 +1,23 @@
+about: the Watchtower code plugin starts a session, waits for it to go idle and sends the prompt
+plugin: watchtower-session
+instance: {id: start, name: Start agent, settings: {model: opus}}
+event: {type: manual, instance: start}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - {method: GET, path: /api/roster, body: {sessions: [{id: s1, name: "todo: fix-login", state: active, managed: false}]}}
+    - {method: POST, path: /api/sessions, body: {id: s9}}
+    - {method: GET, path: /api/sessions/s9, body: {state: active, status: idle}}
+    - {method: POST, path: /api/sessions/s9/message, body: {delivered: typed}}
+expect:
+  attached:
+    - {kind: log, key: "log:started Watchtower session todo: fix-login: s9", text: "started Watchtower session todo: fix-login: s9"}
+  wouldSend: []
+  log: []
+received:
+  watchtower:
+    - {method: GET, path: /api/roster}
+    - {method: POST, path: /api/sessions, body: {dir: /src/web, name: "todo: fix-login", model: opus}}
+    - {method: GET, path: /api/sessions/s9}
+    - {method: POST, path: /api/sessions/s9/message, body: {text: /todo fix-login, from: todo}}

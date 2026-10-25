@@ -1,0 +1,12 @@
+about: a session waiting on a person fails the run with the plugin's message
+plugin: watchtower-session
+instance: {id: start, name: Start agent}
+event: {type: manual, instance: start}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - {method: GET, path: /api/roster, body: {sessions: []}}
+    - {method: POST, path: /api/sessions, body: {id: s9}}
+    - {method: GET, path: /api/sessions/s9, body: {state: active, status: waiting, waitingFor: a permission prompt}}
+expect: {attached: [], wouldSend: [], log: [], error: session is waiting on a permission prompt}

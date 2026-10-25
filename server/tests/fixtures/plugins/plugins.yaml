@@ -1,0 +1,76 @@
+track: [staging, main]
+connections:
+  github: {http: {url: "https://api.github.com", auth: bearer}}
+  jira: {mcp: {url: "https://jira.example/mcp"}}
+  api: {http: {url: "https://api.example", auth: "header:X-Api-Key"}}
+  watchtower: {http: {url: "http://leaf-rain:10011"}}
+plugins:
+  pr-link:
+    connections: [github]
+    on: [push, pr]
+    per: branch
+    steps:
+      - name: prs
+        http:
+          method: GET
+          path: "/repos/{{item.repo_owner}}/{{item.repo_name}}/pulls"
+          query: {head: "{{item.repo_owner}}:{{branch}}", state: all}
+    attach:
+      - each: prs
+        link: {type: pr, url: "{{each.html_url}}", label: "#{{each.number}} · {{each.title}}"}
+
+  jira-transition:
+    connections: [jira]
+    per: jira
+    exclusive: true
+    when: "!contains(settings.never, settings.to)"
+    settings:
+      to:    {label: Jira status, type: choice, options_from: {tool: list_statuses}}
+      never: {label: Never move to, type: list, scope: plugin}
+    steps:
+      - name: transitions
+        tool: getTransitionsForJiraIssue
+        input: {issueIdOrKey: "{{issue}}"}
+      - name: transition
+        value: "transitions.transitions[?to.name=={{settings.to}}] | [0]"
+      - when: transition
+        tool: transitionJiraIssue
+        input: {issueIdOrKey: "{{issue}}", transition: {id: "{{transition.id}}"}}
+
+  rest:
+    connections: [api]
+    on: [manual]
+    settings:
+      hook: {label: Hook id, type: text}
+    steps:
+      - name: posted
+        http: {method: POST, path: "/hooks/{{settings.hook}}", body: {id: "{{item.id}}", title: "{{item.title}}", branches: "{{item.branches}}"}}
+    attach:
+      - {when: posted, log: "posted {{posted.id}}"}
+      - {key: "request-sent", when: "!posted", log: "dry run: nothing posted for {{item.id}}"}
+
+  db-request:
+    connections: [api]
+    per: branch
+    steps:
+      - name: submissions
+        http: {method: GET, path: "/submissions", query: {branch: "{{branch}}"}}
+    attach:
+      - each: submissions
+        when: "each.migrations_pr"
+        link: {type: db-request, url: "{{each.migrations_pr}}", label: "migrations for {{branch}}"}
+      - each: submissions
+        when: "each.migrations_pr && each.state != 'merged'"
+        edge: {needs: "{{each.migrations_pr}}", in: staging, because: "db-request {{each.id}} migrations"}
+      - each: "submissions[?notes]"
+        doc: {name: "db-request-{{each.id}}.md", content: "{{each.notes}}"}
+
+  watchtower-session:
+    connections: [watchtower]
+    on: [manual]
+    code: watchtower-session.js
+    settings:
+      dir:          {label: Folder, type: text, default: "{{item.dir}}"}
+      prompt:       {label: Prompt, type: long-text, default: "/todo {{item.id}}"}
+      resumePrompt: {label: Prompt for a live or resumed session, type: long-text, optional: true}
+      model:        {label: Model, type: choice, options: [opus, sonnet], optional: true}

@@ -1,0 +1,16 @@
+about: a live POST sends the body with the header secret and attaches from the answer
+plugin: rest
+instance: {id: notify, name: Notify, settings: {hook: "{{item.id}}"}}
+event: {type: manual, instance: notify}
+connections:
+  api: {kind: http, auth: "header:X-Api-Key", secret: k1}
+responses:
+  api:
+    - {method: POST, path: /hooks/fix-login, status: 201, body: {id: hook-5}}
+expect:
+  attached:
+    - {kind: log, key: "log:posted hook-5", text: posted hook-5}
+  wouldSend: []
+received:
+  api:
+    - {method: POST, path: /hooks/fix-login, x-api-key: k1, body: {id: fix-login, title: Fix login, branches: [feat/login, feat/login-api]}}

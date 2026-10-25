@@ -1,0 +1,14 @@
+about: a plugins file that fails to load is reported, and the shipped plugins still run
+repo_text: "plugins: {bad: {until: x, attach: [{log: x}]}}"
+hostConnections:
+  github: {http: {url: "http://fake-github"}}
+event: {type: pr, branch: feat/login}
+item: {branches: [feat/login]}
+responses:
+  github:
+    - {method: GET, path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all, body: []}
+expect:
+  errors: ['plugin bad: unknown key "until"']
+  track: []
+  results:
+    - {plugin: pr-link, instance: default, result: {attached: [], wouldSend: [], log: []}}
