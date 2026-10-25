@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as factsPOST } from "@/app/api/projects/[key]/git-facts/route";
 import { describe as describeResults } from "@/lib/action-helpers";
 import { computeProject, itemGitFacts, recomputing, resetGitFactsCache, storedFacts, trackList, type Fetch } from "@/lib/gitfacts";
+import { recordCheckout } from "@/lib/checkouts";
 import { child, item, set, world, type World } from "./helpers";
 
 let w: World;
@@ -11,6 +12,7 @@ beforeEach(async () => {
   resetGitFactsCache();
   vi.unstubAllEnvs();
   vi.stubEnv("GITHUB_TOKEN", "t");
+  await w.d.query("insert into plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
 });
 
 const b64 = (s: string) => Buffer.from(s).toString("base64");
@@ -578,5 +580,33 @@ describe("POST /api/projects/:key/git-facts", () => {
   it("401s without a token and 404s an unknown project", async () => {
     expect((await factsPOST(req(null, { facts: [] }), params("p"))).status).toBe(401);
     expect((await factsPOST(req(w.tokens.bob, { facts: [] }), params("nope"))).status).toBe(404);
+  });
+});
+
+describe("repos a project may use", () => {
+  it("reads nothing from GitHub for a repo the project hasn't got, and the rail says why", async () => {
+    await w.d.query("delete from plugin_repos");
+    await items(["A", ["feat/a"]]);
+    const gh = fakeGitHub(stackedSpec());
+    await computeProject(w.d, "p", gh.impl);
+    expect(gh.calls).toEqual([]);
+    const shown = await itemGitFacts(w.d, "p", "A", gh.impl);
+    expect(shown.blocked).toMatch(/acme\/web isn't one of this project's repos.*Settings → Plugin repos/);
+    expect(gh.calls).toEqual([]);
+  });
+
+  it("uses a repo a member's CLI reported a checkout of", async () => {
+    await w.d.query("delete from plugin_repos");
+    await recordCheckout(w.d, "bob", "p", "/src/web", "git@github.com:Acme/web.git");
+    await items(["A", ["feat/a"]]);
+    const gh = fakeGitHub(stackedSpec());
+    await computeProject(w.d, "p", gh.impl);
+    expect(gh.calls.length).toBeGreaterThan(0);
+    expect((await itemGitFacts(w.d, "p", "A", gh.impl)).blocked).toBeUndefined();
+  });
+
+  it("calls a repo field that isn't owner/name unusable", async () => {
+    await w.one("alice", item("A", { id: "a", status: "in-progress", extra: { repo: "../../etc", branches: ["x"] } }));
+    expect((await itemGitFacts(w.d, "p", "A")).blocked).toMatch(/isn't a GitHub owner\/name/);
   });
 });

@@ -7,17 +7,28 @@ const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
 export class NoSecretKey extends Error {
-  constructor() {
-    super("TODO_SECRET_KEY isn't set on the server, so it can't store connection credentials");
+  constructor(why = secretKeyProblem() ?? "TODO_SECRET_KEY isn't usable") {
+    super(why);
   }
 }
 
-/** The key from TODO_SECRET_KEY, or null when it's unset or not 32 bytes. */
-export function secretKey(raw = process.env.TODO_SECRET_KEY): Buffer | null {
+const HEX_KEY = /^[0-9a-f]{64}$/i;
+/** 32 bytes in base64 (padded) or base64url (unpadded). */
+const BASE64_KEY = /^[A-Za-z0-9+/]{43}=$|^[A-Za-z0-9_-]{43}$/;
+
+/** Why TODO_SECRET_KEY can't be used, or null when it can. */
+export function secretKeyProblem(raw = process.env.TODO_SECRET_KEY): string | null {
   const text = (raw ?? "").trim();
-  if (!text) return null;
-  const key = /^[0-9a-f]{64}$/i.test(text) ? Buffer.from(text, "hex") : Buffer.from(text, "base64");
-  return key.length === 32 ? key : null;
+  if (!text) return "TODO_SECRET_KEY isn't set on the server, so it can't store secrets";
+  if (HEX_KEY.test(text) || BASE64_KEY.test(text)) return null;
+  return "TODO_SECRET_KEY must be 32 bytes, written as 64 hex characters or 44 base64 characters (openssl rand -base64 32)";
+}
+
+/** The key from TODO_SECRET_KEY, or null when it's unset or isn't exactly 32 bytes. */
+export function secretKey(raw = process.env.TODO_SECRET_KEY): Buffer | null {
+  if (secretKeyProblem(raw)) return null;
+  const text = raw!.trim();
+  return HEX_KEY.test(text) ? Buffer.from(text, "hex") : Buffer.from(text.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
 const aad = (scope: string[]) => Buffer.from(scope.join("\x1f"));

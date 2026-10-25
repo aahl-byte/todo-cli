@@ -106,6 +106,16 @@ async function checkedAddress(name: string, url: URL, guard: AddressGuard): Prom
   return found[0];
 }
 
+/** Whether the guard lets a connection to `url` through, without connecting. */
+export async function addressAllowed(url: string, guard: AddressGuard): Promise<boolean> {
+  try {
+    await checkedAddress("check", new URL(url), guard);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** fetch over node:http, connecting to `pin` whatever the URL's host resolves to now. */
 export function pinnedFetch(pin: Resolved): typeof fetch {
   return ((input: string | URL | Request, init: RequestInit = {}) => new Promise<Response>((resolve, reject) => {

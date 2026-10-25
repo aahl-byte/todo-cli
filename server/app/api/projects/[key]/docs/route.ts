@@ -13,7 +13,7 @@ export async function GET(req: Request, ctx: Ctx) {
   return json(await docPage(a.d, key, { item: q.get("item"), after: q.get("after"), limit: Number(q.get("limit")) || undefined }));
 }
 
-/** Record an uploaded file as a doc: `{item_uid, name, file_key, sha256, base, via}` →
+/** Record an uploaded file as a doc: `{item_uid, name, file_key, sha256, base, via, plugin?}` →
  * `{status: applied | conflict, doc}`, where `doc` is the server's current copy. */
 export async function PUT(req: Request, ctx: Ctx) {
   const a = await authed(req);
@@ -26,6 +26,7 @@ export async function PUT(req: Request, ctx: Ctx) {
       item_uid: String(body.item_uid ?? ""), name: body.name, file_key: body.file_key,
       base: typeof body.base === "string" ? body.base : null,
       sha256: typeof body.sha256 === "string" ? body.sha256 : undefined, via: body.via,
+      plugin: typeof body.plugin === "string" ? body.plugin : null,
     }));
   } catch (e) {
     if (e instanceof DocError) return json({ error: e.message }, e.status);

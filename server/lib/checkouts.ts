@@ -3,10 +3,39 @@
 import type { Db } from "./db";
 import { WATCHTOWER_URL } from "./watchtower";
 
+/** A GitHub owner/name, safe to put in an API path. */
+const REPO_KEY = /^[a-z0-9](?:[a-z0-9-]{0,38})\/(?!\.\.?$)[a-z0-9._-]{1,100}$/;
+
 /** `owner/name` from a repo field or a remote URL, lowercased; "" when it has no such shape. */
 export function repoKey(raw: string | null | undefined): string {
   const parts = String(raw ?? "").trim().replace(/\.git$/i, "").replace(/\/+$/, "").split(/[/:]/).filter(Boolean);
-  return parts.length >= 2 ? parts.slice(-2).join("/").toLowerCase() : "";
+  const key = parts.length >= 2 ? parts.slice(-2).join("/").toLowerCase() : "";
+  return REPO_KEY.test(key) ? key : "";
+}
+
+/** Whether a project may use a repo: a member's CLI reported a checkout of it, or it's listed in the project's plugin repos. */
+export async function repoAllowed(d: Pick<Db, "query">, project: string, repo: string): Promise<boolean> {
+  if (!repo || repoKey(repo) !== repo) return false;
+  const [row] = await d.query(
+    `select 1 from plugin_repos where project = $1 and repo = $2
+      union all select 1 from checkouts where project = $1 and repo = $2 limit 1`, [project, repo]);
+  return !!row;
+}
+
+/** The projects allowed to use a repo. */
+export async function projectsAllowed(d: Pick<Db, "query">, repo: string): Promise<string[]> {
+  const rows = await d.query("select project from plugin_repos where repo = $1 union select project from checkouts where repo = $1", [repo]);
+  return rows.map((r) => r.project as string).sort();
+}
+
+/** Why an item's repo gets no GitHub reads or plugin runs, or null when the project may use it. */
+export async function repoRefusal(d: Pick<Db, "query">, project: string, raw: unknown): Promise<string | null> {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const repo = repoKey(String(raw));
+  if (!repo) return `${String(raw)} isn't a GitHub owner/name, so todo doesn't read it from GitHub or run its plugins.`;
+  if (await repoAllowed(d, project, repo)) return null;
+  return `${repo} isn't one of this project's repos, so todo doesn't read it from GitHub or run its plugins. `
+    + "It becomes one when a teammate's CLI reports a checkout of it, or when it's added under Settings → Plugin repos.";
 }
 
 export async function recordCheckout(d: Db, handle: string, project: string, dir: string, repo: string): Promise<void> {

@@ -6,7 +6,9 @@ import { projectActions, recentRuns } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { dryRuns, loadJiraSettings } from "@/lib/jira/settings";
 import { STATUSES } from "@/lib/model";
+import { projectRepos } from "@/lib/plugins/store";
 import { requireUser } from "@/lib/session";
+import { savePluginReposAction } from "@/app/settings-actions";
 
 const when = (iso: string) => iso.replace("T", " ").slice(0, 16);
 
@@ -16,8 +18,16 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
   const d = await db();
   const s = await loadJiraSettings(d, key);
   if (!s) notFound();
+  const repos = await projectRepos(d, key);
   const actions = (
     <>
+      <div className="label section">Plugin repos</div>
+      <p className="hint">Repos this project reads from GitHub and runs plugins for: these, and any a member&apos;s CLI has a checkout of
+        {repos.checkouts.length ? ` (${repos.checkouts.join(", ")})` : ""}.</p>
+      <form action={savePluginReposAction.bind(null, key)} className="plugin-repos">
+        <textarea name="repos" rows={3} defaultValue={repos.repos.map((r) => r.repo).join("\n")} placeholder="owner/name, one per line" />
+        <button type="submit">Save repos</button>
+      </form>
       <div className="label section">Actions</div>
       <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} />
       <div className="label section">Recent runs</div>

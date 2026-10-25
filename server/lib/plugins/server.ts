@@ -1,186 +1,51 @@
-// The server's plugin runner. It reads each repo's .todo-plugins/ from the
-// default branch through GitHub, keeps instances, grants and credentials per
-// project and repo, delivers queued events through the plugin host, and
-// writes what each run attached into the item, so every CLI receives it.
+// The server's plugin runner: delivers queued events through the plugin host
+// and writes what each run attached into the item, so every CLI receives it;
+// hears GitHub's webhooks; and, on a tick, polls repos without webhooks and
+// runs every: floors. What it keeps per repo lives in ./store.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §3–§4.
 import crypto from "node:crypto";
 import type { Db, Row } from "../db";
 import { applyOps, type Op, type Result } from "../apply";
-import { checkoutDir, repoKey } from "../checkouts";
-import { DocError, docByName, issueUpload, listDocs, recordDoc, removeDoc } from "../docs";
+import { checkoutDir, projectsAllowed, repoAllowed, repoKey } from "../checkouts";
+import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs";
 import { docType, putObject } from "../files";
-import { PLUGINS_DIR, githubGet, NotFound, repoFile, scheduleRecompute, type Fetch } from "../gitfacts";
+import { PLUGINS_DIR, scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { itemBranches } from "../model";
 import { hashUid, ulid } from "../ulid";
-import { allInstances, pluginsFor, runEvent, type EventRun, type HostDeps, type Resolved } from "./host";
-import { checkFile, parsePlugins } from "./load";
-import { pluginsEnabled, queuePluginEvent } from "./queue";
-import { decryptSecret, encryptSecret, NoSecretKey, secretKey } from "./secrets";
-import { ALWAYS_ON } from "./shipped";
-import { parseDuration } from "./triggers";
+import { runEvent, type EventRun, type HostDeps } from "./host";
+import { REPO_CODE_DEADLINE_MS } from "./code-runner";
+import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import {
-  POST_REQUEST, type Attachment, type ConnectionDef, type InstanceDef, type PluginDef, type PluginEvent, type PluginItem, type PluginsFile,
-  type RunResult, type Trigger,
-} from "./types";
+  allowedHosts, hostConnections, hostSecrets, invalidateDefs, loadDefs, merge, message, repoSecrets, storedGrants, storedInstances,
+  type PluginInfo, type RepoDefs,
+} from "./store";
+import { parseDuration } from "./triggers";
+import { DEFAULT_DEADLINE_MS, POST_REQUEST, type Attachment, type InstanceDef, type PluginEvent, type PluginItem } from "./types";
 
-export const PLUGIN_HANDLE = "plugin";
+export { PLUGIN_HANDLE } from "./queue";
 const ACTOR = { handle: PLUGIN_HANDLE, bridge: true, unconditional: true };
-const PLUGINS_YAML = "plugins.yaml";
 export const MAX_ATTEMPTS = 4;
-const LEASE_MINUTES = 10;
-const BATCH = 20;
+/** Renewed before each instance runs, so it must outlast one instance's deadline, with room to apply what it attached. */
+export const LEASE_MS = Math.max(DEFAULT_DEADLINE_MS, REPO_CODE_DEADLINE_MS) + 2 * 60_000;
+/** Events delivered by one flush after a request; the tick takes more. */
+export const FLUSH_EVENTS = 5;
+export const TICK_EVENTS = 50;
 export const RUNS_KEPT = 20;
-const EVENTS_KEPT_DAYS = 7;
+const DAYS_KEPT = 7;
 const BRANCH_PAGE = 100;
-/** A repo whose webhook delivered within this long isn't polled. */
+/** A repo whose push webhook arrived within this long isn't polled. */
 const HOOK_FRESH_MINUTES = 60;
-const CAPABILITIES = [POST_REQUEST];
-const CONNECTION_NAME = /^[A-Za-z][\w-]*$/;
+export const MAX_HOOK_BYTES = 5 * 1024 * 1024;
 
 export interface RunnerDeps {
-  /** Every outside call: GitHub for definitions and tips, and the plugins' own connections. */
+  /** GitHub for definitions and tips, and, in tests, the plugins' own connections (unpinned). */
   fetch?: Fetch;
   host?: HostDeps;
 }
 
 const isMap = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-// ── definitions ───────────────────────────────────────────────────────────────
-export interface RepoDefs {
-  /** plugins.yaml, or undefined when the default branch has none. */
-  text?: string;
-  /** The code files it names, by name. */
-  files: Record<string, string>;
-  sha: string | null;
-  defaultBranch: string | null;
-}
-
-function defsOf(row: Row): RepoDefs {
-  const { [PLUGINS_YAML]: text, ...files } = (row.files ?? {}) as Record<string, string>;
-  return { text, files, sha: row.sha ?? null, defaultBranch: row.default_branch ?? null };
-}
-
-/** The repo's plugin files from its default branch, read again only once its head has moved. */
-export async function loadDefs(d: Db, repo: string, f: Fetch = fetch): Promise<RepoDefs> {
-  const [row] = await d.query("select * from plugin_defs where repo = $1", [repo]);
-  if (row && !row.stale) return defsOf(row);
-  const [owner, name] = repo.split("/");
-  let sha: string | null = null;
-  let defaultBranch: string | null = null;
-  const files: Record<string, string> = {};
-  try {
-    defaultBranch = (await githubGet(`/repos/${owner}/${name}`, f)).default_branch ?? "main";
-    sha = String((await githubGet(`/repos/${owner}/${name}/branches/${encodeURIComponent(defaultBranch!)}`, f)).commit.sha);
-  } catch (e) {
-    // A repo this token can't see runs only the shipped plugins.
-    if (!(e instanceof NotFound)) throw e;
-  }
-  if (row && sha && row.sha === sha) {
-    await d.query("update plugin_defs set stale = false, fetched_at = now() where repo = $1", [repo]);
-    return defsOf(row);
-  }
-  if (sha) {
-    const text = await repoFile(owner, name, `${PLUGINS_DIR}/${PLUGINS_YAML}`, sha, f);
-    if (text !== null) {
-      files[PLUGINS_YAML] = text;
-      for (const def of Object.values(parsePlugins(text, { extraPlugins: ALWAYS_ON }).file.plugins ?? {})) {
-        if (!def.code || def.code in files) continue;
-        const code = await repoFile(owner, name, `${PLUGINS_DIR}/${def.code}`, sha, f);
-        if (code !== null) files[def.code] = code;
-      }
-    }
-  }
-  const [saved] = await d.query(
-    `insert into plugin_defs (repo, sha, default_branch, files, stale, fetched_at) values ($1, $2, $3, $4::jsonb, false, now())
-     on conflict (repo) do update set sha = excluded.sha, default_branch = excluded.default_branch, files = excluded.files,
-       stale = false, fetched_at = excluded.fetched_at
-     returning *`, [repo, sha, defaultBranch, JSON.stringify(files)]);
-  return defsOf(saved);
-}
-
-export async function invalidateDefs(d: Db, repo: string): Promise<void> {
-  await d.query("update plugin_defs set stale = true where repo = $1", [repo]);
-}
-
-// ── instances, grants and the plugin list ─────────────────────────────────────
-export async function storedInstances(d: Db, project: string, repo: string): Promise<Record<string, InstanceDef[]>> {
-  const rows = await d.query("select plugin, def from plugin_instances where project = $1 and repo = $2 order by plugin, position, id",
-    [project, repo]);
-  const out: Record<string, InstanceDef[]> = {};
-  for (const r of rows) (out[r.plugin] ??= []).push(r.def);
-  return out;
-}
-
-export async function storedGrants(d: Db, project: string, repo: string): Promise<Record<string, string[]>> {
-  const rows = await d.query("select plugin, capabilities from plugin_grants where project = $1 and repo = $2", [project, repo]);
-  return Object.fromEntries(rows.map((r) => [r.plugin, r.capabilities ?? []]));
-}
-
-export class PluginInputError extends Error {}
-
-/** Replace one plugin's stored instances in a repo. */
-export async function putInstances(d: Db, project: string, repo: string, plugin: string, instances: unknown, handle: string): Promise<void> {
-  if (!Array.isArray(instances)) throw new PluginInputError("instances must be a list");
-  const { file, errors } = checkFile({ instances: { [plugin]: instances } }, { extraPlugins: [plugin] });
-  if (errors.length) throw new PluginInputError(errors.join("; "));
-  const list = file.instances?.[plugin] ?? [];
-  await d.tx(async (t) => {
-    await t.query("delete from plugin_instances where project = $1 and repo = $2 and plugin = $3", [project, repo, plugin]);
-    for (const [i, inst] of list.entries()) {
-      await t.query(
-        `insert into plugin_instances (project, repo, plugin, id, def, position, updated_by) values ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
-        [project, repo, plugin, inst.id, JSON.stringify(inst), i, handle]);
-    }
-  });
-}
-
-/** Set the capabilities granted to one plugin in a repo, recording who granted them. */
-export async function putGrants(d: Db, project: string, repo: string, plugin: string, grants: unknown, handle: string): Promise<void> {
-  if (!Array.isArray(grants) || !grants.every((g) => typeof g === "string")) throw new PluginInputError("grants must be a list of capability names");
-  const unknown = grants.filter((g) => !CAPABILITIES.includes(g));
-  if (unknown.length) throw new PluginInputError(`unknown capability: ${unknown.join(", ")}`);
-  if (!grants.length) {
-    await d.query("delete from plugin_grants where project = $1 and repo = $2 and plugin = $3", [project, repo, plugin]);
-    return;
-  }
-  await d.query(
-    `insert into plugin_grants (project, repo, plugin, capabilities, granted_by, granted_at) values ($1, $2, $3, $4, $5, now())
-     on conflict (project, repo, plugin) do update set capabilities = excluded.capabilities, granted_by = excluded.granted_by,
-       granted_at = excluded.granted_at`, [project, repo, plugin, [...new Set(grants)], handle]);
-}
-
-export interface PluginInfo {
-  name: string;
-  connections: string[];
-  on: Trigger[];
-  every: string | null;
-  settings: PluginDef["settings"];
-  instances: InstanceDef[];
-  shipped: boolean;
-}
-
-interface Merged { file: PluginsFile; resolved: Resolved[]; plugins: PluginInfo[]; errors: string[] }
-
-/** The plugins a repo runs: shipped ones and the repo file's, with every instance, switched off or not. */
-function merge(defs: RepoDefs, stored: Record<string, InstanceDef[]>): Merged {
-  const errors: string[] = [];
-  let file: PluginsFile = {};
-  let dropped: string[] = [];
-  if (defs.text !== undefined) {
-    const loaded = parsePlugins(defs.text, { extraPlugins: ALWAYS_ON });
-    file = loaded.file;
-    dropped = loaded.droppedInstances;
-    errors.push(...loaded.errors);
-  }
-  const resolved = pluginsFor({ repo: defs.text === undefined ? undefined : { text: defs.text, files: defs.files } }, file, errors);
-  const plugins = resolved.map(({ name, def, shipped }) => ({
-    name, connections: def.connections ?? [], on: def.on ?? [], every: def.every ?? null, settings: def.settings ?? {},
-    instances: allInstances(def, file.instances?.[name] ?? [], stored[name] ?? [], dropped.includes(name)), shipped,
-  }));
-  return { file, resolved, plugins, errors };
-}
+const instanceKey = (plugin: string, instance: InstanceDef | string) => `${plugin}/${typeof instance === "string" ? instance : instance.id}`;
 
 /** Stored instances that switch off every plugin outside `only`, so a refresh runs just the ones due. */
 function narrowed(stored: Record<string, InstanceDef[]>, plugins: PluginInfo[], only: string[] | null): Record<string, InstanceDef[]> {
@@ -190,124 +55,14 @@ function narrowed(stored: Record<string, InstanceDef[]>, plugins: PluginInfo[], 
   return out;
 }
 
-// ── connections and credentials ───────────────────────────────────────────────
-const envName = (connection: string) => connection.toUpperCase().replace(/[^A-Z0-9]/g, "_");
-
-/** Connections this server offers every repo: github, and those in TODO_PLUGIN_CONNECTIONS. */
-export function hostConnections(): Record<string, ConnectionDef> {
-  const out: Record<string, ConnectionDef> = {
-    github: { http: { url: githubApi(), ...(process.env.GITHUB_TOKEN ? { auth: "bearer" as const } : {}) } },
-  };
-  const raw = process.env.TODO_PLUGIN_CONNECTIONS;
-  if (!raw) return out;
-  try {
-    const { file, errors } = checkFile({ connections: JSON.parse(raw) });
-    for (const e of errors) console.error(`plugins: TODO_PLUGIN_CONNECTIONS: ${e}`);
-    return { ...out, ...file.connections };
-  } catch (e) {
-    console.error(`plugins: TODO_PLUGIN_CONNECTIONS isn't JSON: ${message(e)}`);
-    return out;
-  }
-}
-
-/** Secrets for the host's connections: GITHUB_TOKEN, and TODO_PLUGIN_SECRET_<NAME>. */
-export function hostSecrets(connections = hostConnections()): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const name of Object.keys(connections)) {
-    const v = name === "github" ? process.env.GITHUB_TOKEN : process.env[`TODO_PLUGIN_SECRET_${envName(name)}`];
-    if (v) out[name] = v;
-  }
-  return out;
-}
-
-const scope = (project: string, repo: string, connection: string) => [project, repo, connection];
-
-/** Store (or, with null, forget) a repo connection's secret. */
-export async function putCredential(d: Db, project: string, repo: string, connection: unknown, secret: unknown, handle: string): Promise<void> {
-  if (!secretKey()) throw new NoSecretKey();
-  if (typeof connection !== "string" || !CONNECTION_NAME.test(connection)) throw new PluginInputError("connection must be a connection name");
-  if (secret === null) {
-    await d.query("delete from plugin_credentials where project = $1 and repo = $2 and connection = $3", [project, repo, connection]);
-    return;
-  }
-  if (typeof secret !== "string" || !secret) throw new PluginInputError("secret must be a non-empty string");
-  await d.query(
-    `insert into plugin_credentials (project, repo, connection, secret_enc, updated_by, updated_at) values ($1, $2, $3, $4, $5, now())
-     on conflict (project, repo, connection) do update set secret_enc = excluded.secret_enc, updated_by = excluded.updated_by,
-       updated_at = excluded.updated_at`, [project, repo, connection, encryptSecret(secret, scope(project, repo, connection)), handle]);
-}
-
-/** The repo's stored secrets this server can read; none without TODO_SECRET_KEY. */
-async function repoSecrets(d: Db, project: string, repo: string): Promise<Record<string, string>> {
-  const key = secretKey();
-  if (!key) return {};
-  const out: Record<string, string> = {};
-  for (const r of await d.query("select connection, secret_enc from plugin_credentials where project = $1 and repo = $2", [project, repo])) {
-    const plain = decryptSecret(r.secret_enc, scope(project, repo, r.connection), key);
-    if (plain !== null) out[r.connection] = plain;
-  }
-  return out;
-}
-
-/** Connection names this server holds a secret for in the repo, whether stored or host-wide. */
-async function secretNames(d: Db, project: string, repo: string): Promise<string[]> {
-  const stored = secretKey()
-    ? (await d.query("select connection from plugin_credentials where project = $1 and repo = $2", [project, repo])).map((r) => r.connection)
-    : [];
-  return [...new Set([...stored, ...Object.keys(hostSecrets())])].sort();
-}
-
-// ── what the CLI and dashboard read ───────────────────────────────────────────
-export interface LastRun { at: string; item: string; skipped?: string; error?: string }
-
-async function lastRuns(d: Db, project: string, repo: string): Promise<Record<string, LastRun>> {
-  const rows = await d.query(
-    `select distinct on (r.plugin, r.instance) r.plugin, r.instance, r.at, r.result, i.id as item_id
-       from plugin_runs r left join items i on i.project = r.project and i.uid = r.item_uid
-      where r.project = $1 and r.repo = $2 order by r.plugin, r.instance, r.id desc`, [project, repo]);
-  const out: Record<string, LastRun> = {};
-  for (const r of rows) {
-    const res = r.result as RunResult;
-    out[`${r.plugin}/${r.instance}`] = { at: new Date(r.at).toISOString(), item: r.item_id ?? r.item_uid,
-      ...(res.skipped ? { skipped: res.skipped } : {}), ...(res.error ? { error: res.error } : {}) };
-  }
-  return out;
-}
-
-export interface RepoPlugins {
-  instances: Record<string, InstanceDef[]>;
-  grants: Record<string, string[]>;
-  plugins: PluginInfo[];
-  secrets: string[];
-  runs: Record<string, LastRun>;
-  errors: string[];
-}
-
-/** One repo's plugins as a project sees them. A repo file GitHub won't give leaves the shipped plugins and an error. */
-export async function repoPlugins(d: Db, project: string, repo: string, f: Fetch = fetch): Promise<RepoPlugins> {
-  const instances = await storedInstances(d, project, repo);
-  const errors: string[] = [];
-  let defs: RepoDefs = { files: {}, sha: null, defaultBranch: null };
-  try {
-    defs = await loadDefs(d, repo, f);
-  } catch (e) {
-    errors.push(`couldn't read ${repo}'s ${PLUGINS_DIR}: ${message(e)}`);
-  }
-  const merged = merge(defs, instances);
-  return {
-    instances, grants: await storedGrants(d, project, repo), plugins: merged.plugins, secrets: await secretNames(d, project, repo),
-    runs: await lastRuns(d, project, repo), errors: [...errors, ...merged.errors],
-  };
-}
-
 // ── the item a plugin sees ────────────────────────────────────────────────────
-async function pluginItem(d: Db, project: string, it: Row, by: string): Promise<PluginItem> {
+async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: string): Promise<PluginItem> {
   const x = it.extra ?? {};
   const repo = repoKey(x.repo);
   const [owner, name] = repo ? repo.split("/") : [null, null];
   const notes = await d.query("select text, meta from notes where project = $1 and item_uid = $2 and kind = 'link' order by n",
     [project, it.uid]);
-  const dir = repo ? (await checkoutDir(d, project, repo, by)).dir : "";
+  const dir = repo ? (await checkoutDir(d as Db, project, repo, by)).dir : "";
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
     id: it.id, uid: it.uid, title: it.title, type: it.type ?? null, status: it.status, priority: it.priority ?? null,
@@ -322,6 +77,8 @@ async function pluginItem(d: Db, project: string, it: Row, by: string): Promise<
 const REPLACED = ["link", "dependency"];
 
 export const pluginUid = (instance: string, itemUid: string, key: string) => hashUid("plugin", instance, itemUid, key);
+/** A request's uid key names the version it creates, so text that returns to an earlier version is a new one. */
+export const requestKey = (key: string, version: number) => `${key}#v${version}`;
 const sameUrl = (a: unknown, b: unknown) => String(a ?? "").replace(/\/+$/, "") === String(b ?? "").replace(/\/+$/, "");
 
 function noteOf(a: Extract<Attachment, { kind: "link" | "edge" }>, instance: string): { kind: string; text: string; meta: Record<string, unknown> } {
@@ -332,12 +89,12 @@ function noteOf(a: Extract<Attachment, { kind: "link" | "edge" }>, instance: str
 
 interface Applied { applied: string[]; log: string[]; edges: boolean }
 
-/** Write one run's attachments: create what's new, set what changed, remove what's gone. */
-async function applyRun(d: Db, project: string, it: Row, run: EventRun, grants: string[]): Promise<Applied> {
-  const instance = `${run.plugin}/${run.instance.id}`;
+/** Write one run's attachments: create what's new, set what changed, remove what's gone. `t` holds the item's lock. */
+async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: string[]): Promise<Applied> {
+  const instance = instanceKey(run.plugin, run.instance);
   const log: string[] = [];
   const applied: string[] = [];
-  const notes = await d.query("select uid, kind, text, meta from notes where project = $1 and item_uid = $2", [project, it.uid]);
+  const notes = await t.query("select uid, kind, text, meta from notes where project = $1 and item_uid = $2", [project, it.uid]);
   const mine = notes.filter((n) => n.meta?.plugin === instance && REPLACED.includes(n.kind));
   const keep = new Set<string>();
   const ops: Op[] = [];
@@ -376,23 +133,25 @@ async function applyRun(d: Db, project: string, it: Row, run: EventRun, grants: 
         log.push(`dropped a request: ${run.plugin} hasn't been granted ${POST_REQUEST}`);
         continue;
       }
-      const [current] = await d.query(
-        `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
+      const [current] = await t.query(
+        `select text, coalesce((meta->>'version')::int, 1) as version from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
           order by coalesce((meta->>'version')::int, 1) desc, n desc limit 1`, [project, it.uid]);
       if (current?.text === a.text) continue;
-      applied.push(uid);
-      op({ op: "create", entity: "note", uid, data: { kind: "ticket-request", text: a.text, meta: { plugin: instance, plugin_key: a.key } } });
+      const key = requestKey(a.key, current ? Number(current.version) + 1 : 1);
+      const ruid = pluginUid(instance, it.uid, key);
+      applied.push(ruid);
+      op({ op: "create", entity: "note", uid: ruid, data: { kind: "ticket-request", text: a.text, meta: { plugin: instance, plugin_key: key } } });
     } else {
       docs.push(a);
     }
   }
-  for (const n of mine) if (!keep.has(n.uid)) op({ op: "remove", entity: "note", uid: n.uid });
-  const results = ops.length ? await applyOps(d, project, ops, ACTOR) : [];
+  for (const n of mine) if (!keep.has(n.uid)) op({ op: "remove", entity: "note", uid: n.uid, plugin: true });
+  const results = ops.length ? await applyOps(t, project, ops, ACTOR) : [];
   results.forEach((r, i) => {
     const why = refused(r, ops[i]);
     if (why) log.push(why);
   });
-  applied.push(...await applyDocs(d, project, it.uid, run, docs, log));
+  applied.push(...await applyDocs(t, project, it.uid, run, docs, log));
   const edgeUids = new Set([...run.result.attached.filter((a) => a.kind === "edge").map((a) => pluginUid(instance, it.uid, a.key)),
                             ...mine.filter((n) => n.kind === "dependency").map((n) => n.uid)]);
   return { applied, log, edges: ops.some((o) => edgeUids.has(o.uid)) };
@@ -400,18 +159,21 @@ async function applyRun(d: Db, project: string, it: Row, run: EventRun, grants: 
 
 function refused(r: Result, o: Op): string | null {
   if (r.status === "applied" && !r.rejected?.length) return null;
-  // A create whose uid a person already removed stays removed.
-  if (r.reason === "removed") return `${o.entity} ${o.uid} was removed from the item, so it isn't added again`;
+  if (r.reason === "removed") return `${o.entity} ${o.uid} was removed from the item by a person, so it isn't added again`;
   if (r.reason === "uid-exists" && o.entity === "log") return null;
   return `${o.op} ${o.entity} ${o.uid} was refused: ${r.reason ?? r.rejected?.map((x) => `${x.field} ${x.reason}`).join(", ")}`;
 }
 
-/** Docs a run attached, and the ones it attached last time and no longer does, if no one has changed them since. */
-async function applyDocs(d: Db, project: string, itemUid: string, run: EventRun, docs: Extract<Attachment, { kind: "doc" }>[],
+/** The plugin may change a doc it wrote that no one has edited since. */
+const ownDoc = (doc: Row | null, instance: string) => !!doc && doc.plugin === instance && doc.sha256 === doc.plugin_sha256;
+
+/** Docs a run attached, and the ones it attached on its last real run and no longer does. */
+async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun, docs: Extract<Attachment, { kind: "doc" }>[],
                          log: string[]): Promise<string[]> {
+  const instance = instanceKey(run.plugin, run.instance);
   const applied: string[] = [];
-  const [prev] = await d.query(
-    `select applied from plugin_runs where project = $1 and item_uid = $2 and plugin = $3 and instance = $4
+  const [prev] = await t.query(
+    `select applied from plugin_runs where project = $1 and item_uid = $2 and plugin = $3 and instance = $4 and not dry_run
         and result->>'error' is null and result->>'skipped' is null order by id desc limit 1`, [project, itemUid, run.plugin, run.instance.id]);
   const before = ((prev?.applied ?? []) as string[]).filter((a) => a.startsWith("doc:")).map((a) => a.slice(4));
   try {
@@ -422,22 +184,24 @@ async function applyDocs(d: Db, project: string, itemUid: string, run: EventRun,
       }
       const bytes = Buffer.from(a.content, "utf8");
       const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
-      const existing = await docByName(d, project, itemUid, a.name);
-      if (existing && existing.by !== PLUGIN_HANDLE) {
-        log.push(`doc ${a.name} was written by ${existing.by}, so the plugin leaves it alone`);
+      const existing = await docByName(t, project, itemUid, a.name);
+      if (existing && !ownDoc(existing, instance)) {
+        log.push(`doc ${a.name} was written or edited by someone else, so the plugin leaves it alone`);
         continue;
       }
       applied.push(`doc:${a.name}`);
       if (existing?.sha256 === sha256) continue;
-      const key = await issueUpload(d, project, itemUid, a.name, bytes.length);
+      const key = await issueUpload(t, project, itemUid, a.name, bytes.length);
       await putObject(key, bytes, docType(a.name));
-      const r = await recordDoc(d, project, PLUGIN_HANDLE, { item_uid: itemUid, name: a.name, file_key: key, base: existing?.sha256 ?? null, sha256 });
+      const r = await recordDoc(t, project, PLUGIN_HANDLE, { item_uid: itemUid, name: a.name, file_key: key, base: existing?.sha256 ?? null,
+                                                           sha256, plugin: instance });
       if (r.status === "conflict") log.push(`doc ${a.name} changed while it was written; kept the newer one`);
     }
     const now = new Set(applied.map((a) => a.slice(4)));
     for (const name of before.filter((n) => !now.has(n))) {
-      const doc = (await listDocs(d, project, itemUid)).find((x) => x.name === name);
-      if (doc && doc.by === PLUGIN_HANDLE) await removeDoc(d, project, PLUGIN_HANDLE, doc.uid, doc.sha256);
+      const doc = await docByName(t, project, itemUid, name);
+      if (ownDoc(doc, instance)) await removeDoc(t, project, PLUGIN_HANDLE, doc!.uid, doc!.sha256);
+      else if (doc) log.push(`doc ${name} was edited since the plugin wrote it, so it stays`);
     }
   } catch (e) {
     if (!(e instanceof DocError)) throw e;
@@ -447,40 +211,57 @@ async function applyDocs(d: Db, project: string, itemUid: string, run: EventRun,
 }
 
 // ── delivery ──────────────────────────────────────────────────────────────────
-/** A failure before any plugin ran, such as GitHub being unreachable: the event is retried. */
+/** A failure that may pass: GitHub unreachable before any plugin ran, or a read-only run that failed transiently. */
 class Transport extends Error {}
+/** Another delivery took the event over. */
+class LeaseLost extends Error {}
 
-async function recordRun(d: Db, row: Row, run: EventRun, outcome: Applied | null): Promise<void> {
+const STILL_OPEN = `i.uid is not null and i.status not in ('done', 'deployed', 'cancelled')
+  and coalesce(i.extra->'archived', 'null'::jsonb) in ('null'::jsonb, 'false'::jsonb)`;
+
+async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome: Applied | null): Promise<void> {
   const result = outcome?.log.length ? { ...run.result, log: [...run.result.log, ...outcome.log] } : run.result;
-  await d.query(
-    `insert into plugin_runs (event_id, project, item_uid, repo, plugin, instance, event, result, applied)
-     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb)`,
+  await t.query(
+    `insert into plugin_runs (event_id, project, item_uid, repo, plugin, instance, event, result, applied, dry_run)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10)`,
     [row.id, row.project, row.item_uid, row.repo, run.plugin, run.instance.id, JSON.stringify(row.event), JSON.stringify(result),
-     JSON.stringify(outcome?.applied ?? [])]);
-  // Keep each instance's last RUNS_KEPT runs, and its last run on every item, which names what it attached there.
-  await d.query(
+     JSON.stringify(outcome?.applied ?? []), !!run.instance.dry_run]);
+  // Each instance keeps its last RUNS_KEPT runs, and its last run on each open item, which names the docs it attached there.
+  await t.query(
     `delete from plugin_runs where id in (
-       select id from (
-         select id, row_number() over (order by id desc) as n_instance,
+       select r.id from (
+         select id, item_uid, row_number() over (order by id desc) as n_instance,
                 row_number() over (partition by item_uid order by id desc) as n_item
-           from plugin_runs where project = $1 and repo = $2 and plugin = $3 and instance = $4) ranked
-        where n_instance > $5 and n_item > 1)`, [row.project, row.repo, run.plugin, run.instance.id, RUNS_KEPT]);
+           from plugin_runs where project = $1 and repo = $2 and plugin = $3 and instance = $4) r
+         left join items i on i.project = $1 and i.uid = r.item_uid
+        where r.n_instance > $5 and (r.n_item > 1 or not (${STILL_OPEN})))`, [row.project, row.repo, run.plugin, run.instance.id, RUNS_KEPT]);
 }
+
+/** The server's guard: no private addresses, except the hosts TODO_PLUGIN_ALLOW_HOSTS names. */
+const hostDeps = (deps: RunnerDeps): HostDeps => ({ fetch: deps.fetch, guard: { allow: allowedHosts() }, ...deps.host });
 
 async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
   const f = deps.fetch ?? fetch;
   const [it] = await d.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
   if (!it) return ["the item is gone"];
+  if (!(await repoAllowed(d, row.project, row.repo))) return [`${row.repo} isn't one of this project's repos`];
   let defs: RepoDefs;
   try {
     defs = await loadDefs(d, row.repo, f);
   } catch (e) {
     throw new Transport(`couldn't read ${row.repo}'s ${PLUGINS_DIR}: ${message(e)}`);
   }
-  const stored = await storedInstances(d, row.project, row.repo);
+  const stored = await storedInstances(d, row.project, row.repo, { secrets: true });
   const grants = await storedGrants(d, row.project, row.repo);
   const merged = merge(defs, stored);
   const connections = hostConnections();
+  const done = new Set<string>(row.finished ?? []);
+  let edges = false;
+  let retry = false;
+  const holds = async (sql: string, params: unknown[]) => {
+    const [held] = await d.query(sql, params);
+    if (!held) throw new LeaseLost(`event ${row.id} was taken over by another delivery`);
+  };
   const out = await runEvent({
     repo: defs.text === undefined ? undefined : { text: defs.text, files: defs.files },
     hostConnections: connections,
@@ -488,49 +269,69 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
     allowRepoCommands: false,
-  }, { fetch: f, ...deps.host });
-  let edges = false;
-  for (const run of out.results) {
-    let outcome: Applied | null = null;
-    if (run.instance.dry_run) outcome = { applied: [], log: ["dry run: nothing was attached"], edges: false };
-    else if (!run.result.error && !run.result.skipped) outcome = await applyRun(d, row.project, it, run, grants[run.plugin] ?? []);
-    edges ||= !!outcome?.edges;
-    await recordRun(d, row, run, outcome);
-  }
-  if (edges) void scheduleRecompute(d, row.project, f);
+  }, hostDeps(deps), {
+    before: async (plugin, instance) => {
+      if (done.has(instanceKey(plugin, instance))) return false;
+      await holds("update plugin_events set claimed_at = now() where id = $1 and lease = $2 returning id", [row.id, row.lease]);
+      return true;
+    },
+    after: async (run) => {
+      const key = instanceKey(run.plugin, run.instance);
+      const outcome = await d.tx(async (t) => {
+        await t.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`plugin\x1f${row.project}\x1f${row.item_uid}\x1f${key}`]);
+        const [held] = await t.query("select 1 from plugin_events where id = $1 and lease = $2 for update", [row.id, row.lease]);
+        if (!held) throw new LeaseLost(`event ${row.id} was taken over by another delivery`);
+        let applied: Applied | null = null;
+        if (run.instance.dry_run) applied = { applied: [], log: ["dry run: nothing was attached"], edges: false };
+        else if (!run.result.error && !run.result.skipped) {
+          const [fresh] = await t.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
+          if (fresh) applied = await applyRun(t, row.project, fresh, run, grants[run.plugin] ?? []);
+        }
+        await recordRun(t, row, run, applied);
+        if (!run.result.transient) await t.query("update plugin_events set finished = array_append(finished, $2) where id = $1", [row.id, key]);
+        return applied;
+      });
+      edges ||= !!outcome?.edges;
+      retry ||= !!run.result.transient;
+    },
+  });
+  if (edges) void scheduleRecompute(d, row.project, f, row.repo);
+  if (retry) throw new Transport(`a read-only run failed for now; it runs again`);
   return out.errors;
 }
 
-/** Deliver due plugin events: each leased, retried with backoff when GitHub can't be read, given up after MAX_ATTEMPTS. */
-export async function flushPluginRuns(d: Db, deps: RunnerDeps = {}): Promise<{ ran: number; failed: number }> {
+/** Deliver up to `limit` due events: each leased, retried with backoff when the failure may pass, given up after MAX_ATTEMPTS. */
+export async function flushPluginRuns(d: Db, deps: RunnerDeps = {}, limit = FLUSH_EVENTS): Promise<{ ran: number; failed: number }> {
   if (!pluginsEnabled()) return { ran: 0, failed: 0 };
+  const lease = `${LEASE_MS} milliseconds`;
   await d.query(
-    `update plugin_events set claimed_at = null, done_at = now(), error = coalesce(error, 'the process stopped during the last attempt')
-      where done_at is null and attempts >= $1 and claimed_at < now() - make_interval(mins => $2)`, [MAX_ATTEMPTS, LEASE_MINUTES]);
+    `update plugin_events set claimed_at = null, lease = null, done_at = now(), error = coalesce(error, 'the process stopped during the last attempt')
+      where done_at is null and attempts >= $1 and claimed_at < now() - $2::interval`, [MAX_ATTEMPTS, lease]);
   const due = await d.query(
     `select id from plugin_events
       where done_at is null and attempts < $1 and (next_attempt_at is null or next_attempt_at <= now())
-        and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
-      order by id limit $3`, [MAX_ATTEMPTS, LEASE_MINUTES, BATCH]);
+        and (claimed_at is null or claimed_at < now() - $2::interval)
+      order by id limit $3`, [MAX_ATTEMPTS, lease, limit]);
   let ran = 0;
   let failed = 0;
   for (const { id } of due) {
     const [row] = await d.query(
-      `update plugin_events set attempts = attempts + 1, claimed_at = now()
-        where id = $1 and done_at is null and (claimed_at is null or claimed_at < now() - make_interval(mins => $2))
-        returning *`, [id, LEASE_MINUTES]);
+      `update plugin_events set attempts = attempts + 1, claimed_at = now(), lease = $3
+        where id = $1 and done_at is null and (claimed_at is null or claimed_at < now() - $2::interval)
+        returning *`, [id, lease, ulid()]);
     if (!row) continue;
     try {
       const errors = await deliver(d, row, deps);
-      await d.query("update plugin_events set done_at = now(), claimed_at = null, error = null, errors = $2::jsonb where id = $1",
-        [row.id, JSON.stringify(errors)]);
+      await d.query("update plugin_events set done_at = now(), claimed_at = null, lease = null, error = null, errors = $3::jsonb where id = $1 and lease = $2",
+        [row.id, row.lease, JSON.stringify(errors)]);
       ran++;
     } catch (e) {
+      if (e instanceof LeaseLost) continue;
       const last = row.attempts >= MAX_ATTEMPTS || !(e instanceof Transport);
       await d.query(
-        `update plugin_events set error = $2, claimed_at = null, done_at = case when $4 then now() end,
-           next_attempt_at = now() + make_interval(secs => $3) where id = $1`,
-        [row.id, message(e), 30 * 2 ** (row.attempts - 1), last]);
+        `update plugin_events set error = $3, claimed_at = null, lease = null, done_at = case when $5 then now() end,
+           next_attempt_at = now() + make_interval(secs => $4) where id = $1 and lease = $2`,
+        [row.id, row.lease, message(e), 30 * 2 ** (row.attempts - 1), last]);
       if (!(e instanceof Transport)) console.error(`plugins: event ${row.id} failed:`, e);
       failed++;
     }
@@ -539,62 +340,65 @@ export async function flushPluginRuns(d: Db, deps: RunnerDeps = {}): Promise<{ r
 }
 
 // ── GitHub events ─────────────────────────────────────────────────────────────
-interface ItemRef { project: string; uid: string; extra: Row }
+interface ItemRef { project: string; uid: string; status: string; extra: Row }
 
-const open = (r: Row) => r.status !== "cancelled" && !r.extra?.archived;
-
-/** Open items in any project on `branch` of `repo`. */
+/** Items in any project on `branch` of `repo` that still run plugins for their branches. */
 export async function itemsOnBranch(d: Pick<Db, "query">, repo: string, branch: string): Promise<ItemRef[]> {
   const rows = await d.query(
     `select project, uid, status, extra from items
-      where (extra->'branches' @> jsonb_build_array($1::text) or extra->>'branch' = $1) and status <> 'cancelled'`, [branch]);
-  return rows.filter((r) => open(r) && repoKey(r.extra?.repo) === repo && itemBranches(r.extra).includes(branch)) as ItemRef[];
-}
-
-/** Projects with any item in `repo`. */
-async function projectsOf(d: Db, repo: string): Promise<string[]> {
-  const rows = await d.query("select distinct project, extra->>'repo' as repo from items where extra ? 'repo'");
-  return [...new Set(rows.filter((r) => repoKey(r.repo) === repo).map((r) => r.project as string))].sort();
+      where extra->'branches' @> jsonb_build_array($1::text) and status not in ('done', 'deployed', 'cancelled')`, [branch]);
+  return rows.filter((r) => !finished(r) && repoKey(r.extra?.repo) === repo) as ItemRef[];
 }
 
 async function queueBranch(d: Db, repo: string, branch: string, event: PluginEvent): Promise<number> {
   const items = await itemsOnBranch(d, repo, branch);
-  await d.tx(async (t) => {
-    for (const it of items) await queuePluginEvent(t, it.project, it.uid, repo, event, PLUGIN_HANDLE);
+  return d.tx(async (t) => {
+    let queued = 0;
+    for (const it of items) if ((await queuePluginEvent(t, it.project, it.uid, repo, event, PLUGIN_HANDLE)) !== null) queued++;
+    return queued;
   });
-  return items.length;
 }
 
-const DEPLOYED = ["success", "failure", "error", "inactive"];
+/** Deployment states after which there's something to look at. */
+const DEPLOYED = ["success", "failure", "error"];
+const PR_ACTIONS = ["opened", "reopened", "closed", "ready_for_review"];
 
-export interface HookOutcome { repo: string | null; queued: number; projects: string[] }
+export interface HookOutcome { repo: string | null; queued: number; projects: string[]; duplicate?: boolean }
+
+/** Whether this delivery id is new; a replay of one already handled is not. Old ids are pruned. */
+export async function firstDelivery(d: Pick<Db, "query">, id: string | null): Promise<boolean> {
+  if (!id) return true;
+  await d.query("delete from github_deliveries where at < now() - make_interval(days => $1)", [DAYS_KEPT]);
+  const [row] = await d.query("insert into github_deliveries (id) values ($1) on conflict do nothing returning id", [id.slice(0, 200)]);
+  return !!row;
+}
 
 /** A GitHub webhook delivery: queue the event for the items on its branch, and say which projects' git facts it moves. */
 export async function githubEvent(d: Db, kind: string, payload: unknown): Promise<HookOutcome> {
   const body = isMap(payload) ? payload : {};
   const repo = repoKey(body.repository?.full_name);
   if (!repo) return { repo: null, queued: 0, projects: [] };
-  await d.query(
-    `insert into plugin_repos (repo, hook_at) values ($1, now()) on conflict (repo) do update set hook_at = excluded.hook_at`, [repo]);
   let queued = 0;
   if (kind === "push" && typeof body.ref === "string" && body.ref.startsWith("refs/heads/")) {
     const branch = body.ref.slice("refs/heads/".length);
-    if (body.deleted) await d.query("update plugin_repos set tips = tips - $2::text where repo = $1", [repo, branch]);
+    await d.query(`insert into repo_polls (repo, hook_at) values ($1, now()) on conflict (repo) do update set hook_at = excluded.hook_at`, [repo]);
+    if (body.deleted) await d.query("update repo_polls set tips = tips - $2::text where repo = $1", [repo, branch]);
     else if (typeof body.after === "string") {
-      await d.query("update plugin_repos set tips = tips || jsonb_build_object($2::text, $3::text) where repo = $1", [repo, branch, body.after]);
+      await d.query("update repo_polls set tips = tips || jsonb_build_object($2::text, $3::text) where repo = $1", [repo, branch, body.after]);
     }
     if (branch === body.repository?.default_branch) await invalidateDefs(d, repo);
     if (!body.deleted) queued = await queueBranch(d, repo, branch, { type: "push", branch });
-  } else if (kind === "pull_request" && typeof body.pull_request?.head?.ref === "string") {
+  } else if (kind === "pull_request" && typeof body.pull_request?.head?.ref === "string"
+             && (PR_ACTIONS.includes(body.action) || (body.action === "edited" && isMap(body.changes?.base)))) {
     const branch = body.pull_request.head.ref;
     queued = await queueBranch(d, repo, branch, { type: "pr", branch });
   } else if (kind === "deployment_status" && typeof body.deployment?.ref === "string" && DEPLOYED.includes(body.deployment_status?.state)) {
     const branch = body.deployment.ref;
-    queued = await queueBranch(d, repo, branch, { type: "deployment", branch });
+    return { repo, queued: await queueBranch(d, repo, branch, { type: "deployment", branch }), projects: [] };
   } else {
     return { repo, queued: 0, projects: [] };
   }
-  return { repo, queued, projects: kind === "deployment_status" ? [] : await projectsOf(d, repo) };
+  return { repo, queued, projects: await projectsAllowed(d, repo) };
 }
 
 export function signatureValid(body: string, header: string | null, secret: string): boolean {
@@ -604,70 +408,104 @@ export function signatureValid(body: string, header: string | null, secret: stri
   return want.length === got.length && crypto.timingSafeEqual(want, got);
 }
 
-// ── the tick ──────────────────────────────────────────────────────────────────
-/** Open items with a repo, across projects. */
-async function openItems(d: Db): Promise<(ItemRef & { repo: string })[]> {
-  const rows = await d.query("select project, uid, status, extra from items where extra ? 'repo' and status <> 'cancelled'");
-  return rows.filter(open).map((r) => ({ project: r.project, uid: r.uid, extra: r.extra, repo: repoKey(r.extra?.repo) })).filter((r) => r.repo);
+/** A request body as text, or null once it passes `max` bytes. */
+export async function readCapped(req: Request, max = MAX_HOOK_BYTES): Promise<string | null> {
+  if (Number(req.headers.get("content-length") ?? 0) > max) return null;
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
-async function branchTips(repo: string, etag: string | null, f: Fetch): Promise<{ tips: Record<string, string>; etag: string | null } | null> {
+// ── the tick ──────────────────────────────────────────────────────────────────
+type OpenItem = ItemRef & { repo: string };
+
+/** Items that still run plugins for their branches, in repos their projects may use. */
+async function openItems(d: Db): Promise<OpenItem[]> {
+  const rows = await d.query("select project, uid, status, extra from items where extra ? 'repo' and status not in ('done', 'deployed', 'cancelled')");
+  const allowed = new Map<string, boolean>();
+  const out: OpenItem[] = [];
+  for (const r of rows) {
+    const repo = repoKey(r.extra?.repo);
+    if (!repo || finished(r)) continue;
+    const k = `${r.project}\x1f${repo}`;
+    if (!allowed.has(k)) allowed.set(k, await repoAllowed(d, r.project, repo));
+    if (allowed.get(k)) out.push({ project: r.project, uid: r.uid, status: r.status, extra: r.extra, repo });
+  }
+  return out;
+}
+
+interface Page { etag: string | null; tips: Record<string, string> }
+
+/** Every branch's tip, each page asked with its own ETag, so an unchanged first page never hides a later one that moved. */
+async function branchPages(repo: string, before: Page[], f: Fetch): Promise<Page[]> {
   const token = process.env.GITHUB_TOKEN;
   const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28",
                     ...(token ? { authorization: `Bearer ${token}` } : {}) };
-  const tips: Record<string, string> = {};
-  let first: string | null = null;
+  const pages: Page[] = [];
   for (let page = 1; ; page++) {
+    const known = before[page - 1];
     const res = await f(`${githubApi()}/repos/${repo}/branches?per_page=${BRANCH_PAGE}&page=${page}`, {
-      signal: AbortSignal.timeout(10_000), headers: { ...headers, ...(page === 1 && etag ? { "if-none-match": etag } : {}) },
+      signal: AbortSignal.timeout(10_000), headers: { ...headers, ...(known?.etag ? { "if-none-match": known.etag } : {}) },
     });
-    if (page === 1 && res.status === 304) return null;
-    if (!res.ok) throw new Error(`GitHub GET /repos/${repo}/branches: ${res.status}`);
-    if (page === 1) first = res.headers.get("etag");
-    const rows = (await res.json()) as { name: string; commit: { sha: string } }[];
-    for (const r of rows) tips[r.name] = r.commit.sha;
-    if (rows.length < BRANCH_PAGE) return { tips, etag: first };
+    let got: Page;
+    if (res.status === 304 && known) got = known;
+    else if (!res.ok) throw new Error(`GitHub GET /repos/${repo}/branches: ${res.status}`);
+    else {
+      const rows = (await res.json()) as { name: string; commit: { sha: string } }[];
+      got = { etag: res.headers.get("etag"), tips: Object.fromEntries(rows.map((r) => [r.name, r.commit.sha])) };
+    }
+    pages.push(got);
+    if (Object.keys(got.tips).length < BRANCH_PAGE) return pages;
   }
 }
 
-/** Poll repos with open items and no recent webhook; a moved tip queues a push for its items. */
-async function pollRepos(d: Db, items: (ItemRef & { repo: string })[], f: Fetch): Promise<{ polled: number; queued: number }> {
+/** Poll repos with open items and no recent push webhook; a moved tip queues a push for its items. */
+async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: number; queued: number }> {
   const repos = [...new Set(items.map((it) => it.repo))].sort();
   let polled = 0;
   let queued = 0;
   for (const repo of repos) {
-    const [state] = await d.query("select * from plugin_repos where repo = $1", [repo]);
+    const [state] = await d.query("select * from repo_polls where repo = $1", [repo]);
     if (state?.hook_at && Date.now() - new Date(state.hook_at).getTime() < HOOK_FRESH_MINUTES * 60_000) continue;
-    let listed: Awaited<ReturnType<typeof branchTips>>;
+    let pages: Page[];
     try {
-      listed = await branchTips(repo, state?.etag ?? null, f);
+      pages = await branchPages(repo, state?.pages ?? [], f);
     } catch (e) {
       console.error(`plugins: polling ${repo}: ${message(e)}`);
       continue;
     }
     polled++;
-    if (!listed) {
-      await d.query("update plugin_repos set polled_at = now() where repo = $1", [repo]);
-      continue;
-    }
+    const tips = Object.assign({}, ...pages.map((p) => p.tips)) as Record<string, string>;
     const before: Record<string, string> | null = state?.polled_at ? state.tips ?? {} : null;
     if (before) {
-      const moved = Object.keys(listed.tips).filter((b) => before[b] !== listed!.tips[b]);
+      const moved = Object.keys(tips).filter((b) => before[b] !== tips[b]);
       const [defs] = await d.query("select default_branch from plugin_defs where repo = $1", [repo]);
       if (defs?.default_branch && moved.includes(defs.default_branch)) await invalidateDefs(d, repo);
       for (const branch of moved) queued += await queueBranch(d, repo, branch, { type: "push", branch });
     }
     await d.query(
-      `insert into plugin_repos (repo, etag, tips, polled_at) values ($1, $2, $3::jsonb, now())
-       on conflict (repo) do update set etag = excluded.etag, tips = excluded.tips, polled_at = excluded.polled_at`,
-      [repo, listed.etag, JSON.stringify(listed.tips)]);
+      `insert into repo_polls (repo, pages, tips, polled_at) values ($1, $2::jsonb, $3::jsonb, now())
+       on conflict (repo) do update set pages = excluded.pages, tips = excluded.tips, polled_at = excluded.polled_at`,
+      [repo, JSON.stringify(pages), JSON.stringify(tips)]);
   }
   return { polled, queued };
 }
 
 /** Queue a refresh for each open item with an every: floor that has come due. */
-async function queueFloors(d: Db, items: (ItemRef & { repo: string })[], f: Fetch): Promise<number> {
-  const byRepo = new Map<string, (ItemRef & { repo: string })[]>();
+async function queueFloors(d: Db, items: OpenItem[], f: Fetch): Promise<number> {
+  const byRepo = new Map<string, OpenItem[]>();
   for (const it of items) byRepo.set(it.repo, [...(byRepo.get(it.repo) ?? []), it]);
   let queued = 0;
   for (const [repo, list] of byRepo) {
@@ -703,8 +541,7 @@ async function queueFloors(d: Db, items: (ItemRef & { repo: string })[], f: Fetc
         return !last.has(p.name) || last.get(p.name)! >= every;
       });
       if (!due.length) continue;
-      await queuePluginEvent(d, it.project, it.uid, repo, { type: "refresh" }, PLUGIN_HANDLE, due.map((p) => p.name));
-      queued++;
+      if ((await queuePluginEvent(d, it.project, it.uid, repo, { type: "refresh" }, PLUGIN_HANDLE, due.map((p) => p.name))) !== null) queued++;
     }
   }
   return queued;
@@ -719,6 +556,6 @@ export async function pluginTick(d: Db, deps: RunnerDeps = {}): Promise<TickResu
   const items = await openItems(d);
   const { polled, queued: pushes } = await pollRepos(d, items, f);
   const refreshes = await queueFloors(d, items, f);
-  await d.query("delete from plugin_events where done_at < now() - make_interval(days => $1)", [EVENTS_KEPT_DAYS]);
-  return { ...(await flushPluginRuns(d, deps)), polled, pushes, refreshes };
+  await d.query("delete from plugin_events where done_at < now() - make_interval(days => $1)", [DAYS_KEPT]);
+  return { ...(await flushPluginRuns(d, deps, TICK_EVENTS)), polled, pushes, refreshes };
 }

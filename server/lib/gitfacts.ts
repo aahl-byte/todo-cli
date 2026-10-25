@@ -8,7 +8,7 @@
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
 import { parse } from "yaml";
 import { db as appDb, type Db, type Row } from "./db";
-import { repoKey } from "./checkouts";
+import { repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { githubApi } from "./github";
 import { later } from "./http";
 import { itemBranches } from "./model";
@@ -642,8 +642,9 @@ function failed(old: GitFacts, why: string): GitFacts {
   return { ...old, needs, needed_by: mark(old.needed_by) as Edge[], shares: mark(old.shares) as Share[], waits_on: waitsOn(needs), error: why };
 }
 
-/** Recompute every item's facts in the project from GitHub, keeping the CLI's conflicts. */
-export async function computeProject(d: Db, project: string, fetchImpl: Fetch = fetch): Promise<void> {
+/** Recompute every item's facts in the project from GitHub, keeping the CLI's conflicts; with `only`, just that repo's.
+ * A repo the project may not use is never read. */
+export async function computeProject(d: Db, project: string, fetchImpl: Fetch = fetch, only?: string): Promise<void> {
   const everything = await d.query<ItemRow>("select uid, id, status, extra from items where project = $1 order by created, id", [project]);
   const all = everything.filter((it) => !it.extra?.archived);
   const stored = new Map<string, GitFacts>((await d.query("select item_uid, data from git_facts where project = $1", [project]))
@@ -655,6 +656,8 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
     if (key) groups.set(key, [...(groups.get(key) ?? []), it]);
   }
   for (const [key, items] of groups) {
+    if (only !== undefined && key !== only) continue;
+    if (!(await repoAllowed(d, project, key))) continue;
     if (!items.some((it) => itemBranches(it.extra).length || stored.has(it.uid) || notes.some((n) => n.item_uid === it.uid))) continue;
     const [owner, name] = key.split("/");
     const gh = new GitHubRepo(owner, name, fetchImpl);
@@ -771,12 +774,13 @@ export async function storedFacts(d: Db, project: string, itemUid: string): Prom
   return row?.data ?? {};
 }
 
-/** Recompute the project after the response, one compute at a time per project. */
-export function scheduleRecompute(d: Db, project: string, fetchImpl: Fetch = fetch): Promise<void> {
-  const running = inflight.get(project);
+/** Recompute the project (or one repo of it) after the response, one compute at a time for each. */
+export function scheduleRecompute(d: Db, project: string, fetchImpl: Fetch = fetch, repo?: string): Promise<void> {
+  const key = repo === undefined ? project : `${project}\x1f${repo}`;
+  const running = inflight.get(key);
   if (running) return running;
-  const run = computeProject(d, project, fetchImpl).catch(() => undefined).finally(() => inflight.delete(project));
-  inflight.set(project, run);
+  const run = computeProject(d, project, fetchImpl, repo).catch(() => undefined).finally(() => inflight.delete(key));
+  inflight.set(key, run);
   later(() => run);
   return run;
 }
@@ -787,7 +791,11 @@ export function recomputing(project: string): Promise<void> | undefined {
 }
 
 /** An item's stored facts for its page, with the hint texts. A row older than a couple of minutes schedules a recompute; the page never waits for it. */
-export async function itemGitFacts(d: Db, project: string, itemUid: string, fetchImpl: Fetch = fetch): Promise<GitFacts & { hints: typeof HINTS }> {
+export async function itemGitFacts(d: Db, project: string, itemUid: string, fetchImpl: Fetch = fetch):
+    Promise<GitFacts & { hints: typeof HINTS; blocked?: string }> {
+  const [it] = await d.query("select extra from items where project = $1 and uid = $2", [project, itemUid]);
+  const blocked = await repoRefusal(d, project, it?.extra?.repo);
+  if (blocked) return { hints: HINTS, blocked };
   const [row] = await d.query("select data, extract(epoch from now() - at) * 1000 as age from git_facts where project = $1 and item_uid = $2", [project, itemUid]);
   if (process.env.GITHUB_TOKEN && (!row || Number(row.age) >= STALE_MS)) void scheduleRecompute(d, project, fetchImpl);
   return { ...(row?.data ?? {}), hints: HINTS };

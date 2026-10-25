@@ -161,6 +161,9 @@ create table if not exists tombstones (
   seq      bigint not null,
   primary key (project, uid)
 );
+-- Who removed it; a plugin may create again what a plugin run removed, but not what a person did.
+alter table tombstones add column if not exists by text;
+alter table tombstones add column if not exists by_plugin boolean not null default false;
 
 create table if not exists applied_ops (
   project text not null,
@@ -363,6 +366,11 @@ create table if not exists docs (
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
+-- plugin: the <plugin>/<instance> that wrote the doc, and plugin_sha256 what it
+-- wrote; a doc whose sha256 has moved on since was edited, and the plugin leaves it.
+alter table docs add column if not exists plugin text;
+alter table docs add column if not exists plugin_sha256 text;
+
 -- A deleted doc's last sha256, so a client can tell whether its copy was edited since.
 create table if not exists doc_tombstones (
   project  text not null,
@@ -420,14 +428,37 @@ create table if not exists plugin_defs (
   fetched_at     timestamptz not null default now()
 );
 
--- Each repo's branch tips as the tick last listed them (with GitHub's ETag),
--- and when a webhook last arrived for it: a repo with webhooks isn't polled.
-create table if not exists plugin_repos (
+-- An item written with a single legacy branch also lists it in branches, so
+-- lookups by branch need only the branches index.
+update items set extra = jsonb_set(extra, '{branches}', jsonb_build_array(btrim(extra->>'branch')))
+ where extra ? 'branch' and not extra ? 'branches' and jsonb_typeof(extra->'branch') = 'string' and btrim(extra->>'branch') <> '';
+
+-- Each repo's branch tips as the tick last listed them, page by page with
+-- GitHub's ETag for each, and when a push webhook last arrived for it: a repo
+-- with webhooks isn't polled.
+create table if not exists repo_polls (
   repo      text primary key,
-  etag      text,
+  pages     jsonb not null default '[]'::jsonb,
   tips      jsonb not null default '{}'::jsonb,
   polled_at timestamptz,
   hook_at   timestamptz
+);
+
+-- Repos a project may read from GitHub and run plugins for, beyond the ones
+-- its members' CLIs report checkouts of.
+create table if not exists plugin_repos (
+  project  text not null,
+  repo     text not null,
+  added_by text not null,
+  added_at timestamptz not null default now(),
+  primary key (project, repo)
+);
+create index if not exists plugin_repos_repo on plugin_repos (repo);
+
+-- GitHub webhook deliveries already handled, so a replay queues nothing.
+create table if not exists github_deliveries (
+  id text primary key,
+  at timestamptz not null default now()
 );
 
 -- Plugin instances the server keeps per project and repo, over the repo file's own.
@@ -442,6 +473,9 @@ create table if not exists plugin_instances (
   updated_at timestamptz not null default now(),
   primary key (project, repo, plugin, id)
 );
+-- Secret-type settings, encrypted apart from def, which names none of them.
+alter table plugin_instances add column if not exists secret_keys text[] not null default '{}';
+alter table plugin_instances add column if not exists secrets_enc text;
 
 -- Capabilities a person granted a plugin, e.g. post-request.
 create table if not exists plugin_grants (
@@ -485,6 +519,9 @@ create table if not exists plugin_events (
   created         timestamptz not null default now()
 );
 create index if not exists plugin_events_due on plugin_events (id) where done_at is null;
+-- lease: who holds the row; finished: plugin/instance pairs already delivered, skipped when it's delivered again.
+alter table plugin_events add column if not exists lease text;
+alter table plugin_events add column if not exists finished text[] not null default '{}';
 
 -- Each instance's run log: what fired it, its result, and what was applied.
 create table if not exists plugin_runs (
@@ -500,6 +537,7 @@ create table if not exists plugin_runs (
   applied  jsonb not null default '[]'::jsonb,
   at       timestamptz not null default now()
 );
+alter table plugin_runs add column if not exists dry_run boolean not null default false;
 create index if not exists plugin_runs_instance on plugin_runs (project, repo, plugin, instance, id);
 create index if not exists plugin_runs_item on plugin_runs (project, item_uid, plugin, instance, id);
 `;

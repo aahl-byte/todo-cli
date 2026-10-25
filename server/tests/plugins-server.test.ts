@@ -17,6 +17,7 @@ import { queuePluginEvent } from "@/lib/plugins/queue";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import { hashUid } from "@/lib/ulid";
 import { child, item, world, type World } from "./helpers";
+import { API, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
 
 let w: World;
 let files: string;
@@ -32,65 +33,12 @@ beforeEach(async () => {
   process.env.TODO_FILES_DIR = files;
   delete process.env.S3_BUCKET;
   delete process.env.VERCEL;
+  await w.d.query("insert into plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
 });
 afterEach(() => {
   rmSync(files, { recursive: true, force: true });
   delete process.env.TODO_FILES_DIR;
 });
-
-const API = "https://api.github.com";
-const b64 = (s: string) => Buffer.from(s).toString("base64");
-const PR = (number: number, title = `PR ${number}`) => ({ number, title, html_url: `https://github.com/acme/web/pull/${number}` });
-
-interface Spec {
-  sha?: string;
-  file?: string;
-  code?: Record<string, string>;
-  prs?: Record<string, unknown[]>;
-  tips?: Record<string, string>;
-  etag?: string;
-  /** Anything outside GitHub, such as a repo connection's endpoint. */
-  other?: (url: string, init: RequestInit | undefined) => Response | Promise<Response> | undefined;
-}
-
-interface Sent { url: string; method: string; headers: Record<string, string>; body: unknown }
-
-/** GitHub as recorded answers: the repo, its default branch's head, its .todo-plugins files, PRs by head and the branch list. */
-function fakeGitHub(spec: Spec) {
-  const sent: Sent[] = [];
-  const impl = (async (input: unknown, init?: RequestInit) => {
-    const url = String(input);
-    const headers = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), String(v)]));
-    sent.push({ url, method: init?.method ?? "GET", headers, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-    const other = await spec.other?.(url, init);
-    if (other) return other;
-    if (!url.startsWith(API)) return new Response("", { status: 404 });
-    const p = url.slice(API.length);
-    if (p === "/repos/acme/web") return Response.json({ default_branch: "main" });
-    if (p === "/repos/acme/web/branches/main") return Response.json({ commit: { sha: spec.sha ?? "s1" } });
-    const content = p.match(/^\/repos\/acme\/web\/contents\/\.todo-plugins\/(.+)\?ref=(\w+)$/);
-    if (content) {
-      const name = decodeURIComponent(content[1]);
-      const text = name === "plugins.yaml" ? spec.file : spec.code?.[name];
-      return text === undefined ? new Response("", { status: 404 }) : Response.json({ content: b64(text) });
-    }
-    const pulls = p.match(/^\/repos\/acme\/web\/pulls\?head=acme%3A([^&]+)&state=all$/);
-    if (pulls) return Response.json(spec.prs?.[decodeURIComponent(pulls[1])] ?? []);
-    if (p.startsWith("/repos/acme/web/branches?")) {
-      if (spec.etag && headers["if-none-match"] === spec.etag) return new Response(null, { status: 304 });
-      return Response.json(Object.entries(spec.tips ?? {}).map(([name, sha]) => ({ name, commit: { sha } })),
-                           { headers: spec.etag ? { etag: spec.etag } : {} });
-    }
-    return new Response("", { status: 404 });
-  }) as Fetch;
-  return { impl, sent };
-}
-
-const req = (url: string, method: string, token: string | null, body?: unknown) => new Request(`http://x${url}`, {
-  method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "content-type": "application/json" },
-  body: body === undefined ? undefined : JSON.stringify(body),
-});
-const params = (key: string) => ({ params: Promise.resolve({ key }) });
 
 async function onBranch(uid: string, branches: string[], data: Record<string, unknown> = {}) {
   await w.one("alice", item(uid, { status: "in-progress", extra: { repo: "acme/web", branches }, ...data }));
@@ -98,7 +46,9 @@ async function onBranch(uid: string, branches: string[], data: Record<string, un
 const linkNotes = async (uid = "I1") => w.d.query("select uid, kind, text, meta from notes where project = 'p' and item_uid = $1 and kind = 'link' order by n", [uid]);
 const runs = () => w.d.query("select * from plugin_runs order by id");
 const events = () => w.d.query("select * from plugin_events order by id");
-const run = (f: Fetch, host = {}) => flushPluginRuns(w.d, { fetch: f, host: { sleep: async () => {}, ...host } });
+const hostDeps = { sleep: async () => {}, guard: { allow: [], lookup: publicDns } };
+const run = (f: Fetch, host = {}) => flushPluginRuns(w.d, { fetch: f, host: { ...hostDeps, ...host } }, 50);
+const tick = (f: Fetch) => pluginTick(w.d, { fetch: f, host: hostDeps });
 
 describe("hashUid", () => {
   it("matches the CLI's hash_uid", () => {
@@ -113,6 +63,7 @@ describe("hashUid", () => {
 describe("running plugins", () => {
   it("delivers a status move to an instance it fires, linking the PR under a deterministic uid that reaches /changes", async () => {
     const gh = fakeGitHub({ prs: { "feat/x": [PR(5, "Login")] } });
+    vi.stubGlobal("fetch", gh.impl);
     const put = await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, {
       repo: "acme/web", plugin: "pr-link", instances: [{ id: "default", name: "default", on: [{ status: { to: "review" } }] }] }), params("p"));
     expect(await put.json()).toEqual({ ok: true });
@@ -238,9 +189,10 @@ describe("running plugins", () => {
     try {
       const gh = fakeGitHub({ file: "plugins:\n  test-doc: {use: shipped}\n" });
       await onBranch("I1", ["feat/x"]);
+      await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
       await run(gh.impl);
       const [doc] = await listDocs(w.d, "p", "I1");
-      expect(doc).toMatchObject({ name: "notes.md", by: "plugin" });
+      expect(doc).toMatchObject({ name: "notes.md", by: "plugin", plugin: "test-doc/default" });
       expect(String(await readLocal(doc.file_key))).toBe("# hi feat/x");
       await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/y" }, "alice");
       await run(gh.impl);
@@ -267,17 +219,17 @@ describe("running plugins", () => {
       expect(grant).toEqual({ capabilities: ["post-request"], granted_by: "alice" });
       await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
       await run(gh.impl);
-      expect(await requests()).toEqual([{ uid: pluginUid("test-request/default", "I1", "request:From Jira: feat/x"), text: "From Jira: feat/x" }]);
+      expect(await requests()).toEqual([{ uid: pluginUid("test-request/default", "I1", "request:From Jira: feat/x#v1"), text: "From Jira: feat/x" }]);
     } finally {
       delete SHIPPED["test-request"];
     }
   });
 
-  it("queues a push for a branch an item gains", async () => {
+  it("queues one refresh for a new item, and a push for a branch an item gains", async () => {
     await onBranch("I1", ["feat/x"]);
     await w.one({ handle: "alice", unconditional: true }, { op: "set", entity: "item", uid: "I1", item_uid: "I1",
                                                            data: { "extra.branches": ["feat/x", "feat/y"] } });
-    expect((await events()).map((e) => e.event)).toEqual([{ type: "push", branch: "feat/x" }, { type: "push", branch: "feat/y" }]);
+    expect((await events()).map((e) => e.event)).toEqual([{ type: "refresh" }, { type: "push", branch: "feat/y" }]);
   });
 
   it("queues nothing without GITHUB_TOKEN", async () => {
@@ -304,14 +256,17 @@ describe("the plugins API", () => {
     const body = await (await pluginsGET(req("/api/projects/p/plugins?repo=Acme/Web", "GET", w.tokens.bob), params("p"))).json();
     expect(body.instances).toEqual({ ping: [{ id: "b", name: "B", enabled: false }] });
     expect(body.grants).toEqual({});
-    expect(body.secrets).toEqual(["github"]);
+    expect(body.secrets).toEqual([]);
+    expect(body.host_secrets).toEqual(["github"]);
     expect(body.plugins).toEqual([
-      { name: "pr-link", connections: ["github"], on: ["push", "pr"], every: null, settings: {}, instances: [{ id: "default", name: "default" }], shipped: true },
+      { name: "pr-link", connections: ["github"], on: ["push", "pr"], every: null, settings: {},
+        instances: [{ id: "default", name: "default", server_runs: true }], shipped: true },
       { name: "ping", connections: ["hooks"], on: ["push"], every: "1h", settings: { path: { label: "Path", type: "text" } },
-        instances: [{ id: "a", name: "A", settings: { path: "x" } }, { id: "b", name: "B", enabled: false }], shipped: false },
+        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false }, { id: "b", name: "B", enabled: false, server_runs: false }],
+        shipped: false },
     ]);
-    expect(body.runs["pr-link/default"]).toMatchObject({ item: "i1" });
-    expect(body.runs["ping/a"]).toMatchObject({ item: "i1", skipped: "ping: `hooks` not authorized here" });
+    expect(body.runs["pr-link/default"]).toMatchObject({ item: "I1" });
+    expect(body.runs["ping/a"]).toMatchObject({ item: "I1", skipped: "ping: `hooks` not authorized here" });
   });
 
   it("offers host-wide connections from the environment, with their secrets, to shipped plugins", async () => {
@@ -329,7 +284,8 @@ describe("the plugins API", () => {
     }
     expect(gh.sent.find((s) => s.url === "https://hooks.example/ping")!.headers.authorization).toBe("Bearer host-hook-secret");
     const body = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
-    expect(body.secrets).toEqual(["github", "hooks"]);
+    expect(body.secrets).toEqual([]);
+    expect(body.host_secrets).toEqual(["github", "hooks"]);
     expect(JSON.stringify(body)).not.toContain("host-hook-secret");
   });
 
@@ -349,6 +305,7 @@ describe("the plugins API", () => {
     expect((await off.json()).error).toMatch(/TODO_SECRET_KEY/);
 
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "hooks.example");
     expect(await (await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" })).json()).toEqual({ ok: true });
     const gh = fakeGitHub({ file: [
       "connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}",
@@ -361,7 +318,8 @@ describe("the plugins API", () => {
     expect(gh.sent.find((s) => s.url === "https://hooks.example/ping")!.headers.authorization).toBe("Bearer s3cret-value");
 
     const body = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
-    expect(body.secrets).toEqual(["github", "hooks"]);
+    expect(body.secrets).toEqual(["hooks"]);
+    expect(body.plugins.find((p: { name: string }) => p.name === "ping").instances[0].server_runs).toBe(true);
     expect(JSON.stringify(body)).not.toContain("s3cret-value");
     for (const t of ["plugin_credentials", "plugin_runs", "plugin_events", "notes", "logs", "changes", "applied_ops"]) {
       expect(JSON.stringify(await w.d.query(`select * from ${t}`))).not.toContain("s3cret-value");
@@ -399,7 +357,7 @@ describe("the GitHub webhook", () => {
 
     await hook("push", { ref: "refs/heads/main", after: "m2", repository });
     expect((await w.d.query("select stale from plugin_defs"))[0].stale).toBe(true);
-    const [state] = await w.d.query("select tips, hook_at from plugin_repos");
+    const [state] = await w.d.query("select tips, hook_at from repo_polls");
     expect(state.tips).toEqual({ main: "m2" });
     expect(state.hook_at).not.toBeNull();
   });
@@ -424,15 +382,15 @@ describe("the tick", () => {
     await run(gh.impl);
     const pushes = async () => (await events()).filter((e) => e.by === "plugin").length;
 
-    expect(await pluginTick(w.d, { fetch: gh.impl })).toMatchObject({ polled: 1, pushes: 0 });
-    expect(await pluginTick(w.d, { fetch: gh.impl })).toMatchObject({ polled: 1, pushes: 0 });
+    expect(await tick(gh.impl)).toMatchObject({ polled: 1, pushes: 0 });
+    expect(await tick(gh.impl)).toMatchObject({ polled: 1, pushes: 0 });
     const conditional = gh.sent.filter((s) => s.url.includes("/branches?"));
     expect(conditional.at(-1)!.headers["if-none-match"]).toBe('"e1"');
     expect(await pushes()).toBe(0);
 
     spec.tips = { main: "m1", "feat/x": "x2" };
     spec.etag = '"e2"';
-    expect(await pluginTick(w.d, { fetch: gh.impl })).toMatchObject({ polled: 1, pushes: 1 });
+    expect(await tick(gh.impl)).toMatchObject({ polled: 1, pushes: 1 });
     expect((await events()).at(-1)).toMatchObject({ item_uid: "I1", event: { type: "push", branch: "feat/x" } });
 
     expect((await tickGET(new Request("http://x/api/plugins/tick"))).status).toBe(401);
@@ -441,8 +399,8 @@ describe("the tick", () => {
   it("leaves a repo with a recent webhook to its webhook", async () => {
     const gh = fakeGitHub({ tips: { "feat/x": "x1" }, prs: { "feat/x": [] } });
     await onBranch("I1", ["feat/x"]);
-    await w.d.query("insert into plugin_repos (repo, hook_at) values ('acme/web', now())");
-    expect(await pluginTick(w.d, { fetch: gh.impl })).toMatchObject({ polled: 0 });
+    await w.d.query("insert into repo_polls (repo, hook_at) values ('acme/web', now())");
+    expect(await tick(gh.impl)).toMatchObject({ polled: 0 });
   });
 
   it("queues a refresh for the plugins whose every: floor is due", async () => {
@@ -452,9 +410,9 @@ describe("the tick", () => {
     ].join("\n"), prs: { "feat/x": [] }, other: (url) => (url === `${API}/user` ? Response.json({}) : undefined) });
     await onBranch("I1", ["feat/x"], { status: "todo" });
     await w.d.query("delete from plugin_events");
-    expect(await pluginTick(w.d, { fetch: gh.impl })).toMatchObject({ refreshes: 1, ran: 1 });
+    expect(await tick(gh.impl)).toMatchObject({ refreshes: 1, ran: 1 });
     expect((await events())[0]).toMatchObject({ event: { type: "refresh" }, only_plugins: ["hourly"] });
     expect((await runs()).map((r) => r.plugin)).toEqual(["hourly"]);
-    expect(await pluginTick(w.d, { fetch: gh.impl })).toMatchObject({ refreshes: 0 });
+    expect(await tick(gh.impl)).toMatchObject({ refreshes: 0 });
   });
 });

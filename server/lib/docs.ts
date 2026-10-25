@@ -31,7 +31,7 @@ export interface DocWrite {
   doc: Row | null;
 }
 
-const COLUMNS = "uid, item_uid, name, size, sha256, file_key, content_type, by, via, at, versions";
+const COLUMNS = "uid, item_uid, name, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256";
 
 const clean = (row: Row | undefined): Row | null => (row ? { ...row, size: Number(row.size) } : null);
 
@@ -116,6 +116,8 @@ async function discard(key: string | null | undefined): Promise<void> {
  * from the stored bytes, and a claimed sha256 must match them. */
 export async function recordDoc(d: Db, project: string, handle: string, input: {
   item_uid: string; name: string; file_key: string; base?: string | null; sha256?: string; via?: string;
+  /** The <plugin>/<instance> writing it on a plugin's behalf; a write without it keeps the doc's owner. */
+  plugin?: string | null;
 }): Promise<DocWrite> {
   const name = input.name;
   const bad = docNameError(name);
@@ -134,6 +136,7 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
   const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
   if (input.sha256 != null && input.sha256 !== sha256) throw new DocError(422, "the upload doesn't match its sha256");
   const via = input.via === "agent" ? "agent" : "human";
+  const plugin = typeof input.plugin === "string" && input.plugin ? input.plugin.slice(0, 200) : null;
   const { result, superseded } = await d.tx(async (t) => {
     await lockProject(t, project);
     const [row] = await t.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 and name_key = $3`,
@@ -152,13 +155,14 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
     const seq = await bump(t, project, uid, input.item_uid, false, handle);
     await t.query("delete from doc_tombstones where project = $1 and uid = $2", [project, uid]);
     const [saved] = await t.query(
-      `insert into docs (project, uid, item_uid, name, name_key, size, sha256, file_key, content_type, by, via, at, versions)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+      `insert into docs (project, uid, item_uid, name, name_key, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, case when $14::text is null then null else $7 end)
        on conflict (project, uid) do update set size = excluded.size, sha256 = excluded.sha256, file_key = excluded.file_key,
-         content_type = excluded.content_type, by = excluded.by, via = excluded.via, at = excluded.at, versions = excluded.versions
+         content_type = excluded.content_type, by = excluded.by, via = excluded.via, at = excluded.at, versions = excluded.versions,
+         plugin = coalesce(excluded.plugin, docs.plugin), plugin_sha256 = coalesce(excluded.plugin_sha256, docs.plugin_sha256)
        returning ${COLUMNS}`,
       [project, uid, input.item_uid, name, docNameKey(name), bytes.length, sha256, key, docType(name), handle, via, nowIso(),
-       JSON.stringify({ sha256: seq })]);
+       JSON.stringify({ sha256: seq }), plugin]);
     return { result: { status: "applied" as const, doc: clean(saved) }, superseded: row?.file_key as string | undefined };
   });
   if (superseded !== result.doc?.file_key) await discard(superseded);
