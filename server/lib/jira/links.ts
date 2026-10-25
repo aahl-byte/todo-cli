@@ -98,7 +98,7 @@ export async function syncLinked(db: Db, jira: JiraClient, project: string, opts
     for (const l of unchanged ? fresh : mine) {
       for (const c of comments) {
         await opts.meet(c.author);
-        const r = await commented(db, { project, item_uid: l.item_uid }, c, null, issue.key, `${project}:${l.item_uid}`);
+        const r = await commented(db, { project, item_uid: l.item_uid }, c, issue.key, `${project}:${l.item_uid}`);
         if (r.handled && (r.results as any[])?.some((x) => x.status === "applied" && !x.duplicate)) out.comments++;
       }
     }

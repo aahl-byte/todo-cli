@@ -16,9 +16,7 @@
     "seed:demo": "tsx scripts/seed-demo.ts",
     "smoke": "node scripts/smoke.cjs",
     "user:jira": "tsx scripts/user-jira.ts",
-    "jira:project": "tsx scripts/jira-project.ts",
     "jira:sync": "tsx scripts/jira-sync.ts",
-    "jira:mode": "tsx scripts/jira-mode.ts",
     "build:plugin-host": "node scripts/build-plugin-host.mjs"
   },
   "dependencies": {
