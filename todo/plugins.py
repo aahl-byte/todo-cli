@@ -48,6 +48,9 @@ CACHE_EVERY = 60                    # seconds a synced store trusts its cached i
 FLOOR_EVERY = 60                    # seconds between checks for due `every:` floors
 DEFS_KEPT = 32
 LOG_KEPT = 50
+REMOVED = "~removed"                # in the runs file: item → plugin uids never to make again
+REMOVED_KEPT = 500
+REPLACED = ("link", "dependency")   # note kinds a run replaces; logs and requests only add
 GIT_TRIGGERS = ("push", "pr", "deployment")
 NO_NODE = "plugins skipped: node isn't installed"
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)$")
@@ -486,7 +489,9 @@ def run(ctx: Context, it: dict, event: dict, *, dry_run: bool = False, only: str
             fresh = store.get_item(root, it["id"])
             if fresh is not None:
                 for r in runs:
-                    r["changes"] = apply(root, fresh, instance_id(r["plugin"], r.get("instance") or {}), r["result"], event)
+                    inst = r.get("instance") or {}
+                    r["changes"] = apply(root, fresh, instance_id(r["plugin"], inst), r["result"], event,
+                                         dry_run=bool(inst.get("dry_run")))
                     fresh = store.get_item(root, it["id"]) or fresh
     for r in runs:
         res = r["result"]
@@ -529,8 +534,8 @@ def _event_label(event: dict) -> str:
 
 
 def _carried(prev: dict | None) -> dict:
-    """What a run that changes nothing keeps from the previous record: the docs the instance owns."""
-    return {"docs": prev["docs"]} if prev and prev.get("docs") else {}
+    """What a run that changes nothing keeps from the previous record: what the instance owns."""
+    return {k: prev[k] for k in ("docs", "uids") if prev and prev.get(k)}
 
 
 # ── applying a result ─────────────────────────────────────────────────────────
@@ -556,31 +561,42 @@ def _summary(a: dict) -> dict:
     return {k: (a[k][:300] if isinstance(a[k], str) else a[k]) for k in keep if k in a}
 
 
-def apply(root: Path, it: dict, iid: str, result: dict, event: dict) -> dict:
-    """Write one instance's result into the store, replacing what it attached
-    before. Returns counts of what changed; an error or skip changes nothing."""
+def apply(root: Path, it: dict, iid: str, result: dict, event: dict, *, dry_run: bool = False) -> dict:
+    """Write one instance's result into the store: links and edges replace what
+    it attached before, logs and requests only add, and a plugin entity once
+    removed is never made again. An error, a skip or a dry-run instance changes
+    nothing but the run record. Returns counts of what changed."""
     runs_file = _state(root, RUNS_FILE)
     runs = _read(runs_file)
-    mine = runs.setdefault(_item_key(it), {})
+    ikey = _item_key(it)
+    mine = runs.setdefault(ikey, {})
     prev = mine.get(iid)
     rec = {"at": now(), "event": _event_label(event)}
     log = [to_str(x) for x in result.get("log") or []]
     if result.get("wouldSend"):
         rec["would_send"] = len(result["wouldSend"])
-    if result.get("error") or result.get("skipped"):
-        rec.update({k: to_str(result[k])[:2000] for k in ("error", "skipped") if result.get(k)}, **_carried(prev))
-        if log:
-            rec["log"] = log[-LOG_KEPT:]
-        mine[iid] = rec
-        _write(runs_file, runs)
-        return {}
-    changes = {"added": 0, "updated": 0, "removed": 0}
     item_uid = it.get("uid") or it["id"]
     item_dir = root / it["folder"] / it["id"]
     notes = store._read_entries(item_dir / store.NOTES_DIR)
     logs = store._read_entries(item_dir / store.LOG_DIR)
+    present = {e["meta"].get("uid") for e in notes + logs if e["meta"].get("uid")}
+    gone = runs.setdefault(REMOVED, {}).setdefault(ikey, [])
+    gone += [u for u in (prev or {}).get("uids") or [] if u not in present and u not in gone]   # removed by a person
+    if result.get("error") or result.get("skipped") or dry_run:
+        rec.update({k: to_str(result[k])[:2000] for k in ("error", "skipped") if result.get(k)}, **_carried(prev))
+        if dry_run and not (result.get("error") or result.get("skipped")):
+            rec["dry_run"] = True
+            rec["attached"] = [_summary(a) for a in result.get("attached") or [] if isinstance(a, dict)]
+        if (prev or {}).get("uids"):
+            rec["uids"] = [u for u in prev["uids"] if u in present]
+        if log:
+            rec["log"] = log[-LOG_KEPT:]
+        mine[iid] = rec
+        _trim(runs, ikey)
+        _write(runs_file, runs)
+        return {}
+    changes = {"added": 0, "updated": 0, "removed": 0}
     by_uid = {e["meta"].get("uid"): e for e in notes if e["meta"].get("uid")}
-    logs_by_uid = {e["meta"].get("uid"): e for e in logs if e["meta"].get("uid")}
     kept: set = set()
     linked: set = set()
     owned_docs: list = []
@@ -591,6 +607,9 @@ def apply(root: Path, it: dict, iid: str, result: dict, event: dict) -> dict:
         uid = hash_uid("plugin", iid, item_uid, a["key"])
         tag = {"plugin": iid, "plugin_key": a["key"]}
         kind = a["kind"]
+        if kind != "doc" and uid in gone:
+            log.append(f'skipped {kind} {a["key"]}: it was removed from the item')
+            continue
         if kind == "link":
             url = _norm_url(a.get("url"))
             elsewhere = any(e["meta"].get("kind") == "link" and _norm_url(e["meta"].get("url")) == url
@@ -613,15 +632,11 @@ def apply(root: Path, it: dict, iid: str, result: dict, event: dict) -> dict:
                 store.rewrite_entry(root, it["id"], store.NOTES_DIR, e["id"], text, {**meta, "kind": note_kind, **fields})
                 changes["updated"] += 1
         elif kind == "log":
-            e = logs_by_uid.get(uid)
-            if e is None:
+            if uid not in present:
                 store.add_log(root, it["id"], to_str(a.get("text")), now(), extra=tag, uid=uid)
                 changes["added"] += 1
-            elif e["text"] != to_str(a.get("text")):
-                store.rewrite_entry(root, it["id"], store.LOG_DIR, e["id"], to_str(a.get("text")), {**e["meta"], **tag})
-                changes["updated"] += 1
         elif kind == "request":
-            if uid not in by_uid and _post_request(root, it, to_str(a.get("text")), {**tag}, uid):
+            if uid not in present and _post_request(root, it, to_str(a.get("text")), {**tag}, uid):
                 changes["added"] += 1
         elif kind == "doc":
             name = to_str(a.get("name"))
@@ -633,31 +648,56 @@ def apply(root: Path, it: dict, iid: str, result: dict, event: dict) -> dict:
             owned_docs.append(name)
             if how in changes:
                 changes[how] += 1
-        kept.add(uid)
+        if kind != "doc":
+            kept.add(uid)
         attached.append(_summary(a))
     for e in notes:
         m = e["meta"]
-        if m.get("plugin") == iid and m.get("kind") in ("link", "dependency") and m.get("uid") not in kept:
+        if m.get("plugin") == iid and m.get("kind") in REPLACED and m.get("uid") not in kept:
             store.remove_note(root, it["id"], e["id"])
-            changes["removed"] += 1
-    for e in logs:
-        if e["meta"].get("plugin") == iid and e["meta"].get("uid") not in kept:
-            store.remove_log(root, it["id"], e["id"])
+            gone.append(m.get("uid"))
             changes["removed"] += 1
     for name in (prev or {}).get("docs") or []:
         if docs.find(owned_docs, name) is None and docs.remove(item_dir, it.get("uid"), name, now()):
             changes["removed"] += 1
     rec["attached"] = attached
+    owned = {u for u in (prev or {}).get("uids") or [] if u in present} | kept
+    rec["uids"] = sorted(u for u in owned if u not in gone)
     if owned_docs:
         rec["docs"] = owned_docs
     if log:
         rec["log"] = log[-LOG_KEPT:]
     mine[iid] = rec
+    _trim(runs, ikey)
     _write(runs_file, runs)
     if any(changes.values()) and sync.enabled(root):
         sync.mark_changed(root, it["id"])
         sync.flag_changes(root)
     return changes
+
+
+def _trim(runs: dict, ikey: str) -> None:
+    gone = runs.get(REMOVED, {}).get(ikey)
+    if gone is not None:
+        if gone:
+            runs[REMOVED][ikey] = gone[-REMOVED_KEPT:]
+        else:
+            del runs[REMOVED][ikey]
+
+
+def forget(root: Path, item_uid: str, uid: str) -> None:
+    """Never make this plugin entity again on the item: the server refused it as removed."""
+    f = _state(root, RUNS_FILE)
+    runs = _read(f)
+    gone = runs.setdefault(REMOVED, {}).setdefault(item_uid, [])
+    if uid not in gone:
+        gone.append(uid)
+    _trim(runs, item_uid)
+    _write(f, runs)
+
+
+def removed(root: Path, it: dict) -> list:
+    return (_read(_state(root, RUNS_FILE)).get(REMOVED) or {}).get(_item_key(it)) or []
 
 
 def _write_doc(root: Path, it: dict, item_dir: Path, name: str, content: str) -> tuple:

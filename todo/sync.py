@@ -990,6 +990,14 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
             _write_checks(d, changed)
 
 
+def _plugin_owned(entity: str, data: dict) -> str | None:
+    """The plugin instance that made a note or log entry, from its create op."""
+    if entity not in ("note", "log"):
+        return None
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    return meta.get("plugin") or data.get("meta.plugin")
+
+
 def _whole_op_rejected(root, op, r, local, snap, report) -> None:
     item_id = _item_id(local, op["item_uid"])
     reason = r.get("reason") or "rejected"
@@ -1009,6 +1017,15 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         return
     if reason == "removed" and op["op"] == "remove":
         snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
+        return
+    if reason == "removed" and op["op"] == "create" and _plugin_owned(entity, data):
+        # A plugin entity someone removed stays removed: no new uid, no retry.
+        snap["entities"].pop(uid, None)
+        _delete_local(local, entity, uid, op["item_uid"])
+        from . import plugins
+        plugins.forget(root, op["item_uid"], uid)
+        report.messages.append(f"{item_id}: {what} from plugin {_plugin_owned(entity, data)} not applied; "
+                               f"{r.get('by') or 'someone'} removed it")
         return
     if reason == "removed" and op["op"] == "create" and uid in snap.get("removed", []):
         # This store already saw that uid removed (it pushed or pulled the

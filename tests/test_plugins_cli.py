@@ -412,7 +412,78 @@ def test_a_new_branch_runs_a_refresh_for_the_item(fx, host):
     run_cli(fx.root, ["branch", "add", a, "feat/a"])
     run_cli(fx.root, ["branch", "add", a, "feat/a"])
     plugins.after_command(fx.root)
-    assert [c["event"] for c in host.calls()] == [{"type": "refresh"}]
+    assert [c["event"] for c in host.calls()] == [{"type": "push", "branch": "feat/a"}]
+
+
+LINK = {"kind": "link", "key": "link:https://x.test/1", "type": "preview", "url": "https://x.test/1"}
+
+
+def test_logs_and_requests_only_add(fx, host):
+    a = item_with_branch(fx)
+    for text in ("first", "second"):
+        host.results({"refresh": [ran("p", [{"kind": "log", "key": f"log:{text}", "text": text},
+                                            {"kind": "request", "key": f"request:{text}", "text": f"ask {text}"}])]})
+        refresh(fx.root, a)
+    it = store.get_item(fx.root, a)
+    assert [e["text"] for e in it["log"]] == ["first", "second"]
+    assert [n["text"] for n in it["notes"] if n["kind"] == "ticket-request"] == ["ask first", "ask second"]
+
+
+def test_a_removed_plugin_note_is_never_made_again(fx, host):
+    a = item_with_branch(fx)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    [note] = plugin_notes(fx.root, a, "p/default")
+    run_cli(fx.root, ["unnote", a, str(note["id"])])
+    [(_, [run])] = refresh(fx.root, a)
+    assert plugin_notes(fx.root, a, "p/default") == [] and run["changes"]["added"] == 0
+    assert note["uid"] in plugins.removed(fx.root, store.resolve_item(fx.root, a))
+    host.results({"refresh": [ran("p", [])]})
+    refresh(fx.root, a)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    assert plugin_notes(fx.root, a, "p/default") == []
+
+
+def test_a_link_a_run_dropped_stays_dropped(fx, host):
+    a = item_with_branch(fx)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    host.results({"refresh": [ran("p", [])]})
+    refresh(fx.root, a)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    assert plugin_notes(fx.root, a, "p/default") == []
+
+
+def test_a_dry_run_instance_attaches_nothing_and_records_its_run(fx, host):
+    a = item_with_branch(fx)
+    run = ran("p", [LINK], wouldSend=[{"connection": "hook", "method": "POST", "path": "/x"}])
+    run["instance"]["dry_run"] = True
+    host.results({"refresh": [run]})
+    refresh(fx.root, a)
+    assert store.get_item(fx.root, a)["notes"] == []
+    rec = plugins.records(fx.root, store.resolve_item(fx.root, a))["p/default"]
+    assert rec["dry_run"] is True and rec["would_send"] == 1 and rec["attached"][0]["url"] == "https://x.test/1"
+
+
+def test_the_server_refusing_a_removed_plugin_note_is_final(fx, host, monkeypatch):
+    server = FakeServer()
+    remote.save_sync_config(fx.root, {"url": "http://fake", "project": "p", "deploy_step": True})
+    monkeypatch.setattr(plugins, "remote_for", lambda root: server.client("alice"))
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, server.client("alice"))
+    it = store.resolve_item(fx.root, a)
+    uid = hash_uid("plugin", "p/default", it["uid"], LINK["key"])
+    server.tombs[uid] = (1, "bob")
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    report = sync.run_round(fx.root, server.client("alice"))
+    assert plugin_notes(fx.root, a, "p/default") == [] and uid in plugins.removed(fx.root, it)
+    assert any("from plugin p/default not applied; bob removed it" in m for m in report.messages)
+    refresh(fx.root, a)
+    sync.run_round(fx.root, server.client("alice"))
+    assert plugin_notes(fx.root, a, "p/default") == [] and uid not in server.rows
 
 
 # ── connections and credentials ───────────────────────────────────────────────

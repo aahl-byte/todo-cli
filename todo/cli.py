@@ -345,8 +345,9 @@ def cmd_set(root: Path, args) -> None:
 def _set_branches(root: Path, it, branches: list) -> None:
     store.update_todo(root, it["id"], {"branches": branches})
     print(f'{it["id"]}: branches = {", ".join(branches) or "—"}')
-    if any(b not in it["branches"] for b in branches):
-        plugins_mod.queue(it["id"], {"type": "refresh"})
+    for b in branches:
+        if b not in it["branches"]:
+            plugins_mod.queue(it["id"], {"type": "push", "branch": b})
 
 
 _EMPTY_BRANCH = "A branch name can't be empty."
