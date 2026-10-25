@@ -84,3 +84,13 @@ def run_cli(root, argv):
         args.func(Path(root), args)
     finally:
         identity.set_via(None)
+
+
+@pytest.fixture(autouse=True)
+def _plugins_off(monkeypatch):
+    """Plugins stay off, so no test reaches GitHub; tests of plugins turn them on."""
+    from todo import plugins
+
+    monkeypatch.setenv(plugins.OFF_ENV, "0")
+    plugins._said.clear()
+    plugins._queue.clear()
