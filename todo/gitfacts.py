@@ -25,8 +25,8 @@ import urllib.request
 from itertools import combinations
 from pathlib import Path
 
-from . import checkout, store, yamlio
-from .remote import RemoteError, remote_for, sync_config, sync_dir
+from . import checkout, statelock, store, yamlio
+from .remote import RemoteError, remote_for, sync_config
 from .util import now, to_str
 
 FACTS_FILE = "git.yaml"
@@ -314,8 +314,7 @@ def _save(root: Path, it: dict, facts: dict) -> None:
     yamlio.write_atomic(f, yamlio.dump(y, facts))
 
 
-def state_file(root: Path, name: str) -> Path:
-    return sync_dir(root) / name if sync_config(root) else root / ("." + name)
+state_file = statelock.state_file
 
 
 def read_json(f: Path) -> dict:
@@ -326,9 +325,7 @@ def read_json(f: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_json(f: Path, data: dict) -> None:
-    f.parent.mkdir(exist_ok=True)
-    yamlio.write_atomic(f, json.dumps(data, sort_keys=True))
+_write_json = statelock.write_json
 
 
 # ── where each repo is checked out ────────────────────────────────────────────
@@ -1043,6 +1040,8 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
     tips_file, cache_file = state_file(root, TIPS_FILE), state_file(root, CACHE_FILE)
     state = read_json(tips_file)
     cache = read_json(cache_file)
+    started_unposted = set(state.get("unposted") or [])
+    done: set = set()               # the repos whose entry this round rewrites
     used: dict = {}
     changed = []
     for key, group in groups.items():
@@ -1067,6 +1066,7 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
         moved = {n for n in set(tips) | set(old_tips) if tips.get(n) != old_tips.get(n)}
         if saved.get("default") not in (None, repo.default):
             moved.add("HEAD")
+        done.add(key)
         if not (force or touched or moved & _relevant(root, group) or saved.get("incomplete")):
             state[key] = {**saved, "at": time.time(), "tips": tips, "default": repo.default}
             continue
@@ -1095,13 +1095,16 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
             if _strip(new) != _strip(load(root, it)):
                 _save(root, it, {"at": stamp, **new} if new else {})
                 changed.append(it["id"])
-    if used:
-        _write_json(cache_file, used)
-    unposted = set(state.get("unposted") or []) | set(changed) if sync_config(root) else set()
+    unposted = started_unposted | set(changed) if sync_config(root) else set()
     if remote is not None and unposted:
         unposted = _post(root, remote, project, unposted)
-    state["unposted"] = sorted(unposted)
-    _write_json(tips_file, state)
+    with statelock.locked(root):
+        if used:
+            _write_json(cache_file, used)
+        fresh = read_json(tips_file)
+        fresh.update({k: state[k] for k in done})
+        fresh["unposted"] = sorted(unposted | (set(fresh.get("unposted") or []) - started_unposted))
+        _write_json(tips_file, fresh)
     return changed
 
 
@@ -1143,11 +1146,14 @@ def post_pending(root: Path) -> None:
     cfg = sync_config(root)
     r = remote_for(root) if cfg else None
     f = state_file(root, TIPS_FILE)
-    state = read_json(f)
-    if r is None or not state.get("unposted"):
+    sending = set(read_json(f).get("unposted") or [])
+    if r is None or not sending:
         return
-    state["unposted"] = sorted(_post(root, r, cfg.get("project"), set(state["unposted"])))
-    _write_json(f, state)
+    left = _post(root, r, cfg.get("project"), sending)
+    with statelock.locked(root):
+        state = read_json(f)
+        state["unposted"] = sorted(left | (set(state.get("unposted") or []) - sending))
+        _write_json(f, state)
 
 
 def maybe_local(root: Path, seen: dict | None = None) -> None:
@@ -1156,11 +1162,12 @@ def maybe_local(root: Path, seen: dict | None = None) -> None:
     if sync_config(root) is not None or not root.is_dir():
         return
     f = state_file(root, TIPS_FILE)
-    state = read_json(f)
-    if time.time() - state.get("local_at", 0) < LOCAL_EVERY:
-        return
-    state["local_at"] = time.time()
-    _write_json(f, state)
+    with statelock.locked(root):
+        state = read_json(f)
+        if time.time() - state.get("local_at", 0) < LOCAL_EVERY:
+            return
+        state["local_at"] = time.time()
+        _write_json(f, state)
     try:
         on_round(root, fetch_prs=False, seen=seen)
     except Exception as e:  # noqa: BLE001 — facts must never break a command

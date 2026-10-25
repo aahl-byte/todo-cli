@@ -30,13 +30,11 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from . import checkout, connections, docs, gitfacts, render, store, sync, yamlio
+from . import checkout, connections, docs, gitfacts, identity, render, statelock, store, sync, yamlio
 from .remote import RemoteError, remote_for, sync_config
 from .uids import hash_uid
 from .util import now, to_str
@@ -51,12 +49,17 @@ CACHE_FILE = "plugins.json"
 RUNS_FILE = "plugin-runs.json"
 TIPS_FILE = "plugin-tips.json"
 DEFS_FILE = "plugin-defs.json"
-LOCK_FILE = "plugins.lock"
+DEFERRED_FILE = "plugin-deferred.json"
+PLUGIN_BUDGET = 20.0                # seconds of automatic plugin runs a command allows itself
+BATCH_JOBS = 8                      # jobs per host process, so the budget is checked between them
+MIN_RUN = 1.0                       # the least time a run is given, even when the budget is spent
 CACHE_EVERY = 60                    # seconds a synced store trusts its cached instances
 RETRY_EVERY = 60                    # seconds before a failed fetch of them is tried again
+STALE_AFTER = 3600                  # a cached list this old, while the server fails, can't be trusted
 FLOOR_EVERY = 60                    # seconds between checks for due `every:` floors
 DEFS_KEPT = 32
 LOG_KEPT = 50
+SEEN = "~seen"                      # in the tips file: each repo's ls-remote answer, as last handled
 REMOVED = "~removed"                # in the runs file: item → plugin uids a person removed
 RUNNER = "~runner"                  # in the runs file: uids the runner removed, until the server has the remove
 REMOVED_KEPT = 500
@@ -160,37 +163,11 @@ def call_host(payload: dict) -> dict:
 
 
 # ── state files ───────────────────────────────────────────────────────────────
-_locks = threading.local()
-
-
 def _state(root: Path, name: str) -> Path:
     return gitfacts.state_file(root, name)
 
 
-@contextlib.contextmanager
-def state_lock(root: Path):
-    """The one lock every read-modify-write of the plugin state files takes. Re-entrant per thread."""
-    depth = getattr(_locks, "depth", 0)
-    try:
-        import fcntl
-    except ImportError:              # Windows: no flock
-        fcntl = None
-    if depth or fcntl is None:
-        _locks.depth = depth + 1
-        try:
-            yield
-        finally:
-            _locks.depth = depth
-        return
-    f = _state(root, LOCK_FILE)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    with open(f, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        _locks.depth = 1
-        try:
-            yield
-        finally:
-            _locks.depth = 0
+state_lock = statelock.locked
 
 
 def _read(f: Path) -> dict:
@@ -198,16 +175,7 @@ def _read(f: Path) -> dict:
 
 
 def _write(f: Path, data: dict) -> None:
-    f.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as out:
-            json.dump(data, out, sort_keys=True, indent=1)
-        os.replace(tmp, f)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    statelock.write_json(f, data)
 
 
 @contextlib.contextmanager
@@ -245,22 +213,23 @@ def _ok(r) -> bool:
 
 # ── where an item's plugins come from ─────────────────────────────────────────
 def default_ref(d: Path, info: dict | None) -> tuple:
-    """(ref, None) for the default branch's tip as this checkout has it, or
-    (None, why). The default comes from ls-remote --symref, else origin/HEAD;
-    nothing is fetched."""
+    """(ref, why, older): the default branch's tip as this checkout has it, or
+    (None, why, False). The default comes from ls-remote --symref, else
+    origin/HEAD; nothing is fetched, so `older` says the ref is behind the
+    tip ls-remote saw."""
     default = (info or {}).get("default")
     if not default:
         r = _git(d, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
         head = r.stdout.strip() if _ok(r) else ""
         default = head.split("/", 1)[1] if head.startswith("origin/") else None
     if not default:
-        return None, "default"
+        return None, "default", False
     tip = ((info or {}).get("tips") or {}).get(default)
     if tip and _ok(_git(d, "cat-file", "-e", f"{tip}^{{commit}}")):
-        return tip, None
+        return tip, None, False
     if _ok(_git(d, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{default}")):
-        return f"refs/remotes/origin/{default}", None
-    return None, default
+        return f"refs/remotes/origin/{default}", default, bool(tip)
+    return None, default, False
 
 
 def _code_names(text: str) -> list:
@@ -368,6 +337,7 @@ class Context:
         self._stored: dict = {}
         self._own: str | None = None
         self._tips: dict | None = None
+        self.user = identity.user()
 
     @property
     def synced(self) -> bool:
@@ -411,7 +381,9 @@ class Context:
         if d is not None and self.local:
             payload = read_worktree(d)
         elif d is not None:
-            ref, why = default_ref(d, self.tips(key))
+            ref, why, older = default_ref(d, self.tips(key))
+            if older:
+                notice(f"plugins: running {key}'s plugins from an older copy of {why}; run git fetch origin")
             if ref is None:
                 notice(f"plugins: can't tell {key}'s default branch; run git remote set-head origin -a"
                        if why == "default" else f"plugins: {key}'s default branch {why} isn't fetched here; "
@@ -434,8 +406,9 @@ class Context:
         if not self.cfg:
             return _norm_stored(_read_local(self.root).get(key))
         got = _read(_state(self.root, CACHE_FILE)).get(key) or {}
+        failing = {**_norm_stored(got), "stale": time.time() - got.get("at", 0) > STALE_AFTER}
         if time.time() - got.get("failed_at", 0) < RETRY_EVERY:
-            return _norm_stored(got)
+            return failing
         if not self.fresh and time.time() - got.get("at", 0) < CACHE_EVERY:
             return _norm_stored(got)
         r = self.remote()
@@ -448,7 +421,7 @@ class Context:
             if e.status != 404:
                 with _updating(self.root, CACHE_FILE) as cache:
                     cache[key] = {**(cache.get(key) or {}), "failed_at": time.time()}
-                return _norm_stored(got)
+                return failing
             answer = _norm_stored({})
         with _updating(self.root, CACHE_FILE) as cache:
             cache[key] = {**answer, "at": time.time()}
@@ -474,16 +447,35 @@ class Context:
                 yamlio.write_atomic(_local_file(self.root), yamlio.dump(yamlio.yaml(), data))
         self._stored.pop(key, None)
 
-    def runs_here(self, key: str, plugin: str, inst: dict) -> bool:
-        """Whether this host runs the instance on its own: always on a local-only
-        store; on a synced one only when the server says it leaves it to the CLI."""
-        if not self.cfg:
-            return True
+    def listed(self, key: str, plugin: str, inst: dict) -> dict | None:
+        """The server's entry for the instance, from its plugin list."""
         for p in self.stored(key)["plugins"]:
             if p.get("name") == plugin:
-                return any(i.get("id") == inst.get("id") and i.get("server_runs") is False
-                           for i in p.get("instances") or [] if isinstance(i, dict))
-        return False
+                return next((i for i in p.get("instances") or [] if isinstance(i, dict) and i.get("id") == inst.get("id")),
+                            None)
+        return None
+
+    def owns(self, it: dict) -> bool:
+        """Whether this clone's user runs the item's CLI instances: its developer, else its creator."""
+        return (it.get("developer") or it.get("creator")) == self.user
+
+    def any_here(self, key: str, it: dict) -> bool:
+        """Whether this host could run any instance for the item on its own, without describing the repo."""
+        if not self.cfg:
+            return True
+        stored = self.stored(key)
+        return not stored.get("stale") and self.owns(it) and any(
+            isinstance(i, dict) and i.get("server_runs") is False for p in stored["plugins"] for i in p.get("instances") or [])
+
+    def runs_here(self, key: str, plugin: str, inst: dict, it: dict) -> bool:
+        """Whether this host runs the instance on its own: always on a local-only
+        store; on a synced one only when the server leaves it to the CLI, the
+        server's list is current enough to trust, and this clone owns the item."""
+        if not self.cfg:
+            return True
+        entry = self.listed(key, plugin, inst)
+        return bool(entry) and entry.get("server_runs") is False and not self.stored(key).get("stale") \
+            and self.owns(it)
 
 
 def _needs_no_settings(plugin: dict) -> bool:
@@ -575,7 +567,7 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
     if it is None:
         return None
     key = ctx.repo_key(it)
-    if not key:
+    if not key or (not job.anywhere and not ctx.any_here(key, it)):
         return None
     repo = ctx.repo(key)
     if repo["described"] is None:
@@ -584,18 +576,24 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
 
     def allowed(p, i) -> bool:
         iid = instance_id(p["name"], i)
-        return (job.only is None or iid in job.only) and (job.anywhere or ctx.runs_here(key, p["name"], i))
+        return (job.only is None or iid in job.only) and (job.anywhere or ctx.runs_here(key, p["name"], i, it))
 
     wanted = [(p, i) for p, insts in view for i in insts if allowed(p, i) and fires(p, i, job.event)]
     if not wanted:
         return None
+    blocked = [(p, i, why) for p, i in wanted for why in [_held_secret(ctx, key, p, i)] if why]
+    wanted = [(p, i) for p, i in wanted if not any(b[1] is i for b in blocked)]
     if not it.get("uid"):
-        store.ensure_uid(root, it["id"])
+        store.ensure_uid(root, it["id"], ctx.project if ctx.synced else None)
         it = store.get_item(root, it["id"])
+    plan = {"job": job, "item": it, "wanted": wanted, "payload": None,
+            "blocked": [(instance_id(p["name"], i), why) for p, i, why in blocked]}
+    if not wanted:
+        return plan
     stored = {name: [_without_secrets(i) for i in rows] for name, rows in ctx.stored(key)["instances"].items()}
     for p, insts in view:
         for i in insts:
-            if not allowed(p, i):
+            if not allowed(p, i) or any(b[1] is i for b in blocked):
                 rows = stored.setdefault(p["name"], [])
                 rows[:] = [r for r in rows if r.get("id") != i.get("id")]
                 rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
@@ -605,7 +603,19 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
                "dryRun": dry_run, "allowRepoCommands": True}
     if repo["payload"]:
         payload["repo"] = repo["payload"]
-    return {"job": job, "item": it, "wanted": wanted, "payload": payload}
+    plan["payload"] = payload
+    return plan
+
+
+def _held_secret(ctx: Context, key: str, plugin: dict, inst: dict) -> str | None:
+    """Why the instance can't run here when a setting it needs is a secret only the server holds."""
+    for k, v in (inst.get("settings") or {}).items():
+        spec = (plugin.get("settings") or {}).get(k) or {}
+        if is_secret_value(v) and not spec.get("optional") and "default" not in spec:
+            reason = (ctx.listed(key, plugin["name"], inst) or {}).get("server_runs_reason")
+            return (f"setting {k} is a secret the server holds, and the server can't run this instance"
+                    + (f": {reason}" if reason else ""))
+    return None
 
 
 def is_secret_value(v) -> bool:
@@ -622,6 +632,15 @@ def _without_secrets(inst: dict) -> dict:
 
 def _execute(ctx: Context, plans: list, *, dry_run: bool, lock: bool) -> list:
     """Run every plan in one host process and apply what comes back. `(item, runs)` per plan."""
+    for p in plans:
+        for iid, why in p.get("blocked") or []:
+            if not dry_run:
+                with _locked(ctx.root, p["item"], lock):
+                    apply(ctx.root, p["item"], iid, {"skipped": why}, p["job"].event)
+            notice(f"plugins: {iid} on {p['item']['id']}: {why}")
+    plans = [p for p in plans if p["payload"] is not None]
+    if not plans:
+        return []
     try:
         out = call_host({"mode": "events", "runs": [p["payload"] for p in plans]})
         answers = out.get("runs")
@@ -675,8 +694,8 @@ def run(ctx: Context, it: dict, event: dict, *, dry_run: bool = False, only: str
     plan = _plan(ctx, Job(it["id"], event, sel, anywhere), dry_run)
     if plan is None:
         return []
-    [(_, runs)] = _execute(ctx, [plan], dry_run=dry_run, lock=lock)
-    return runs
+    done = _execute(ctx, [plan], dry_run=dry_run, lock=lock)
+    return done[0][1] if done else []
 
 
 @contextlib.contextmanager
@@ -692,7 +711,7 @@ def _record_failure(root: Path, it: dict, iids: list, event: dict, error: str, l
     with _locked(root, it, lock), _updating(root, RUNS_FILE) as runs:
         mine = runs.setdefault(item_key(it), {})
         for iid in iids:
-            mine[iid] = {**_carried(mine.get(iid)), "at": now(), "event": event_label(event), "error": error[:2000]}
+            mine[iid] = {"at": now(), "event": event_label(event), "error": error[:2000]}
 
 
 def item_key(it: dict) -> str | None:
@@ -709,11 +728,6 @@ def event_label(event: dict) -> str:
     if t == "manual":
         return f'manual {event.get("instance")}'
     return str(t)
-
-
-def _carried(prev: dict | None) -> dict:
-    """What a run that changes nothing keeps from the previous record: what the instance owns."""
-    return {"uids": prev["uids"]} if prev and prev.get("uids") else {}
 
 
 # ── applying a result ─────────────────────────────────────────────────────────
@@ -754,54 +768,35 @@ def apply(root: Path, it: dict, iid: str, result: dict, event: dict, *, dry_run:
 def _apply(root: Path, it: dict, iid: str, result: dict, event: dict, dry_run: bool, runs: dict) -> dict:
     ikey = item_key(it)
     mine = runs.setdefault(ikey, {})
-    prev = mine.get(iid)
     rec = {"at": now(), "event": event_label(event)}
     log = [to_str(x) for x in result.get("log") or []]
     if result.get("wouldSend"):
         rec["would_send"] = len(result["wouldSend"])
-    item_dir = root / it["folder"] / it["id"]
-    notes = store.read_entries(item_dir / store.NOTES_DIR)
-    logs = store.read_entries(item_dir / store.LOG_DIR)
-    present = {e["meta"].get("uid") for e in notes + logs if e["meta"].get("uid")}
-    gone = runs.setdefault(REMOVED, {}).setdefault(ikey, [])
-    gone += [u for u in (prev or {}).get("uids") or [] if u not in present and u not in gone]
     changes = {"added": 0, "updated": 0, "removed": 0}
     if result.get("error") or result.get("skipped") or dry_run:
         rec.update({k: to_str(result[k])[:2000] for k in ("error", "skipped") if result.get(k)})
         if dry_run and not (result.get("error") or result.get("skipped")):
             rec["dry_run"] = True
             rec["attached"] = [_summary(a) for a in result.get("attached") or [] if isinstance(a, dict)]
-        owned = [u for u in (prev or {}).get("uids") or [] if u in present]
     else:
-        adds = {e["meta"].get("uid") for e in notes + logs
-                if e["meta"].get("plugin") == iid and e["meta"].get("kind") not in REPLACED}
-        kept, attached, dropped = _attach(root, it, iid, result, item_dir, notes, present, gone, log, changes)
-        if dropped and sync.enabled(root):
-            runs.setdefault(RUNNER, {}).update({u: ikey for u in dropped})
-        owned = sorted((kept | adds) - set(gone) - {None})
-        rec["attached"] = attached
-    if owned:
-        rec["uids"] = sorted(owned)
+        rec["attached"] = _attach(root, it, iid, result, set((runs.get(REMOVED) or {}).get(ikey) or []),
+                                  log, changes, runs)
     if log:
         rec["log"] = log[-LOG_KEPT:]
     mine[iid] = rec
-    runs[REMOVED][ikey] = gone[-REMOVED_KEPT:]
-    if not runs[REMOVED][ikey]:
-        del runs[REMOVED][ikey]
-    if not runs[REMOVED]:
-        del runs[REMOVED]
     return changes
 
 
-def _attach(root: Path, it: dict, iid: str, result: dict, item_dir: Path, notes: list, present: set,
-            gone: list, log: list, changes: dict) -> tuple:
+def _attach(root: Path, it: dict, iid: str, result: dict, gone: set, log: list, changes: dict, runs: dict) -> list:
     item_uid = it["uid"]
+    item_dir = root / it["folder"] / it["id"]
+    notes = store.read_entries(item_dir / store.NOTES_DIR)
+    present = {e["meta"].get("uid") for e in notes + store.read_entries(item_dir / store.LOG_DIR) if e["meta"].get("uid")}
     by_uid = {e["meta"].get("uid"): e for e in notes if e["meta"].get("uid")}
     kept: set = set()
     linked: set = set()
     wrote_docs: set = set()
     attached = []
-    dropped = []
     for a in result.get("attached") or []:
         if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc") or not a.get("key"):
             continue
@@ -814,7 +809,10 @@ def _attach(root: Path, it: dict, iid: str, result: dict, item_dir: Path, notes:
         uid = hash_uid("plugin", iid, item_uid, key)
         tag = {"plugin": iid, "plugin_key": a["key"]}
         if kind != "doc" and uid in gone:
-            log.append(f'skipped {kind} {a["key"]}: someone removed it from the item')
+            if uid in present:
+                kept.add(uid)                # back since a person removed it: left as it is
+            else:
+                log.append(f'skipped {kind} {a["key"]}: someone removed it from the item')
             continue
         if kind == "link":
             url = to_str(a.get("url"))
@@ -841,14 +839,18 @@ def _attach(root: Path, it: dict, iid: str, result: dict, item_dir: Path, notes:
         if kind != "doc":
             kept.add(uid)
         attached.append(_summary(a))
-    for e in notes:
-        m = e["meta"]
-        if m.get("plugin") == iid and m.get("kind") in REPLACED and m.get("uid") not in kept:
-            store.remove_note(root, it["id"], e["id"])
-            dropped.append(m.get("uid"))
-            changes["removed"] += 1
+    stale = [e for e in notes if e["meta"].get("plugin") == iid and e["meta"].get("kind") in REPLACED
+             and e["meta"].get("uid") not in kept]
+    if stale and sync.enabled(root):
+        # Recorded first, so a crash mid-removal still tells the server these were the runner's.
+        runs.setdefault(RUNNER, {}).update({e["meta"].get("uid"): item_key(it) for e in stale})
+        _write(_state(root, RUNS_FILE), runs)
+        sync.mark_changed(root, it["id"])
+    for e in stale:
+        store.remove_note(root, it["id"], e["id"])
+        changes["removed"] += 1
     _drop_docs(it, iid, item_dir, wrote_docs, log, changes)
-    return kept, attached, dropped
+    return attached
 
 
 def _put_note(root: Path, it: dict, uid: str, a: dict, tag: dict, e: dict | None, changes: dict) -> None:
@@ -968,16 +970,25 @@ def _open_items(root: Path) -> list:
 
 def push_jobs(ctx: Context, seen: dict | None, queued: list) -> tuple:
     """(jobs, tips to save once they ran): a push for each open item branch whose
-    tip moved since plugins last saw it. A repo seen for the first time only
-    records its tips; a branch a queued push already covers fires once."""
+    tip moved since plugins last saw it, from the ls-remote answers git facts
+    saved (and this command's). A repo seen for the first time only records
+    its tips; a branch a queued push already covers fires once."""
     root = ctx.root
-    tips_now = {}
-    jobs = []
     state = _read(_state(root, TIPS_FILE))
-    items = _open_items(root) if seen or queued else []
+    views = {k: v for k, v in _read(gitfacts.state_file(root, gitfacts.TIPS_FILE)).items()
+             if isinstance(v, dict) and isinstance(v.get("tips"), dict)}
+    views.update(seen or {})
+    marks = state.get(SEEN) or {}
+    fresh = {k: hashlib.sha1(json.dumps(v["tips"], sort_keys=True).encode()).hexdigest() for k, v in views.items()}
+    moved = [k for k in views if fresh[k] != marks.get(k)]
     covered = {(j.item_id, j.event.get("branch")) for j in queued if j.event.get("type") == "push"}
-    for key, info in (seen or {}).items():
-        tips = info.get("tips") or {}
+    if not moved and not covered:
+        return [], {}
+    items = _open_items(root)
+    tips_now: dict = {}
+    jobs = []
+    for key in moved:
+        tips = views[key]["tips"]
         before = state.get(key)
         after = {}
         for it in items:
@@ -994,9 +1005,10 @@ def push_jobs(ctx: Context, seen: dict | None, queued: list) -> tuple:
     for item_id, b in covered:
         it = next((x for x in items if x["id"] == item_id), None)
         key = ctx.repo_key(it) if it else ""
-        sha = (ctx.tips(key).get("tips") or {}).get(b) if key else None
+        sha = ((views.get(key) or {}).get("tips") or {}).get(b) if key else None
         if sha and (key in state or key in tips_now):
             tips_now.setdefault(key, dict(state.get(key) or {}))[b] = sha
+    tips_now[SEEN] = {**marks, **{k: fresh[k] for k in moved}}
     return jobs, tips_now
 
 
@@ -1020,10 +1032,12 @@ def floor_jobs(ctx: Context) -> list:
         key = ctx.repo_key(it)
         if not key:
             continue
+        if not ctx.any_here(key, it):
+            continue
         mine = runs.get(item_key(it)) or {}
         due = {instance_id(p["name"], i) for p, insts in plugin_view(ctx, key) for i in insts
                if duration(p.get("every")) is not None and i.get("enabled") is not False
-               and ctx.runs_here(key, p["name"], i)
+               and ctx.runs_here(key, p["name"], i, it)
                and _since(mine.get(instance_id(p["name"], i))) >= duration(p["every"])}
         if due:
             jobs.append(Job(it["id"], {"type": "refresh"}, due))
@@ -1041,14 +1055,12 @@ def _since(rec: dict | None) -> float:
 
 
 def run_jobs(ctx: Context, jobs: list, *, lock: bool = True, report: bool = False) -> list:
-    """Run the jobs in one host process, never raising; then once more for the
-    events those runs set off. `(item, runs)` per job that ran."""
+    """Run the jobs in batches of one host process each, never raising, then
+    once more for the events those runs set off. Once PLUGIN_BUDGET seconds
+    have gone, the jobs left wait for the next command. `(item, runs)` per job that ran."""
     sys.stdout.flush()
-    if host_command() is None:
-        if any(_has_repo(ctx, j if isinstance(j, Job) else Job(*j)) for j in jobs):
-            notice(NO_NODE)
-        return []
-    out, done = [], set()
+    started = time.monotonic()
+    out, done, left = [], set(), []
     for _ in range(2):
         plans = []
         for job in _merged([j if isinstance(j, Job) else Job(*j) for j in jobs]):
@@ -1065,19 +1077,53 @@ def run_jobs(ctx: Context, jobs: list, *, lock: bool = True, report: bool = Fals
                 continue
             if plan is not None:
                 plans.append(plan)
-        if plans:
+        if plans and host_command() is None and any(p["payload"] for p in plans):
+            notice(NO_NODE)
+            return out
+        for n in range(0, len(plans), BATCH_JOBS):
+            batch = plans[n:n + BATCH_JOBS]
+            remaining = PLUGIN_BUDGET - (time.monotonic() - started)
+            if n and remaining <= 0:
+                left += [p["job"] for p in plans[n:]]
+                break
+            share = int(max(remaining, MIN_RUN) * 1000 / max(1, sum(1 for p in batch if p["payload"])))
+            for p in batch:
+                if p["payload"]:
+                    p["payload"]["limits"] = {"deadlineMs": share}
             try:
-                out += [(it, runs) for it, runs in _execute(ctx, plans, dry_run=False, lock=lock) if runs]
+                out += [(it, runs) for it, runs in _execute(ctx, batch, dry_run=False, lock=lock) if runs]
             except Exception as e:  # noqa: BLE001
                 notice(f"plugins: skipped ({type(e).__name__}: {e})")
         jobs = _take_queue()
-        if not jobs:
+        if not jobs or left:
+            left += [j for j in jobs]
             break
+    if left:
+        _defer(ctx.root, left)
+        notice(f"plugins: {len(left)} job(s) wait for the next command")
     if report:
         for it, runs in out:
             for line in run_lines(it, runs):
                 print(line)
     return out
+
+
+def _defer(root: Path, jobs: list) -> None:
+    with _updating(root, DEFERRED_FILE) as state:
+        state["jobs"] = (state.get("jobs") or []) + [
+            {"item": j.item_id, "event": j.event, "only": sorted(j.only) if j.only is not None else None,
+             "anywhere": j.anywhere} for j in jobs]
+
+
+def _deferred(root: Path) -> list:
+    """The jobs an earlier command's budget left, taken off the list."""
+    f = _state(root, DEFERRED_FILE)
+    if not f.exists():
+        return []
+    with _updating(root, DEFERRED_FILE) as state:
+        rows, state["jobs"] = state.get("jobs") or [], []
+    return [Job(r["item"], r["event"], None if r.get("only") is None else set(r["only"]), bool(r.get("anywhere")))
+            for r in rows if isinstance(r, dict) and r.get("item") and isinstance(r.get("event"), dict)]
 
 
 def _merged(jobs: list) -> list:
@@ -1090,11 +1136,6 @@ def _merged(jobs: list) -> list:
         elif out[k].only is not None:
             out[k].only = None if j.only is None else out[k].only | set(j.only)
     return list(out.values())
-
-
-def _has_repo(ctx: Context, job: Job) -> bool:
-    it = store.get_item(ctx.root, job.item_id)
-    return it is not None and is_open(ctx.root, it) and bool(ctx.repo_key(it))
 
 
 def run_lines(it: dict, runs: list, where: str = "") -> list:
@@ -1123,9 +1164,10 @@ def _round_jobs(ctx: Context, seen: dict | None, queued: list) -> list:
 
 
 def after_command(root: Path, seen: dict | None = None) -> None:
-    """The plugins a command set off: its status moves and new branches, and on
-    a local-only store the pushes and floors since the last check. Tips advance
-    even with plugins off, so turning them on later doesn't replay old pushes."""
+    """The plugins a command set off, once its own output is out: its status
+    moves and new branches, the pushes git facts saw, due floors, and whatever
+    an earlier command's budget left. Tips advance even with plugins off, so
+    turning them on later doesn't replay old pushes."""
     if root is None or not root.is_dir():
         _take_queue()
         return
@@ -1133,20 +1175,9 @@ def after_command(root: Path, seen: dict | None = None) -> None:
         queued = _take_queue()
         if off():
             queued = []
-        ctx = Context(root, seen=seen)
-        if sync.enabled(root):
-            if queued:
-                _round_jobs(ctx, None, queued)
         else:
-            _round_jobs(ctx, seen, queued)
-    except Exception as e:  # noqa: BLE001
-        notice(f"plugins: skipped ({type(e).__name__}: {e})")
-
-
-def after_round(root: Path, remote, project: str | None, seen: dict | None) -> None:
-    """A synced store's plugins after a round: pushes the round's ls-remote saw, and due floors."""
-    try:
-        _round_jobs(Context(root, remote=remote, project=project, seen=seen), seen, [])
+            queued = _deferred(root) + queued
+        _round_jobs(Context(root, seen=seen), seen, queued)
     except Exception as e:  # noqa: BLE001
         notice(f"plugins: skipped ({type(e).__name__}: {e})")
 

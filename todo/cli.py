@@ -714,8 +714,15 @@ def cmd_renote(root: Path, args) -> None:
 def cmd_unnote(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _note_id(it, args.id)
+    _forget_plugin_entry(root, it, next(n for n in it["notes"] if n["id"] == args.id))
     store.remove_note(root, it["id"], args.id)
     print(f'{it["id"]}: removed note [{args.id}]')
+
+
+def _forget_plugin_entry(root: Path, it, entry) -> None:
+    """A person removing what a plugin attached: the plugin never makes it again."""
+    if (entry.get("meta") or {}).get("plugin") and it.get("uid") and entry.get("uid"):
+        plugins_mod.forget(root, it["uid"], entry["uid"])
 
 
 def cmd_log(root: Path, args) -> None:
@@ -734,6 +741,7 @@ def cmd_logs(root: Path, args) -> None:
 def cmd_unlog(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _log_id(it, args.id)
+    _forget_plugin_entry(root, it, next(e for e in it["log"] if e["id"] == args.id))
     store.remove_log(root, it["id"], args.id)
     print(f'{it["id"]}: removed log [{args.id}]')
 

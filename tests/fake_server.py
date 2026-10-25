@@ -44,6 +44,7 @@ class FakeServer:
         self.plugin_gets = 0
         self.plugin_tombs = set()
         self.host_secrets = []
+        self.feed_by_plugin = True   # False: an older server, whose feed doesn't say who removed a note
         self.plugins_down = False
         self.creds_unkeyed = False   # no TODO_SECRET_KEY: credentials answer 503
 
@@ -423,6 +424,8 @@ class FakeServer:
                                 "deleted": row is None, "data": data})
                     if e == "doc" and row is None and uid in server.doc_tombs:
                         out[-1]["last_sha256"] = server.doc_tombs[uid]
+                    if e in ("note", "log") and row is None and server.feed_by_plugin:
+                        out[-1]["by_plugin"] = uid in server.plugin_tombs
                 return {"changes": out, "cursor": rows[-1][0] if rows else since,
                         "more": len(rows) == limit, "deploy_step": server.deploy_step,
                         "actions": server.actions}

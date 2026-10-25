@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -133,10 +134,12 @@ def test_pr_link_links_a_branch_pr_that_syncs_with_its_deterministic_uid(fx, git
     monkeypatch.setattr(plugins, "remote_for", lambda root: server.client("alice"))
     cli_runs(server, fx.root, "pr-link/default")
     a = item_with_branch(fx)
-    sync.run_round(fx.root, server.client("alice"))            # the item's uid; first sight of the repo's tips
+    sync.run_round(fx.root, server.client("alice"))            # the item's uid
+    plugins.after_command(fx.root)                              # first sight of the repo's tips
     url = github.pr("feat/a", 7, "Fix login")
-    fx.commit("feat/a", "more.txt", "y\n")                     # the tip moves: the next round's push event
+    fx.commit("feat/a", "more.txt", "y\n")                     # the tip moves: a push event after the command
     sync.run_round(fx.root, server.client("alice"))
+    plugins.after_command(fx.root)
     it = store.resolve_item(fx.root, a)
     [note] = plugin_notes(fx.root, a)
     assert (note["kind"], note["text"]) == ("link", "#7 · Fix login")
@@ -409,17 +412,6 @@ def test_a_host_that_fails_is_one_notice_and_the_command_goes_on(fx, host, monke
     plugins.after_command(fx.root)
     err = capsys.readouterr().err
     assert err.count("the plugin host exited 3") == 1 and store.get_item(fx.root, a)["notes"] == []
-
-
-def test_without_node_plugins_skip_with_one_notice(fx, on, monkeypatch, capsys):
-    real = shutil.which
-    monkeypatch.setattr(plugins.shutil, "which", lambda name, *a, **kw: None if name == "node" else real(name, *a, **kw))
-    a, b = fx.item("Alpha", []), fx.item("Beta", [])
-    plugins.queue(a, {"type": "status", "from": "todo", "to": "in-progress"})
-    plugins.queue(b, {"type": "status", "from": "todo", "to": "in-progress"})
-    plugins.after_command(fx.root)
-    assert capsys.readouterr().err.count(plugins.NO_NODE) == 1
-    assert not (fx.root / plugins.RUNS_FILE).exists() and not (fx.root / ".plugin-runs.json").exists()
 
 
 def test_a_new_branch_runs_a_refresh_for_the_item(fx, host):
@@ -994,3 +986,270 @@ def test_adding_an_item_runs_one_refresh(fx, host):
     run_cli(fx.root, ["add", "New thing"])
     plugins.after_command(fx.root)
     assert [(c["item"]["id"], c["event"]) for c in host.calls()] == [("new-thing", {"type": "refresh"})]
+
+
+# ── one clone per instance, and who removed what ─────────────────────────────
+def as_user(monkeypatch, who):
+    monkeypatch.setenv("TODO_USER", who)
+
+
+def two_clones(fx, host, monkeypatch, tmp_path):
+    server = FakeServer()
+    git(tmp_path, "clone", "-q", str(fx.origin), str(tmp_path / "work2"))
+    b_root = tmp_path / "work2" / ".TODO"
+    (b_root / "OPEN").mkdir(parents=True)
+    for r in (fx.root, b_root):
+        remote.save_sync_config(r, {"url": "http://fake", "project": "p", "deploy_step": True})
+    monkeypatch.setattr(plugins, "remote_for", lambda root: server.client("tester" if Path(root) == fx.root else "bob"))
+    cli_runs(server, fx.root, "p/default")
+    return server, b_root
+
+
+def test_only_the_item_s_owner_runs_a_cli_instance(fx, host, monkeypatch, tmp_path):
+    server, b_root = two_clones(fx, host, monkeypatch, tmp_path)
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, server.client("tester"))
+    sync.run_round(b_root, server.client("bob"), adopt=True)
+    host.results({"refresh": [ran("p", [LINK])]})
+    as_user(monkeypatch, "bob")
+    assert refresh(b_root, a) == [] and host.calls() == []         # bob isn't the developer or creator
+    as_user(monkeypatch, "tester")
+    refresh(fx.root, a)
+    assert len(host.calls()) == 1
+    run_cli(fx.root, ["assign", a, "--dev", "bob"])
+    assert refresh(fx.root, a) == []
+    as_user(monkeypatch, "bob")
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": ["manual"], "settings": {}}])
+    host.results({"manual": [ran("p")]})
+    run_cli(b_root, ["plugin", "run", a, "p/default"])             # a manual run goes anywhere
+    assert len(host.calls()) == 2
+
+
+def test_a_link_the_runner_dropped_and_brought_back_survives_on_both_clones(fx, host, monkeypatch, tmp_path):
+    server, b_root = two_clones(fx, host, monkeypatch, tmp_path)
+    a = item_with_branch(fx)
+    rA = lambda: sync.run_round(fx.root, server.client("tester"))      # noqa: E731
+    rB = lambda **kw: sync.run_round(b_root, server.client("bob"), **kw)  # noqa: E731
+    rA()
+    rB(adopt=True)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    rA()
+    rB()
+    host.results({"refresh": [ran("p", [])]})
+    refresh(fx.root, a)
+    rA()
+    rB()
+    host.results({"refresh": [ran("p", [LINK])]})
+    for _ in range(2):
+        refresh(fx.root, a)
+        rA()
+        rB()
+    for root in (fx.root, b_root):
+        assert [n["meta"]["url"] for n in plugin_notes(root, a, "p/default")] == [LINK["url"]]
+        assert plugins.removed(root, store.resolve_item(root, a)) == []
+
+
+def test_a_person_s_removal_is_recorded_when_made_and_when_pulled(fx, host, monkeypatch, tmp_path):
+    server, b_root = two_clones(fx, host, monkeypatch, tmp_path)
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, server.client("tester"))
+    sync.run_round(b_root, server.client("bob"), adopt=True)
+    host.results({"refresh": [ran("p", [LINK, {"kind": "log", "key": "log:hi", "text": "hi"}])]})
+    refresh(fx.root, a)
+    sync.run_round(fx.root, server.client("tester"))
+    sync.run_round(b_root, server.client("bob"))
+    [note] = plugin_notes(b_root, a, "p/default")
+    run_cli(b_root, ["unnote", a, str(note["id"])])               # bob removes the link by hand
+    [entry] = store.get_item(b_root, a)["log"]
+    run_cli(b_root, ["unlog", a, str(entry["id"])])
+    it_b = store.resolve_item(b_root, a)
+    assert sorted(plugins.removed(b_root, it_b)) == sorted([note["uid"], entry["uid"]])
+    sync.run_round(b_root, server.client("bob"))
+    sync.run_round(fx.root, server.client("tester"))
+    assert note["uid"] in plugins.removed(fx.root, store.resolve_item(fx.root, a))
+    refresh(fx.root, a)
+    assert plugin_notes(fx.root, a, "p/default") == []
+
+
+def test_an_older_feed_records_no_removal(fx, host, monkeypatch, tmp_path):
+    server, b_root = two_clones(fx, host, monkeypatch, tmp_path)
+    server.feed_by_plugin = False
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, server.client("tester"))
+    sync.run_round(b_root, server.client("bob"), adopt=True)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    sync.run_round(fx.root, server.client("tester"))
+    sync.run_round(b_root, server.client("bob"))
+    [note] = plugin_notes(b_root, a, "p/default")
+    run_cli(b_root, ["unnote", a, str(note["id"])])
+    sync.run_round(b_root, server.client("bob"))
+    sync.run_round(fx.root, server.client("tester"))
+    assert plugins.removed(fx.root, store.resolve_item(fx.root, a)) == []
+
+
+def test_the_runner_never_deletes_a_present_note_a_person_removed_before(fx, host):
+    a = item_with_branch(fx)
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    [note] = plugin_notes(fx.root, a, "p/default")
+    plugins.forget(fx.root, store.resolve_item(fx.root, a)["uid"], note["uid"])   # e.g. pulled before the note came back
+    refresh(fx.root, a)
+    assert [n["uid"] for n in plugin_notes(fx.root, a, "p/default")] == [note["uid"]]
+
+
+def test_a_crash_between_removing_and_recording_keeps_the_runner_s_removal(fx, synced, host, monkeypatch):
+    cli_runs(synced, fx.root, "p/default")
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, synced.client("alice"))
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    sync.run_round(fx.root, synced.client("alice"))
+    real = store.remove_note
+
+    def crash(*a, **kw):
+        real(*a, **kw)
+        raise KeyboardInterrupt
+    monkeypatch.setattr(store, "remove_note", crash)
+    with pytest.raises(KeyboardInterrupt):
+        plugins.apply(fx.root, store.get_item(fx.root, a), "p/default", {"attached": [], "log": []}, {"type": "refresh"})
+    monkeypatch.setattr(store, "remove_note", real)
+    sync.run_round(fx.root, synced.client("alice"))
+    assert [op.get("plugin") for b in synced.pushes for op in b if op["op"] == "remove"] == [True]
+    host.results({"refresh": [ran("p", [LINK])]})
+    refresh(fx.root, a)
+    sync.run_round(fx.root, synced.client("alice"))
+    assert len(plugin_notes(fx.root, a, "p/default")) == 1
+
+
+# ── git facts share the state lock ────────────────────────────────────────────
+def test_git_facts_keep_what_another_process_wrote_meanwhile(fx, monkeypatch):
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    item_with_branch(fx)
+    f = gitfacts.state_file(fx.root, gitfacts.TIPS_FILE)
+    real = gitfacts.Repo.ls_remote
+
+    def meanwhile(self):
+        out = real(self)
+        with plugins.state_lock(fx.root):
+            data = gitfacts.read_json(f)
+            data["local_at"] = 12345
+            f.write_text(json.dumps(data))
+        return out
+    monkeypatch.setattr(gitfacts.Repo, "ls_remote", meanwhile)
+    gitfacts.on_round(fx.root)
+    state = gitfacts.read_json(f)
+    assert state["local_at"] == 12345 and gitfacts.store_repo(fx.root)[0] in state
+
+
+# ── commands come first ───────────────────────────────────────────────────────
+def test_a_round_never_runs_plugins_the_command_runs_them_after(fx, synced, host, monkeypatch):
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    cli_runs(synced, fx.root, "p/default")
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, synced.client("alice"))
+    plugins.after_command(fx.root)                                  # first sight
+    fx.commit("feat/a", "m.txt", "1\n")
+    sync.run_round(fx.root, synced.client("alice"))
+    assert host.calls() == []
+    plugins.after_command(fx.root)
+    assert [(c["item"]["id"], c["event"]) for c in host.calls()] == [(a, {"type": "push", "branch": "feat/a"})]
+
+
+def test_a_command_s_plugin_budget_defers_the_rest(fx, host, monkeypatch, capsys):
+    monkeypatch.setattr(plugins, "PLUGIN_BUDGET", 0.0)
+    monkeypatch.setattr(plugins, "BATCH_JOBS", 1)
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": [{"status": {"to": "review"}}],
+                    "settings": {}}])
+    items = [fx.item(f"Item {n}", []) for n in range(3)]
+    for i in items:
+        plugins.queue(i, {"type": "status", "from": "in-progress", "to": "review"})
+    plugins.after_command(fx.root)
+    assert len(host.calls()) == 1 and "plugins: 2 job(s) wait for the next command" in capsys.readouterr().err
+    monkeypatch.setattr(plugins, "PLUGIN_BUDGET", 20.0)
+    monkeypatch.setattr(plugins, "BATCH_JOBS", 8)
+    plugins.after_command(fx.root)
+    assert sorted(c["item"]["id"] for c in host.calls()) == sorted(items)
+
+
+# ── minor rules ───────────────────────────────────────────────────────────────
+def test_a_stale_list_from_a_failing_server_runs_nothing(fx, synced, host):
+    cli_runs(synced, fx.root, "p/default")
+    a = item_with_branch(fx)
+    key = gitfacts.store_repo(fx.root)[0]
+    plugins.Context(fx.root, fresh=True).stored(key)
+    f = fx.root / ".sync" / "plugins.json"
+    cache = json.loads(f.read_text())
+    cache[key]["at"] = time.time() - 2 * 3600
+    f.write_text(json.dumps(cache))
+    synced.plugins_down = True
+    host.results({"refresh": [ran("p", [LINK])]})
+    assert refresh(fx.root, a) == [] and host.calls() == []
+
+
+def test_an_older_copy_of_the_default_branch_says_so(fx, host, capsys):
+    key = gitfacts.store_repo(fx.root)[0]
+    ctx = plugins.Context(fx.root, seen={key: {"default": "main", "tips": {"main": "1" * 40}, "dir": fx.work}})
+    assert ctx.repo(key)["payload"] is not None
+    assert f"plugins: running {key}'s plugins from an older copy of main; run git fetch origin" in capsys.readouterr().err
+
+
+def test_no_cli_instance_on_the_server_list_costs_nothing(fx, synced, host, monkeypatch):
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    monkeypatch.setattr(plugins, "FLOOR_EVERY", -1)
+    key = gitfacts.store_repo(fx.root)[0]
+    synced.plugin_config[key] = {"plugins": [{"name": "p", "instances": [{"id": "default", "server_runs": True}]}]}
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, synced.client("alice"))
+    plugins.after_command(fx.root)
+    fx.commit("feat/a", "m.txt", "1\n")
+    sync.run_round(fx.root, synced.client("alice"))
+    plugins.queue(a, {"type": "status", "from": "in-progress", "to": "review"})
+    plugins.after_command(fx.root)
+    assert host.calls("describe") == [] and host.calls() == []
+
+
+def test_without_node_the_notice_comes_only_for_what_would_run(fx, host, monkeypatch, capsys):
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": [{"status": {"to": "review"}}],
+                    "settings": {}}])
+    a = fx.item("Alpha", [])
+    plugins.queue(a, {"type": "status", "from": "todo", "to": "in-progress"})
+    plugins.after_command(fx.root)                                  # caches the description; nothing fires
+    stamp = plugins._host_stamp()                                   # the same bundle, now without node
+    monkeypatch.setattr(plugins, "_host_stamp", lambda: stamp)
+    monkeypatch.delenv(plugins.HOST_ENV)
+    real = shutil.which
+    monkeypatch.setattr(plugins.shutil, "which", lambda name, *x, **kw: None if name == "node" else real(name, *x, **kw))
+    plugins.queue(a, {"type": "status", "from": "todo", "to": "in-progress"})
+    plugins.after_command(fx.root)
+    assert plugins.NO_NODE not in capsys.readouterr().err
+    plugins.queue(a, {"type": "status", "from": "in-progress", "to": "review"})
+    plugins.after_command(fx.root)
+    assert capsys.readouterr().err.count(plugins.NO_NODE) == 1
+
+
+def test_a_secret_only_the_server_holds_says_why_it_can_t_run(fx, synced, host):
+    key = gitfacts.store_repo(fx.root)[0]
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": ["push"],
+                    "settings": {"token": {"label": "Token", "type": "secret"}}}])
+    synced.plugin_config[key] = {
+        "instances": {"p": [{"id": "default", "name": "default", "settings": {"token": {"set": True}}}]},
+        "plugins": [{"name": "p", "instances": [{"id": "default", "server_runs": False,
+                                                 "server_runs_reason": "the server can't reach github"}]}]}
+    a = item_with_branch(fx)
+    refresh(fx.root, a)
+    assert host.calls() == []
+    rec = plugins.records(fx.root, store.resolve_item(fx.root, a))["p/default"]
+    assert rec["skipped"] == ("setting token is a secret the server holds, and the server can't run this "
+                              "instance: the server can't reach github")
+
+
+def test_a_uid_written_for_a_run_is_the_one_sync_would_give(fx, synced, host):
+    a = fx.item("Alpha", [])
+    item_file = fx.root / store.OPEN / a / store.ITEM_FILE
+    y, meta = yamlio.load(item_file)
+    del meta["uid"]
+    yamlio.save(y, item_file, meta)
+    store.ensure_uid(fx.root, a, "p")
+    assert store.resolve_item(fx.root, a)["uid"] == hash_uid("p", a, meta["created"])

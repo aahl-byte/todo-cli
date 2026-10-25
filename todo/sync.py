@@ -631,7 +631,7 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     pushed_status: set = set()
     try:
         ensure_uids(root, project, ids)
-        seen = _git_facts(root, remote, project)    # before the push: the server's guard reads them
+        _git_facts(root, remote, project)       # before the push: the server's guard reads them
         if adopt and not snap["entities"]:
             # First link: the server's state wins over the clone, and every
             # field it replaces is reported.
@@ -669,7 +669,6 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             checkout.report(sync_dir(root), remote, project)
         except RemoteError:
             pass                    # a server without checkout reports, or a blip; the next round retries
-        plugins.after_round(root, remote, project, seen)
     except RemoteError as e:
         report.error = str(e)
     finally:
@@ -679,15 +678,12 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     return report
 
 
-def _git_facts(root: Path, remote: Remote, project: str) -> dict:
-    """Recompute git facts for branches that moved, and post what changed.
-    Returns each repo's ls-remote answer, for the plugins' push events."""
-    seen: dict = {}
+def _git_facts(root: Path, remote: Remote, project: str) -> None:
+    """Recompute git facts for branches that moved, and post what changed."""
     try:
-        gitfacts.on_round(root, remote, project, seen=seen)
+        gitfacts.on_round(root, remote, project)
     except Exception as e:  # noqa: BLE001 — git facts must never break a round
         print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
-    return seen
 
 
 BATCH_BYTES = 1_000_000          # well under Vercel's 4.5 MB request limit
@@ -1223,10 +1219,14 @@ def _write_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
         if entity != "item" and ((item_uid not in now.item_dirs and item_uid in ents)
                                   or item_uid in now.incomplete):
             return False            # its item is unreadable or only partly read: delete once it's fixed
+        owner = _plugin_owned(entity, (now.entities.get(uid) or ents.get(uid) or {}).get("data") or {})
         try:
             _delete_local(now, entity, uid, item_uid)
         except Exception:  # noqa: BLE001 — a malformed child file: delete once it's fixed
             return False
+        if owner and ch.get("by_plugin") is False:
+            from . import plugins
+            plugins.forget(root, item_uid, uid)         # a person removed it: the plugin never makes it again
         ents.pop(uid, None)
         _undefer(snap, uid)
         removed = snap.setdefault("removed", [])
