@@ -1175,3 +1175,27 @@ def test_a_chain_onto_an_archived_dependency_that_landed_is_landed(fx):
     gitfacts.refresh(fx.root)
     [e] = fx.facts(b)["needs"]
     assert (e["id"], e["state"]) == (a, "landed")
+
+
+def test_the_rewritten_hint_clears_once_the_dependent_merges_the_target_in(fx):
+    a, b = amended_parent(fx)
+    fx.merge("feat/a", "staging")
+    fx.refresh()
+    demoted(fx, a, b)
+    fx.merge("staging", "feat/b")
+    fx.refresh()
+    f = fx.facts(b)
+    assert f["needs"] == [] and f["shares"] == [] and f["waits_on"] == []
+    fx.refresh()
+    assert fx.facts(b)["shares"] == []
+
+
+def test_the_rewritten_hint_clears_after_a_squash_landing_too(fx):
+    a, b = amended_parent(fx)
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
+    demoted(fx, a, b)
+    fx.merge("staging", "feat/b")
+    gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
+    assert fx.facts(b)["shares"] == [] and fx.facts(b)["needs"] == []

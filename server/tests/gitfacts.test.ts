@@ -322,6 +322,23 @@ describe("PR base chains and other edge cases", () => {
     }
   });
 
+  it("clears the rewritten hint once the dependent merges the target in", async () => {
+    const B2 = sha("7");
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec()).impl);
+    const landed = (bHead: string, bCommits: string[], extra: Record<string, string> = {}) => fakeGitHub({
+      tips: { main: M, staging: S, "feat/a": A2, "feat/b": bHead }, track: TRACK,
+      u: { ...u(S, A2, [A2]), ...u(S, bHead, bCommits) }, anc: { [`${n(A2)}...${n(S)}`]: "ahead", ...extra } });
+    resetGitFactsCache();
+    await computeProject(w.d, "p", landed(B, [A, B]).impl);
+    expect((await facts("B")).shares).toMatchObject([{ id: "a", rewritten: true }]);
+    resetGitFactsCache();
+    await computeProject(w.d, "p", landed(B2, [A, B, B2], { [`${n(A2)}...${n(B2)}`]: "ahead" }).impl);
+    const b = await facts("B");
+    expect(b.shares).toEqual([]);
+    expect(b.needs).toEqual([]);
+  });
+
   it("lands a chain dependency merged without a PR", async () => {
     await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
     await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: { "feat/b": [open(8, B, "feat/a")] },

@@ -530,21 +530,22 @@ def _mirror(e: dict, b_it: dict, bb: dict, ab: dict) -> dict:
 
 
 def _reached(repo: Repo, dep: dict, ab: dict, tip: str, target: str) -> tuple:
-    """Whether A's current work reached T(B): (True, why), (False, ""), or
-    (None, why) when it couldn't be checked. Through a merged PR that carried
-    A's head, A's head itself, or A's finished item landed-in."""
+    """Whether A's current work reached T(B): (True, why, the commit that
+    carried it), (False, "", None), or (None, why, None) when it couldn't be
+    checked. Through a merged PR that carried A's head (its merge or squash
+    commit), A's head itself, or A's finished item landed-in."""
     for p in ab.get("prs") or []:
         if p["state"] == "merged" and p.get("head") == ab.get("head") and p.get("merge_commit"):
             reached = repo.is_ancestor(p["merge_commit"], tip)
             if reached is None:
-                return None, f'couldn\'t check PR #{p["number"]}'
+                return None, f'couldn\'t check PR #{p["number"]}', None
             if reached:
-                return True, f'{ab["name"]} landed through PR #{p["number"]} ({p["merge_commit"][:7]})'
+                return True, f'{ab["name"]} landed through PR #{p["number"]} ({p["merge_commit"][:7]})', p["merge_commit"]
     if ab.get("head") and repo.is_ancestor(ab["head"], tip):
-        return True, f'{ab["name"]} is in {target}'
+        return True, f'{ab["name"]} is in {target}', ab["head"]
     if dep["status"] in COMPLETE and (ab.get("in") or {}).get(target) is True:
-        return True, f'{dep["id"]} is {dep["status"]} and landed in {target}'
-    return False, ""
+        return True, f'{dep["id"]} is {dep["status"]} and landed in {target}', ab.get("landed")
+    return False, "", None
 
 
 def _chain_state(repo: Repo, dep: dict, ab: dict, tip: str | None, target: str = "") -> tuple:
@@ -552,7 +553,7 @@ def _chain_state(repo: Repo, dep: dict, ab: dict, tip: str | None, target: str =
     current work reached T(B)."""
     if not tip:
         return "unknown", "T(B) isn't on the remote"
-    reached, why = _reached(repo, dep, ab, tip, target)
+    reached, why, _ = _reached(repo, dep, ab, tip, target)
     if reached is None:
         return "unknown", why
     if reached:
@@ -708,7 +709,7 @@ def _carry(repo: Repo, items: list, facts: dict, prev: dict, u: dict, related: s
             if branch[other].get("merged_gone") and tip:
                 landed = repo.is_ancestor(branch[other]["landed"], tip)
             elif mb and mb in set(u.get(me) or ()):
-                _rewritten(repo, facts, it, dep, e, branch[other], branch[me]["target"], tip)
+                _rewritten(repo, facts, it, dep, e, branch[other], branch[me], branch[me]["target"], tip)
                 continue
             else:
                 landed = repo.is_ancestor(mb, tip) if mb and tip else False
@@ -721,29 +722,39 @@ def _carry(repo: Repo, items: list, facts: dict, prev: dict, u: dict, related: s
             me, other = (it["id"], s.get("via")), (s.get("id"), s.get("branch"))
             if me not in branch or other not in branch or tuple(sorted((me, other))) in related:
                 continue
-            if s.get("rewritten") and s.get("mb") in set(u.get(me) or ()):
-                facts[it["id"]]["shares"].append(s)
+            if s.get("rewritten"):
+                if s.get("mb") in set(u.get(me) or ()) and not _merged_in(repo, s.get("landing"), branch[me]):
+                    facts[it["id"]]["shares"].append(s)
                 continue
             why = unknown_of(me) or unknown_of(other)
             if why:
                 facts[it["id"]]["shares"].append({**s, "state": "unknown", "reason": why})
 
 
-def _rewritten(repo: Repo, facts: dict, b_it: dict, a_it: dict, e: dict, ab: dict, target: str, tip: str | None) -> None:
+def _rewritten(repo: Repo, facts: dict, b_it: dict, a_it: dict, e: dict, ab: dict, bb: dict, target: str,
+               tip: str | None) -> None:
     """B still carries commits A dropped when it was rewritten: B waits until
-    A's current work reaches T(B), then keeps only a hint to merge it in."""
+    A's current work reaches T(B), then keeps a hint to merge it in until B
+    holds the commit that carried it."""
     mb, old = e["mb"], f'{e.get("via")} still carries its old commits ({e["mb"][:7]})'
-    reached, why = _reached(repo, a_it, ab, tip, target) if tip else (None, "T(B) isn't on the remote")
+    reached, why, landing = _reached(repo, a_it, ab, tip, target) if tip else (None, "T(B) isn't on the remote", None)
     if reached:
+        if _merged_in(repo, landing, bb):
+            return
         facts[b_it["id"]]["shares"].append({
             "id": a_it["id"], "item": a_it.get("uid"), "branch": e.get("branch"), "via": e.get("via"), "shared": 1,
-            "commits": [mb[:7]], "mb": mb, "rewritten": True,
+            "commits": [mb[:7]], "mb": mb, "rewritten": True, "landing": landing,
             "evidence": f'{e.get("branch")} was rewritten and has landed in {target}, but {old}: merge {target} into {e.get("via")}'})
     elif reached is None:
         _add_pair(facts, b_it, a_it, {**e, "state": "unknown", "reason": why, "target": target})
     else:
         _add_pair(facts, b_it, a_it, {**e, "state": "waiting", "target": target,
                                       "evidence": f'{e.get("branch")} was rewritten, and {old}'})
+
+
+def _merged_in(repo: Repo, landing: str | None, bb: dict) -> bool:
+    """Whether B's head holds the commit through which A's work landed."""
+    return bool(landing and bb.get("head") and repo.is_ancestor(landing, bb["head"]))
 
 
 def _add_pair(facts: dict, b_it: dict, a_it: dict, e: dict) -> None:
