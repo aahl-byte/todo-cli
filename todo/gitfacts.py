@@ -91,6 +91,11 @@ class Repo:
         self.tips: dict = {}
         self.default = "main"
         self.used: dict = {}
+        self.fixed: set = set()             # tracked and default branches: never item-owned
+        self.absent: set = set()            # commits not here at the start of the compute
+        self.lost: set = set()              # commits a targeted fetch couldn't bring
+        self.closed: dict = {}              # branch → PRs closed into a tracked branch that moved
+        self.covered: set = set()           # the tracked branches `closed` was listed for
 
     def ls_remote(self) -> dict | None:
         """Branch tips, and the default branch from the remote's HEAD; None when unreachable."""
@@ -128,6 +133,19 @@ class Repo:
             return True
         _git(self.dir, "fetch", "--quiet", "origin", timeout=120)
         return not self.missing(shas)
+
+    def ensure(self, sha: str, number=None) -> bool:
+        """Whether `sha` is here, fetching its PR's `refs/pull/<n>/head` once when it isn't."""
+        if not sha or sha not in self.absent:
+            return True
+        if sha in self.lost or number is None:
+            return False
+        _git(self.dir, "fetch", "--quiet", "origin", f"refs/pull/{number}/head", timeout=60)
+        if self.missing([sha]):
+            self.lost.add(sha)
+            return False
+        self.absent.discard(sha)
+        return True
 
     def track(self) -> list:
         """The `track:` list from the plugins file on the default branch; [] without one."""
@@ -398,12 +416,19 @@ def _branch_facts(repo: Repo, it: dict, old: dict, fetch_prs, track: list) -> li
                 b["unknown"] = "GitHub didn't answer for its PRs"
             elif got is not None:
                 (pr, prs), b["pr_head"] = got, head
+        elif pr and pr.get("state") in OPEN_PR and pr.get("base") in repo.covered:
+            hit = next((p for p in repo.closed.get(name, []) if p["number"] == pr["number"]), None)
+            if hit:
+                pr = hit
+                prs = ([hit] if hit["state"] == "merged" else []) + [p for p in prs if p["number"] != hit["number"]]
         if pr:
             b["pr"] = pr
         if prs:
             b["prs"] = prs
         landed = next((p.get("merge_commit") for p in prs if p["state"] == "merged" and p.get("head") == head
                        and p.get("merge_commit")), None) or head
+        if live is None and head and landed != head:
+            b["merged_gone"] = True             # its last merged PR carried this head: it has landed
         if landed:
             b["landed"] = landed
             if track:
@@ -412,11 +437,12 @@ def _branch_facts(repo: Repo, it: dict, old: dict, fetch_prs, track: list) -> li
     return out
 
 
-def _targets(repo: Repo, facts: dict, open_ids: set, owners: dict, track: list) -> None:
+def _targets(repo: Repo, facts: dict, owners: dict, track: list) -> None:
     """T(B) per branch: follow an open PR's base through branches open items
-    own, stopping at a branch nobody owns; with no open PR, the first tracked
+    own; a tracked or default branch ends the chain as T(B), and any other
+    branch ends it as an orphan. With no open PR, T(B) is the first tracked
     branch on the remote, else the default branch."""
-    by_name = {b["name"]: b for i in open_ids for b in facts[i]["branches"]}
+    by_name = {b["name"]: b for i, fx in facts.items() for b in fx["branches"] if owners.get(b["name"]) == i}
     fallback = next((t for t in track if t in repo.tips), None) or repo.default
     for fx in facts.values():
         for b in fx["branches"]:
@@ -428,8 +454,11 @@ def _targets(repo: Repo, facts: dict, open_ids: set, owners: dict, track: list) 
                 base = pr["base"]
                 if base in seen:
                     break
-                if base not in owners:
+                if base in repo.fixed:
                     target = base
+                    break
+                if base not in owners:
+                    b["orphan"] = base
                     break
                 chain.append(base)
                 seen.add(base)
@@ -465,6 +494,8 @@ def _resolve(repo: Repo, dep: dict, ab: dict, tip: str, mb: str) -> tuple:
     for p in ab.get("prs") or []:
         if p["state"] != "merged" or not p.get("head"):
             continue
+        if not repo.ensure(p["head"], p["number"]):
+            return "unknown", f'PR #{p["number"]}\'s head commit isn\'t available from origin'
         carried = repo.is_ancestor(mb, p["head"])
         if carried is None:
             return "unknown", f'couldn\'t check PR #{p["number"]}'
@@ -498,34 +529,111 @@ def _mirror(e: dict, b_it: dict, bb: dict, ab: dict) -> dict:
     return {**e, "id": b_it["id"], "item": b_it.get("uid"), "branch": bb["name"], "via": ab["name"]}
 
 
-def _git_relations(repo: Repo, items: list, facts: dict, prev: dict) -> None:
-    """Needs, needed-by and shares between branches of different items, from
-    intersecting their unlanded commits; carried over as unknown where a
-    branch couldn't be read, and kept as landed once the shared commits reached
-    the dependent's target."""
-    by_id = {it["id"]: it for it in items}
+def _chain_state(repo: Repo, dep: dict, ab: dict, tip: str | None) -> tuple:
+    """(state, why) of "B needs A" through B's PR base chain: landed once a
+    merged PR of A's branch carried its head into T(B)."""
+    if not tip:
+        return "unknown", "T(B) isn't on the remote"
+    for p in ab.get("prs") or []:
+        if p["state"] == "merged" and p.get("head") == ab.get("head") and p.get("merge_commit"):
+            reached = repo.is_ancestor(p["merge_commit"], tip)
+            if reached is None:
+                return "unknown", f'couldn\'t check PR #{p["number"]}'
+            if reached:
+                return "landed", f'{ab["name"]} landed through PR #{p["number"]} ({p["merge_commit"][:7]})'
+    if dep["status"] in CANT_LAND:
+        return "stale", f'{dep["id"]} is {dep["status"]}'
+    if (ab.get("pr") or {}).get("state") == "closed":
+        return "stale", f'its PR #{ab["pr"].get("number")} closed unmerged'
+    return "waiting", ""
+
+
+def _pr_for_head(b: dict):
+    return next((p["number"] for p in [b.get("pr") or {}] + (b.get("prs") or []) if p.get("head") == b.get("head")), None)
+
+
+def _unlanded(repo: Repo, items: list, facts: dict) -> dict:
+    """U per branch that can be read; branches that can't get `unknown`."""
     u: dict = {}
     for it in items:
         for b in facts[it["id"]]["branches"]:
-            if "unknown" in b or not b.get("head"):
+            if b["name"] in repo.fixed or "unknown" in b or not b.get("head") or b.get("merged_gone"):
+                continue
+            if not repo.ensure(b["head"], _pr_for_head(b)):
+                b["unknown"], b["lost"] = "its head commit isn't available from origin", True
                 continue
             got = repo.unlanded(repo.tips[b["target"]], b["head"])
             if got is None:
                 b["unknown"] = f"couldn't list its commits not in {b['target']} (or more than {UNLANDED_CAP})"
                 continue
             u[(it["id"], b["name"])] = got
+    return u
+
+
+def _chain_edges(repo: Repo, items: list, facts: dict, u: dict, others: dict) -> set:
+    """B needs every item whose branch B's PR base chain runs through, shared
+    commits or not; a chain ending at a branch no open item owns needs that
+    item (stale) or, owned by nobody, can't be checked. The chained pairs."""
+    owner = {b: it for it in items if it["status"] != "cancelled" for b in it["branches"] if b not in repo.fixed}
+    branch = {(i, b["name"]): b for i in facts for b in facts[i]["branches"]}
+    chained = set()
+    for b_it in items:
+        if b_it["status"] == "cancelled":
+            continue
+        for bb in facts[b_it["id"]]["branches"]:
+            tip = repo.tips.get(bb["target"])
+            for name in bb.get("chain") or []:
+                a_it = owner[name]
+                ab = branch[(a_it["id"], name)]
+                chained.add(tuple(sorted(((b_it["id"], bb["name"]), (a_it["id"], name)))))
+                ub, ua = u.get((b_it["id"], bb["name"])), u.get((a_it["id"], name))
+                common = [x for x in ub if x in set(ua)] if ub is not None and ua is not None else []
+                state, why = _resolve(repo, a_it, ab, tip, common[0]) if common and tip else _chain_state(repo, a_it, ab, tip)
+                e = {**_edge(a_it, ab, bb, state, why or f'{bb["name"]}\'s PR is based on {name}', common), "chain": True}
+                facts[b_it["id"]]["needs"].append(e)
+                facts[a_it["id"]]["needed_by"].append(_mirror(e, b_it, bb, ab))
+            name = bb.get("orphan")
+            if not name:
+                continue
+            dep = others.get(name)
+            if dep is not None:
+                why = f'{bb["name"]}\'s PR is based on {name}, whose item {dep["id"]} is ' + (
+                    "archived" if dep["folder"] == store.ARCHIVED else dep["status"])
+                e = {"id": dep["id"], "item": dep.get("uid"), "branch": name, "via": bb["name"], "target": bb["target"],
+                     "state": "stale", "source": "git", "evidence": why, "chain": True}
+                facts[b_it["id"]]["needs"].append(e)
+                if dep["id"] in facts:
+                    facts[dep["id"]]["needed_by"].append(_mirror(e, b_it, bb, {"name": name}))
+                    chained.add(tuple(sorted(((b_it["id"], bb["name"]), (dep["id"], name)))))
+            else:
+                facts[b_it["id"]]["needs"].append({
+                    "needs": f"branch:{name}", "branch": name, "via": bb["name"], "target": bb["target"], "state": "unknown",
+                    "source": "git", "chain": True, "reason": f"PR based on {name}, which no item tracks",
+                    "evidence": "add the branch to its item, or retarget the PR"})
+    return chained
+
+
+def _git_relations(repo: Repo, items: list, facts: dict, prev: dict, others: dict) -> None:
+    """Needs, needed-by and shares between branches of different items: chain
+    edges first, then the other pairs from intersecting their unlanded
+    commits; carried over where a side couldn't be read or was rewritten."""
+    by_id = {it["id"]: it for it in items}
+    u = _unlanded(repo, items, facts)
+    chained = _chain_edges(repo, items, facts, u, others)
     index: dict = {}
     for key, shas in u.items():
-        for s in shas:
-            index.setdefault(s, []).append(key)
+        for x in shas:
+            index.setdefault(x, []).append(key)
     shared: dict = {}
     for keys in index.values():
         for x, y in combinations(keys, 2):
             if x[0] != y[0]:
                 shared.setdefault(tuple(sorted((x, y))), True)
     branch = {(i, b["name"]): b for i in facts for b in facts[i]["branches"]}
-    related = set()
+    related = set(chained)
     for (xk, yk) in shared:
+        if (xk, yk) in chained:
+            continue
         xi, yi = by_id[xk[0]], by_id[yk[0]]
         x, y = (xi, branch[xk]), (yi, branch[yk])
         ux, uy = set(u[xk]), set(u[yk])
@@ -533,15 +641,15 @@ def _git_relations(repo: Repo, items: list, facts: dict, prev: dict) -> None:
         rel = _relate(x, y, ux, uy)
         if rel is None:
             for (pi, pb), (qi, qb), up, uq in ((x, y, u[xk], uy), (y, x, u[yk], ux)):
-                common = [s for s in up if s in uq]
+                common = [c for c in up if c in uq]
                 facts[pi["id"]]["shares"].append({
                     "id": qi["id"], "item": qi.get("uid"), "branch": qb["name"], "via": pb["name"], "shared": len(common),
-                    "commits": [s[:7] for s in common[:SHOWN_COMMITS]], "evidence": SHARES_HINT})
+                    "commits": [c[:7] for c in common[:SHOWN_COMMITS]], "evidence": SHARES_HINT})
             continue
         (b_it, bb), (a_it, ab) = rel
         if b_it["status"] == "cancelled":
             continue
-        common = [s for s in u[(b_it["id"], bb["name"])] if s in set(u[(a_it["id"], ab["name"])])]
+        common = [c for c in u[(b_it["id"], bb["name"])] if c in set(u[(a_it["id"], ab["name"])])]
         state, why = _resolve(repo, a_it, ab, repo.tips[bb["target"]], common[0])
         e = _edge(a_it, ab, bb, state, why, common)
         facts[b_it["id"]]["needs"].append(e)
@@ -577,7 +685,15 @@ def _carry(repo: Repo, items: list, facts: dict, prev: dict, u: dict, related: s
                 continue
             tip = repo.tips.get(branch[me]["target"])
             mb = e.get("mb")
-            landed = repo.is_ancestor(mb, tip) if mb and tip else False
+            if branch[other].get("merged_gone") and tip:
+                landed = repo.is_ancestor(branch[other]["landed"], tip)
+            elif mb and mb in set(u.get(me) or ()):
+                _add_pair(facts, it, dep, {**e, "state": "waiting", "target": branch[me]["target"],
+                                           "evidence": f'{e.get("branch")} was rewritten, and {e.get("via")} still carries '
+                                                       f'its old commits ({mb[:7]})'})
+                continue
+            else:
+                landed = repo.is_ancestor(mb, tip) if mb and tip else False
             if landed is None:
                 _add_pair(facts, it, dep, {**e, "state": "unknown", "reason": "couldn't check its shared commits"})
             elif landed:
@@ -705,8 +821,9 @@ def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, fa
     could be read: every previous fact stays, its edges marked unknown."""
     prev = {it["id"]: load(root, it) for it in items}
     track = repo.track() if failure is None else []
+    repo.fixed = set(track) | {repo.default}
     open_ids = {it["id"] for it in items if it["status"] != "cancelled"}
-    owners = {b: it["id"] for it in items if it["id"] in open_ids for b in it["branches"]}
+    owners = {b: it["id"] for it in items if it["id"] in open_ids for b in it["branches"] if b not in repo.fixed}
     facts = {}
     for it in items:
         old = {b.get("name"): b for b in prev[it["id"]].get("branches") or [] if isinstance(b, dict)}
@@ -719,8 +836,10 @@ def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, fa
     if failure is not None:
         _carry(repo, items, facts, prev, {}, set())
     else:
-        _targets(repo, facts, open_ids, owners, track)
-        _git_relations(repo, items, facts, prev)
+        _targets(repo, facts, owners, track)
+        repo.absent = repo.missing([b.get("head") for f in facts.values() for b in f["branches"]]
+                                   + [p.get("head") for f in facts.values() for b in f["branches"] for p in b.get("prs") or []])
+        _git_relations(repo, items, facts, prev, _others(root, repo, items))
     for it in items:
         if it["status"] == "cancelled":
             continue
@@ -734,6 +853,7 @@ def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, fa
                 facts[dep["id"]]["needed_by"].append({**e, "id": it["id"], "item": it.get("uid"),
                                                       "branch": (it["branches"] or [None])[0],
                                                       "via": dep_branch["name"] if dep_branch else None})
+    _cycles(facts)
     notice: list = [failure] if failure else []
     if failure is None:
         _hints(repo, items, facts, notice)
@@ -747,6 +867,60 @@ def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, fa
     return facts
 
 
+def _others(root: Path, repo: Repo, items: list) -> dict:
+    """Branch → the cancelled or archived item of this repo that lists it."""
+    group = _groups(root, store.list_todos(root)).get(repo.key) or []
+    return {b: it for it in group if it["status"] == "cancelled" or _archived(root, it)
+            for b in it["branches"] if b not in repo.fixed}
+
+
+def _and(names: list) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _cycles(facts: dict) -> None:
+    """Label unresolved edges that make items wait on each other in a ring."""
+    graph = {i: {e["id"] for e in f.get("needs") or [] if e.get("id") in facts and e["id"] != i
+                 and e["state"] in UNRESOLVED} for i, f in facts.items()}
+    index, low, stack, on, sccs, counter = {}, {}, [], set(), [], [0]
+
+    def visit(v):
+        index[v] = low[v] = counter[0]
+        counter[0] += 1
+        stack.append(v)
+        on.add(v)
+        for w in graph[v]:
+            if w not in index:
+                visit(w)
+                low[v] = min(low[v], low[w])
+            elif w in on:
+                low[v] = min(low[v], index[w])
+        if low[v] == index[v]:
+            ring = []
+            while True:
+                w = stack.pop()
+                on.discard(w)
+                ring.append(w)
+                if w == v:
+                    break
+            if len(ring) > 1:
+                sccs.append(sorted(ring))
+
+    for v in sorted(graph):
+        if v not in index:
+            visit(v)
+    for ring in sccs:
+        edges = [e for i in ring for e in facts[i]["needs"] if e.get("id") in ring and e["state"] in UNRESOLVED]
+        text = (f'{_and(ring)} wait on each other through '
+                f'{_and([f"{e.get(chr(98) + "ranch")}←{e.get(chr(118) + "ia")}" for e in edges])}: '
+                "merge them in one order, or split the items")
+        for i in ring:
+            for k in ("needs", "needed_by"):
+                for e in facts[i][k]:
+                    if e.get("id") in ring and e["state"] in UNRESOLVED:
+                        e["cycle"] = text
+
+
 def _strip(d: dict) -> dict:
     return {k: v for k, v in d.items() if k != "at"}
 
@@ -757,7 +931,8 @@ def _recorded(root: Path, it: dict) -> list:
 
 
 def _relevant(root: Path, group: list) -> set:
-    """Branches whose move can change a fact: the items' own, their targets and PR bases, the default and tracked ones."""
+    """Branches whose move can change a fact: the items' own, their targets and
+    PR bases, the default and tracked ones, and those dependency notes name."""
     names = {"HEAD"}
     for it in group:
         names.update(it["branches"])
@@ -766,20 +941,41 @@ def _relevant(root: Path, group: list) -> set:
             names.update(x for x in (b.get("target"), (b.get("pr") or {}).get("base")) if x)
             names.update(b.get("chain") or [])
             names.update((b.get("in") or {}).keys())
+        for e in f.get("needs") or []:
+            if e.get("source") == "plugin" and e.get("branch"):
+                names.add(e["branch"])
+        for n in (store.get_item(root, it["id"]) or {}).get("notes") or []:
+            needs = to_str((n.get("meta") or {}).get("needs"))
+            if n["kind"] == "dependency" and needs.startswith("branch:"):
+                names.add(needs[len("branch:"):])
     return names
 
 
-def _open_pr_items(root: Path, group: list) -> set:
-    return {it["id"] for it in group
-            if any((b.get("pr") or {}).get("state") in OPEN_PR for b in load(root, it).get("branches") or [])}
+def _merged_into(repo: Repo, root: Path, group: list, moved_tracked: set) -> set:
+    """For tracked branches that moved, the PRs recently closed into each, from
+    one list call per branch; the items whose open PR that didn't cover."""
+    repo.closed, repo.covered = {}, set()
+    for t in sorted(moved_tracked):
+        rows = gh_get(f"/repos/{repo.key}/pulls?state=closed&base={urllib.parse.quote(t, safe='')}"
+                      "&sort=updated&direction=desc&per_page=100")
+        if rows is None:
+            return set()
+        if isinstance(rows, list):
+            repo.covered.add(t)
+            for r in rows:
+                repo.closed.setdefault((r.get("head") or {}).get("ref"), []).append(_pr_fields(r))
+    return {it["id"] for it in group for b in load(root, it).get("branches") or []
+            if (b.get("pr") or {}).get("state") in OPEN_PR and (b["pr"].get("base") not in repo.covered)}
 
 
 def on_round(root: Path, remote=None, project: str | None = None, *, force: bool = False,
              repos: set | None = None, fetch_prs=True, prs_for: set | None = None) -> list:
     """Recompute the repos whose relevant branches moved (one ls-remote each)
     or whose items' branches changed; with `force`, every repo asked for. PRs
-    are refetched for branches whose head moved since their last fetch, for
-    open PRs when a tracked branch moved, and for the items in `prs_for`. Posts what changed when given a server.
+    are refetched for branches whose head moved since their last fetch, and
+    for the items in `prs_for`; when a tracked branch moved, one list of the
+    PRs closed into it stands in for refetching each open one. Posts what
+    changed when given a server.
     Returns the ids of changed items."""
     all_items = [it for it in store.list_todos(root) if not _archived(root, it)]
     groups = _groups(root, all_items)
@@ -815,23 +1011,21 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
         failure = None
         if repo.shallow():
             failure = "this checkout is a shallow clone; git facts need its full history"
-        else:
-            heads = list(tips.values()) + [b.get("head") for it in group for b in load(root, it).get("branches") or []
-                                           if b.get("head") and b.get("name") in it["branches"]]
-            if not repo.fetch_if_needed(tips.values()):
-                failure = "fetching from origin didn't bring every branch's commits"
-            elif repo.missing(heads):
-                repo.fetch_if_needed(heads)
+        elif not repo.fetch_if_needed(tips.values()):
+            failure = "fetching from origin didn't bring every branch's commits"
+        repo.lost = set(saved.get("lost") or [])
         want = set(prs_for or ())
-        if fetch_prs and moved & set(repo.track()):
-            want |= _open_pr_items(root, group)           # a squash merge leaves the head where it was
+        moved_tracked = moved & set(repo.track()) if fetch_prs and failure is None else set()
+        if moved_tracked:
+            want |= _merged_into(repo, root, group, moved_tracked)   # a squash merge leaves the head where it was
         fresh = _compute(root, repo, group, lambda it: "force" if it["id"] in want else fetch_prs, all_items, failure)
-        incomplete = failure is not None or any("unknown" in b for f in fresh.values() for b in f.get("branches") or [])
+        incomplete = failure is not None or any("unknown" in b and not b.get("lost")
+                                                for f in fresh.values() for b in f.get("branches") or [])
         if not incomplete:
             for kind, bucket in repo.used.items():
                 used.setdefault(kind, {}).update(bucket)
         state[key] = {"at": time.time(), "default": repo.default, "tips": old_tips if incomplete else tips,
-                      **({"incomplete": True} if incomplete else {})}
+                      **({"incomplete": True} if incomplete else {}), **({"lost": sorted(repo.lost)} if repo.lost else {})}
         stamp = now()
         for it in group:
             new = fresh.get(it["id"], {})
@@ -976,6 +1170,8 @@ def describe(e: dict) -> str:
     why = f' — {e["evidence"]}' if e.get("evidence") else ""
     if e.get("state") == "unknown":
         why += f' (unknown: {e.get("reason") or "not computed"})'
+    if e.get("cycle"):
+        why += f'; {e["cycle"]}'
     return f'{who}{where} {e["state"]}{why}'
 
 

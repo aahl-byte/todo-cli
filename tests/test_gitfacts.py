@@ -86,7 +86,7 @@ class Fixture:
         """Record a PR for `branch` at its current head; `add` keeps the earlier ones."""
         row = {"number": number, "state": "closed" if state in ("merged", "closed") else "open",
                "draft": False, "merged_at": "2026-10-23T00:00:00Z" if state == "merged" else None,
-               "merge_commit_sha": merge_commit, "base": {"ref": base}, "head": {"sha": self.sha(branch)},
+               "merge_commit_sha": merge_commit, "base": {"ref": base}, "head": {"sha": self.sha(branch), "ref": branch},
                "html_url": f"https://github.com/acme/web/pull/{number}"}
         self.prs[branch] = [row] + (self.prs.get(branch, []) if add else [])
 
@@ -102,6 +102,9 @@ def fx(tmp_path, monkeypatch):
     f = Fixture(tmp_path)
 
     def fake_get(path):
+        if "/pulls?state=closed&base=" in path:
+            base = path.split("base=")[1].split("&")[0].replace("%2F", "/")
+            return [r for rows in f.prs.values() for r in rows if r["state"] == "closed" and r["base"]["ref"] == base]
         if "/pulls?" in path:
             head = path.split("head=")[1].split("&")[0]
             branch = head.split(":", 1)[1].replace("%2F", "/")
@@ -806,14 +809,17 @@ def test_a_recreated_parent_that_both_moved_past_is_ambiguous(fx):
     assert shares(fx, a) == [(b, "feat/b")]
 
 
-def test_a_tracked_branch_moving_refetches_open_prs_only(fx, monkeypatch):
+def test_a_tracked_branch_moving_lists_prs_closed_into_it_instead_of_refetching_each(fx, monkeypatch):
     a, b = stacked(fx)
     fx.branch("feat/c")
     fx.commit("feat/c", "c.txt", "c\n")
-    c = fx.item("Gamma", ["feat/c"])
+    fx.branch("feat/d", "main")
+    fx.commit("feat/d", "d.txt", "d\n")
+    c, d = fx.item("Gamma", ["feat/c"]), fx.item("Delta", ["feat/d"])
     fx.pr("feat/a", 7)
     fx.pr("feat/b", 8)
     fx.pr("feat/c", 6, state="merged", merge_commit=fx.sha("feat/c"))
+    fx.pr("feat/d", 9, base="main")
     monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
     gitfacts.on_round(fx.root)
     assert fx.facts(b)["needs"][0]["state"] == "waiting"
@@ -824,8 +830,11 @@ def test_a_tracked_branch_moving_refetches_open_prs_only(fx, monkeypatch):
     monkeypatch.setattr(gitfacts, "gh_get", lambda path: fetched.append(path) or real(path))
     gitfacts.on_round(fx.root)
     assert fx.facts(b)["needs"][0]["state"] == "landed"
-    heads = {p.split("head=")[1].split("&")[0].split(":")[1] for p in fetched if "/pulls?" in p}
-    assert heads == {"feat%2Fa", "feat%2Fb"} and c
+    assert fx.facts(a)["branches"][0]["pr"]["state"] == "merged"
+    lists = [p for p in fetched if "state=closed&base=" in p]
+    heads = sorted(p.split("head=")[1].split("&")[0].split(":")[1] for p in fetched if "head=" in p)
+    assert len(lists) == 1 and "base=staging" in lists[0]
+    assert heads == ["feat%2Fd"] and c and d
 
 
 def test_a_stage_the_server_refuses_on_older_facts_says_so_in_the_sync_log(fx, synced, monkeypatch):
@@ -845,3 +854,247 @@ def test_a_stage_the_server_refuses_on_older_facts_says_so_in_the_sync_log(fx, s
             f"(facts from {seen_at[:16].replace('T', ' ')}); it's rechecking — retry in a minute, or use --force")
     assert any(want in m for m in report.messages)
     assert any(want in e["text"] for e in store.get_item(fx.root, b)["log"])
+
+
+def approve(fx, i):
+    store.update_todo(fx.root, i, {"status": "qa-approved"}, "2026-10-23T00:00:00.000Z")
+
+
+def refused(fx, i, capsys=None):
+    approve(fx, i)
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["stage", i])
+    return capsys.readouterr().err if capsys else ""
+
+
+def test_a_pr_based_on_a_cancelled_items_branch_is_stale(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8, base="feat/a")
+    store.update_todo(fx.root, a, {"status": "cancelled"}, "2026-10-23T00:00:00.000Z")
+    fx.refresh()
+    [e] = fx.facts(b)["needs"]
+    assert (e["id"], e["branch"], e["state"]) == (a, "feat/a", "stale") and "cancelled" in e["evidence"]
+    refused(fx, b)
+
+
+def test_a_pr_based_on_an_archived_items_branch_is_stale(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8, base="feat/a")
+    store.update_todo(fx.root, a, {"status": "done"}, "2026-10-23T00:00:00.000Z")
+    store.archive_todos(fx.root)
+    fx.refresh()
+    [e] = fx.facts(b)["needs"]
+    assert (e["id"], e["state"]) == (a, "stale") and "archived" in e["evidence"]
+
+
+def test_a_pr_based_on_a_branch_no_item_tracks_is_unknown_and_blocks(fx, capsys):
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.branch("feat/b", "feat/a")
+    fx.commit("feat/b", "b.txt", "b\n")
+    fx.item("Alpha", [])
+    b = fx.item("Beta", ["feat/b"])
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8, base="feat/a")
+    fx.refresh()
+    [e] = fx.facts(b)["needs"]
+    assert e["state"] == "unknown" and e["reason"] == "PR based on feat/a, which no item tracks"
+    assert "retarget the PR" in e["evidence"] and fx.facts(b)["branches"][0]["target"] == "staging"
+    assert "which no item tracks" in refused(fx, b, capsys)
+
+
+def test_a_failed_fetch_keeps_a_chain_edge_unknown(fx, tmp_path, monkeypatch):
+    a, b = stacked(fx)
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8, base="feat/a")
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    gitfacts.on_round(fx.root)
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", str(fx.origin), str(other))
+    git(other, "checkout", "-q", "feat/b")
+    (other / "b9").write_text("x")
+    git(other, "add", "b9")
+    git(other, "commit", "-qm", "b9")
+    git(other, "push", "-q", "origin", "feat/b")
+    git(fx.work, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["waits_on"] == [a] and fx.facts(b)["needs"][0]["state"] == "unknown"
+    git(fx.work, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["waits_on"] == [a] and fx.facts(b)["needs"][0]["state"] == "waiting"
+
+
+def test_a_rebased_parent_under_a_stacked_pr_keeps_the_edge(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8, base="feat/a")
+    fx.refresh()
+    fx.commit("staging", "s.txt", "s\n")
+    git(fx.work, "checkout", "-q", "feat/a")
+    git(fx.work, "rebase", "-q", "staging")
+    git(fx.work, "push", "-q", "-f", "origin", "feat/a")
+    fx.pr("feat/a", 7)
+    fx.refresh()
+    [e] = fx.facts(b)["needs"]
+    assert (e["id"], e["state"], e["chain"]) == (a, "waiting", True)
+    refused(fx, b)
+
+
+def test_a_chain_edge_lands_through_the_parents_merged_pr(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8, base="feat/a")
+    fx.refresh()
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "landed"
+
+
+def test_an_amended_parent_without_prs_still_holds_the_dependent(fx):
+    a, b = stacked(fx)
+    fx.refresh()
+    git(fx.work, "checkout", "-q", "feat/a")
+    git(fx.work, "commit", "-q", "--amend", "-m", "amended")
+    git(fx.work, "push", "-q", "-f", "origin", "feat/a")
+    fx.refresh()
+    [e] = fx.facts(b)["needs"]
+    assert (e["id"], e["state"]) == (a, "waiting") and "rewritten" in e["evidence"]
+    refused(fx, b)
+
+
+def test_items_that_wait_on_each_other_are_labelled_a_cycle(fx, capsys):
+    fx.branch("a1")
+    fx.commit("a1", "a1.txt", "x\n")
+    fx.branch("b1", "a1")
+    fx.commit("b1", "b1.txt", "x\n")
+    fx.branch("b2")
+    fx.commit("b2", "b2.txt", "x\n")
+    fx.branch("a2", "b2")
+    fx.commit("a2", "a2.txt", "x\n")
+    a, b = fx.item("A", ["a1", "a2"]), fx.item("B", ["b1", "b2"])
+    fx.refresh()
+    want = f"{a} and {b} wait on each other through b2←a2 and a1←b1: merge them in one order, or split the items"
+    for i in (a, b):
+        assert all(e["cycle"] == want for e in fx.facts(i)["needs"])
+    assert want in refused(fx, b, capsys)
+
+
+def test_an_item_listing_staging_doesnt_block_the_others(fx):
+    fx.commit("staging", "s.txt", "s\n")
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    fx.item("Release", ["staging"])
+    a, b = fx.item("A", ["feat/a"]), fx.item("B", ["feat/b"])
+    fx.pr("staging", 1, base="main")
+    fx.pr("feat/a", 2)
+    fx.pr("feat/b", 3)
+    fx.refresh()
+    for i in (a, b):
+        f = fx.facts(i)
+        assert f["branches"][0]["target"] == "staging" and f["waits_on"] == [] and "chain" not in f["branches"][0]
+
+
+def squash_merged_and_deleted(fx):
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    a = fx.item("Alpha", ["feat/a"], status="qa-approved")
+    fx.refresh()
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    fx.delete("feat/a")
+    fx.refresh()
+    return a
+
+
+def fresh_clone(fx, tmp_path, name="deployer"):
+    dep = tmp_path / name
+    git(tmp_path, "clone", "-q", f"file://{fx.origin}", str(dep))
+    shutil.copytree(fx.root, dep / store.ROOT_NAME)
+    root = dep / store.ROOT_NAME
+    for x in root.glob(".git-*"):
+        x.unlink()
+    return root
+
+
+def counting_git(monkeypatch):
+    real, counts = subprocess.run, collections.Counter()
+
+    def counting(cmd, *a, **kw):
+        if cmd[0] == "git" and cmd[1] == "-C":
+            counts[cmd[3]] += 1
+        return real(cmd, *a, **kw)
+    monkeypatch.setattr(subprocess, "run", counting)
+    return counts
+
+
+def test_a_squash_merged_deleted_branch_has_landed_even_without_its_head(fx, tmp_path, monkeypatch):
+    a = squash_merged_and_deleted(fx)
+    root = fresh_clone(fx, tmp_path)
+    head = gitfacts.load(root, store.resolve_item(root, a))["branches"][0]["head"]
+    assert subprocess.run(["git", "-C", str(root.parent), "cat-file", "-e", head]).returncode != 0
+    gitfacts.refresh(root)
+    br = gitfacts.load(root, store.resolve_item(root, a))["branches"][0]
+    assert "unknown" not in br and br["merged_gone"] and br["in"]["staging"] is True
+    run_cli(root, ["stage", a])
+    assert store.resolve_item(root, a)["status"] == "ready-to-deploy"
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    counts = counting_git(monkeypatch)
+    for _ in range(3):
+        gitfacts.on_round(root)
+    assert "fetch" not in counts and "rev-list" not in counts
+
+
+def reused_after_merge_with_head_off_every_branch(fx, push_pr_ref: bool):
+    """feat/a's PR #7 merged at a2, then feat/a was reset to a1, which feat/b was cut from: a2 is on no branch."""
+    a, b = stacked(fx)
+    a1 = fx.sha("feat/a")
+    a2 = fx.commit("feat/a", "a2.txt", "a2\n")
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    fx.pr("feat/b", 8)
+    if push_pr_ref:
+        git(fx.work, "push", "-q", "origin", f"{a2}:refs/pull/7/head")
+    git(fx.work, "push", "-q", "-f", "origin", f"{a1}:refs/heads/feat/a")
+    fx.refresh()
+    return a, b
+
+
+def test_a_merged_prs_missing_head_is_fetched_from_its_pull_ref(fx, tmp_path):
+    a, b = reused_after_merge_with_head_off_every_branch(fx, push_pr_ref=True)
+    root = fresh_clone(fx, tmp_path)
+    gitfacts.refresh(root)
+    assert gitfacts.load(root, store.resolve_item(root, b))["needs"][0]["state"] == "landed"
+
+
+def test_a_head_gone_from_origin_is_tried_once_then_left_unknown(fx, tmp_path, monkeypatch):
+    a, b = reused_after_merge_with_head_off_every_branch(fx, push_pr_ref=False)
+    root = fresh_clone(fx, tmp_path)
+    gitfacts.refresh(root)
+    [e] = gitfacts.load(root, store.resolve_item(root, b))["needs"]
+    assert e["state"] == "unknown" and "isn't available" in e["evidence"]
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    counts = counting_git(monkeypatch)
+    for _ in range(3):
+        gitfacts.on_round(root)
+    assert "fetch" not in counts
+
+
+def test_a_dependency_notes_branch_moving_triggers_a_recompute(fx, monkeypatch):
+    fx.branch("feat/x")
+    fx.commit("feat/x", "x.txt", "x\n")
+    fx.merge("feat/x", "staging")
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    b = fx.item("Beta", ["feat/b"])
+    store.add_note(fx.root, b, "x", "2026-10-23T00:00:00.000Z", kind="dependency",
+                   extra={"needs": "branch:feat/x", "in": "staging"})
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["needs"][0]["state"] == "landed"
+    fx.commit("feat/x", "x2.txt", "x2\n")
+    gitfacts.on_round(fx.root)
+    assert fx.facts(b)["needs"][0]["state"] == "waiting"
