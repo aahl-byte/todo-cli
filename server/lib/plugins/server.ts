@@ -320,7 +320,6 @@ async function pluginItem(d: Db, project: string, it: Row, by: string): Promise<
 }
 
 // ── applying a run ────────────────────────────────────────────────────────────
-const NOTE_KIND: Record<string, string> = { link: "link", edge: "dependency" };
 /** Note kinds a run replaces by key; logs and requests are only ever added. */
 const REPLACED = ["link", "dependency"];
 
@@ -641,7 +640,7 @@ async function branchTips(repo: string, etag: string | null, f: Fetch): Promise<
 
 /** Poll repos with open items and no recent webhook; a moved tip queues a push for its items. */
 async function pollRepos(d: Db, items: (ItemRef & { repo: string })[], f: Fetch): Promise<{ polled: number; queued: number }> {
-  const repos = [...new Set(items.filter((it) => itemBranches(it.extra).length).map((it) => it.repo))].sort();
+  const repos = [...new Set(items.map((it) => it.repo))].sort();
   let polled = 0;
   let queued = 0;
   for (const repo of repos) {
