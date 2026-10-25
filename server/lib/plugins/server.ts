@@ -4,7 +4,7 @@
 // runs every: floors. What it keeps per repo lives in ./store.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §3–§4.
 import crypto from "node:crypto";
-import { withLock, type Db, type Row } from "../db";
+import type { Db, Row } from "../db";
 import { applyOps, type Op, type Result } from "../apply";
 import { checkoutDir, projectsAllowed, repoAllowed, repoKey } from "../checkouts";
 import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs";
@@ -214,6 +214,42 @@ async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun,
   return applied;
 }
 
+// ── the per-item lock ─────────────────────────────────────────────────────────
+const LOCK_TTL_MS = 2 * 60_000;
+
+export interface LockOptions { pollMs?: number; waitMs?: number; renewMs?: number }
+
+/** Run `fn` holding the lease on one item and instance, a row in plugin_locks, so two deliveries never apply the same
+ * instance to an item at once. It needs nothing of the connection between statements, so it holds behind a
+ * transaction-mode pooler; a crashed holder's lease runs out. */
+export async function withItemLock<T>(d: Pick<Db, "query">, project: string, itemUid: string, instance: string, fn: () => Promise<T>,
+                                      opts: LockOptions = {}): Promise<T> {
+  const holder = ulid();
+  const ttl = `${LOCK_TTL_MS} milliseconds`;
+  const key = [project, itemUid, instance];
+  const giveUp = Date.now() + (opts.waitMs ?? LOCK_TTL_MS);
+  for (;;) {
+    const [got] = await d.query(
+      `insert into plugin_locks (project, item_uid, instance, holder, expires_at) values ($1, $2, $3, $4, now() + $5::interval)
+       on conflict (project, item_uid, instance) do update set holder = excluded.holder, expires_at = excluded.expires_at
+         where plugin_locks.expires_at < now()
+       returning holder`, [...key, holder, ttl]);
+    if (got) break;
+    if (Date.now() >= giveUp) throw new Transport(`${instance} on ${itemUid} is busy in another delivery`);
+    await new Promise((done) => setTimeout(done, opts.pollMs ?? 250));
+  }
+  const renew = setInterval(() => {
+    void d.query("update plugin_locks set expires_at = now() + $5::interval where project = $1 and item_uid = $2 and instance = $3 and holder = $4",
+                 [...key, holder, ttl]).catch(() => undefined);
+  }, opts.renewMs ?? LOCK_TTL_MS / 3);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(renew);
+    await d.query("delete from plugin_locks where project = $1 and item_uid = $2 and instance = $3 and holder = $4", [...key, holder]);
+  }
+}
+
 // ── delivery ──────────────────────────────────────────────────────────────────
 /** A failure that may pass: GitHub unreachable before any plugin ran, or a read-only run that failed transiently. */
 class Transport extends Error {}
@@ -285,7 +321,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     after: async (run) => {
       const key = instanceKey(run.plugin, run.instance);
       // One run at a time per item and instance, from read through apply; each unit of ops commits on its own.
-      const outcome = await withLock(d, `plugin\x1f${row.project}\x1f${row.item_uid}\x1f${key}`, async () => {
+      const outcome = await withItemLock(d, row.project, row.item_uid, key, async () => {
         await holds("select 1 from plugin_events where id = $1 and lease = $2", [row.id, row.lease]);
         let applied: Applied | null = null;
         if (run.instance.dry_run) applied = { applied: [], log: ["dry run: nothing was attached"], edges: false };
@@ -377,16 +413,25 @@ export interface HookOutcome { repo: string | null; queued: number; projects: st
 const deliveryKeys = (id: string | null, body: string) =>
   [`body:${crypto.createHash("sha256").update(body).digest("hex")}`, ...(id ? [`id:${id.slice(0, 200)}`] : [])];
 
-/** Whether a delivery was handled already, by its id or by the signed body, which an attacker can replay under a new id. */
-export async function deliverySeen(d: Pick<Db, "query">, id: string | null, body: string): Promise<boolean> {
-  await d.query("delete from github_deliveries where at < now() - make_interval(days => $1)", [DAYS_KEPT]);
-  const [hit] = await d.query("select 1 from github_deliveries where id = any($1)", [deliveryKeys(id, body)]);
-  return !!hit;
-}
+class Duplicate extends Error {}
 
-/** Mark a delivery handled, once it has been; a failed one stays unmarked so GitHub's redelivery runs. */
-export async function deliveryDone(d: Pick<Db, "query">, id: string | null, body: string): Promise<void> {
-  for (const key of deliveryKeys(id, body)) await d.query("insert into github_deliveries (id) values ($1) on conflict do nothing", [key]);
+/** Handle a webhook delivery once: its id and its signed body's hash (which a replay under a fresh id keeps) are claimed in the
+ * transaction that queues its events, so a parallel copy waits and finds them taken, and a failure releases them for
+ * GitHub's redelivery. Null for a copy already handled. */
+export async function handleDelivery(d: Db, id: string | null, body: string, kind: string, payload: unknown): Promise<HookOutcome | null> {
+  await d.query("delete from github_deliveries where at < now() - make_interval(days => $1)", [DAYS_KEPT]);
+  try {
+    return await d.tx(async (t) => {
+      for (const key of deliveryKeys(id, body)) {
+        const [claimed] = await t.query("insert into github_deliveries (id) values ($1) on conflict do nothing returning id", [key]);
+        if (!claimed) throw new Duplicate();
+      }
+      return githubEvent(t, kind, payload);
+    });
+  } catch (e) {
+    if (e instanceof Duplicate) return null;
+    throw e;
+  }
 }
 
 /** A GitHub webhook delivery: queue the event for the items on its branch, and say which projects' git facts it moves. */

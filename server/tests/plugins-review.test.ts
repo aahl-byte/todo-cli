@@ -15,7 +15,7 @@ import { migrate } from "@/lib/db";
 import { listDocs } from "@/lib/docs";
 import { itemGitFacts, resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
 import { queuePluginEvent } from "@/lib/plugins/queue";
-import { flushPluginRuns, itemsOnBranch, LEASE_MS, pluginTick, pluginUid, requestKey } from "@/lib/plugins/server";
+import { flushPluginRuns, itemsOnBranch, LEASE_MS, pluginTick, pluginUid, requestKey, withItemLock } from "@/lib/plugins/server";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import { child, item, world, type World } from "./helpers";
 import { API, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
@@ -643,4 +643,56 @@ describe("older CLIs", () => {
 
 it("reads GitHub Enterprise owners with underscores", () => {
   expect(repoKey("git@github.com:Acme_Corp/web.git")).toBe("acme_corp/web");
+});
+
+describe("parallel webhook replays", () => {
+  it("queue exactly one event from five copies sent at once", async () => {
+    vi.stubEnv("GITHUB_WEBHOOK_SECRET", "s");
+    vi.stubGlobal("fetch", fakeGitHub({}).impl);
+    await onBranch(["feat/x"]);
+    await w.d.query("delete from plugin_events");
+    const body = JSON.stringify({ action: "opened", repository: { full_name: "acme/web" }, pull_request: { head: { ref: "feat/x" } } });
+    const sig = `sha256=${crypto.createHmac("sha256", "s").update(body).digest("hex")}`;
+    const answers = await Promise.all(["a", "b", "c", "d", "e"].map((id) => webhookPOST(new Request("http://x/api/github/webhook", {
+      method: "POST", body, headers: { "x-github-event": "pull_request", "x-hub-signature-256": sig, "x-github-delivery": id } }))));
+    const bodies = await Promise.all(answers.map((r) => r.json()));
+    expect(bodies.filter((b) => b.duplicate).length).toBe(4);
+    expect((await events()).length).toBe(1);
+    await vi.waitFor(async () => expect((await events()).every((e) => e.done_at)).toBe(true));
+  });
+});
+
+describe("the per-item lock", () => {
+  it("lets one of two acquirers in at a time", async () => {
+    const order: string[] = [];
+    const hold = (who: string) => withItemLock(w.d, "p", "I1", "x/default", async () => {
+      order.push(`${who} in`);
+      await new Promise((done) => setTimeout(done, 30));
+      order.push(`${who} out`);
+    }, { pollMs: 5 });
+    await Promise.all([hold("a"), hold("b")]);
+    expect([order.slice(0, 2), order.slice(2)].map((pair) => pair[0].split(" ")[0] === pair[1].split(" ")[0])).toEqual([true, true]);
+    expect(await w.d.query("select * from plugin_locks")).toEqual([]);
+  });
+
+  it("takes over a crashed holder's lock once its lease expires, and not before", async () => {
+    await w.d.query(`insert into plugin_locks (project, item_uid, instance, holder, expires_at)
+                     values ('p', 'I1', 'x/default', 'dead', now() + interval '1 hour')`);
+    await expect(withItemLock(w.d, "p", "I1", "x/default", async () => "ran", { pollMs: 5, waitMs: 50 })).rejects.toThrow(/busy/);
+    await w.d.query("update plugin_locks set expires_at = now() - interval '1 second'");
+    expect(await withItemLock(w.d, "p", "I1", "x/default", async () => "ran", { pollMs: 5 })).toBe("ran");
+  });
+
+  it("releases on failure, and renews while the holder runs", async () => {
+    await expect(withItemLock(w.d, "p", "I1", "x/default", async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    expect(await w.d.query("select * from plugin_locks")).toEqual([]);
+    const seen: string[] = [];
+    await withItemLock(w.d, "p", "I1", "x/default", async () => {
+      const [a] = await w.d.query("select expires_at from plugin_locks");
+      await new Promise((done) => setTimeout(done, 60));
+      const [b] = await w.d.query("select expires_at from plugin_locks");
+      seen.push(String(new Date(b.expires_at) > new Date(a.expires_at)));
+    }, { renewMs: 10 });
+    expect(seen).toEqual(["true"]);
+  });
 });

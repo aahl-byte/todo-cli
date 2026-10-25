@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { scheduleRecompute } from "@/lib/gitfacts";
 import { json, later } from "@/lib/http";
-import { deliveryDone, deliverySeen, flushPluginRuns, githubEvent, readCapped, signatureValid } from "@/lib/plugins/server";
+import { flushPluginRuns, handleDelivery, readCapped, signatureValid } from "@/lib/plugins/server";
 
 /** GitHub's push, pull_request and deployment_status deliveries, signed with GITHUB_WEBHOOK_SECRET. */
 export async function POST(req: Request) {
@@ -17,10 +17,8 @@ export async function POST(req: Request) {
     return json({ error: "body isn't JSON" }, 400);
   }
   const d = await db();
-  const id = req.headers.get("x-github-delivery");
-  if (await deliverySeen(d, id, body)) return json({ repo: null, queued: 0, projects: [], duplicate: true }, 200);
-  const outcome = await githubEvent(d, req.headers.get("x-github-event") ?? "", payload);
-  await deliveryDone(d, id, body);
+  const outcome = await handleDelivery(d, req.headers.get("x-github-delivery"), body, req.headers.get("x-github-event") ?? "", payload);
+  if (!outcome) return json({ repo: null, queued: 0, projects: [], duplicate: true }, 200);
   later(async () => {
     await flushPluginRuns(d);
     if (outcome.repo) for (const p of outcome.projects) await scheduleRecompute(d, p, fetch, outcome.repo);

@@ -455,6 +455,17 @@ create table if not exists project_plugin_repos (
 );
 create index if not exists project_plugin_repos_repo on project_plugin_repos (repo);
 
+-- Who is applying a plugin instance's run to an item, until when; a holder
+-- renews it while it works, and a crashed one's lease runs out.
+create table if not exists plugin_locks (
+  project    text not null,
+  item_uid   text not null,
+  instance   text not null,
+  holder     text not null,
+  expires_at timestamptz not null,
+  primary key (project, item_uid, instance)
+);
+
 -- GitHub webhook deliveries already handled, so a replay queues nothing.
 create table if not exists github_deliveries (
   id text primary key,
