@@ -334,24 +334,30 @@ async function lastRuns(d: Pick<Db, "query">, project: string, repo: string): Pr
   return out;
 }
 
-/** Whether this server is able to run an instance, as its own host would judge it: the connections resolve with the
- * secret for their origin, no repo connection starts a command, required settings have values, and no address is refused. */
-async function serverRuns(r: Resolved, instance: InstanceDef, connections: Record<string, ResolvedConnection>, guard: AddressGuard): Promise<boolean> {
-  if (!pluginsEnabled()) return false;
-  if (wouldSkip({ plugin: r.def, instance, connections, shipped: r.shipped, allowRepoCommands: false })) return false;
+/** Why this server can't run an instance, as its own host would judge it, or null when it can: the connections must
+ * resolve with the secret for their origin, no repo connection may start a command, required settings need values,
+ * and no address may be refused. */
+async function serverRefusal(r: Resolved, instance: InstanceDef, connections: Record<string, ResolvedConnection>, guard: AddressGuard,
+                             unreadable: string[]): Promise<string | null> {
+  if (!pluginsEnabled()) return "GITHUB_TOKEN isn't set on the server";
   for (const name of r.def.connections ?? []) {
     const c = connections[name];
-    const url = c.url;
-    if (url && !(await addressAllowed(url, guard, c.origin ?? "repo"))) return false;
+    if (c?.kind === "http" && c.auth && !c.secret && unreadable.includes(name)) return `credential for \`${name}\` doesn't decrypt`;
   }
-  return true;
+  const skip = wouldSkip({ plugin: r.def, instance, connections, shipped: r.shipped, allowRepoCommands: false });
+  if (skip) return skip;
+  for (const name of r.def.connections ?? []) {
+    const c = connections[name];
+    if (c.url && !(await addressAllowed(c.url, guard, c.origin ?? "repo"))) return `connection \`${name}\` is refused by the private-address rule`;
+  }
+  return null;
 }
 
 export interface RepoPlugins {
   instances: Record<string, InstanceDef[]>;
   grants: Record<string, string[]>;
   /** Each instance says whether this server runs it; a CLI runs only the ones it doesn't. */
-  plugins: (Omit<PluginInfo, "instances"> & { instances: (InstanceDef & { server_runs: boolean })[] })[];
+  plugins: (Omit<PluginInfo, "instances"> & { instances: (InstanceDef & { server_runs: boolean; server_runs_reason: string | null })[] })[];
   /** Repo connections this server holds a credential for. */
   secrets: string[];
   /** Host connections with a secret, which only shipped plugins receive. */
@@ -373,6 +379,8 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
   }
   const merged = merge(defs, instances);
   const secrets = await repoSecrets(d, project, repo);
+  const unreadable = (await d.query("select connection from plugin_credentials where project = $1 and repo = $2", [project, repo]))
+    .map((x) => x.connection as string).filter((c) => !(c in secrets));
   const usable = merge(defs, await storedInstances(d, project, repo, { secrets: true }));
   const connections = connectionsFor({ hostConnections: hostConnections(), secrets: { repo: secrets, host: hostSecrets() } }, usable.file);
   const guard = guardFor(repo, lookup);
@@ -383,7 +391,8 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
     const shown = [];
     for (const i of p.instances) {
       const inst = real.instances.find((x) => x.id === i.id) ?? i;
-      shown.push({ ...masked(i, secretKeysOf(p.settings)), server_runs: await serverRuns(r, inst, connections, guard) });
+      const why = await serverRefusal(r, inst, connections, guard, unreadable);
+      shown.push({ ...masked(i, secretKeysOf(p.settings)), server_runs: why === null, server_runs_reason: why });
     }
     plugins.push({ ...p, instances: shown });
   }

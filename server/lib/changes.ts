@@ -10,6 +10,8 @@ export interface Change {
   data: Row | null;
   /** For a deleted doc: its last content's sha256. */
   last_sha256?: string;
+  /** For a deleted note: a plugin run removed it, rather than a person. */
+  by_plugin?: boolean;
 }
 
 const TABLES: Record<string, string> = { ...TABLE, doc: "docs" };
@@ -40,6 +42,10 @@ export async function changesSince(db: Db, project: string, since: number, limit
     if (!data && r.entity === "doc") {
       const [tomb] = await db.query("select sha256 from doc_tombstones where project = $1 and uid = $2", [project, r.uid]);
       if (tomb) change.last_sha256 = tomb.sha256;
+    }
+    if (!data && r.entity === "note") {
+      const [tomb] = await db.query("select by_plugin from tombstones where project = $1 and uid = $2", [project, r.uid]);
+      change.by_plugin = !!tomb?.by_plugin;
     }
     changes.push(change);
   }

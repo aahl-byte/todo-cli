@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GET as changesGET } from "@/app/api/projects/[key]/changes/route";
 import { GET as pluginsGET, PUT as pluginsPUT } from "@/app/api/projects/[key]/plugins/route";
 import { POST as credentialsPOST } from "@/app/api/projects/[key]/plugins/credentials/route";
 import { GET as reposGET, PUT as reposPUT } from "@/app/api/projects/[key]/plugins/repos/route";
@@ -579,6 +580,45 @@ describe("server_runs", () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ local: { mcp: { command: "/bin/true" } } }));
     vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
     expect((await shownRuns()).loc).toEqual([true]);
+  });
+});
+
+describe("server_runs_reason", () => {
+  const reasons = async () => Object.fromEntries((await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob),
+    params("p"))).json()).plugins.map((p: { name: string; instances: { server_runs_reason: string | null }[] }) =>
+    [p.name, p.instances[0]?.server_runs_reason]));
+
+  it("names why the server can't run an instance, and is null when it can", async () => {
+    const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}", "  watchtower: {http: {url: 'http://192.168.1.4:10011'}}",
+      "plugins:", "  ping: {connections: [hooks], on: [push], steps: [{http: {method: GET, path: /}}], attach: []}",
+      "  wt: {connections: [watchtower], on: [manual], steps: [{http: {method: GET, path: /}}], attach: []}",
+      "  needs: {on: [push], settings: {path: {label: Path, type: text}}, steps: [{name: v, value: '`1`'}], attach: [], }",
+      "instances:", "  needs: [{id: a, name: A}]"].join("\n");
+    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    expect(await reasons()).toEqual({
+      "pr-link": null, ping: "credential for `hooks` doesn't decrypt",
+      wt: "connection `watchtower` is refused by the private-address rule", needs: "setting path is not set",
+    });
+    vi.stubEnv("GITHUB_TOKEN", "");
+    expect((await reasons())["pr-link"]).toBe("GITHUB_TOKEN isn't set on the server");
+  });
+});
+
+describe("the changes feed", () => {
+  it("says whether a deleted note was removed by a plugin run or by a person", async () => {
+    await onBranch([]);
+    const note = (uid: string) => child("note", uid, "I1", { kind: "link", text: "x", meta: { url: `https://x/${uid}`, type: "pr", plugin: "p/default" } });
+    await w.one("bob", note("N1"));
+    await w.one("bob", note("N2"));
+    await w.one({ handle: "bob", unconditional: true }, { op: "remove", entity: "note", uid: "N1", item_uid: "I1", plugin: true });
+    await w.one({ handle: "bob", unconditional: true }, { op: "remove", entity: "note", uid: "N2", item_uid: "I1" });
+    const feed = await (await changesGET(req("/api/projects/p/changes?since=0", "GET", w.tokens.bob), params("p"))).json();
+    const gone = Object.fromEntries(feed.changes.filter((c: { deleted: boolean }) => c.deleted).map((c: { uid: string; by_plugin: boolean }) => [c.uid, c.by_plugin]));
+    expect(gone).toEqual({ N1: true, N2: false });
   });
 });
 
