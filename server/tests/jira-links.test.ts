@@ -8,6 +8,7 @@ import { flushJira } from "@/lib/jira/flush";
 import { loadJiraSettings, saveJiraSettings } from "@/lib/jira/settings";
 import { outboundRules } from "@/lib/jira/rules";
 import { item as itemView } from "@/lib/views";
+import { jiraConfig } from "@/lib/jira/config";
 import { child, item, set, world, type World } from "./helpers";
 
 let w: World;
@@ -32,6 +33,9 @@ function issue(key: string, summary: string, description: string, status = "In P
                           updated: "2026-10-01T10:00:00.000+0000", comment: { total: 0, comments: [] as any[] }, attachment: [] as any[] } };
 }
 
+const MEDIA: Record<string, string> = { "10": "11111111-2222-3333-4444-555555555555", "11": "66666666-7777-8888-9999-000000000000" };
+const PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+
 /** A Jira holding a few issues; a search naming a key it doesn't know fails, as Jira's does. */
 function fakeJira() {
   const issues: Record<string, ReturnType<typeof issue>> = {
@@ -49,6 +53,9 @@ function fakeJira() {
       if (unknown) return new Response(`An issue with key '${unknown}' does not exist`, { status: 400 });
       return Response.json({ issues: keys.map((k: string) => issues[k]), isLast: true });
     }
+    const att = u.match(/\/attachment\/content\/(\w+)$/);
+    if (att) return new Response(null, { status: 303, headers: { location: `https://media.test/file/${MEDIA[att[1]]}/binary?token=t` } });
+    if (u.startsWith("https://media.test/file/")) return new Response(PNG, { headers: { "content-type": "image/png" } });
     const one = u.match(/\/rest\/api\/3\/issue\/([A-Z]+-\d+)\?/);
     if (one) return issues[one[1]] ? Response.json(issues[one[1]]) : new Response("gone", { status: 404 });
     return new Response("not found", { status: 404 });
@@ -302,5 +309,101 @@ describe("jira links-mode triggers", () => {
     expect(asked).toEqual(["CNS/statuses", "OPS/statuses"]);
     expect(await saveJiraSettings(w.d, "p", "alice", { statuses: {} }, outboundRules(RULES)!)).toEqual([]);
     expect((await w.d.query("select jira_outbound from projects where key = 'p'"))[0].jira_outbound.triggers).toEqual(RULES.triggers);
+  });
+});
+
+describe("jira links-mode polling", () => {
+  it("only polls read-only", async () => {
+    expect(jiraConfig()).toMatchObject({ baseUrl: "https://acme.atlassian.net" });
+    delete process.env.JIRA_READ_ONLY;
+    await expect(sync(fakeJira().impl)).rejects.toThrow(/JIRA_READ_ONLY/);
+  });
+
+  it("copies image attachments once and links other files to Jira", async () => {
+    process.env.TODO_FILES_DIR = (await import("node:os")).tmpdir() + "/todo-files-" + Date.now();
+    const jira = fakeJira();
+    const f = jira.issues["CNS-1"].fields as any;
+    f.attachment = [{ id: "10", filename: "shot.png", mimeType: "image/png", size: 70 },
+                    { id: "11", filename: "spec.pdf", mimeType: "application/pdf", size: 900 }];
+    f.description = { type: "doc", content: [
+      { type: "mediaSingle", content: [{ type: "media", attrs: { type: "file", id: MEDIA["10"], alt: "shot.png" } }] },
+      { type: "mediaSingle", content: [{ type: "media", attrs: { type: "file", id: MEDIA["11"], alt: "spec.pdf" } }] }] };
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    expect((await sync(jira.impl)).files).toBe(1);
+    const [req] = await requests("A");
+    const key = req.text.match(/\(\/api\/files\/([^)]+)\)/)[1];
+    expect(key).toMatch(/^p\/J[0-9A-F]{25}\/J[0-9A-F]{25}\.png$/);
+    expect(req.text).toContain("[📎 spec.pdf](https://acme.atlassian.net/secure/attachment/11/spec.pdf)");
+    const { readLocal } = await import("@/lib/files");
+    expect((await readLocal(key))?.length).toBe(PNG.length);
+    f.updated = "2099-01-01T00:00:00.000+0000";
+    expect((await sync(jira.impl)).files).toBe(0);
+    delete process.env.TODO_FILES_DIR;
+  });
+
+  it("lists every attachment with the item and drops ones removed in Jira", async () => {
+    process.env.TODO_FILES_DIR = (await import("node:os")).tmpdir() + "/todo-files-" + Date.now();
+    const jira = fakeJira();
+    const f = jira.issues["CNS-1"].fields as any;
+    f.attachment = [{ id: "10", filename: "shot.png", mimeType: "image/png", size: 70 },
+                    { id: "11", filename: "spec.pdf", mimeType: "application/pdf", size: 900 }];
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    await sync(jira.impl);
+    const files = async () => (await itemView(w.d, "p", "a"))!.files.map((x: any) => [x.filename, !!x.file_key, Number(x.size)]);
+    expect(await files()).toEqual([["shot.png", true, 70], ["spec.pdf", false, 900]]);
+    f.attachment = [f.attachment[0]];
+    f.updated = "2099-01-01T00:00:00.000+0000";
+    await sync(jira.impl);
+    expect(await files()).toEqual([["shot.png", true, 70]]);
+    delete process.env.TODO_FILES_DIR;
+  });
+
+  it("updates an edited comment once and marks it edited", async () => {
+    const jira = fakeJira();
+    const f = jira.issues["CNS-1"].fields;
+    const c1: any = { id: "c1", author: pat, body: adf("seen on prod"), created: "2026-09-02T09:00:00.000+0000", updated: "2026-09-02T09:00:00.000+0000" };
+    f.comment = { total: 1, comments: [c1] };
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    await sync(jira.impl);
+    const note = async () => (await w.d.query("select text, meta from notes where kind = 'comment'"))[0];
+    expect((await note()).meta.edited_at).toBeUndefined();
+    c1.body = adf("seen on prod, and on staging");
+    c1.updated = "2026-10-03T08:00:00.000+0000";
+    f.updated = "2099-01-01T00:00:00.000+0000";
+    await sync(jira.impl);
+    expect(await note()).toMatchObject({ text: "seen on prod, and on staging",
+      meta: { jira_updated: "2026-10-03T08:00:00.000Z", edited_at: "2026-10-03T08:00:00.000Z" } });
+    const seq = (await w.d.query("select seq from projects where key = 'p'"))[0].seq;
+    await sync(jira.impl);
+    expect((await w.d.query("select seq from projects where key = 'p'"))[0].seq).toBe(seq);
+  });
+
+  it("makes a user for each Jira person it meets, when asked", async () => {
+    const jira = fakeJira();
+    jira.issues["CNS-1"].fields.comment = { total: 1, comments: [{ id: "c1", author: { accountId: "acc-carol", displayName: "Carol Q" },
+                                                                    body: adf("hi"), created: "2026-09-02T09:00:00.000+0000" }] as any[] };
+    await w.d.query("update users set jira_account_id = 'acc-bob' where handle = 'bob'");
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    expect((await syncJira(w.d, "p", { createUsers: true, fetchImpl: jira.impl })).users).toBe(2);
+    expect((await w.d.query("select handle from users where jira_account_id is not null order by handle")).map((u) => u.handle))
+      .toEqual(["bob", "carol-q", "pat-pm"]);
+    expect((await w.d.query("select author from notes where kind = 'comment'"))[0].author).toBe("carol-q");
+  });
+
+  it("tells the trigger which status a request append bounced the item from", async () => {
+    await w.d.query("update projects set jira_outbound = $1::jsonb where key = 'p'",
+      [JSON.stringify({ writes: true, never: [], triggers: [{ from: "in-progress", to: "requested", jira: "To Do" }] })]);
+    const jira = fakeJira();
+    await w.apply("alice", item("A", { status: "requested" }),
+      child("note", "R", "A", { kind: "ticket-request", text: "Customers want exports.", ts: "t" }));
+    for (const to of ["in-triage", "in-progress"]) {
+      const [v] = await w.d.query("select versions from items where uid = 'A'");
+      await w.one("alice", set("item", "A", "A", { status: to }, { status: v.versions.status }));
+    }
+    await link("A", ["CNS-1"]);
+    await sync(jira.impl);
+    expect(await status("A")).toBe("requested");
+    expect(await w.d.query("select action, payload, result from jira_outbox"))
+      .toEqual([{ action: "transition", payload: { key: "CNS-1", status: "To Do" }, result: { dry_run: true } }]);
   });
 });
