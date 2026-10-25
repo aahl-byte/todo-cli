@@ -210,6 +210,23 @@ connections:
 - `todo connection list|test` shows each connection and whether this host can
   reach and authorize it.
 
+### Who may use what
+
+- **Host secrets go to shipped plugins only.** A repo plugin that names a
+  host-wide connection, such as `github` with the server's token, runs without
+  its secret and is skipped as not authorized. Repo plugins bring their own
+  connection and a repo credential.
+- **A project runs plugins only for its repos.** A repo is allowed for a
+  project once a member's CLI has reported a checkout of it, or once it is
+  added on the project's settings page. An item naming any other repo gets no
+  plugin runs and no git facts, so pointing an item at a repo can't make the
+  server act on it.
+- **No private addresses from the server.** A server connection refuses
+  loopback, private and link-local addresses unless
+  `TODO_PLUGIN_ALLOW_HOSTS` lists the host. The check uses the resolved
+  address it connects to. The CLI has no such limit, since a dev machine's own
+  network is its user's.
+
 ## 4. Plugins
 
 ### The plugin file
