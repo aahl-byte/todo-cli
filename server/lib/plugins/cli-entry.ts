@@ -1,7 +1,9 @@
 // The CLI's way into the plugin host: JSON on stdin, JSON on stdout. By default
 // the input is one instance's run and the output its RunResult; with
 // "mode": "event" it is an event for runEvent and the output its EventResult;
-// with "mode": "describe" it is a repo's plugin file and the output what it declares.
+// with "mode": "events" it is {runs: [event inputs]} and the output {runs: [their
+// EventResults]}, in order, from one process; with "mode": "describe" it is a
+// repo's plugin file and the output what it declares.
 // A failed run still exits 0; unreadable input exits 2.
 // This process is the sandbox's isolation, so code plugins run in it directly.
 import { hostFailure } from "./sandbox.mjs";
@@ -18,7 +20,7 @@ async function readStdin(): Promise<string> {
 }
 
 type Parsed = { mode: "instance"; input: RunInput } | { mode: "event"; input: EventInput }
-  | { mode: "describe"; input: Pick<EventInput, "repo"> };
+  | { mode: "events"; input: EventInput[] } | { mode: "describe"; input: Pick<EventInput, "repo"> };
 
 const EVENT_MAPS = ["hostConnections", "secrets", "storedInstances", "grants", "limits"];
 
@@ -32,6 +34,20 @@ export function parseInput(text: string): Parsed | string {
   }
   if (!isMap(input)) return "input must be a JSON object";
   const { mode = "instance", ...rest } = input;
+  if (mode === "events") {
+    if (!Array.isArray(rest.runs)) return "input needs runs as a list";
+    const runs: EventInput[] = [];
+    for (const [i, run] of rest.runs.entries()) {
+      const one = isMap(run) ? parseFields("event", run) : "must be an object";
+      if (typeof one === "string") return `runs[${i}]: ${one}`;
+      runs.push(one.input as EventInput);
+    }
+    return { mode, input: runs };
+  }
+  return parseFields(mode, rest);
+}
+
+function parseFields(mode: unknown, rest: Record<string, unknown>): Parsed | string {
   if (mode === "event" || mode === "describe") {
     const repo = rest.repo;
     if (repo !== undefined && !(isMap(repo) && typeof repo.text === "string" && (repo.files === undefined || isMap(repo.files)))) {
@@ -51,9 +67,11 @@ export function parseInput(text: string): Parsed | string {
 }
 
 let mode: Parsed["mode"] = "instance";
-type Answer = RunResult | EventResult | Described;
+type Answer = RunResult | EventResult | Described | { runs: EventResult[]; errors?: string[] };
+const failure = (e: unknown) => `the plugin host failed: ${hostFailure(e)}`;
 const failed = (e: unknown): Answer => {
-  const error = `the plugin host failed: ${hostFailure(e)}`;
+  const error = failure(e);
+  if (mode === "events") return { runs: [], errors: [error] };
   if (mode === "describe") return { plugins: [], instances: {}, dropped: [], connections: {}, errors: [error], track: [] };
   return mode === "event" ? { results: [], errors: [error], track: [] } : { attached: [], wouldSend: [], log: [], error };
 };
@@ -77,6 +95,13 @@ async function main() {
   mode = parsed.mode;
   const deps = { isolation: "inline" as const };
   if (parsed.mode === "describe") return answer(describeRepo(parsed.input.repo));
+  if (parsed.mode === "events") {
+    const runs: EventResult[] = [];
+    for (const input of parsed.input) {
+      runs.push(await runEvent(input, deps).catch((e) => ({ results: [], errors: [failure(e)], track: [] })));
+    }
+    return answer({ runs });
+  }
   answer(await (parsed.mode === "event" ? runEvent(parsed.input, deps) : runInstance(parsed.input, deps)).catch(failed));
 }
 

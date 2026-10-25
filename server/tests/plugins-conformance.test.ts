@@ -187,3 +187,20 @@ describe("the bundle's describe mode", () => {
     expect([code, stderr.trim()]).toEqual([2, "plugin host: repo must be {text, files}"]);
   });
 });
+
+describe("the bundle's events mode", () => {
+  it("runs each event input in order in one process", async () => {
+    const repo = { text: "plugins:\n  mine: {on: [manual], attach: [{log: \"{{event.instance}}\"}]}\ninstances:\n  mine: [{id: a, name: A}, {id: b, name: B}]\n" };
+    const one = (instance: string) => ({ repo, item: ITEM, event: { type: "manual", instance } });
+    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "events", runs: [one("b"), one("a")] }));
+    expect(code, stderr).toBe(0);
+    const out = JSON.parse(stdout) as { runs: EventResult[] };
+    expect(out.runs.map((r) => r.results.map((x) => [x.instance.id, x.result.attached.map((a) => (a as { text: string }).text)])))
+      .toEqual([[["b", ["b"]]], [["a", ["a"]]]]);
+  });
+
+  it("refuses a run that isn't an event input", async () => {
+    const { code, stderr } = await bundled(JSON.stringify({ mode: "events", runs: [{ item: ITEM }] }));
+    expect([code, stderr.trim()]).toEqual([2, "plugin host: runs[0]: input needs event as an object"]);
+  });
+});
