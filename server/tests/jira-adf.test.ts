@@ -40,12 +40,4 @@ describe("jira rich text", () => {
       { type: "text", text: " " }, { type: "status", attrs: { text: "BLOCKED" } }] }] };
     expect(adfToText(doc)).toBe("See https://github.com/acme/pr/1 🎉 by 2026-10-03 BLOCKED");
   });
-
-  it("writes ADF Jira accepts: no empty text nodes", async () => {
-    const { textToAdf } = await import("@/lib/jira/adf");
-    const doc = textToAdf("line one\n\nline two\nthree\n");
-    const texts = JSON.stringify(doc).match(/"text":"[^"]*"/g)!;
-    expect(texts.every((t) => t !== '"text":""')).toBe(true);
-    expect(adfToText(doc)).toBe("line one\n\nline two\nthree");
-  });
 });

@@ -517,12 +517,6 @@ describe("qa-rejected", () => {
       { me: "carol", override: true, comment: "bad" });
     expect(ops[1].data).toMatchObject({ kind: "qa-rejection", meta: { with_status: "qa-rejected" } });
   });
-
-  it("falls back to in-progress's Jira status", async () => {
-    const { jiraTarget } = await import("@/lib/jira/outbound");
-    expect(jiraTarget({ "in-progress": "In Progress" }, "qa-rejected")).toBe("In Progress");
-    expect(jiraTarget({ "in-progress": "In Progress", "qa-rejected": "Rejected" }, "qa-rejected")).toBe("Rejected");
-  });
 });
 
 describe("pins", () => {

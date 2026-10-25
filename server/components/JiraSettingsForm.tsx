@@ -1,10 +1,7 @@
 "use client";
 import { useMemo, useState, useTransition } from "react";
 import { saveJiraSettingsAction } from "@/app/settings-actions";
-import { describeMove, validateRules, type InboundRules, type OutboundRules, type Problem, type Trigger } from "@/lib/jira/rules";
-
-type StatusSet = { jira: string; statuses: string[] };
-type Rule = { from: string; to: string; status: string };
+import { describeMove, validateRules, type OutboundRules, type Problem, type Trigger } from "@/lib/jira/rules";
 
 function JiraPick({ value, options, onChange, label }: { value: string; options: string[] | null; onChange: (v: string) => void; label: string }) {
   if (!options) return <input aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} placeholder="Jira status" />;
@@ -26,88 +23,29 @@ function Pick({ value, options, onChange, label }: { value: string; options: rea
   );
 }
 
-export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jiraStatuses, serverReadOnly, mode = "import" }: {
-  projectKey: string; inbound: InboundRules; outbound: OutboundRules; statuses: readonly string[];
-  jiraStatuses: string[] | null; serverReadOnly: boolean; mode?: "import" | "links";
+export function JiraSettingsForm({ projectKey, outbound, statuses, jiraStatuses, serverReadOnly }: {
+  projectKey: string; outbound: OutboundRules; statuses: readonly string[]; jiraStatuses: string[] | null; serverReadOnly: boolean;
 }) {
-  const links = mode === "links";
-  const [sets, setSets] = useState<StatusSet[]>(Object.entries(inbound.statuses).map(([jira, s]) => ({ jira, statuses: [...s] })));
-  const [rules, setRules] = useState<Rule[]>(inbound.transitions ?? []);
   const [out, setOut] = useState<OutboundRules>(outbound);
   const [neverDraft, setNeverDraft] = useState("");
   const [test, setTest] = useState({ from: "review", to: "ready-for-qa" });
   const [saved, setSaved] = useState<{ ok: boolean; problems: Problem[] } | null>(null);
   const [pending, start] = useTransition();
 
-  const inboundNow: InboundRules = useMemo(
-    () => ({ statuses: Object.fromEntries(sets.map((s) => [s.jira, s.statuses])), transitions: rules }), [sets, rules]);
-  const problems = useMemo(() => validateRules(inboundNow, out, statuses, jiraStatuses), [inboundNow, out, statuses, jiraStatuses]);
+  const problems = useMemo(() => validateRules(out, statuses, jiraStatuses), [out, statuses, jiraStatuses]);
   const errors = problems.filter((p) => p.level === "error");
-  const used = new Set(sets.flatMap((s) => s.statuses));
-  const unmirrored = (jiraStatuses ?? []).filter((j) => !sets.some((s) => s.jira.toLowerCase() === j.toLowerCase()));
-  const setNames = sets.map((s) => s.jira).filter(Boolean);
 
-  const editSet = (i: number, f: (s: StatusSet) => StatusSet) => { setSets(sets.map((s, j) => (j === i ? f(s) : s))); setSaved(null); };
-  const editRule = (i: number, patch: Partial<Rule>) => { setRules(rules.map((r, j) => (j === i ? { ...r, ...patch } : r))); setSaved(null); };
   const editOut = (patch: Partial<OutboundRules>) => { setOut({ ...out, ...patch }); setSaved(null); };
   const editTrigger = (i: number, patch: Partial<Trigger>) =>
     editOut({ triggers: out.triggers.map((t, j) => (j === i ? { ...t, ...patch } : t)) });
-  const save = () => start(async () => setSaved(await saveJiraSettingsAction(projectKey, inboundNow, out)));
+  const save = () => start(async () => setSaved(await saveJiraSettingsAction(projectKey, out)));
 
   return (
     <div className="jira-settings">
-      {links ? (
       <section>
         <div className="label section">Jira → todo</div>
-        <p className="hint">Links mode: a linked issue's status shows next to its key and never moves the item.</p>
+        <p className="hint">A linked issue's status shows next to its key and never moves the item.</p>
       </section>
-      ) : (
-      <section>
-        <div className="label section">Jira → todo</div>
-        <p className="hint">Each Jira status covers a set of todo statuses. An item moved in Jira lands on the first, unless it already sits in the set.</p>
-        <div className="rule-table">
-          {sets.map((s, i) => (
-            <div className="rule-row" key={i} data-set={s.jira}>
-              <JiraPick label="Jira status" value={s.jira} options={jiraStatuses} onChange={(v) => editSet(i, (x) => ({ ...x, jira: v }))} />
-              <span className="arrow">→</span>
-              <span className="chips">
-                {s.statuses.map((st, k) => (
-                  <span key={st} className={`chip${k === 0 ? " first" : ""}`} data-tip={k === 0 ? "lands here" : undefined}>
-                    {st}
-                    {k > 0 && <button type="button" className="x" aria-label={`make ${st} first`}
-                                      onClick={() => editSet(i, (x) => ({ ...x, statuses: [st, ...x.statuses.filter((y) => y !== st)] }))}>↑</button>}
-                    <button type="button" className="x" aria-label={`remove ${st}`}
-                            onClick={() => editSet(i, (x) => ({ ...x, statuses: x.statuses.filter((y) => y !== st) }))}>✕</button>
-                  </span>
-                ))}
-                <select aria-label="add todo status" value="" onChange={(e) => e.target.value && editSet(i, (x) => ({ ...x, statuses: [...x.statuses, e.target.value] }))}>
-                  <option value="">+ status</option>
-                  {statuses.filter((st) => !used.has(st)).map((st) => <option key={st} value={st}>{st}</option>)}
-                </select>
-              </span>
-              <button type="button" className="x" aria-label={`remove ${s.jira || "set"}`} onClick={() => { setSets(sets.filter((_, j) => j !== i)); setSaved(null); }}>✕</button>
-            </div>
-          ))}
-        </div>
-        <button type="button" className="add" onClick={() => setSets([...sets, { jira: "", statuses: [] }])}><span className="pl">+</span>status set</button>
-        {unmirrored.length > 0 && <p className="hint">Not mirrored: {unmirrored.join(", ")}</p>}
-
-        <div className="label sub">Specific Jira moves</div>
-        <div className="rule-table">
-          {rules.map((r, i) => (
-            <div className="rule-row" key={i}>
-              <Pick label="from Jira status" value={r.from} options={setNames} onChange={(v) => editRule(i, { from: v })} />
-              <span className="arrow">→</span>
-              <Pick label="to Jira status" value={r.to} options={setNames} onChange={(v) => editRule(i, { to: v })} />
-              <span className="arrow">means</span>
-              <Pick label="todo status" value={r.status} options={statuses} onChange={(v) => editRule(i, { status: v })} />
-              <button type="button" className="x" aria-label="remove rule" onClick={() => { setRules(rules.filter((_, j) => j !== i)); setSaved(null); }}>✕</button>
-            </div>
-          ))}
-        </div>
-        <button type="button" className="add" onClick={() => setRules([...rules, { from: "", to: "", status: "" }])}><span className="pl">+</span>move rule</button>
-      </section>
-      )}
 
       <section>
         <div className="label section">todo → Jira</div>
@@ -116,12 +54,7 @@ export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jira
           Send to Jira
           <span className="hint">{serverReadOnly ? "Locked off: this server is read-only (JIRA_READ_ONLY)." : out.writes ? "On: triggered calls are sent." : "Off: triggered calls are only recorded below."}</span>
         </label>
-        {links ? <p className="hint">A trigger moves every Jira issue the item links. Comments stay in todo.</p> : (
-        <label className="switch">
-          <input type="checkbox" checked={out.comments} onChange={(e) => editOut({ comments: e.target.checked })} />
-          Post comments
-        </label>
-        )}
+        <p className="hint">A trigger moves every Jira issue the item links. Comments stay in todo.</p>
         <div className="rule-row">
           <span className="hint">Never move Jira to</span>
           <span className="chips">
@@ -152,7 +85,7 @@ export function JiraSettingsForm({ projectKey, inbound, outbound, statuses, jira
           <Pick label="test from" value={test.from} options={statuses} onChange={(v) => setTest({ ...test, from: v })} />
           <span className="arrow">→</span>
           <Pick label="test to" value={test.to} options={statuses} onChange={(v) => setTest({ ...test, to: v })} />
-          <span className="result">{describeMove(sets.length && !links ? inboundNow : null, out, test.from, test.to)}</span>
+          <span className="result">{describeMove(out, test.from, test.to)}</span>
         </div>
       </section>
 

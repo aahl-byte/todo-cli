@@ -165,13 +165,13 @@ describe("jira trigger rules", () => {
     expect(outboundTarget(r, "todo", "in-progress")).toBe("In Progress");
     expect(outboundTarget(r, "in-triage", "in-progress")).toBeNull();
     expect(outboundTarget(r, "in-qa", "in-progress")).toBeNull();
-    expect(describeMove(null, r, "todo", "in-progress")).toBe("moves Jira to In Progress.");
-    expect(describeMove(null, r, "requested", "in-triage")).toBe("no trigger.");
-    expect(describeMove(null, r, "in-qa", "in-progress")).toBe("the trigger is ignored: Open is never moved to.");
+    expect(describeMove(r, "todo", "in-progress")).toBe("moves Jira to In Progress.");
+    expect(describeMove(r, "requested", "in-triage")).toBe("no trigger.");
+    expect(describeMove(r, "in-qa", "in-progress")).toBe("the trigger is ignored: Open is never moved to.");
   });
 
   it("validates triggers, warning on statuses Jira doesn't have", () => {
-    const bad = validateRules({ statuses: {} }, outboundRules({ never: ["Open"], triggers: [
+    const bad = validateRules(outboundRules({ never: ["Open"], triggers: [
       { from: "todo", to: "done", jira: "Open" }, { from: "todo", to: "done", jira: "B" },
       { from: "todo", to: "nope", jira: "A" }, { from: "todo", to: "review", jira: "" }] })!, STATUSES, ["A", "Open"]);
     expect(bad.filter((p) => p.level === "error").map((p) => p.message)).toEqual([
@@ -179,7 +179,7 @@ describe("jira trigger rules", () => {
       "The trigger todo → nope names nope, which isn't a todo status.", "The trigger todo → review has no Jira status.",
     ]);
     expect(bad.filter((p) => p.level === "warning").map((p) => p.message)).toEqual(["Jira has no status B."]);
-    expect(validateRules({ statuses: {} }, outboundRules({ ...RULES, triggers: RULES.triggers.slice(0, 3) })!, STATUSES)).toEqual([]);
+    expect(validateRules(outboundRules({ ...RULES, triggers: RULES.triggers.slice(0, 3) })!, STATUSES)).toEqual([]);
   });
 
   it("records matching moves as dry runs while writes are off, and sends nothing", async () => {
@@ -233,11 +233,11 @@ describe("jira trigger rules", () => {
   it("saves valid settings with a stamp, stores nothing when invalid, and lists dry runs", async () => {
     await w.d.query("update projects set jira_outbound = null where key = 'p'");
     const statuses = vi.fn(async () => new Response(JSON.stringify([{ statuses: [{ name: "To Do" }, { name: "In Progress" }] }])));
-    const bad = await saveJiraSettings(w.d, "p", "alice", { statuses: {} },
+    const bad = await saveJiraSettings(w.d, "p", "alice",
       outboundRules({ never: ["Open"], triggers: [{ from: "todo", to: "done", jira: "Open" }] })!);
     expect(bad.map((p) => p.level)).toEqual(["error"]);
     expect((await w.d.query("select jira_outbound from projects where key = 'p'"))[0].jira_outbound).toBeNull();
-    const ok = await saveJiraSettings(w.d, "p", "alice", { statuses: {} }, outboundRules({ triggers: RULES.triggers.slice(0, 2) })!,
+    const ok = await saveJiraSettings(w.d, "p", "alice", outboundRules({ triggers: RULES.triggers.slice(0, 2) })!,
       ["To Do", "In Progress"]);
     expect(ok.map((p) => p.message)).toEqual(["Jira has no status In QA."]);
     const s = await loadJiraSettings(w.d, "p", statuses as unknown as typeof fetch);

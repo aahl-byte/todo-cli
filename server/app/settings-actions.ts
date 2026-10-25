@@ -2,18 +2,18 @@
 import { revalidatePath } from "next/cache";
 import { cleanAction, validateActions, type ActionDef } from "@/lib/actions/model";
 import { db } from "@/lib/db";
-import { jiraStatusesOf, saveJiraSettings, settingsJiraProjects } from "@/lib/jira/settings";
-import type { InboundRules, OutboundRules, Problem } from "@/lib/jira/rules";
+import { jiraStatusesOf, linkedJiraProjects, saveJiraSettings } from "@/lib/jira/settings";
+import type { OutboundRules, Problem } from "@/lib/jira/rules";
 import { STATUSES } from "@/lib/model";
 import { requireUser } from "@/lib/session";
 
-export async function saveJiraSettingsAction(key: string, inbound: InboundRules, outbound: OutboundRules):
+export async function saveJiraSettingsAction(key: string, outbound: OutboundRules):
     Promise<{ ok: boolean; problems: Problem[] }> {
   const user = await requireUser();
   const d = await db();
-  const j = await settingsJiraProjects(d, key);
-  if (!j || (j.mode === "import" && !j.jiraProjects.length)) return { ok: false, problems: [{ level: "error", message: "This project isn't linked to Jira." }] };
-  const problems = await saveJiraSettings(d, key, user.handle, inbound, outbound, await jiraStatusesOf(j.jiraProjects));
+  const jiraProjects = await linkedJiraProjects(d, key);
+  if (!jiraProjects) return { ok: false, problems: [{ level: "error", message: "No such project." }] };
+  const problems = await saveJiraSettings(d, key, user.handle, outbound, await jiraStatusesOf(jiraProjects));
   const ok = !problems.some((x) => x.level === "error");
   if (ok) revalidatePath(`/p/${key}/settings`);
   return { ok, problems };

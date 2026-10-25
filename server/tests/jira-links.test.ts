@@ -305,9 +305,9 @@ describe("jira links-mode triggers", () => {
       return new Response(JSON.stringify([{ statuses: [{ name: String(url).includes("CNS") ? "Open" : "Done" }, { name: "In Progress" }] }]));
     }) as unknown as typeof fetch;
     const s = await loadJiraSettings(w.d, "p", impl);
-    expect(s).toMatchObject({ mode: "links", jiraProject: null, jiraProjects: ["CNS", "OPS"], jiraStatuses: ["Done", "In Progress", "Open"] });
+    expect(s).toMatchObject({ jiraProjects: ["CNS", "OPS"], jiraStatuses: ["Done", "In Progress", "Open"] });
     expect(asked).toEqual(["CNS/statuses", "OPS/statuses"]);
-    expect(await saveJiraSettings(w.d, "p", "alice", { statuses: {} }, outboundRules(RULES)!)).toEqual([]);
+    expect(await saveJiraSettings(w.d, "p", "alice", outboundRules(RULES)!)).toEqual([]);
     expect((await w.d.query("select jira_outbound from projects where key = 'p'"))[0].jira_outbound.triggers).toEqual(RULES.triggers);
   });
 });

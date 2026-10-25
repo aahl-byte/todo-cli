@@ -8,8 +8,6 @@ import {
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
 import { queueAutoActions } from "./actions/runs";
-import { jiraReadOnly } from "./jira/config";
-import { inboundRules, jiraStatusFor } from "./jira/rules";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
 import { GUARDED, refusal, unresolvedEdges } from "./gitfacts";
 
@@ -348,7 +346,6 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
   if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
-  if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", project: ctx.project, itemUid, note: row });
   return result;
 }
 
@@ -392,13 +389,6 @@ async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, 
   row.meta.version = Number(m.n) === 0 ? 1 : Number(m.v) + 1;
   const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if (!item || item.status === "requested") return { bounce: false };
-  // Mirroring a read-only Jira, the item stays where Jira has it, and Jira's
-  // workflow is the triage. Items that only link issues follow the usual rules.
-  if (ctx.actor.bridge && jiraReadOnly() && !await onlyLinksJira(ctx, itemUid)) {
-    Object.assign(row.meta, { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: "jira",
-                              triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle });
-    return { bounce: false };
-  }
   // An item's first request, arriving after work began, records what it was
   // built against: frozen at once and flagged untriaged.
   if (row.meta.version === 1) {
@@ -451,10 +441,7 @@ async function requestLifecycle(ctx: Ctx, itemUid: string, from: string, to: str
     const open = await ctx.t.query(
       `select * from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' and coalesce(meta->>'frozen', 'false') <> 'true'`,
       [ctx.project, itemUid]);
-    const viaJira = ctx.actor.bridge && jiraReadOnly() && to !== "in-triage";
-    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle,
-                    frozen_via: to === "in-triage" ? "triage" : viaJira ? "jira" : "skip",
-                    ...(viaJira ? { triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle } : {}) };
+    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: to === "in-triage" ? "triage" : "skip" };
     for (const n of open) await writeRequestMeta(ctx, n, { version: n.meta?.version ?? 1, ...stamp });
     return;
   }
@@ -489,25 +476,6 @@ export async function backfillRequestVersions(d: Db): Promise<number> {
     count++;
   }
   return count;
-}
-
-/** Whether the item links Jira issues by field without mirroring an imported one. */
-async function onlyLinksJira(ctx: Ctx, itemUid: string): Promise<boolean> {
-  const [r] = await ctx.t.query(
-    `select bool_or(source = 'field') and not bool_or(source = 'import') as only from jira_links where project = $1 and item_uid = $2`,
-    [ctx.project, itemUid]);
-  return !!r?.only;
-}
-
-/** Whether a move on a Jira-linked item would need a different Jira status. */
-async function changesJiraStatus(ctx: Ctx, itemUid: string, from: string, to: string): Promise<boolean> {
-  const [link] = await ctx.t.query(
-    `select p.jira_inbound from jira_links l join projects p on p.key = l.project
-      where l.project = $1 and l.item_uid = $2 and l.source = 'import'`,
-    [ctx.project, itemUid]);
-  if (!link) return false;
-  const rules = inboundRules(link.jira_inbound);
-  return !rules || jiraStatusFor(rules, from) !== jiraStatusFor(rules, to);
 }
 
 async function set(ctx: Ctx, op: Op): Promise<Result> {
@@ -557,11 +525,6 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     const checked = !ctx.actor.unconditional && field !== "position";
     if (checked && version !== undefined && op.base?.[field] !== version) {
       rejected.push({ field, reason: "stale", server_value: current, version, ...(await ctx.who(version)) });
-      continue;
-    }
-    if (entity === "item" && field === "status" && !ctx.actor.bridge && jiraReadOnly()
-        && await changesJiraStatus(ctx, row.uid, String(current), String(value))) {
-      rejected.push({ field, reason: "jira-read-only", server_value: current, version });
       continue;
     }
     if (entity === "item" && field === "status") {
