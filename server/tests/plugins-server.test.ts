@@ -314,16 +314,19 @@ describe("the plugins API", () => {
     expect(body.runs["ping/a"]).toMatchObject({ item: "i1", skipped: "ping: `hooks` not authorized here" });
   });
 
-  it("offers host-wide connections from the environment, with their secrets", async () => {
+  it("offers host-wide connections from the environment, with their secrets, to shipped plugins", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://hooks.example", auth: "bearer" } } }));
     vi.stubEnv("TODO_PLUGIN_SECRET_HOOKS", "host-hook-secret");
-    const gh = fakeGitHub({ file: [
-      "plugins:", "  ping:", "    connections: [hooks]", "    on: [push]",
-      "    steps: [{http: {method: POST, path: /ping}}]", "    attach: [{log: pinged}]",
-    ].join("\n"), other: (url) => (url.startsWith("https://hooks.example") ? Response.json({}) : undefined) });
+    SHIPPED["test-ping"] = { def: { connections: ["hooks"], on: ["push"], steps: [{ http: { method: "POST", path: "/ping" } }], attach: [] } };
+    const gh = fakeGitHub({ file: "plugins:\n  test-ping: {use: shipped}\n",
+                            other: (url) => (url.startsWith("https://hooks.example") ? Response.json({}) : undefined) });
     vi.stubGlobal("fetch", gh.impl);
     await onBranch("I1", ["feat/x"]);
-    await run(gh.impl);
+    try {
+      await run(gh.impl);
+    } finally {
+      delete SHIPPED["test-ping"];
+    }
     expect(gh.sent.find((s) => s.url === "https://hooks.example/ping")!.headers.authorization).toBe("Bearer host-hook-secret");
     const body = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
     expect(body.secrets).toEqual(["github", "hooks"]);

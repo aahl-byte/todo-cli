@@ -46,10 +46,28 @@ export function resolveSettings(plugin: PluginDef, instance: InstanceDef, scope:
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** The connections a run gets: a host connection's secret goes only to plugins shipped with todo. */
+function connectionsOf(input: RunInput): Record<string, ResolvedConnection> {
+  if (input.shipped) return input.connections ?? {};
+  const out: Record<string, ResolvedConnection> = {};
+  for (const [name, c] of Object.entries(input.connections ?? {})) {
+    if (c.origin !== "host" || c.secret === undefined) out[name] = c;
+    else {
+      const { secret: _withheld, ...rest } = c;
+      out[name] = rest as ResolvedConnection;
+    }
+  }
+  return out;
+}
+
+const hostOnly = (name: string) =>
+  `\`${name}\` is this host's connection, whose credentials only plugins shipped with todo get; declare a repo connection named ${name} and store a repo credential for it`;
+
 /** Why this host won't run the plugin, if it won't: a connection it lacks, can't authorize, or mustn't start. */
 function connectionProblem(input: RunInput): string | undefined {
   for (const name of input.plugin.connections ?? []) {
     const c = input.connections?.[name];
+    if (c?.kind === "http" && c.auth && !input.shipped && c.origin === "host") return hostOnly(name);
     if (!c || (c.kind === "http" && c.auth && !c.secret)) return `\`${name}\` not authorized here`;
     if (c.kind === "mcp" && c.command && (c.origin ?? "repo") === "repo" && !input.allowRepoCommands) {
       return `\`${name}\` runs a command, which this host doesn't allow for repo connections`;
@@ -84,7 +102,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
 
   const repoCode = !!plugin.code && !input.shipped;
   const deadline = Date.now() + (input.limits?.deadlineMs ?? (repoCode ? REPO_CODE_DEADLINE_MS : DEFAULT_DEADLINE_MS));
-  const calls = new Calls(input.connections, result, { ...deps, dryRun: input.dryRun || !!instance.dry_run, deadline });
+  const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun: input.dryRun || !!instance.dry_run, deadline });
   const attached = new Attached();
   const mayRequest = !!plugin.capabilities?.includes(POST_REQUEST) && !!input.grants?.includes(POST_REQUEST);
   try {
