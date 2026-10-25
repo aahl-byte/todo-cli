@@ -181,7 +181,7 @@ def cmd_list(root: Path, args) -> None:
 
 
 def cmd_get(root: Path, args) -> None:
-    it = store.resolve_item(root, args.query)
+    it = _item_with_docs(root, args.query)
     cfg = remote.sync_config(root) or {}
     render.print_item(it, full_log=args.log, related=related_items(root, it), server=cfg.get("url"))
     waiting = store.unseen(it, identity.party())
@@ -352,37 +352,52 @@ def cmd_doc_add(root: Path, args) -> None:
         src = Path(args.file)
         if not src.is_file():
             die(f"No such file: {args.file}", 2)
-        name, data = (args.name if args.name is not None else src.name), src.read_bytes()
-    err = docs.name_error(name)
-    if err:
-        die(err, 2)
-    if len(data) > docs.MAX_BYTES:
-        die(f"{name} is {docs.human_size(len(data))}; a doc is at most {docs.human_size(docs.MAX_BYTES)}.", 2)
+        name = args.name if args.name is not None else src.name
+        _check_doc(name, src.stat().st_size)
+        data = src.read_bytes()
+    _check_doc(name, len(data))
     docs.add(_item_dir(root, it), it["uid"], name, data, now())
     print(f'{it["id"]}: doc {name} added ({docs.human_size(len(data))})')
 
 
+def _check_doc(name: str, size: int) -> None:
+    err = docs.name_error(name)
+    if err:
+        die(err, 2)
+    if size > docs.MAX_BYTES:
+        die(f"{name} is {docs.human_size(size)}; a doc is at most {docs.human_size(docs.MAX_BYTES)}.", 2)
+
+
+def _item_with_docs(root: Path, query: str):
+    """The item, after its waiting doc changes have been written, whatever their size."""
+    it = store.resolve_item(root, query)
+    if sync.enabled(root):
+        sync.fetch_item_docs(root, it["uid"])
+        it = store.resolve_item(root, it["id"])
+    return it
+
+
 def _find_doc(root: Path, it, name: str) -> Path:
-    path = _item_dir(root, it) / docs.DOCS_DIR / name
-    if docs.name_error(name) or not path.is_file():
+    found = docs.find(docs.files(_item_dir(root, it)), name)
+    if found is None:
         die(f'{it["id"]} has no doc "{name}". See `todo docs {it["id"]}`.', 2)
-    return path
+    return _item_dir(root, it) / docs.DOCS_DIR / found
 
 
 def cmd_doc_path(root: Path, args) -> None:
-    it = store.resolve_item(root, args.query)
+    it = _item_with_docs(root, args.query)
     print(_find_doc(root, it, args.name).resolve())
 
 
 def cmd_doc_rm(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
-    _find_doc(root, it, args.name)
-    docs.remove(_item_dir(root, it), it["uid"], args.name, now())
-    print(f'{it["id"]}: doc {args.name} removed')
+    name = _find_doc(root, it, args.name).name
+    docs.remove(_item_dir(root, it), it["uid"], name, now())
+    print(f'{it["id"]}: doc {name} removed')
 
 
 def cmd_docs(root: Path, args) -> None:
-    it = store.resolve_item(root, args.query)
+    it = _item_with_docs(root, args.query)
     if not it["docs"]:
         print("(no docs)")
         return
@@ -815,6 +830,8 @@ def _link_remote(repo: Path, args) -> None:
     report = sync.rounds(root, lambda: sync.run_round(root, rem, adopt=True), wait=True)
     for m in report.messages:
         print(f"sync: {m}")
+    if report.doc_failures:
+        print(sync.doc_notice(report))
     if report.error:
         die(f"Linked, but the first sync failed: {report.error}\nRun `todo sync` to retry.", 1)
     print(f"Syncing with {url} (project {key}): pushed {report.pushed}, pulled {report.pulled}")
@@ -829,6 +846,8 @@ def cmd_sync(root: Path, args) -> None:
     left = sync.pending(root)
     for m in report.messages:
         print(f"sync: {m}")
+    if report.doc_failures:
+        print(sync.doc_notice(report))
     print(f"pushed {report.pushed} op(s), {report.rejected} rejected; pulled {report.pulled} change(s)")
     if report.error:
         print(f"offline: {report.error}")

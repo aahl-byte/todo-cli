@@ -137,6 +137,11 @@ class Remote:
         The server hashes the stored bytes first, so this gets a transfer's time."""
         return self.request("PUT", self._docs_path(project), record, max(self.timeout, TRANSFER_TIMEOUT))
 
+    def doc_list(self, project: str, item: str | None = None, after: str | None = None) -> dict:
+        """A page of the project's doc records (or one item's): `{docs, next}`."""
+        query = urllib.parse.urlencode({k: v for k, v in (("item", item), ("after", after)) if v})
+        return self.request("GET", self._docs_path(project, f"?{query}" if query else ""))
+
     def doc_remove(self, project: str, uid: str, base: str) -> dict:
         query = urllib.parse.urlencode({"base": base})
         return self.request("DELETE", self._docs_path(project, f"/{urllib.parse.quote(uid)}?{query}"))
@@ -195,7 +200,7 @@ def multipart(fields: dict, filename: str, data: bytes, content_type: str) -> tu
     out = bytearray()
     for k, v in fields.items():
         out += (f'--{boundary}\r\ncontent-disposition: form-data; name="{k}"\r\n\r\n{v}\r\n').encode()
-    safe = filename.replace('"', "_").replace("\r", "_").replace("\n", "_")
+    safe = filename.encode("utf-8", "replace").decode().replace('"', "_").replace("\r", "_").replace("\n", "_")
     out += (f'--{boundary}\r\ncontent-disposition: form-data; name="file"; filename="{safe}"\r\n'
             f"content-type: {content_type}\r\n\r\n").encode()
     out += data + f"\r\n--{boundary}--\r\n".encode()

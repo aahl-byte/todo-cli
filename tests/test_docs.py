@@ -66,7 +66,7 @@ def test_add_from_stdin_needs_a_name(root, monkeypatch, capsys):
     assert (doc_dir(root) / "handoff.md").read_bytes() == b"handoff notes\n"
 
 
-@pytest.mark.parametrize("name", ["a/b.md", ".hidden", "x" * 121, ""])
+@pytest.mark.parametrize("name", ["a/b.md", ".hidden", "x" * 201, ""])
 def test_add_refuses_names_that_are_not_plain_file_names(root, tmp_path, name):
     src = tmp_path / "f.md"
     src.write_text("x")
@@ -365,3 +365,278 @@ def test_a_server_without_docs_leaves_the_round_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(type(client), "doc_upload", gone)
     report = sync.run_round(root, client)
     assert report.error is None and report.messages == []
+
+
+# ── review regressions ───────────────────────────────────────────────────────
+import os
+import unicodedata
+
+from todo.remote import RemoteError
+
+
+def item_uid(root, q="login-bug"):
+    return store.resolve_item(root, q)["uid"]
+
+
+@pytest.mark.parametrize("name", [
+    "設" * 66 + ".md",                 # 201 UTF-8 bytes
+    "a:b.md", "a<b.md", "a>b.md", 'a"b.md', "a|b.md", "a?.md", "a*.md", "a\\b.md", "a\tb.md",
+    "trailing.", "trailing ", "con", "CON.md", "nul.txt", "Aux", "prn.tar.gz", "com1.md", "LPT9.txt",
+    ".meta.yaml", ".hidden",
+])
+def test_names_follow_one_rule_on_both_sides(name):
+    assert docs.name_error(name) is not None
+
+
+@pytest.mark.parametrize("name", ["設" * 65 + ".md", "design v2.md", "console.md", "com10.md", "lpt.md", "a.b.c"])
+def test_ordinary_names_pass(name):
+    assert docs.name_error(name) is None
+
+
+def test_a_name_is_one_doc_whatever_its_case_or_unicode_form():
+    nfd = unicodedata.normalize("NFD", "Café.md")
+    assert docs.name_key(nfd) == docs.name_key("café.md") == "café.md"
+    assert docs.doc_uid("I1", nfd) == docs.doc_uid("I1", "CAFÉ.MD") == sync._hash_uid("doc", "I1", "café.md")
+
+
+def test_a_name_the_store_cant_write_is_skipped_and_the_rest_arrive(pair, server):
+    a, _ = pair
+    server.dashboard_put(item_uid(a), "設" * 100 + ".md", b"x", "carol")
+    server.dashboard_put(item_uid(a), "zz-after.md", b"later", "carol")
+    failures = []
+    for _ in range(2):
+        report = rnd(a, server, "alice")
+        assert report.error is None
+        failures += report.doc_failures
+    assert (doc_dir(a, "login-bug") / "zz-after.md").read_bytes() == b"later"
+    assert len([f for f in failures if "設" in f]) == 1
+
+
+@pytest.mark.parametrize("status", [503, 501])
+def test_a_doc_failure_never_stops_the_pull(pair, server, status):
+    a, b = pair
+    (doc_dir(a, "login-bug") / "plan.md").write_text("v2\n")
+    run_cli(b, ["note", "login-bug", "from bob"])
+    assert rnd(b, server, "bob").error is None
+    client = server.client("alice")
+
+    def boom(*_a, **_k):
+        raise RemoteError("bucket down", status)
+
+    client.doc_upload = boom
+    report = sync.run_round(a, client)
+    assert report.error is None
+    assert "from bob" in [n["text"] for n in store.resolve_item(a, "login-bug")["notes"]]
+    assert len(report.doc_failures) == 1 and "plan.md" in report.doc_failures[0]
+    assert rnd(a, server, "alice").error is None
+    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"v2\n")
+
+
+def test_doc_failures_print_as_one_line(capsys):
+    sync._print_report(sync.Report(doc_failures=["a.md (503 down)", "b.md (503 down)"]))
+    err = capsys.readouterr().err.strip().splitlines()
+    assert len(err) == 1 and "a.md" in err[0] and "b.md" in err[0]
+
+
+def test_a_doc_that_cant_be_read_is_skipped_and_the_others_sync(pair, server, tmp_path):
+    a, _ = pair
+    (doc_dir(a, "login-bug") / "plan.md").write_text("v2\n")
+    secret = doc_dir(a, "login-bug") / "locked.md"
+    secret.write_text("x")
+    secret.chmod(0)
+    try:
+        report = rnd(a, server, "alice")
+    finally:
+        secret.chmod(0o644)
+    assert report.error is None
+    assert any("locked.md" in f for f in report.doc_failures)
+    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"v2\n")
+
+
+def test_an_undecodable_file_name_is_skipped(pair, server, capsys):
+    a, _ = pair
+    d = os.fsencode(doc_dir(a, "login-bug"))
+    with open(os.path.join(d, b"caf\xe9.md"), "wb") as f:
+        f.write(b"x")
+    report = rnd(a, server, "alice")
+    assert report.error is None
+    assert any("caf" in f for f in report.doc_failures)
+    assert [d["name"] for d in store.resolve_item(a, "login-bug")["docs"]] == ["plan.md"]
+
+
+def test_multipart_survives_an_undecodable_name():
+    body, _ = remote.multipart({}, "caf\udce9.md", b"x", "text/markdown")
+    assert b"x\r\n" in body
+
+
+def test_a_symlink_in_docs_is_never_followed(pair, server, tmp_path):
+    a, _ = pair
+    outside = tmp_path / "secret.txt"
+    outside.write_text("private")
+    (doc_dir(a, "login-bug") / "link.md").symlink_to(outside)
+    report = rnd(a, server, "alice")
+    assert report.error is None
+    assert server_doc(server, "link.md") is None
+    assert b"private" not in b"".join(server.blobs.values())
+    assert [d["name"] for d in store.resolve_item(a, "login-bug")["docs"]] == ["plan.md"]
+
+
+def test_a_corrupt_sidecar_keeps_a_local_edit_without_a_conflict(pair, server):
+    a, b = pair
+    d = doc_dir(a, "login-bug")
+    (d / docs.META_FILE).write_text("{{{ not yaml")
+    (d / "plan.md").write_text("alice v2\n")
+    report = rnd(a, server, "alice")
+    assert report.error is None and report.messages == []
+    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["plan.md"]
+    assert (d / ".meta.yaml.bad").read_text() == "{{{ not yaml"
+    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"alice v2\n")
+    assert sidecar(a, "login-bug")["plan.md"]["base"] == docs.sha256_bytes(b"alice v2\n")
+
+
+def test_a_corrupt_sidecar_doesnt_undo_a_dashboard_delete(pair, server):
+    a, _ = pair
+    (doc_dir(a, "login-bug") / docs.META_FILE).write_text("{{{ not yaml")
+    server.dashboard_delete(item_uid(a), "plan.md")
+    assert rnd(a, server, "alice").error is None
+    assert server_doc(server, "plan.md") is None
+    assert not (doc_dir(a, "login-bug") / "plan.md").exists()
+
+
+def test_a_corrupt_sidecar_takes_an_unchanged_doc_as_synced(pair, server):
+    a, _ = pair
+    (doc_dir(a, "login-bug") / docs.META_FILE).write_text("- just a list")
+    before = len(server.uploads)
+    assert rnd(a, server, "alice").error is None
+    assert len(server.uploads) == before
+    assert sidecar(a, "login-bug")["plan.md"]["by"] == "alice"
+
+
+def test_a_cut_between_upload_and_record_recovers(pair, server):
+    a, b = pair
+    (doc_dir(a, "login-bug") / "plan.md").write_text("v2\n")
+    client = server.client("alice")
+
+    def cut(*_a, **_k):
+        raise RemoteError("cut")
+
+    client.doc_record = cut
+    assert sync.run_round(a, client).error is None
+    assert rnd(a, server, "alice").error is None
+    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"v2\n")
+    assert sidecar(a, "login-bug")["plan.md"]["base"] == docs.sha256_bytes(b"v2\n")
+    assert rnd(b, server, "bob").error is None
+    assert (doc_dir(b, "login-bug") / "plan.md").read_text() == "v2\n"
+
+
+def test_the_same_new_doc_on_both_sides_is_no_conflict(pair, server):
+    a, b = pair
+    for root in (a, b):
+        (doc_dir(root, "login-bug") / "same.md").write_text("same\n")
+    assert rnd(a, server, "alice").error is None
+    report = rnd(b, server, "bob")
+    assert report.messages == []
+    assert sorted(p.name for p in doc_dir(b, "login-bug").iterdir() if not p.name.startswith(".")) == ["plan.md", "same.md"]
+
+
+def test_a_case_twin_is_refused_and_the_round_goes_on(pair, server):
+    a, _ = pair
+    (doc_dir(a, "login-bug") / "PLAN.md").write_text("twin\n")
+    report = rnd(a, server, "alice")
+    assert report.error is None
+    assert any("PLAN.md" in f for f in report.doc_failures)
+    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"v1\n")
+
+
+def test_a_server_doc_matches_a_local_file_in_another_unicode_form(tmp_path, server, monkeypatch):
+    a, b = make(tmp_path, "a", server), make(tmp_path, "b", server)
+    run_cli(a, ["add", "Login bug"])
+    src = tmp_path / "café.md"
+    src.write_text("same\n")
+    run_cli(a, ["doc", "add", "login-bug", str(src), "--name", unicodedata.normalize("NFC", "café.md")])
+    assert rnd(a, server, "alice").error is None
+    assert rnd(b, server, "bob", adopt=True).error is None
+    d = doc_dir(b, "login-bug")
+    nfc = unicodedata.normalize("NFC", "café.md")
+    (d / nfc).rename(d / unicodedata.normalize("NFD", "café.md"))
+    report = rnd(b, server, "bob")
+    assert report.error is None and report.messages == [] and report.doc_failures == []
+    assert len([r for r in server.rows.values() if r["_entity"] == "doc"]) == 1
+    server.dashboard_put(item_uid(b), nfc, b"newer\n", "carol")
+    report = rnd(b, server, "bob")
+    assert report.error is None and report.messages == []
+    assert [p.name for p in d.iterdir() if not p.name.startswith(".")] == [nfc]
+    assert (d / nfc).read_text() == "newer\n"
+
+
+def test_big_docs_wait_for_a_full_round(pair, server, monkeypatch):
+    a, _ = pair
+    big = b"x" * (sync.QUICK_DOC_BYTES + 1)
+    (doc_dir(a, "login-bug") / "big.bin").write_bytes(big)
+    (doc_dir(a, "login-bug") / "small.md").write_text("small")
+    assert rnd(a, server, "alice", doc_limit=sync.QUICK_DOC_BYTES).error is None
+    assert server_doc(server, "small.md") is not None and server_doc(server, "big.bin") is None
+    assert rnd(a, server, "alice", push_only=True, sweep=True).error is None
+    assert server_doc(server, "big.bin")["size"] == len(big)
+
+
+def test_a_big_doc_from_elsewhere_comes_down_when_its_item_is_looked_at(pair, server, monkeypatch, capsys):
+    a, _ = pair
+    big = b"y" * (sync.QUICK_DOC_BYTES + 1)
+    server.dashboard_put(item_uid(a), "big.bin", big, "carol")
+    assert rnd(a, server, "alice", doc_limit=sync.QUICK_DOC_BYTES).error is None
+    assert not (doc_dir(a, "login-bug") / "big.bin").exists()
+    monkeypatch.setattr(remote, "remote_for", lambda root, timeout=None: server.client("alice"))
+    for argv in (["docs", "login-bug"], ["doc", "path", "login-bug", "big.bin"], ["get", "login-bug"]):
+        (doc_dir(a, "login-bug") / "big.bin").unlink(missing_ok=True)
+        meta = docs.read_meta(item_dir(a, "login-bug"))
+        meta.pop("big.bin", None)
+        docs.write_meta(item_dir(a, "login-bug"), meta)
+        snap = sync.load_snapshot(a)
+        snap["docs"][docs.doc_uid(item_uid(a), "big.bin")] = {
+            "entity": "doc", "uid": docs.doc_uid(item_uid(a), "big.bin"), "item_uid": item_uid(a), "deleted": False,
+            "data": server_doc(server, "big.bin")}
+        sync.save_snapshot(a, snap)
+        run_cli(a, argv)
+        assert (doc_dir(a, "login-bug") / "big.bin").read_bytes() == big, argv
+
+
+def test_a_doc_for_an_item_never_here_is_dropped_after_its_wait(pair, server):
+    a, _ = pair
+    snap = sync.load_snapshot(a)
+    snap["docs"]["ZDOC"] = {"entity": "doc", "uid": "ZDOC", "item_uid": "ZNOWHERE", "deleted": False,
+                            "data": {"uid": "ZDOC", "name": "lost.md", "sha256": "0", "size": 1}}
+    sync.save_snapshot(a, snap)
+    for _ in range(sync.DOC_WAIT_ROUNDS):
+        report = rnd(a, server, "alice")
+        assert "ZDOC" in sync.load_snapshot(a)["docs"]
+    report = rnd(a, server, "alice")
+    assert "ZDOC" not in sync.load_snapshot(a)["docs"]
+    assert any("lost.md" in m for m in report.messages)
+
+
+def test_docs_a_store_missed_before_it_upgraded_are_backfilled(pair, server):
+    a, _ = pair
+    server.dashboard_put(item_uid(a), "missed.md", b"missed", "carol")
+    snap = sync.load_snapshot(a)
+    snap["cursor"] = server.seq                 # an old CLI moved past it without asking for docs
+    snap.pop(sync.DOCS_BACKFILLED, None)
+    sync.save_snapshot(a, snap)
+    assert rnd(a, server, "alice").error is None
+    assert (doc_dir(a, "login-bug") / "missed.md").read_bytes() == b"missed"
+    assert sync.load_snapshot(a)[sync.DOCS_BACKFILLED] is True
+    lists = len(server.doc_lists)
+    assert rnd(a, server, "alice").error is None
+    assert len(server.doc_lists) == lists
+
+
+def test_doc_add_checks_the_size_before_reading(root, tmp_path, monkeypatch):
+    monkeypatch.setattr(docs, "MAX_BYTES", 4)
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"12345")
+    read = []
+    real = type(src).read_bytes
+    monkeypatch.setattr(type(src), "read_bytes", lambda self: read.append(self) or real(self))
+    with pytest.raises(SystemExit):
+        run_cli(root, ["doc", "add", "beta", str(src)])
+    assert read == []

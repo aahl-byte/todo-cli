@@ -35,6 +35,7 @@ class FakeServer:
         self.checkouts = []
         self.blobs = {}          # file key → bytes
         self.uploads = []        # file keys, in upload order
+        self.doc_lists = []      # (item, after) per doc list request
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -227,8 +228,19 @@ class FakeServer:
 
     # ── docs (server/lib/docs.ts) ────────────────────────────────────────────
     def _doc(self, item_uid, name):
-        return next((r for r in self.rows.values()
-                     if r["_entity"] == "doc" and r["item_uid"] == item_uid and r["name"] == name), None)
+        from todo import docs
+        return next((r for r in self.rows.values() if r["_entity"] == "doc" and r["item_uid"] == item_uid
+                     and docs.name_key(r["name"]) == docs.name_key(name)), None)
+
+    def list_docs(self, item=None, after=None, limit=2):
+        """A page of doc rows by uid; a small page, so tests page through."""
+        self.doc_lists.append((item, after))
+        rows = sorted((r for r in self.rows.values() if r["_entity"] == "doc"
+                       and (item is None or r["item_uid"] == item) and (after is None or r["uid"] > after)),
+                      key=lambda r: r["uid"])
+        page = rows[:limit]
+        return {"docs": [self._public(r) for r in page],
+                "next": page[-1]["uid"] if len(rows) > limit else None}
 
     def _upload(self, data):
         key = f"{self.project}/docs/{len(self.blobs) + 1:026d}.bin"
@@ -249,6 +261,9 @@ class FakeServer:
         data = self.blobs[rec["file_key"]]
         sha = hashlib.sha256(data).hexdigest()
         row = self._doc(rec["item_uid"], rec["name"])
+        if row and row["name"] != rec["name"]:
+            from todo.remote import RemoteError
+            raise RemoteError(f'409 a doc named {row["name"]} already exists', 409)
         current = row["sha256"] if row else None
         if sha == current:
             return {"status": "applied", "doc": self._public(row)}
@@ -303,6 +318,12 @@ class FakeServer:
 
             def doc_record(self, project, rec):
                 return server.record_doc(copy.deepcopy(rec), author)
+
+            def doc_list(self, project, item=None, after=None):
+                if server.offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                return server.list_docs(item, after)
 
             def doc_remove(self, project, uid, base):
                 return server.remove_doc(uid, base, author)
