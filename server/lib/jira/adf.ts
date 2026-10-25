@@ -53,18 +53,6 @@ export function adfToText(doc: unknown): string {
   return out.join("").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export function textToAdf(text: string) {
-  const paragraphs = text.replace(/\s+$/, "").split(/\n{2,}/).map((p) => ({
-    type: "paragraph",
-    // Jira rejects empty text nodes, so blank lines become bare breaks.
-    content: p.split("\n").flatMap((line, i) => [
-      ...(i ? [{ type: "hardBreak" }] : []),
-      ...(line ? [{ type: "text", text: line }] : []),
-    ]),
-  }));
-  return { type: "doc", version: 1, content: paragraphs };
-}
-
 /** How a `media` node renders: an image URL, a link, or null for its name only. */
 export type MediaRef = (attrs: Record<string, any>) => { image?: string; link?: string } | null;
 

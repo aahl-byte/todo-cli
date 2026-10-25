@@ -3,15 +3,11 @@ import type { Db } from "../db";
 import { STATUSES } from "../model";
 import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
-import { inboundRules, outboundRules, validateRules, type InboundRules, type OutboundRules, type Problem } from "./rules";
+import { outboundRules, validateRules, type OutboundRules, type Problem } from "./rules";
 
 export interface JiraSettings {
-  mode: "import" | "links";
-  jiraProject: string | null;
   /** The Jira projects whose statuses the rules pick from. */
   jiraProjects: string[];
-  jiraUrl: string | null;
-  inbound: InboundRules;
   outbound: OutboundRules;
   serverReadOnly: boolean;
   /** Jira's statuses for the project, or null when Jira couldn't be asked. */
@@ -22,7 +18,7 @@ export interface JiraSettings {
 
 export interface DryRun { id: number; at: string; itemId: string | null; title: string | null; action: string; key: string; status?: string }
 
-const EMPTY_OUTBOUND: OutboundRules = { writes: false, comments: true, never: [], triggers: [] };
+const EMPTY_OUTBOUND: OutboundRules = { writes: false, never: [], triggers: [] };
 
 export async function jiraStatuses(jiraProject: string, fetchImpl?: Fetch): Promise<string[] | null> {
   const cfg = jiraConfig();
@@ -45,28 +41,21 @@ export async function jiraStatusesOf(jiraProjects: string[], fetchImpl?: Fetch):
   return [...new Set(lists.flat() as string[])].sort();
 }
 
-/** A links-mode project picks from the Jira projects its items link; import mode from its own. */
-export async function settingsJiraProjects(db: Db, key: string): Promise<{ mode: "import" | "links"; jiraProjects: string[] } | null> {
-  const [p] = await db.query("select jira_mode, jira_project from projects where key = $1", [key]);
+/** The Jira projects a project's items link, or null when there's no such project. */
+export async function linkedJiraProjects(db: Db, key: string): Promise<string[] | null> {
+  const [p] = await db.query("select 1 from projects where key = $1", [key]);
   if (!p) return null;
-  if (p.jira_mode !== "links") return { mode: "import", jiraProjects: p.jira_project ? [p.jira_project] : [] };
   const linked = await db.query(
     `select distinct split_part(jira_key, '-', 1) as j from jira_links where project = $1 and source = 'field' order by 1`, [key]);
-  return { mode: "links", jiraProjects: linked.map((r) => r.j) };
+  return linked.map((r) => r.j);
 }
 
 export async function loadJiraSettings(db: Db, key: string, fetchImpl?: Fetch): Promise<JiraSettings | null> {
-  const [p] = await db.query(
-    "select jira_project, jira_inbound, jira_outbound, jira_settings_by, jira_settings_at from projects where key = $1", [key]);
+  const [p] = await db.query("select jira_outbound, jira_settings_by, jira_settings_at from projects where key = $1", [key]);
   if (!p) return null;
-  const cfg = jiraConfig();
-  const { mode, jiraProjects } = (await settingsJiraProjects(db, key))!;
+  const jiraProjects = (await linkedJiraProjects(db, key))!;
   return {
-    mode,
-    jiraProject: p.jira_project ?? null,
     jiraProjects,
-    jiraUrl: cfg && p.jira_project ? `${cfg.baseUrl}/browse/${p.jira_project}` : null,
-    inbound: inboundRules(p.jira_inbound) ?? { statuses: {}, transitions: [] },
     outbound: outboundRules(p.jira_outbound) ?? EMPTY_OUTBOUND,
     serverReadOnly: jiraReadOnly(),
     jiraStatuses: await jiraStatusesOf(jiraProjects, fetchImpl),
@@ -85,21 +74,18 @@ export async function dryRuns(db: Db, key: string, limit = 20): Promise<DryRun[]
                             action: r.action, key: r.payload?.key, status: r.payload?.status }));
 }
 
-/** Validate and store both rule sets; errors store nothing. */
-export async function saveJiraSettings(db: Db, key: string, by: string, inbound: InboundRules, outbound: OutboundRules,
+/** Validate and store the triggers; errors store nothing. */
+export async function saveJiraSettings(db: Db, key: string, by: string, outbound: OutboundRules,
                                        jiraStatusList?: string[] | null): Promise<Problem[]> {
   const clean: OutboundRules = {
-    writes: !!outbound.writes, comments: outbound.comments !== false,
+    writes: !!outbound.writes,
     never: (outbound.never ?? []).map((s) => s.trim()).filter(Boolean),
     triggers: (outbound.triggers ?? []).map((t) => ({ from: t.from, to: t.to, jira: String(t.jira ?? "").trim() })),
   };
-  const statuses: Record<string, string[]> = {};
-  for (const [k, v] of Object.entries(inbound.statuses ?? {})) if (k.trim()) statuses[k.trim()] = v;
-  const rules: InboundRules = { statuses, transitions: inbound.transitions ?? [] };
-  const problems = validateRules(rules, clean, STATUSES, jiraStatusList);
+  const problems = validateRules(clean, STATUSES, jiraStatusList);
   if (problems.some((p) => p.level === "error")) return problems;
   await db.query(
-    `update projects set jira_inbound = $2::jsonb, jira_outbound = $3::jsonb, jira_settings_by = $4, jira_settings_at = now()
-      where key = $1`, [key, JSON.stringify(rules), JSON.stringify(clean), by]);
+    "update projects set jira_outbound = $2::jsonb, jira_settings_by = $3, jira_settings_at = now() where key = $1",
+    [key, JSON.stringify(clean), by]);
   return problems;
 }

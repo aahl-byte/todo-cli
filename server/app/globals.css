@@ -590,7 +590,6 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .rule-row select, .rule-row input { font: 12px var(--mono); min-width: 9em; }
 .rule-row .arrow { color: var(--faint); font-size: 11px; }
 .rule-row .chips { display: inline-flex; gap: 5px; flex-wrap: wrap; align-items: center; }
-.rule-row .chip.first { color: var(--text); border-color: var(--cyan-dim); }
 .rule-row .x { border: 0; background: none; color: var(--faint); cursor: pointer; padding: 0 2px; font-size: 11px; }
 .rule-row .x:hover { color: var(--danger); }
 .rule-row.tester .result { color: var(--text); }

@@ -942,7 +942,7 @@ def _log_rejection(root, op, x, local, report) -> None:
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
 FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff", "request-frozen",
-         "bad-relation", "already-related", "jira-read-only"}
+         "bad-relation", "already-related"}
 
 
 def _sync_log(root: Path, item_id: str, text: str) -> None:

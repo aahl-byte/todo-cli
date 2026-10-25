@@ -5,10 +5,9 @@ import type { Db } from "../db";
 import { applyOps } from "../apply";
 import { ulid } from "../ulid";
 import { nowIso } from "../model";
-import { textToAdf } from "./adf";
 import { outboundRules } from "./rules";
 import { JiraClient, type Fetch } from "./client";
-import { COMMENT_MARK, LEASE_MINUTES, MAX_ATTEMPTS, jiraConfig, jiraReadOnly } from "./config";
+import { LEASE_MINUTES, MAX_ATTEMPTS, jiraConfig, jiraReadOnly } from "./config";
 
 export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: number; failed: number }> {
   const cfg = jiraConfig();
@@ -66,8 +65,8 @@ export async function flushJira(db: Db, fetchImpl?: Fetch): Promise<{ sent: numb
   return { sent, failed };
 }
 
-/** Projects whose writes are on; a project with only the legacy map writes. */
-const WRITING = "jira_outbound is null or coalesce((jira_outbound->>'writes')::boolean, false)";
+/** Projects whose writes are on. */
+const WRITING = "coalesce((jira_outbound->>'writes')::boolean, false)";
 
 async function neverTarget(db: Db, row: any): Promise<boolean> {
   const [p] = await db.query("select jira_outbound from projects where key = $1", [row.project]);
@@ -112,17 +111,6 @@ async function deliver(jira: JiraClient, action: string, p: Record<string, any>)
     if (!t) throw new Error(`no transition from ${current ?? "?"} to ${p.status}`);
     await jira.call("POST", `/rest/api/3/issue/${key}/transitions`, { transition: { id: t.id } });
     return { transition: t.id };
-  }
-  if (action === "comment") {
-    const who = p.author ?? "someone";
-    const head = p.label === "QA rejected" ? `QA rejected — ${who} ${COMMENT_MARK}` : `${who} ${COMMENT_MARK}`;
-    const res = await jira.call("POST", `/rest/api/3/issue/${key}/comment`, { body: textToAdf(`${head}:\n${p.text}`) });
-    return { comment_id: res?.id ?? null };
-  }
-  if (action === "remotelink") {
-    await jira.call("POST", `/rest/api/3/issue/${key}/remotelink`,
-      { globalId: `todo:${p.global_id ?? p.url}`, object: { url: p.url, title: p.title } });
-    return {};
   }
   throw new Error(`unknown action ${action}`);
 }

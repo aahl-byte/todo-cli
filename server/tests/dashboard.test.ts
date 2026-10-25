@@ -517,12 +517,6 @@ describe("qa-rejected", () => {
       { me: "carol", override: true, comment: "bad" });
     expect(ops[1].data).toMatchObject({ kind: "qa-rejection", meta: { with_status: "qa-rejected" } });
   });
-
-  it("falls back to in-progress's Jira status", async () => {
-    const { jiraTarget } = await import("@/lib/jira/outbound");
-    expect(jiraTarget({ "in-progress": "In Progress" }, "qa-rejected")).toBe("In Progress");
-    expect(jiraTarget({ "in-progress": "In Progress", "qa-rejected": "Rejected" }, "qa-rejected")).toBe("Rejected");
-  });
 });
 
 describe("pins", () => {
@@ -642,7 +636,7 @@ describe("role filters", () => {
     await w.one("alice", item("S1", { status: "todo", title: "Fix the Login form" }));
     await w.one("alice", item("S2", { status: "todo", extra: { branch: "feat/login-sso" } }));
     await w.one("alice", item("S3", { status: "todo" }));
-    await w.d.query("insert into jira_links (project, item_uid, jira_key) values ('p', 'S3', 'OPS-412')");
+    await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'S3', 'OPS-412', 'field')");
     const p = (await project(w.d, "p"))!;
     const ids = async (search: string) => (await board(w.d, p, { search }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
     expect(await ids("login")).toEqual(["s1", "s2"]);

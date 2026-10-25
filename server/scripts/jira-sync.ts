@@ -1,5 +1,5 @@
 // One read-only Jira sync pass, or one every N seconds with --every N. --all
-// polls every project in `links` mode in turn.
+// polls every project in turn.
 export {};
 process.env.JIRA_READ_ONLY = "1";
 const { db } = await import("../lib/db");

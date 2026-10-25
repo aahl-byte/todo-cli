@@ -1,29 +1,18 @@
-// The Jira → todo half: webhook payloads become ops applied as the mapped Jira
-// user, unconditionally, and flagged so they are never echoed back. Op ids and
-// uids derive from Jira's own ids, so a retried webhook is a no-op.
+// Jira comments as todo notes, applied as the mapped Jira user, unconditionally,
+// and flagged so they are never echoed back. Uids and op ids derive from Jira's
+// own ids, so a repeated pass is a no-op.
 import crypto from "node:crypto";
 import type { Db } from "../db";
 import { applyOps, type Actor, type Op } from "../apply";
-import { STATUSES, nowIso } from "../model";
 import { adfToMarkdown, adfToText } from "./adf";
 import { mediaRef } from "./media";
-import type { Fetch } from "./client";
-import { COMMENT_MARK, jiraConfig, jiraReadOnly, ownAccountId } from "./config";
-import { enqueue, jiraTarget } from "./outbound";
-import { inboundRules, inboundStatus } from "./rules";
-
-const PRIORITY: Record<string, string> = { critical: "urgent", highest: "urgent", blocker: "urgent", high: "high",
-                                           medium: "medium", low: "low", lowest: "low" };
-/** The todo priority for a Jira priority name; unknown names are medium. */
-export const jiraPriority = (name: unknown) => PRIORITY[String(name ?? "").toLowerCase()] ?? "medium";
+import { COMMENT_MARK, jiraConfig } from "./config";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
 export interface InboundResult {
   handled: boolean;
   reason?: string;
-  /** Answer 503 so Jira redelivers the event later. */
-  retry?: boolean;
   results?: unknown[];
 }
 
@@ -32,7 +21,7 @@ export function jiraUid(...parts: string[]): string {
   return "J" + crypto.createHash("sha1").update(parts.join("\u001f")).digest("hex").slice(0, 25).toUpperCase();
 }
 
-export async function handleFor(db: Db, p: Person): Promise<string | null> {
+async function handleFor(db: Db, p: Person): Promise<string | null> {
   if (!p) return null;
   if (p.accountId) {
     const [u] = await db.query("select handle from users where jira_account_id = $1", [p.accountId]);
@@ -45,187 +34,16 @@ async function bridgeActor(db: Db, p: Person): Promise<Actor> {
   return { handle: (await handleFor(db, p)) ?? "jira-bridge", unconditional: true, bridge: true };
 }
 
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "item";
-}
-
-export async function handleWebhook(db: Db, payload: any, opts: { deliveryId?: string; fetchImpl?: Fetch } = {}):
-    Promise<InboundResult> {
-  const event: string = payload?.webhookEvent ?? "";
-  const issue = payload?.issue;
-  if (!issue?.key) return { handled: false, reason: "no issue" };
-  const [link] = await db.query(
-    `select l.item_uid, l.jira_key, l.last_event_at, l.last_assignee_at, i.status, i.project, p.jira_status_map, p.jira_inbound from jira_links l
-       join items i on i.uid = l.item_uid and i.project = l.project join projects p on p.key = l.project
-      where l.jira_key = $1 and l.source = 'import'`, [issue.key]);
-
-  if (event === "jira:issue_created") {
-    if (link) return { handled: false, reason: "already linked" };
-    const jiraProject = issue.fields?.project?.key;
-    const [project] = await db.query("select key from projects where jira_project = $1 and jira_mode = 'import'", [jiraProject ?? null]);
-    if (!project) return { handled: false, reason: `no project mapped to ${jiraProject}` };
-    return created(db, project.key, issue);
-  }
-  if (!link) return { handled: false, reason: "issue not linked" };
-  // Read-only, todo never writes to Jira, so no change there is our echo.
-  const readOnly = jiraReadOnly();
-  const cfg = jiraConfig();
-  const own = cfg && !readOnly ? await ownAccountId(cfg, opts.fetchImpl) : null;
-  if (event === "jira:issue_updated") {
-    if (own && payload.user?.accountId === own) {
-      await stamp(db, link, payload);
-      return { handled: false, reason: "own change" };
-    }
-    // Without knowing our own account, a late echo of our transition could roll
-    // the item back; ask Jira to redeliver once the account is known.
-    const statusChange = (payload.changelog?.items ?? []).some((x: any) => x.field === "status");
-    if (!own && !readOnly && statusChange) {
-      // Apply the rest now; ask Jira to redeliver for the status.
-      const rest = { ...payload, changelog: { ...payload.changelog, items: payload.changelog.items.filter((x: any) => x.field !== "status") } };
-      await updated(db, link, issue, rest, opts.deliveryId, ":rest");
-      return { handled: false, reason: "own account unknown", retry: true };
-    }
-    return updated(db, link, issue, payload, opts.deliveryId);
-  }
-  if (event === "comment_created" || event === "comment_updated") return commented(db, link as any, payload.comment, own, issue.key);
-  return { handled: false, reason: `ignored ${event}` };
-}
-
-async function created(db: Db, project: string, issue: any): Promise<InboundResult> {
-  const f = issue.fields ?? {};
-  const uid = jiraUid("item", issue.key);
-  const actor = await bridgeActor(db, f.reporter);
-  const summary = String(f.summary ?? issue.key);
-  const description = adfToMarkdown(f.description, await mediaRef(db, project, uid, issue.key, jiraConfig()?.baseUrl));
-  const isBug = String(f.issuetype?.name ?? "").toLowerCase() === "bug";
-  const ops: Op[] = [
-    { op_id: `jira:${issue.key}:create`, op: "create", entity: "item", uid, item_uid: uid,
-      data: { id: slug(summary), title: summary, type: isBug ? "bug" : "feature", status: "requested",
-              creator: actor.handle, developer: await handleFor(db, f.assignee),
-              created: f.created ? new Date(f.created).toISOString() : undefined } },
-    { op_id: `jira:${issue.key}:request`, op: "create", entity: "note", uid: jiraUid("request", issue.key), item_uid: uid,
-      data: { n: 1, kind: "ticket-request", text: description ? `${summary}\n\n${description}` : summary,
-              meta: { jira_key: issue.key }, source: "jira" } },
-  ];
-  const results = await applyOps(db, project, ops, actor);
-  if (results[0].status === "applied") {
-    await db.query("insert into jira_links (project, item_uid, jira_key) values ($1, $2, $3) on conflict do nothing",
-      [project, uid, issue.key]);
-  }
-  return { handled: true, results };
-}
-
-async function updated(db: Db, link: any, issue: any, payload: any, deliveryId: string | undefined,
-                       suffix = ""): Promise<InboundResult> {
-  const items: any[] = payload.changelog?.items ?? [];
-  const data: Record<string, unknown> = {};
-  // A redelivered older event must not undo a newer change from Jira.
-  const at = Number(payload.timestamp) || null;
-  const older = (last: unknown) => at !== null && last != null && at < Number(last);
-  if (items.some((x) => x.field === "assignee") && !older(link.last_assignee_at)) {
-    data.developer = await handleFor(db, issue.fields?.assignee);
-  }
-  const status = older(link.last_event_at) ? undefined : items.find((x) => x.field === "status");
-  if (status) {
-    const jiraStatus = String((Object.hasOwn(status, "toString") ? status.toString : null) ?? issue.fields?.status?.name ?? "");
-    const rules = inboundRules(link.jira_inbound);
-    if (rules) {
-      const from = Object.hasOwn(status, "fromString") ? status.fromString : null;
-      const todo = inboundStatus(rules, link.status, from, jiraStatus);
-      if (todo) data.status = todo;
-    } else {
-      const map: Record<string, string> = link.jira_status_map ?? {};
-      const echo = (jiraTarget(map, link.status) ?? "").toLowerCase() === jiraStatus.toLowerCase();
-      // jsonb keeps no key order, so ties go to the earliest status in the lifecycle.
-      const todo = STATUSES.find((k) => (map[k] ?? "").toLowerCase() === jiraStatus.toLowerCase());
-      if (todo && !echo) data.status = todo;
-    }
-  }
-  if (items.some((x) => x.field === "summary") && !older(link.last_event_at) && issue.fields?.summary) {
-    data.title = String(issue.fields.summary);
-  }
-  if (items.some((x) => x.field === "priority") && issue.fields?.priority?.name) data.priority = jiraPriority(issue.fields.priority.name);
-  const request = !older(link.last_event_at) && items.some((x) => x.field === "description" || x.field === "summary")
-    ? await changedRequest(db, link, issue) : null;
-  if (!Object.keys(data).length && !request) {
-    await stamp(db, link, payload);
-    return { handled: false, reason: "nothing to apply" };
-  }
-  const id = payload.changelog?.id ?? deliveryId ?? `${issue.key}:${payload.timestamp ?? nowIso()}`;
-  const ops: Op[] = [];
-  if (Object.keys(data).length) {
-    ops.push({ op_id: `jira:update:${id}${suffix}`, op: "set", entity: "item", uid: link.item_uid, item_uid: link.item_uid, data });
-  }
-  // A new request version after the field changes, so its move back to
-  // `requested` wins over a status from the same event.
-  if (request) {
-    ops.push({ op_id: `jira:request:${id}`, op: "create", entity: "note", uid: jiraUid("request", `${issue.key}:${id}`),
-               item_uid: link.item_uid, data: { kind: "ticket-request", text: request, meta: { jira_key: issue.key }, source: "jira" } });
-  }
-  const actor = await bridgeActor(db, payload.user);
-  const results = await applyOps(db, link.project, ops, actor);
-  await stamp(db, link, payload);
-  const blocked = results[0].rejected?.find((x) => x.field === "status");
-  if (blocked && !results[0].duplicate) await gated(db, link, issue.key, String(data.status), blocked.reason, actor, String(id));
-  return { handled: true, results };
-}
-
-/** The issue's request text, when it differs from the current version. */
-async function changedRequest(db: Db, link: any, issue: any): Promise<string | null> {
-  const f = issue.fields ?? {};
-  const summary = String(f.summary ?? issue.key);
-  const description = adfToMarkdown(f.description, await mediaRef(db, link.project, link.item_uid, issue.key, jiraConfig()?.baseUrl));
-  const text = description ? `${summary}\n\n${description}` : summary;
-  const [cur] = await db.query(
-    `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
-      order by coalesce((meta->>'version')::int, 1) desc, n desc limit 1`, [link.project, link.item_uid]);
-  return cur?.text === text ? null : text;
-}
-
-/** Record how far each field's events have come, applied or ignored, so an
- * older redelivery can't land after them. */
-async function stamp(db: Db, link: any, payload: any): Promise<void> {
-  const at = Number(payload?.timestamp) || null;
-  if (at === null) return;
-  const items: any[] = payload.changelog?.items ?? [];
-  if (items.some((x) => ["status", "description", "summary"].includes(x.field))) {
-    await db.query("update jira_links set last_event_at = greatest(coalesce(last_event_at, 0), $2) where item_uid = $1 and project = $3 and jira_key = $4",
-      [link.item_uid, at, link.project, link.jira_key]);
-  }
-  if (items.some((x) => x.field === "assignee")) {
-    await db.query("update jira_links set last_assignee_at = greatest(coalesce(last_assignee_at, 0), $2) where item_uid = $1 and project = $3 and jira_key = $4",
-      [link.item_uid, at, link.project, link.jira_key]);
-  }
-}
-
-/** Jira moved the issue somewhere todo refused (the deploy gate): say so on both sides. */
-async function gated(db: Db, link: any, key: string, to: string, reason: string, actor: Actor, id: string) {
-  const why = reason === "checks-pending" ? "pre-deploy checks are still pending"
-    : reason === "waits-on" ? "it waits on a dependency that hasn't landed" : reason;
-  await applyOps(db, link.project, [{
-    op_id: `jira:gated:${id}`, op: "create", entity: "log", uid: jiraUid("gated", id),
-    item_uid: link.item_uid,
-    data: { text: `Jira moved ${key} to ${to}, but todo kept it at ${link.status}: ${why}.`, ts: nowIso() },
-  }], actor);
-  await enqueue(db, link.project, link.item_uid, "comment",
-    { key, author: "todo", label: "comment", text: `Not moved to ${to} in todo: ${why}.` });
-}
-
-/** Mirror a Jira comment as a comment note on `link`'s item. A `scope` goes
- * into the note's uid and op ids, so one issue can feed several items. */
-export async function commented(db: Db, link: { project: string; item_uid: string }, comment: any, own: string | null,
-                                issueKey: string, scope?: string): Promise<InboundResult> {
+/** Mirror a Jira comment as a comment note on `link`'s item. `scope` goes into
+ * the note's uid and op ids, so one issue can feed several items. */
+export async function commented(db: Db, link: { project: string; item_uid: string }, comment: any,
+                                issueKey: string, scope: string): Promise<InboundResult> {
   if (!comment?.id) return { handled: false, reason: "no comment" };
-  if ((own && comment.author?.accountId === own) || adfToText(comment.body).includes(COMMENT_MARK)) {
-    return { handled: false, reason: "own comment" };
-  }
-  const ours = await db.query("select 1 from jira_outbox where result->>'comment_id' = $1", [String(comment.id)]);
-  if (ours.length) return { handled: false, reason: "own comment" };
+  if (adfToText(comment.body).includes(COMMENT_MARK)) return { handled: false, reason: "own comment" };
   // Linked issues keep their files per issue, not per item.
-  const filesFor = scope ? jiraUid("item", issueKey) : link.item_uid;
-  const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, filesFor, issueKey, jiraConfig()?.baseUrl));
-  const uid = scope ? jiraUid("comment", scope, String(comment.id)) : jiraUid("comment", String(comment.id));
-  const opId = scope ? `jira:comment:${scope}:${comment.id}` : `jira:comment:${comment.id}`;
+  const text = adfToMarkdown(comment.body, await mediaRef(db, link.project, jiraUid("item", issueKey), issueKey, jiraConfig()?.baseUrl));
+  const uid = jiraUid("comment", scope, String(comment.id));
+  const opId = `jira:comment:${scope}:${comment.id}`;
   const updated = comment.updated ? new Date(comment.updated).toISOString() : null;
   const [note] = await db.query("select meta, text from notes where project = $1 and uid = $2", [link.project, uid]);
   const actor = await bridgeActor(db, comment.updateAuthor ?? comment.author);

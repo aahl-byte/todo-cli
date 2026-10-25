@@ -10,15 +10,15 @@ export function validJiraKeys(value: unknown): value is string[] {
     && new Set(value).size === value.length;
 }
 
-/** Make the item's 'field' links match `keys`. A key the bridge already
- * linked by import keeps that link. */
+/** Make the item's 'field' links match `keys`; a key's row of another source becomes a field link. */
 export async function syncFieldLinks(t: Db, project: string, itemUid: string, keys: string[]): Promise<void> {
   await t.query(
     `delete from jira_links where project = $1 and item_uid = $2 and source = 'field' and not (jira_key = any($3::text[]))`,
     [project, itemUid, keys]);
   for (const key of keys) {
     await t.query(
-      `insert into jira_links (project, item_uid, jira_key, source) values ($1, $2, $3, 'field') on conflict do nothing`,
+      `insert into jira_links (project, item_uid, jira_key, source) values ($1, $2, $3, 'field')
+       on conflict (project, item_uid, jira_key) do update set source = 'field' where jira_links.source <> 'field'`,
       [project, itemUid, key]);
   }
 }
