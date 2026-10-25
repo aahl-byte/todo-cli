@@ -356,6 +356,16 @@ its declared connections.
   Without Node, the CLI skips plugins and says so; a synced store still gets
   the server's results.
 
+### Which host runs an instance
+
+On a synced store each instance runs on exactly one host: the server whenever
+it can, otherwise the CLI. The server can when the repo is allowed for the
+project and it holds every connection the instance needs, with no command
+connection and no address its private-network rule refuses. It reports this per
+instance, and the CLI runs only the rest, so side effects such as starting an
+agent happen once. A local-only store runs everything in the CLI, and a manual
+`todo plugin run` runs where it was asked.
+
 ### What a plugin can do
 
 A plugin can call its connections and attach **links, docs, edges and dev-log
