@@ -16,8 +16,7 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    |---|---|
    | `DATABASE_URL` | everything (use the pooled URL on serverless hosts) |
    | `CRON_SECRET` | the Jira retry cron (`/api/jira/flush`) |
-   | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_WEBHOOK_SECRET` | the Jira bridge |
-   | `JIRA_ACCOUNT_ID` | optional; the integration's own account, else fetched from `/myself` |
+   | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | the Jira bridge |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
    | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses) |
    | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
@@ -88,48 +87,35 @@ under its own path.
 
 ## Jira bridge
 
-A project mirrors Jira in one of two modes, `projects.jira_mode`:
+The bridge mirrors the Jira issues a project's items link with `todo jira link`,
+from any Jira project. It never imports issues as items.
 
-- **`import`** (the default) imports the active issues of the project's
-  `jira_project` as items and mirrors their status, fields, comments and
-  sub-tasks.
-- **`links`** imports nothing. It mirrors only the issues its items link with
-  `todo jira link`, from any Jira project, and needs no `jira_project`.
+- **Request:** each linked issue is appended once to its item's request as a
+  `## KEY · <summary>` block with the description and images. Appending follows
+  the request-version rules: a frozen request gets a new version, which returns
+  the item to `requested`.
+- **Comments** mirror onto every item linking the issue, edits included.
+- **Status:** a linked issue's status shows next to its key and never moves the
+  item.
+- **Triggers** on the settings page run the other way: a todo move transitions
+  every issue the item links. They reach Jira only once the project switches
+  writes on, on a server without `JIRA_READ_ONLY`; until then the page lists
+  what they would have sent. No comments go to Jira.
 
-In both modes, each issue an item links is appended once to that item's request
-as a `## KEY · <summary>` block with the description and images, and its
-comments mirror onto every item linking it. Appending follows the request-version
-rules: a frozen request gets a new version, which returns the item to
-`requested`. A linked issue's status is shown next to its key and never moves
-the item.
-
-Triggers on the settings page run the other way in both modes: a todo move
-transitions the imported issue, or in links mode every issue the item links.
-Links mode posts no comments to Jira.
-
-**Put a project in links mode** and poll it, read-only:
+**Poll Jira**, read-only, from a timer every few minutes:
 
 ```bash
-DATABASE_URL=... npm run project:add -- web "Web app"
-DATABASE_URL=... npm run jira:mode -- web links          # or: import
 DATABASE_URL=... JIRA_BASE_URL=... JIRA_EMAIL=... JIRA_API_TOKEN=... npm run jira:sync -- --all
 ```
 
-`jira:sync -- --all` runs one pass over every links-mode project and exits
-non-zero if any failed; run it from a timer every few minutes. `jira:sync --
-<project>` polls one project in either mode, and `--every SECONDS` keeps
-polling. Polling always runs with `JIRA_READ_ONLY=1`.
+`jira:sync -- --all` runs one pass over every project and exits non-zero if any
+failed. `jira:sync -- <project>` polls one project, `--every SECONDS` keeps
+polling, and `--create-users` makes a user for each Jira person it meets.
+Polling always runs with `JIRA_READ_ONLY=1`.
 
-For import mode:
-
-- **Map a project:** in SQL, set `projects.jira_project` to the Jira project key,
-  and `jira_status_map` to `{"<todo status>": "<Jira status name>", ...}`.
-- **Register a webhook** in Jira (System → Webhooks) for issue created, issue
-  updated and comment created, pointed at
-  `https://<host>/api/jira/webhook?secret=<JIRA_WEBHOOK_SECRET>`.
-- **Link people:** `npm run user:jira -- <handle> <accountId>` for an existing
-  user (their token is kept), or `user:add -- <handle> --jira <accountId>` when
-  creating one. Unmatched Jira users show up as `jira:<Display Name>`.
+**Link people:** `npm run user:jira -- <handle> <accountId>` for an existing user
+(their token is kept), or `user:add -- <handle> --jira <accountId>` when creating
+one. Unmatched Jira users show up as `jira:<Display Name>`.
 
 The outbox flushes after every request. The cron in `vercel.json` retries
 daily, which Hobby plans allow; on Pro, set it to `*/5 * * * *`.
