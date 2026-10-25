@@ -7,7 +7,8 @@
 // A failed run still exits 0; unreadable input exits 2.
 // This process is the sandbox's isolation, so code plugins run in it directly.
 import { hostFailure } from "./sandbox.mjs";
-import { describeRepo, runEvent, runInstance, type Described, type EventInput, type EventResult } from "./host";
+import { describeRepo, type Described } from "./describe";
+import { runEvent, runInstance, type EventInput, type EventResult } from "./host";
 import type { RunInput, RunResult } from "./types";
 
 const isMap = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);

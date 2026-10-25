@@ -11,7 +11,7 @@ import { fillJson } from "./template";
 import { runYaml } from "./yaml-runner";
 import {
   DEFAULT_DEADLINE_MS, POST_REQUEST, type ConnectionDef, type ConnectionOrigin, type InstanceDef, type Limits, type PluginDef, type PluginEvent,
-  type PluginItem, type PluginsFile, type ResolvedConnection, type RunInput, type RunResult, type SettingDef, type Trigger,
+  type PluginItem, type PluginsFile, type ResolvedConnection, type RunInput, type RunResult,
 } from "./types";
 
 export interface HostDeps extends ConnectionOptions {
@@ -157,7 +157,7 @@ function connectionsFor(input: EventInput, file: PluginsFile): Record<string, Re
 interface Resolved { name: string; def: PluginDef; code?: string; shipped: boolean }
 
 /** The repo file's plugins with shipped ones resolved, after the always-on shipped plugins. */
-function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): Resolved[] {
+export function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): Resolved[] {
   const out = new Map<string, Resolved>();
   const fromRegistry = (name: string) => out.set(name, { name, def: SHIPPED[name].def, code: SHIPPED[name].code, shipped: true });
   for (const name of ALWAYS_ON) fromRegistry(name);
@@ -193,49 +193,17 @@ export function instancesFor(def: PluginDef, repo: InstanceDef[], stored: Instan
   return merged.filter((i) => i.enabled !== false);
 }
 
-function loadRepo(repo: EventInput["repo"]): { file: PluginsFile; dropped: string[]; errors: string[] } {
-  if (!repo) return { file: {}, dropped: [], errors: [] };
-  const loaded = parsePlugins(repo.text, { extraPlugins: ALWAYS_ON });
-  return { file: loaded.file, dropped: loaded.droppedInstances, errors: [...loaded.errors] };
-}
-
-export interface PluginSummary {
-  name: string;
-  shipped: boolean;
-  connections: string[];
-  on: Trigger[];
-  every?: string;
-  exclusive?: boolean;
-  per?: string;
-  code?: string;
-  settings: Record<string, SettingDef>;
-}
-
-export interface Described {
-  plugins: PluginSummary[];
-  /** The repo file's own instances, by plugin, after load. */
-  instances: Record<string, InstanceDef[]>;
-  /** Plugins that lost an instance at load, so they get no implicit default. */
-  dropped: string[];
-  connections: Record<string, ConnectionDef>;
-  errors: string[];
-  track: string[];
-}
-
-/** What a repo's plugin file declares, shipped plugins resolved, for a host deciding what to run or list. */
-export function describeRepo(repo?: EventInput["repo"]): Described {
-  const { file, dropped, errors } = loadRepo(repo);
-  const plugins = pluginsFor({ repo } as EventInput, file, errors).map(({ name, def, shipped }) => ({
-    name, shipped, connections: def.connections ?? [], on: def.on ?? [], settings: def.settings ?? {},
-    ...(def.every !== undefined ? { every: def.every } : {}), ...(def.exclusive ? { exclusive: true } : {}),
-    ...(def.per ? { per: def.per } : {}), ...(def.code ? { code: def.code } : {}),
-  }));
-  return { plugins, instances: file.instances ?? {}, dropped, connections: file.connections ?? {}, errors, track: file.track ?? [] };
-}
-
 /** Given a repo's plugin file and an event on an item, run every instance the event fires, one after another. */
 export async function runEvent(input: EventInput, deps: HostDeps = {}): Promise<EventResult> {
-  const { file, dropped, errors } = loadRepo(input.repo);
+  const errors: string[] = [];
+  let file: PluginsFile = {};
+  let dropped: string[] = [];
+  if (input.repo) {
+    const loaded = parsePlugins(input.repo.text, { extraPlugins: ALWAYS_ON });
+    file = loaded.file;
+    dropped = loaded.droppedInstances;
+    errors.push(...loaded.errors);
+  }
   const connections = connectionsFor(input, file);
   const results: EventRun[] = [];
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {

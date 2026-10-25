@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { describeRepo, runEvent, type EventInput } from "@/lib/plugins/host";
+import { describeRepo } from "@/lib/plugins/describe";
+import { runEvent, type EventInput } from "@/lib/plugins/host";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import type { PluginItem } from "@/lib/plugins/types";
 // @ts-expect-error a plain-JS build script
