@@ -4,8 +4,6 @@
 // writes what each run attached into the item, so every CLI receives it.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §3–§4.
 import crypto from "node:crypto";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
 import type { Db, Row } from "../db";
 import { applyOps, type Op, type Result } from "../apply";
 import { checkoutDir, repoKey } from "../checkouts";
@@ -449,12 +447,6 @@ async function applyDocs(d: Db, project: string, itemUid: string, run: EventRun,
 }
 
 // ── delivery ──────────────────────────────────────────────────────────────────
-/** Where the code-plugin worker lives on disk: beside this module in the source tree, which Next's bundle doesn't keep. */
-export function workerUrl(): URL {
-  const file = process.env.TODO_PLUGIN_WORKER || path.join(process.cwd(), "lib/plugins/code-worker.mjs");
-  return pathToFileURL(file);
-}
-
 /** A failure before any plugin ran, such as GitHub being unreachable: the event is retried. */
 class Transport extends Error {}
 
@@ -496,7 +488,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
     allowRepoCommands: false,
-  }, { fetch: f, workerUrl: workerUrl(), ...deps.host });
+  }, { fetch: f, ...deps.host });
   let edges = false;
   for (const run of out.results) {
     let outcome: Applied | null = null;

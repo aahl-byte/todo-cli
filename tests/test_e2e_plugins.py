@@ -90,7 +90,7 @@ def fake():
 def server(tmp_path, fake):
     base, _ = fake
     env = {**os.environ, "TODO_PGLITE": str(tmp_path / "pglite"), "TODO_FILES_DIR": str(tmp_path / "files"),
-           "GITHUB_TOKEN": "gh-test", "GITHUB_API_URL": base}
+           "GITHUB_TOKEN": "gh-test", "GITHUB_API_URL": base, "TODO_PLUGIN_ALLOW_HOSTS": base.split("//", 1)[1]}
     out = subprocess.run(["npx", "tsx", "scripts/user-add.ts", "alice"], cwd=SERVER, env=env,
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
@@ -98,8 +98,11 @@ def server(tmp_path, fake):
     port = _port()
     log_path = tmp_path / "server.log"
     log = open(log_path, "w")
-    proc = subprocess.Popen([str(SERVER / "node_modules" / ".bin" / "next"), "start", "-p", str(port), "-H", "127.0.0.1"],
-                            cwd=SERVER, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    # Started from elsewhere, so the worker must come from the build, not from a path relative to the working directory.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    proc = subprocess.Popen([str(SERVER / "node_modules" / ".bin" / "next"), "start", str(SERVER), "-p", str(port), "-H", "127.0.0.1"],
+                            cwd=elsewhere, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     url = f"http://127.0.0.1:{port}"
     deadline = time.time() + 60
     while time.time() < deadline:

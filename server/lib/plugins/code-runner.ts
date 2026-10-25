@@ -95,7 +95,8 @@ export function hostCodeSlots(total?: number, perRepo?: number): CodeSlots {
   return (shared ??= new CodeSlots(total, perRepo));
 }
 
-const WORKER_URL = new URL("./code-worker.mjs", import.meta.url);
+// One self-contained file, so a bundler that copies it as an asset ships a worker that runs.
+const WORKER_URL = new URL("./code-worker.bundle.mjs", import.meta.url);
 /** How long past the deadline a worker gets before it's terminated. */
 const KILL_GRACE_MS = 5_000;
 const WORKER_HEAP_MB = 256;
