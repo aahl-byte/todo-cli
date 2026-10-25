@@ -216,14 +216,17 @@ connections:
   host-wide connection, such as `github` with the server's token, runs without
   its secret and is skipped as not authorized. Repo plugins bring their own
   connection and a repo credential.
-- **A project runs plugins only for its repos.** A repo is allowed for a
-  project once a member's CLI has reported a checkout of it, or once it is
-  added on the project's settings page. An item naming any other repo gets no
-  plugin runs and no git facts, so pointing an item at a repo can't make the
-  server act on it.
+- **A project runs plugins only for its repos.** The server's operator lists
+  the GitHub owners it serves (`TODO_PLUGIN_OWNERS`). A repo of a listed owner
+  is allowed for a project once a member's CLI has reported a checkout of it,
+  or once it is added on the project's settings page. An item naming any other
+  repo gets no plugin runs and no git facts, so pointing an item at a repo
+  can't make the server act on it. The server token itself should be scoped to
+  the team's repos.
 - **No private addresses from the server.** A server connection refuses
   loopback, private and link-local addresses unless
-  `TODO_PLUGIN_ALLOW_HOSTS` lists the host. The check uses the resolved
+  `TODO_PLUGIN_ALLOW_HOSTS` lists the host: bare entries for host-wide
+  connections, `owner/name=host` entries for one repo's own connections. The check uses the resolved
   address it connects to. The CLI has no such limit, since a dev machine's own
   network is its user's.
 
