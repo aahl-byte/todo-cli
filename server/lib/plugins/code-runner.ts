@@ -28,48 +28,72 @@ export interface CodeRun {
   sleep?: (ms: number) => Promise<void>;
   isolation?: Isolation;
   workerUrl?: URL;
-  /** Code plugins this host runs at once. */
-  runLimit?: number;
+  /** The pool of sandboxes this run waits for. */
+  slots: CodeSlots;
+  /** Which repo the plugin came from, for the pool's per-repo share. */
+  repoKey: string;
 }
 
-export const DEFAULT_CODE_RUN_LIMIT = 4;
+export const DEFAULT_CODE_RUNS = 4;
+export const DEFAULT_CODE_RUNS_PER_REPO = 2;
+/** A repo's code plugin gets a minute unless its limits say otherwise; shipped ones get the host default. */
+export const REPO_CODE_DEADLINE_MS = 60_000;
 
-/** A counting semaphore whose waiters give up at their own deadline. */
-export class Slots {
-  private active = 0;
-  private waiting: (() => void)[] = [];
+/** A counting semaphore with a per-repo share, whose waiters give up at their own deadline. */
+export class CodeSlots {
+  private active = new Map<string, number>();
+  private running = 0;
+  private waiting: { repo: string; grant: () => void }[] = [];
 
-  constructor(readonly limit: number) {}
+  constructor(readonly total = DEFAULT_CODE_RUNS, readonly perRepo = DEFAULT_CODE_RUNS_PER_REPO) {}
 
-  /** Take a slot, or false once the deadline passes first. */
-  take(deadline: number): Promise<boolean> {
-    if (this.active < this.limit) {
-      this.active++;
+  private free(repo: string): boolean {
+    return this.running < this.total && (this.active.get(repo) ?? 0) < this.perRepo;
+  }
+
+  private claim(repo: string): void {
+    this.running++;
+    this.active.set(repo, (this.active.get(repo) ?? 0) + 1);
+  }
+
+  /** Take a slot for a repo, or false once the deadline passes first. */
+  take(repo: string, deadline: number): Promise<boolean> {
+    if (this.free(repo) && !this.waiting.some((w) => w.repo === repo)) {
+      this.claim(repo);
       return Promise.resolve(true);
     }
     return new Promise((done) => {
-      const grant = () => {
-        clearTimeout(timer);
-        this.active++;
-        done(true);
+      const waiter = {
+        repo,
+        grant: () => {
+          clearTimeout(timer);
+          this.claim(repo);
+          done(true);
+        },
       };
       const timer = setTimeout(() => {
-        this.waiting = this.waiting.filter((g) => g !== grant);
+        this.waiting = this.waiting.filter((w) => w !== waiter);
         done(false);
       }, Math.max(0, deadline - Date.now()));
-      this.waiting.push(grant);
+      this.waiting.push(waiter);
     });
   }
 
-  give(): void {
-    this.active--;
-    this.waiting.shift()?.();
+  give(repo: string): void {
+    this.running--;
+    this.active.set(repo, (this.active.get(repo) ?? 1) - 1);
+    // The longest-waiting run whose repo has room goes next.
+    const next = this.waiting.findIndex((w) => this.free(w.repo));
+    if (next >= 0) this.waiting.splice(next, 1)[0].grant();
   }
 }
 
-/** Host-wide slots, one semaphore per configured limit. */
-const slots = new Map<number, Slots>();
-const slotsFor = (limit: number) => slots.get(limit) ?? slots.set(limit, new Slots(limit)).get(limit)!;
+let shared: CodeSlots | undefined;
+
+/** The host-wide pool, sized by the first call that creates it. */
+export function hostCodeSlots(total?: number, perRepo?: number): CodeSlots {
+  return (shared ??= new CodeSlots(total, perRepo));
+}
 
 const WORKER_URL = new URL("./code-worker.mjs", import.meta.url);
 /** How long past the deadline a worker gets before it's terminated. */
@@ -159,13 +183,12 @@ export async function runCode(run: CodeRun): Promise<void> {
     kinds: ATTACHMENT_KINDS, deadline: run.deadline, memoryBytes: run.memoryBytes ?? DEFAULT_MEMORY_BYTES,
   };
   const host = hostFor(run);
-  const free = slotsFor(Math.max(1, run.runLimit ?? DEFAULT_CODE_RUN_LIMIT));
-  if (!(await free.take(run.deadline))) throw new DeadlineError("the run passed its deadline waiting for a free sandbox");
+  if (!(await run.slots.take(run.repoKey, run.deadline))) throw new DeadlineError("the run passed its deadline waiting for a free sandbox");
   let out: { error?: string };
   try {
     out = run.isolation === "inline" ? await runSandbox(job, host) : await inWorker(job, host, run.workerUrl ?? WORKER_URL);
   } finally {
-    free.give();
+    run.slots.give(run.repoKey);
   }
   if (run.attached.failure) throw new LimitError(run.attached.failure);
   if (out.error !== undefined) throw new Error(out.error);

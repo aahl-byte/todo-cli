@@ -33,6 +33,7 @@ export function parseInput(text: string): Parsed | string {
   if (mode === "event") {
     for (const k of ["item", "event"]) if (!isMap(rest[k])) return `input needs ${k} as an object`;
     for (const k of EVENT_MAPS) if (rest[k] !== undefined && !isMap(rest[k])) return `${k} must be an object`;
+    if (rest.repoKey !== undefined && typeof rest.repoKey !== "string") return "repoKey must be a string";
     const repo = rest.repo;
     if (repo !== undefined && !(isMap(repo) && typeof repo.text === "string" && (repo.files === undefined || isMap(repo.files)))) {
       return "repo must be {text, files}";

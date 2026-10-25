@@ -170,6 +170,17 @@ plugins:
       ["local", "default", "local: `local` runs a command, which this host doesn't allow for repo connections"]]);
   });
 
+  it("gives no implicit default to a plugin whose instances were dropped", async () => {
+    const out = await run({ repo: { files: {}, text: `
+plugins:
+  quiet: {on: [push], attach: [{log: quiet ran}]}
+instances:
+  quiet: [{id: q, name: Q, wat: 1}]
+` }, storedInstances: { "pr-link": [{ id: "default", name: "default", enabled: false }] } });
+    expect(out.errors).toEqual(['instances.quiet: [0] unknown key "wat"']);
+    expect(out.results).toEqual([]);
+  });
+
   it("fires only what the event triggers", async () => {
     const out = await run({ event: { type: "manual", instance: "go" }, repo: { files: {}, text: `
 plugins:

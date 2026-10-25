@@ -159,6 +159,8 @@ export interface RunInput {
   allowRepoCommands?: boolean;
   /** The plugin ships with todo, so it may declare capabilities; otherwise it's checked as a repo plugin. */
   shipped?: boolean;
+  /** The repo the plugin came from, e.g. owner/name, for its share of code-run slots. */
+  repoKey?: string;
 }
 
 export const POST_REQUEST = "post-request";

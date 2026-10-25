@@ -227,8 +227,11 @@ function instanceErrors(inst: unknown): string[] {
 }
 
 /** The valid parts of a parsed plugins file, and a line for every part dropped. */
-export function checkFile(raw: unknown, opts: LoadOptions = {}): { file: PluginsFile; errors: string[] } {
-  if (!isMap(raw)) return { file: {}, errors: ["plugins.yaml must be a map"] };
+export interface Checked { file: PluginsFile; errors: string[]; /** Plugins that lost any instance at load. */ droppedInstances: string[] }
+
+export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
+  if (!isMap(raw)) return { file: {}, errors: ["plugins.yaml must be a map"], droppedInstances: [] };
+  const droppedInstances = new Set<string>();
   const errors = unknownKeys(raw, FILE_KEYS);
   const file: PluginsFile = {};
   if ("track" in raw) {
@@ -253,7 +256,10 @@ export function checkFile(raw: unknown, opts: LoadOptions = {}): { file: Plugins
     else (file.plugins ??= {})[n] = p as never;
   }
   for (const [n, list] of Object.entries(instances)) {
-    const fail = (e: string) => errors.push(`instances.${n}: ${e}`);
+    const fail = (e: string) => {
+      errors.push(`instances.${n}: ${e}`);
+      droppedInstances.add(n);
+    };
     if (n in plugins && !file.plugins?.[n]) fail("dropped with its plugin");
     else if (!(n in plugins) && !opts.extraPlugins?.includes(n)) fail("no plugin by that name");
     else if (!Array.isArray(list)) fail("must be a list");
@@ -269,7 +275,7 @@ export function checkFile(raw: unknown, opts: LoadOptions = {}): { file: Plugins
       });
     }
   }
-  return { file, errors };
+  return { file, errors, droppedInstances: [...droppedInstances] };
 }
 
 /** Every problem in a parsed plugins file. */
@@ -278,12 +284,12 @@ export function fileErrors(raw: unknown, opts: LoadOptions = {}): string[] {
 }
 
 /** Parse a plugins.yaml, keeping what's valid; only text that isn't YAML loses everything. */
-export function parsePlugins(text: string, opts: LoadOptions = {}): { file: PluginsFile; errors: string[] } {
+export function parsePlugins(text: string, opts: LoadOptions = {}): Checked {
   let raw: unknown;
   try {
     raw = parse(text) ?? {};
   } catch (e) {
-    return { file: {}, errors: [`plugins.yaml isn't YAML: ${(e as Error).message}`] };
+    return { file: {}, errors: [`plugins.yaml isn't YAML: ${(e as Error).message}`], droppedInstances: [] };
   }
   return checkFile(raw, opts);
 }

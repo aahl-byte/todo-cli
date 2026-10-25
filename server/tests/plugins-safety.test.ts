@@ -8,6 +8,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { openConnection } from "@/lib/plugins/connections";
 import { runInstance, type HostDeps } from "@/lib/plugins/host";
+import { CodeSlots, hostCodeSlots, REPO_CODE_DEADLINE_MS } from "@/lib/plugins/code-runner";
 import { loadPlugins, PluginsFileError } from "@/lib/plugins/load";
 import { fillUrl, lookup } from "@/lib/plugins/template";
 import { search } from "@/lib/plugins/expr";
@@ -291,8 +292,9 @@ describe("the sandbox's limits", () => {
     await new Promise<void>((done) => slow.listen(0, "127.0.0.1", done));
     try {
       const url = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+      const pool = new CodeSlots(2, 2);
       const one = (deadlineMs = 30_000) => run({ plugin: { code: "p.js", connections: ["wt"] }, connections: { wt: { kind: "http", url } },
-        code: "export async function run({ wt, attach }) { await wt.get('/'); attach.log('done'); }", limits: { deadlineMs } }, { ...fast, codeRunLimit: 2 });
+        code: "export async function run({ wt, attach }) { await wt.get('/'); attach.log('done'); }", limits: { deadlineMs } }, { ...fast, codeSlots: pool });
       const rs = await Promise.all(Array.from({ length: 6 }, () => one()));
       expect(rs.map((r) => r.error ?? "ok")).toEqual(Array(6).fill("ok"));
       expect(peak).toBe(2);
@@ -302,5 +304,35 @@ describe("the sandbox's limits", () => {
       slow.closeAllConnections();
       slow.close();
     }
+  });
+});
+
+describe("code-run slots are shared fairly", () => {
+  it("keeps one repo's looping plugins from blocking another repo", async () => {
+    const pool = new CodeSlots(4, 2);
+    const loop = (repoKey: string) => run({ code: "export function run() { for (;;) {} }", repoKey, limits: { deadlineMs: 1500 } }, { ...fast, codeSlots: pool });
+    const started = Date.now();
+    const a = Array.from({ length: 4 }, () => loop("acme/a"));
+    const b = await run({ code: "export function run({ attach }) { attach.log('b ran'); }", repoKey: "acme/b" }, { ...fast, codeSlots: pool });
+    expect(b.attached.map((x) => (x as { text: string }).text)).toEqual(["b ran"]);
+    expect(Date.now() - started).toBeLessThan(1000);
+    for (const r of await Promise.all(a)) expect(r.error).toMatch(/^the run passed its deadline/);
+  });
+
+  it("gives repo code plugins a minute and shipped ones five", async () => {
+    const asked: number[] = [];
+    const sleep = async (ms: number) => { asked.push(ms); };
+    const code = "export async function run({ wait }) { await wait.until(() => false, { every: '10m', timeout: '1h' }).catch(() => {}); }";
+    await run({ code }, { sleep });
+    await run({ code, shipped: true }, { sleep });
+    expect(REPO_CODE_DEADLINE_MS).toBe(60_000);
+    expect(asked[0]).toBeGreaterThan(55_000);
+    expect(asked[0]).toBeLessThanOrEqual(60_000);
+    expect(asked[1]).toBeGreaterThan(295_000);
+  });
+
+  it("has one host-wide pool", () => {
+    expect(hostCodeSlots()).toBe(hostCodeSlots());
+    expect([hostCodeSlots().total, hostCodeSlots().perRepo]).toEqual([4, 2]);
   });
 });
