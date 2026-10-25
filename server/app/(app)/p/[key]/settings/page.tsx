@@ -6,6 +6,7 @@ import { projectActions, recentRuns } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { dryRuns, loadJiraSettings } from "@/lib/jira/settings";
 import { STATUSES } from "@/lib/model";
+import { OWNERS_UNSET, pluginOwners } from "@/lib/checkouts";
 import { projectRepos } from "@/lib/plugins/store";
 import { requireUser } from "@/lib/session";
 import { savePluginReposAction } from "@/app/settings-actions";
@@ -22,6 +23,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
   const actions = (
     <>
       <div className="label section">Plugin repos</div>
+      {!pluginOwners().length && <p className="hot">{OWNERS_UNSET}</p>}
       <p className="hint">Repos this project reads from GitHub and runs plugins for: these, and any a member&apos;s CLI has a checkout of
         {repos.checkouts.length ? ` (${repos.checkouts.join(", ")})` : ""}.</p>
       <form action={savePluginReposAction.bind(null, key)} className="plugin-repos">

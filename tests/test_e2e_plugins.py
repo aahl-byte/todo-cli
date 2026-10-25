@@ -90,7 +90,8 @@ def fake():
 def server(tmp_path, fake):
     base, _ = fake
     env = {**os.environ, "TODO_PGLITE": str(tmp_path / "pglite"), "TODO_FILES_DIR": str(tmp_path / "files"),
-           "GITHUB_TOKEN": "gh-test", "GITHUB_API_URL": base, "TODO_PLUGIN_ALLOW_HOSTS": base.split("//", 1)[1]}
+           "GITHUB_TOKEN": "gh-test", "GITHUB_API_URL": base, "TODO_PLUGIN_OWNERS": "acme",
+           "TODO_PLUGIN_ALLOW_HOSTS": f"{base.split('//', 1)[1]},acme/web={base.split('//', 1)[1]}"}
     out = subprocess.run(["npx", "tsx", "scripts/user-add.ts", "alice"], cwd=SERVER, env=env,
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr

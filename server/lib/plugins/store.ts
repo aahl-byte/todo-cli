@@ -7,12 +7,14 @@ import { repoKey } from "../checkouts";
 import { PLUGINS_DIR, githubGet, NotFound, repoFile, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { addressAllowed, type AddressGuard } from "./connections";
-import { allInstances, pluginsFor, type Resolved } from "./host";
+import { allInstances, connectionsFor, pluginsFor, wouldSkip, type Resolved } from "./host";
 import { pluginsEnabled } from "./queue";
 import { checkFile, parsePlugins } from "./load";
 import { decryptSecret, encryptSecret, NoSecretKey, secretKey } from "./secrets";
 import { ALWAYS_ON } from "./shipped";
-import { POST_REQUEST, type ConnectionDef, type InstanceDef, type PluginDef, type PluginsFile, type RunResult, type Trigger } from "./types";
+import {
+  POST_REQUEST, type ConnectionDef, type InstanceDef, type PluginDef, type PluginsFile, type ResolvedConnection, type RunResult, type Trigger,
+} from "./types";
 
 const PLUGINS_YAML = "plugins.yaml";
 const CAPABILITIES = [POST_REQUEST];
@@ -249,8 +251,15 @@ export function hostSecrets(connections = hostConnections()): Record<string, str
   return out;
 }
 
-/** Hosts plugins may reach even on a private address: TODO_PLUGIN_ALLOW_HOSTS, comma-separated host or host:port. */
-export const allowedHosts = () => (process.env.TODO_PLUGIN_ALLOW_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+/** The address guard for one repo's runs, from TODO_PLUGIN_ALLOW_HOSTS: a `host[:port]` entry opens a private host to
+ * the host's own connections, which shipped plugins use; `owner/name=host[:port]` opens it to that repo's connections. */
+export function guardFor(repo: string, lookup?: AddressGuard["lookup"]): AddressGuard {
+  const entries = (process.env.TODO_PLUGIN_ALLOW_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  const allow = entries.filter((e) => !e.includes("="));
+  const repoAllow = entries.filter((e) => e.includes("=")).map((e) => e.split("=", 2))
+    .filter(([r]) => repoKey(r.trim()) === repo).map(([, h]) => h.trim()).filter(Boolean);
+  return { allow, repoAllow, ...(lookup ? { lookup } : {}) };
+}
 
 const credentialScope = (project: string, repo: string, connection: string) => [project, repo, connection];
 
@@ -283,18 +292,11 @@ export async function repoSecrets(d: Pick<Db, "query">, project: string, repo: s
   return out;
 }
 
-/** Repo connections this server can authorize with a stored credential. */
-async function repoSecretNames(d: Pick<Db, "query">, project: string, repo: string): Promise<string[]> {
-  if (!secretKey()) return [];
-  return (await d.query("select connection from plugin_credentials where project = $1 and repo = $2 order by connection", [project, repo]))
-    .map((r) => r.connection as string);
-}
-
 // ── repos a project may use ───────────────────────────────────────────────────
 export interface ProjectRepos { repos: { repo: string; added_by: string; added_at: string }[]; checkouts: string[] }
 
 export async function projectRepos(d: Pick<Db, "query">, project: string): Promise<ProjectRepos> {
-  const repos = await d.query("select repo, added_by, added_at from plugin_repos where project = $1 order by repo", [project]);
+  const repos = await d.query("select repo, added_by, added_at from project_plugin_repos where project = $1 order by repo", [project]);
   const checkouts = await d.query("select distinct repo from checkouts where project = $1 and repo <> '' order by repo", [project]);
   return { repos: repos.map((r) => ({ repo: r.repo, added_by: r.added_by, added_at: new Date(r.added_at).toISOString() })),
            checkouts: checkouts.map((r) => r.repo) };
@@ -308,9 +310,9 @@ export async function putProjectRepos(d: Db, project: string, raw: unknown, hand
   if (bad.length) throw new PluginInputError(`not a GitHub owner/name: ${bad.join(", ")}`);
   const keys = [...new Set(repos.map((r) => repoKey(r)))].sort();
   await d.tx(async (t) => {
-    await t.query("delete from plugin_repos where project = $1 and not (repo = any($2))", [project, keys]);
+    await t.query("delete from project_plugin_repos where project = $1 and not (repo = any($2))", [project, keys]);
     for (const repo of keys) {
-      await t.query("insert into plugin_repos (project, repo, added_by) values ($1, $2, $3) on conflict do nothing", [project, repo, handle]);
+      await t.query("insert into project_plugin_repos (project, repo, added_by) values ($1, $2, $3) on conflict do nothing", [project, repo, handle]);
     }
   });
   return keys;
@@ -332,25 +334,15 @@ async function lastRuns(d: Pick<Db, "query">, project: string, repo: string): Pr
   return out;
 }
 
-/** Whether this server runs a plugin for the repo: every connection it needs resolves here, with the secret for
- * its origin, starts no command, and isn't on a private address the allow list doesn't name. */
-async function serverRuns(p: PluginInfo, file: PluginsFile, repoCreds: string[], guard: AddressGuard): Promise<boolean> {
+/** Whether this server is able to run an instance, as its own host would judge it: the connections resolve with the
+ * secret for their origin, no repo connection starts a command, required settings have values, and no address is refused. */
+async function serverRuns(r: Resolved, instance: InstanceDef, connections: Record<string, ResolvedConnection>, guard: AddressGuard): Promise<boolean> {
   if (!pluginsEnabled()) return false;
-  const host = hostConnections();
-  const hostKeys = hostSecrets(host);
-  for (const name of p.connections) {
-    const own = file.connections?.[name];
-    const def = own ?? host[name];
-    if (!def) return false;
-    let url: string;
-    if ("mcp" in def) {
-      if (!("url" in def.mcp)) return false;
-      url = def.mcp.url;
-    } else {
-      url = def.http.url;
-      if (def.http.auth && (own ? !repoCreds.includes(name) : !p.shipped || !hostKeys[name])) return false;
-    }
-    if (!(await addressAllowed(url, guard))) return false;
+  if (wouldSkip({ plugin: r.def, instance, connections, shipped: r.shipped, allowRepoCommands: false })) return false;
+  for (const name of r.def.connections ?? []) {
+    const c = connections[name];
+    const url = c.url;
+    if (url && !(await addressAllowed(url, guard, c.origin ?? "repo"))) return false;
   }
   return true;
 }
@@ -380,15 +372,23 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
     errors.push(`couldn't read ${repo}'s ${PLUGINS_DIR}: ${message(e)}`);
   }
   const merged = merge(defs, instances);
-  const creds = await repoSecretNames(d, project, repo);
-  const guard: AddressGuard = { allow: allowedHosts(), ...(lookup ? { lookup } : {}) };
+  const secrets = await repoSecrets(d, project, repo);
+  const usable = merge(defs, await storedInstances(d, project, repo, { secrets: true }));
+  const connections = connectionsFor({ hostConnections: hostConnections(), secrets: { repo: secrets, host: hostSecrets() } }, usable.file);
+  const guard = guardFor(repo, lookup);
   const plugins = [];
   for (const p of merged.plugins) {
-    const runs = await serverRuns(p, merged.file, creds, guard);
-    plugins.push({ ...p, instances: p.instances.map((i) => ({ ...masked(i, secretKeysOf(p.settings)), server_runs: runs })) });
+    const r = usable.resolved.find((x) => x.name === p.name)!;
+    const real = usable.plugins.find((x) => x.name === p.name)!;
+    const shown = [];
+    for (const i of p.instances) {
+      const inst = real.instances.find((x) => x.id === i.id) ?? i;
+      shown.push({ ...masked(i, secretKeysOf(p.settings)), server_runs: await serverRuns(r, inst, connections, guard) });
+    }
+    plugins.push({ ...p, instances: shown });
   }
   return {
-    instances, grants: await storedGrants(d, project, repo), plugins, secrets: creds,
+    instances, grants: await storedGrants(d, project, repo), plugins, secrets: Object.keys(secrets).sort(),
     host_secrets: Object.keys(hostSecrets()).sort(), runs: await lastRuns(d, project, repo), errors: [...errors, ...merged.errors],
   };
 }

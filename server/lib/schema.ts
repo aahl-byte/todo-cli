@@ -446,14 +446,14 @@ create table if not exists repo_polls (
 
 -- Repos a project may read from GitHub and run plugins for, beyond the ones
 -- its members' CLIs report checkouts of.
-create table if not exists plugin_repos (
+create table if not exists project_plugin_repos (
   project  text not null,
   repo     text not null,
   added_by text not null,
   added_at timestamptz not null default now(),
   primary key (project, repo)
 );
-create index if not exists plugin_repos_repo on plugin_repos (repo);
+create index if not exists project_plugin_repos_repo on project_plugin_repos (repo);
 
 -- GitHub webhook deliveries already handled, so a replay queues nothing.
 create table if not exists github_deliveries (

@@ -12,7 +12,8 @@ beforeEach(async () => {
   resetGitFactsCache();
   vi.unstubAllEnvs();
   vi.stubEnv("GITHUB_TOKEN", "t");
-  await w.d.query("insert into plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
+  vi.stubEnv("TODO_PLUGIN_OWNERS", "acme");
+  await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
 });
 
 const b64 = (s: string) => Buffer.from(s).toString("base64");
@@ -585,7 +586,7 @@ describe("POST /api/projects/:key/git-facts", () => {
 
 describe("repos a project may use", () => {
   it("reads nothing from GitHub for a repo the project hasn't got, and the rail says why", async () => {
-    await w.d.query("delete from plugin_repos");
+    await w.d.query("delete from project_plugin_repos");
     await items(["A", ["feat/a"]]);
     const gh = fakeGitHub(stackedSpec());
     await computeProject(w.d, "p", gh.impl);
@@ -596,7 +597,7 @@ describe("repos a project may use", () => {
   });
 
   it("uses a repo a member's CLI reported a checkout of", async () => {
-    await w.d.query("delete from plugin_repos");
+    await w.d.query("delete from project_plugin_repos");
     await recordCheckout(w.d, "bob", "p", "/src/web", "git@github.com:Acme/web.git");
     await items(["A", ["feat/a"]]);
     const gh = fakeGitHub(stackedSpec());

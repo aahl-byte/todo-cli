@@ -598,8 +598,8 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
 
   // An older CLI writes a single `extra.branch`; it replaces the list.
   const branch = accepted.find(([f]) => f === "extra.branch");
-  if (entity === "item" && branch && legacyBranch(branch[1]) && !("extra.branches" in (op.data ?? {}))) {
-    accepted.push(["extra.branches", [legacyBranch(branch[1])]]);
+  if (entity === "item" && branch && !("extra.branches" in (op.data ?? {}))) {
+    accepted.push(["extra.branches", legacyBranch(branch[1]) ? [legacyBranch(branch[1])] : null]);
   }
 
   if (accepted.length) {

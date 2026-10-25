@@ -4,7 +4,7 @@
 // runs every: floors. What it keeps per repo lives in ./store.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §3–§4.
 import crypto from "node:crypto";
-import type { Db, Row } from "../db";
+import { withLock, type Db, type Row } from "../db";
 import { applyOps, type Op, type Result } from "../apply";
 import { checkoutDir, projectsAllowed, repoAllowed, repoKey } from "../checkouts";
 import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs";
@@ -17,7 +17,7 @@ import { runEvent, type EventRun, type HostDeps } from "./host";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import {
-  allowedHosts, hostConnections, hostSecrets, invalidateDefs, loadDefs, merge, message, repoSecrets, storedGrants, storedInstances,
+  guardFor, hostConnections, hostSecrets, invalidateDefs, loadDefs, merge, message, repoSecrets, storedGrants, storedInstances,
   type PluginInfo, type RepoDefs,
 } from "./store";
 import { parseDuration } from "./triggers";
@@ -41,10 +41,13 @@ export const MAX_HOOK_BYTES = 5 * 1024 * 1024;
 export interface RunnerDeps {
   /** GitHub for definitions and tips, and, in tests, the plugins' own connections (unpinned). */
   fetch?: Fetch;
+  /** The host's own dependencies; of a guard, only its lookup is taken, since the allow lists come from the environment. */
   host?: HostDeps;
 }
 
 const isMap = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
+/** JSON Postgres accepts: it refuses NUL in text, which a plugin can put in anything it returns. */
+const pgJson = (v: unknown) => JSON.stringify(v).replace(/\\u0000/g, "\\ufffd");
 const instanceKey = (plugin: string, instance: InstanceDef | string) => `${plugin}/${typeof instance === "string" ? instance : instance.id}`;
 
 /** Stored instances that switch off every plugin outside `only`, so a refresh runs just the ones due. */
@@ -89,7 +92,7 @@ function noteOf(a: Extract<Attachment, { kind: "link" | "edge" }>, instance: str
 
 interface Applied { applied: string[]; log: string[]; edges: boolean }
 
-/** Write one run's attachments: create what's new, set what changed, remove what's gone. `t` holds the item's lock. */
+/** Write one run's attachments: create what's new, set what changed, remove what's gone. The caller holds the item's lock. */
 async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: string[]): Promise<Applied> {
   const instance = instanceKey(run.plugin, run.instance);
   const log: string[] = [];
@@ -161,7 +164,8 @@ function refused(r: Result, o: Op): string | null {
   if (r.status === "applied" && !r.rejected?.length) return null;
   if (r.reason === "removed") return `${o.entity} ${o.uid} was removed from the item by a person, so it isn't added again`;
   if (r.reason === "uid-exists" && o.entity === "log") return null;
-  return `${o.op} ${o.entity} ${o.uid} was refused: ${r.reason ?? r.rejected?.map((x) => `${x.field} ${x.reason}`).join(", ")}`;
+  const why = r.reason === "error" && r.message ? `error: ${r.message}` : r.reason ?? r.rejected?.map((x) => `${x.field} ${x.reason}`).join(", ");
+  return `${o.op} ${o.entity} ${o.uid} was refused: ${why}`;
 }
 
 /** The plugin may change a doc it wrote that no one has edited since. */
@@ -224,8 +228,8 @@ async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome:
   await t.query(
     `insert into plugin_runs (event_id, project, item_uid, repo, plugin, instance, event, result, applied, dry_run)
      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10)`,
-    [row.id, row.project, row.item_uid, row.repo, run.plugin, run.instance.id, JSON.stringify(row.event), JSON.stringify(result),
-     JSON.stringify(outcome?.applied ?? []), !!run.instance.dry_run]);
+    [row.id, row.project, row.item_uid, row.repo, run.plugin, run.instance.id, pgJson(row.event), pgJson(result),
+     pgJson(outcome?.applied ?? []), !!run.instance.dry_run]);
   // Each instance keeps its last RUNS_KEPT runs, and its last run on each open item, which names the docs it attached there.
   await t.query(
     `delete from plugin_runs where id in (
@@ -237,8 +241,11 @@ async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome:
         where r.n_instance > $5 and (r.n_item > 1 or not (${STILL_OPEN})))`, [row.project, row.repo, run.plugin, run.instance.id, RUNS_KEPT]);
 }
 
-/** The server's guard: no private addresses, except the hosts TODO_PLUGIN_ALLOW_HOSTS names. */
-const hostDeps = (deps: RunnerDeps): HostDeps => ({ fetch: deps.fetch, guard: { allow: allowedHosts() }, ...deps.host });
+/** The server's guard: no private addresses, except the hosts TODO_PLUGIN_ALLOW_HOSTS opens to this repo's runs. */
+function hostDeps(deps: RunnerDeps, repo: string): HostDeps {
+  const { guard, ...rest } = deps.host ?? {};
+  return { fetch: deps.fetch, ...rest, guard: guardFor(repo, guard?.lookup) };
+}
 
 async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
   const f = deps.fetch ?? fetch;
@@ -269,7 +276,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
     allowRepoCommands: false,
-  }, hostDeps(deps), {
+  }, hostDeps(deps, row.repo), {
     before: async (plugin, instance) => {
       if (done.has(instanceKey(plugin, instance))) return false;
       await holds("update plugin_events set claimed_at = now() where id = $1 and lease = $2 returning id", [row.id, row.lease]);
@@ -277,18 +284,20 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     },
     after: async (run) => {
       const key = instanceKey(run.plugin, run.instance);
-      const outcome = await d.tx(async (t) => {
-        await t.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`plugin\x1f${row.project}\x1f${row.item_uid}\x1f${key}`]);
-        const [held] = await t.query("select 1 from plugin_events where id = $1 and lease = $2 for update", [row.id, row.lease]);
-        if (!held) throw new LeaseLost(`event ${row.id} was taken over by another delivery`);
+      // One run at a time per item and instance, from read through apply; each unit of ops commits on its own.
+      const outcome = await withLock(d, `plugin\x1f${row.project}\x1f${row.item_uid}\x1f${key}`, async () => {
+        await holds("select 1 from plugin_events where id = $1 and lease = $2", [row.id, row.lease]);
         let applied: Applied | null = null;
         if (run.instance.dry_run) applied = { applied: [], log: ["dry run: nothing was attached"], edges: false };
         else if (!run.result.error && !run.result.skipped) {
-          const [fresh] = await t.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
-          if (fresh) applied = await applyRun(t, row.project, fresh, run, grants[run.plugin] ?? []);
+          const [fresh] = await d.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
+          if (fresh) applied = await applyRun(d, row.project, fresh, run, grants[run.plugin] ?? []);
         }
-        await recordRun(t, row, run, applied);
-        if (!run.result.transient) await t.query("update plugin_events set finished = array_append(finished, $2) where id = $1", [row.id, key]);
+        await recordRun(d, row, run, applied);
+        if (!run.result.transient) {
+          await holds("update plugin_events set finished = array_append(finished, $3) where id = $1 and lease = $2 returning id",
+            [row.id, row.lease, key]);
+        }
         return applied;
       });
       edges ||= !!outcome?.edges;
@@ -323,7 +332,7 @@ export async function flushPluginRuns(d: Db, deps: RunnerDeps = {}, limit = FLUS
     try {
       const errors = await deliver(d, row, deps);
       await d.query("update plugin_events set done_at = now(), claimed_at = null, lease = null, error = null, errors = $3::jsonb where id = $1 and lease = $2",
-        [row.id, row.lease, JSON.stringify(errors)]);
+        [row.id, row.lease, pgJson(errors)]);
       ran++;
     } catch (e) {
       if (e instanceof LeaseLost) continue;
@@ -365,12 +374,19 @@ const PR_ACTIONS = ["opened", "reopened", "closed", "ready_for_review"];
 
 export interface HookOutcome { repo: string | null; queued: number; projects: string[]; duplicate?: boolean }
 
-/** Whether this delivery id is new; a replay of one already handled is not. Old ids are pruned. */
-export async function firstDelivery(d: Pick<Db, "query">, id: string | null): Promise<boolean> {
-  if (!id) return true;
+const deliveryKeys = (id: string | null, body: string) =>
+  [`body:${crypto.createHash("sha256").update(body).digest("hex")}`, ...(id ? [`id:${id.slice(0, 200)}`] : [])];
+
+/** Whether a delivery was handled already, by its id or by the signed body, which an attacker can replay under a new id. */
+export async function deliverySeen(d: Pick<Db, "query">, id: string | null, body: string): Promise<boolean> {
   await d.query("delete from github_deliveries where at < now() - make_interval(days => $1)", [DAYS_KEPT]);
-  const [row] = await d.query("insert into github_deliveries (id) values ($1) on conflict do nothing returning id", [id.slice(0, 200)]);
-  return !!row;
+  const [hit] = await d.query("select 1 from github_deliveries where id = any($1)", [deliveryKeys(id, body)]);
+  return !!hit;
+}
+
+/** Mark a delivery handled, once it has been; a failed one stays unmarked so GitHub's redelivery runs. */
+export async function deliveryDone(d: Pick<Db, "query">, id: string | null, body: string): Promise<void> {
+  for (const key of deliveryKeys(id, body)) await d.query("insert into github_deliveries (id) values ($1) on conflict do nothing", [key]);
 }
 
 /** A GitHub webhook delivery: queue the event for the items on its branch, and say which projects' git facts it moves. */

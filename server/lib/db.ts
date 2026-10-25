@@ -9,12 +9,31 @@ export interface Db {
   tx<T>(fn: (db: Db) => Promise<T>): Promise<T>;
   exec(sql: string): Promise<void>;
   close?(): Promise<void>;
+  /** A lock across processes; see withLock. */
+  lock?<T>(key: string, fn: () => Promise<T>): Promise<T>;
 }
 
 // Next bundles route handlers and server components separately, so a module
 // variable would give each its own connection — and PGlite would open the same
 // data directory twice. One shared slot on globalThis keeps a single instance.
 const slot = globalThis as typeof globalThis & { __todoDb?: Promise<Db> | null };
+
+/** Run `fn` holding a lock on `key` across processes sharing the database, released when it settles. */
+export function withLock<T>(d: Db, key: string, fn: () => Promise<T>): Promise<T> {
+  return d.lock ? d.lock(key, fn) : localLock(key, fn);
+}
+
+const held = new Map<string, Promise<unknown>>();
+
+/** A lock within this process, for a database only this process opens. */
+function localLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const before = held.get(key) ?? Promise.resolve();
+  const run = before.then(fn, fn);
+  const tail = run.catch(() => undefined);
+  held.set(key, tail);
+  void tail.then(() => { if (held.get(key) === tail) held.delete(key); });
+  return run;
+}
 
 export function db(): Promise<Db> {
   if (!slot.__todoDb) slot.__todoDb = open();
@@ -69,8 +88,23 @@ async function pgPool(url: string): Promise<Db> {
     exec: async (sql) => void (await c.query(sql)),
     tx: (fn) => fn(wrap(c)),
   });
+  // Locks hold a connection of their own, so waiting for one never starves the queries made under it.
+  let lockPool: InstanceType<typeof Pool> | null = null;
   return {
     ...wrap(pool),
+    lock: async (key, fn) => {
+      const client = await (lockPool ??= new Pool({ connectionString: url, max: 5 })).connect();
+      try {
+        await client.query("select pg_advisory_lock(hashtextextended($1, 0))", [key]);
+        try {
+          return await fn();
+        } finally {
+          await client.query("select pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+        }
+      } finally {
+        client.release();
+      }
+    },
     tx: async (fn) => {
       const client = await pool.connect();
       try {

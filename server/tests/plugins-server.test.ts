@@ -26,6 +26,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.stubEnv("GITHUB_TOKEN", "gh-token");
+  vi.stubEnv("TODO_PLUGIN_OWNERS", "acme");
   vi.stubEnv("TODO_SECRET_KEY", "");
   vi.stubEnv("TODO_PLUGIN_CONNECTIONS", "");
   resetGitFactsCache();
@@ -33,7 +34,7 @@ beforeEach(async () => {
   process.env.TODO_FILES_DIR = files;
   delete process.env.S3_BUCKET;
   delete process.env.VERCEL;
-  await w.d.query("insert into plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
+  await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
 });
 afterEach(() => {
   rmSync(files, { recursive: true, force: true });
@@ -305,7 +306,7 @@ describe("the plugins API", () => {
     expect((await off.json()).error).toMatch(/TODO_SECRET_KEY/);
 
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
-    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "hooks.example");
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     expect(await (await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" })).json()).toEqual({ ok: true });
     const gh = fakeGitHub({ file: [
       "connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}",

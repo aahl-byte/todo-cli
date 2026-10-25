@@ -9,11 +9,12 @@ import { GET as pluginsGET, PUT as pluginsPUT } from "@/app/api/projects/[key]/p
 import { POST as credentialsPOST } from "@/app/api/projects/[key]/plugins/credentials/route";
 import { GET as reposGET, PUT as reposPUT } from "@/app/api/projects/[key]/plugins/repos/route";
 import { POST as webhookPOST } from "@/app/api/github/webhook/route";
-import { recordCheckout } from "@/lib/checkouts";
+import { OWNERS_UNSET, recordCheckout, repoKey } from "@/lib/checkouts";
+import { migrate } from "@/lib/db";
 import { listDocs } from "@/lib/docs";
-import { resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
+import { itemGitFacts, resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
 import { queuePluginEvent } from "@/lib/plugins/queue";
-import { flushPluginRuns, LEASE_MS, pluginTick, pluginUid, requestKey } from "@/lib/plugins/server";
+import { flushPluginRuns, itemsOnBranch, LEASE_MS, pluginTick, pluginUid, requestKey } from "@/lib/plugins/server";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import { child, item, world, type World } from "./helpers";
 import { API, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
@@ -25,6 +26,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.stubEnv("GITHUB_TOKEN", "gh-token");
+  vi.stubEnv("TODO_PLUGIN_OWNERS", "acme");
   vi.stubEnv("TODO_SECRET_KEY", "");
   vi.stubEnv("TODO_PLUGIN_CONNECTIONS", "");
   vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "");
@@ -33,7 +35,7 @@ beforeEach(async () => {
   process.env.TODO_FILES_DIR = files;
   delete process.env.S3_BUCKET;
   delete process.env.VERCEL;
-  await w.d.query("insert into plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
+  await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
 });
 afterEach(() => {
   rmSync(files, { recursive: true, force: true });
@@ -85,7 +87,7 @@ describe("repos a project may use", () => {
   });
 
   it("allows a repo a member's CLI has a checkout of, and one listed through the API", async () => {
-    await w.d.query("delete from plugin_repos");
+    await w.d.query("delete from project_plugin_repos");
     await recordCheckout(w.d, "bob", "p", "/src/api", "git@github.com:acme/api.git");
     const put = await reposPUT(new Request("http://x/api/projects/p/plugins/repos", {
       method: "PUT", headers: { authorization: `Bearer ${w.tokens.alice}` }, body: JSON.stringify({ repos: ["Acme/Web"] }) }), params("p"));
@@ -115,15 +117,26 @@ describe("the private-address guard", () => {
     for (const r of await runs()) expect(r.result.error ?? r.result.skipped).toMatch(/isn't an address this host connects to/);
   });
 
-  it("lets a private host through once TODO_PLUGIN_ALLOW_HOSTS names it", async () => {
-    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "leaf-rain:10011, 127.0.0.1:8710");
-    const file = ["connections:", "  wt: {http: {url: 'http://127.0.0.1:8710'}}",
-      "plugins:", "  y:", "    connections: [wt]", "    on: [push]", "    steps: [{http: {method: GET, path: /}}]", "    attach: []"].join("\n");
-    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("http://127.0.0.1:8710") ? Response.json({}) : undefined) });
-    await onBranch([]);
+  const localPlugin = ["connections:", "  wt: {http: {url: 'http://127.0.0.1:8710'}}",
+    "plugins:", "  y:", "    connections: [wt]", "    on: [push]", "    steps: [{http: {method: GET, path: /}}]", "    attach: []"].join("\n");
+  async function reachesLocal(allow: string): Promise<boolean> {
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", allow);
+    const gh = fakeGitHub({ file: localPlugin, other: (url) => (url.startsWith("http://127.0.0.1:8710") ? Response.json({}) : undefined) });
     await push("main");
     await flushPluginRuns(w.d, { fetch: gh.impl, host: { sleep: async () => {} } }, 50);
-    expect(gh.sent.map((s) => s.url)).toContain("http://127.0.0.1:8710/");
+    return gh.sent.some((s) => s.url === "http://127.0.0.1:8710/");
+  }
+
+  it("lets a private host through for a repo's connections once TODO_PLUGIN_ALLOW_HOSTS names it for that repo", async () => {
+    await onBranch([]);
+    expect(await reachesLocal("leaf-rain:10011, acme/web=127.0.0.1:8710")).toBe(true);
+  });
+
+  it("keeps a private host listed for another repo, or listed host-wide, from this repo's connections", async () => {
+    await onBranch([]);
+    expect(await reachesLocal("acme/api=127.0.0.1:8710")).toBe(false);
+    expect(await reachesLocal("127.0.0.1:8710")).toBe(false);
+    expect((await runs()).filter((r) => r.plugin === "y").every((r) => /isn't an address/.test(r.result.error))).toBe(true);
   });
 });
 
@@ -182,7 +195,7 @@ describe("webhooks", () => {
     const payload = { action: "opened", repository, pull_request: { head: { ref: "feat/x" } } };
     for (let i = 0; i < 3; i++) await hook("pull_request", payload, "same-id");
     expect((await events()).length).toBe(1);
-    expect((await w.d.query("select id from github_deliveries")).map((r) => r.id)).toEqual(["same-id"]);
+    expect((await w.d.query("select id from github_deliveries order by id")).map((r) => r.id.split(":")[0])).toEqual(["body", "id"]);
     await settle();
   });
 
@@ -449,7 +462,7 @@ describe("secrets", () => {
     const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}", "  local: {mcp: {command: /bin/echo}}",
       "  lan: {http: {url: 'http://192.168.1.4'}}", "plugins:", ...["hooks", "local", "lan", "github"].flatMap(uses)].join("\n");
     vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
-    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "hooks.example");
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     const runsHere = async () => Object.fromEntries((await shown()).plugins.map((p: { name: string; instances: { server_runs: boolean }[] }) =>
       [p.name, p.instances[0]?.server_runs]));
     expect(await runsHere()).toEqual({ "pr-link": true, "use-hooks": false, "use-local": false, "use-lan": false, "use-github": false });
@@ -460,4 +473,134 @@ describe("secrets", () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     expect(Object.values(await runsHere()).every((v) => v === false)).toBe(true);
   });
+});
+
+describe("owners the server reads", () => {
+  it("allows no repo while TODO_PLUGIN_OWNERS is unset, and says so on the rail", async () => {
+    vi.stubEnv("TODO_PLUGIN_OWNERS", "");
+    const gh = fakeGitHub({});
+    vi.stubGlobal("fetch", gh.impl);
+    await onBranch(["feat/x"]);
+    expect(await events()).toEqual([]);
+    expect((await itemGitFacts(w.d, "p", "I1", gh.impl)).blocked).toBe(OWNERS_UNSET);
+    expect((await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).status).toBe(404);
+    expect(gh.sent).toEqual([]);
+  });
+
+  it("refuses a repo outside the owners, even with a checkout or a listing", async () => {
+    vi.stubEnv("TODO_PLUGIN_OWNERS", "Acme, beta_corp");
+    const gh = fakeGitHub({});
+    vi.stubGlobal("fetch", gh.impl);
+    await recordCheckout(w.d, "bob", "p", "/tmp/fake", "git@github.com:mallory/x.git");
+    await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'mallory/y', 'bob')");
+    for (const repo of ["mallory/x", "mallory/y"]) {
+      expect(await queuePluginEvent(w.d, "p", "I1", repo, { type: "refresh" }, "bob")).toBeNull();
+      expect((await pluginsGET(req(`/api/projects/p/plugins?repo=${repo}`, "GET", w.tokens.bob), params("p"))).status).toBe(404);
+    }
+    expect(gh.sent).toEqual([]);
+    await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'beta_corp/app', 'bob')");
+    expect((await pluginsGET(req("/api/projects/p/plugins?repo=Beta_Corp/app", "GET", w.tokens.bob), params("p"))).status).toBe(200);
+  });
+});
+
+describe("webhook replays under fresh ids", () => {
+  const SECRET = "s";
+  const body = JSON.stringify({ action: "opened", repository: { full_name: "acme/web" }, pull_request: { head: { ref: "feat/x" } } });
+  const hook = (id: string) => webhookPOST(new Request("http://x/api/github/webhook", {
+    method: "POST", body, headers: { "x-github-event": "pull_request", "x-github-delivery": id,
+                                     "x-hub-signature-256": `sha256=${crypto.createHmac("sha256", SECRET).update(body).digest("hex")}` } }));
+  beforeEach(async () => {
+    vi.stubEnv("GITHUB_WEBHOOK_SECRET", SECRET);
+    vi.stubGlobal("fetch", fakeGitHub({}).impl);
+    await onBranch(["feat/x"]);
+    await w.d.query("delete from plugin_events");
+  });
+
+  it("drops the same signed body whatever its delivery id", async () => {
+    for (const id of ["d1", "d1", "d2", "d3"]) await hook(id);
+    expect((await events()).length).toBe(1);
+    await vi.waitFor(async () => expect((await events()).every((e) => e.done_at)).toBe(true));
+  });
+
+  it("runs GitHub's redelivery of a delivery that failed", async () => {
+    await w.d.exec("alter table plugin_events rename to plugin_events_away");
+    await expect(hook("d1")).rejects.toThrow();
+    await w.d.exec("alter table plugin_events_away rename to plugin_events");
+    expect((await (await hook("d1")).json()).queued).toBe(1);
+    await vi.waitFor(async () => expect((await events()).every((e) => e.done_at)).toBe(true));
+  });
+});
+
+describe("a bad attachment", () => {
+  it("fails only itself: the run's other attachments and the later instances still apply", async () => {
+    SHIPPED["nul"] = { def: { connections: [], on: ["push"], steps: [{ name: "v", value: "`1`" }], attach: [
+      { link: { type: "x", url: "https://ok.example/1", label: "fine" } }, { link: { type: "x", url: "https://ok.example/2", label: "bad\u0000label" } }] } };
+    try {
+      const gh = fakeGitHub({ file: `plugins:\n  nul: {use: shipped}\n${logPlugins("after").replace("plugins:\n", "")}\n` });
+      await onBranch([]);
+      await w.d.query("delete from plugin_events");
+      await push("z");
+      const r = await run(gh.impl);
+      expect(r).toEqual({ ran: 1, failed: 0 });
+      expect((await links()).map((n) => n.text)).toEqual(["fine"]);
+      expect((await w.d.query("select text from logs")).map((r) => r.text)).toEqual(["after ran"]);
+      const nul = (await runs()).find((r) => r.plugin === "nul")!;
+      expect(nul.result.log.join(" ")).toMatch(/create note \w+ was refused: error/);
+    } finally {
+      delete SHIPPED["nul"];
+    }
+  });
+});
+
+describe("server_runs", () => {
+  const shownRuns = async () => Object.fromEntries((await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob),
+    params("p"))).json()).plugins.map((p: { name: string; instances: { id: string; server_runs: boolean }[] }) => [p.name, p.instances.map((i) => i.server_runs)]));
+
+  it("is false for an instance missing a required setting, true once it's set; an item-level when doesn't matter", async () => {
+    const file = ["plugins:", "  needs:", "    on: [push]", "    when: \"item.status == 'never'\"", "    settings: {path: {label: Path, type: text}}",
+      "    steps: [{name: v, value: '`1`'}]", "    attach: [{log: hi}]", "instances:", "  needs: [{id: a, name: A}, {id: b, name: B, settings: {path: x}}]"].join("\n");
+    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    expect((await shownRuns()).needs).toEqual([false, true]);
+  });
+
+  it("is false when a stored credential won't decrypt", async () => {
+    const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}", "plugins:",
+      "  ping: {connections: [hooks], on: [push], steps: [{http: {method: GET, path: /}}], attach: []}"].join("\n");
+    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
+    expect((await shownRuns()).ping).toEqual([true]);
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    expect((await shownRuns()).ping).toEqual([false]);
+  });
+
+  it("is true for a host connection that runs a command, which the server does run", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ local: { mcp: { command: "/bin/true" } } }));
+    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
+    expect((await shownRuns()).loc).toEqual([true]);
+  });
+});
+
+describe("older CLIs", () => {
+  it("write a single extra.branch, which still routes webhooks to the item, and moving it moves the routing", async () => {
+    await w.one("alice", item("I1", { status: "in-progress", extra: { repo: "acme/web", branch: "feat/old" } }));
+    expect((await itemsOnBranch(w.d, "acme/web", "feat/old")).map((i) => i.uid)).toEqual(["I1"]);
+    await setItem({ "extra.branch": "feat/new" });
+    expect(await itemsOnBranch(w.d, "acme/web", "feat/old")).toEqual([]);
+    expect((await itemsOnBranch(w.d, "acme/web", "feat/new")).map((i) => i.uid)).toEqual(["I1"]);
+    await setItem({ "extra.branch": null });
+    expect(await itemsOnBranch(w.d, "acme/web", "feat/new")).toEqual([]);
+  });
+
+  it("have their legacy branch backfilled into branches by the migration", async () => {
+    await w.one("alice", item("I1", { status: "in-progress", extra: { repo: "acme/web" } }));
+    await w.d.query(`update items set extra = extra - 'branches' || '{"branch": " feat/legacy "}'::jsonb where uid = 'I1'`);
+    await migrate(w.d);
+    expect((await w.d.query("select extra->'branches' as b from items where uid = 'I1'"))[0].b).toEqual(["feat/legacy"]);
+  });
+});
+
+it("reads GitHub Enterprise owners with underscores", () => {
+  expect(repoKey("git@github.com:Acme_Corp/web.git")).toBe("acme_corp/web");
 });
