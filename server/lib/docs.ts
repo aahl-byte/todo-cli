@@ -139,7 +139,12 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
     const [row] = await t.query(`select ${COLUMNS} from docs where project = $1 and item_uid = $2 and name_key = $3`,
       [project, input.item_uid, docNameKey(name)]);
     refuseTwin(row ?? null, name);
-    await t.query("delete from doc_uploads where project = $1 and file_key = $2", [project, key]);
+    // Taking the key here, under the project lock, makes a second record of it find nothing.
+    const [taken] = await t.query(
+      `delete from doc_uploads where project = $1 and file_key = $2 and item_uid = $3 and name_key = $4
+          and created > now() - make_interval(hours => $5) returning file_key`,
+      [project, key, input.item_uid, docNameKey(name), UPLOAD_HOURS]);
+    if (!taken) throw new DocError(422, "that upload wasn't issued for this doc, or has expired");
     const current = row?.sha256 ?? null;
     if (sha256 === current) return { result: { status: "applied" as const, doc: clean(row) }, superseded: key };
     if ((input.base ?? null) !== current) return { result: { status: "conflict" as const, doc: clean(row) }, superseded: key };
@@ -156,8 +161,15 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
        JSON.stringify({ sha256: seq })]);
     return { result: { status: "applied" as const, doc: clean(saved) }, superseded: row?.file_key as string | undefined };
   });
-  await discard(superseded);
+  if (superseded !== result.doc?.file_key) await discard(superseded);
   return result;
+}
+
+/** Whether `key` was issued as a doc upload and not yet recorded or expired. */
+export async function pendingUpload(d: Db, key: string): Promise<boolean> {
+  const [row] = await d.query(
+    "select 1 from doc_uploads where file_key = $1 and created > now() - make_interval(hours => $2)", [key, UPLOAD_HOURS]);
+  return !!row;
 }
 
 /** Delete a doc, unless it changed since `base`. */
@@ -176,6 +188,16 @@ export async function removeDoc(d: Db, project: string, handle: string, uid: str
   });
   await discard(gone);
   return result;
+}
+
+const SWEEP_EVERY_MS = 60 * 60_000;
+let lastSweep = 0;
+
+/** Sweep stale uploads at most once an hour per process; null when not yet due. */
+export async function sweepDocUploadsIfDue(d: Db, now = Date.now()): Promise<number | null> {
+  if (now - lastSweep < SWEEP_EVERY_MS) return null;
+  lastSweep = now;
+  return sweepDocUploads(d);
 }
 
 /** Drop upload keys never recorded within a day, with their bytes. Returns how many. */

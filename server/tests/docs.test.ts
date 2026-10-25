@@ -9,7 +9,7 @@ import { DELETE as docDELETE, GET as docGET } from "@/app/api/projects/[key]/doc
 import { GET as changesGET } from "@/app/api/projects/[key]/changes/route";
 import { GET as fileGET, POST as filePOST } from "@/app/api/files/[...key]/route";
 import { addProject } from "@/lib/auth";
-import { docKind, docNameError, docNameKey, docUid, sweepDocUploads } from "@/lib/docs";
+import { docKind, docNameError, docNameKey, docUid, issueUpload, recordDoc, sweepDocUploads, sweepDocUploadsIfDue } from "@/lib/docs";
 import { newDocKey, readLocal, saveLocal } from "@/lib/files";
 import { hashUid } from "@/lib/ulid";
 import { item, world, type World } from "./helpers";
@@ -251,5 +251,56 @@ describe("doc identity and uploads", () => {
     expect(await sweepDocUploads(w.d)).toBe(1);
     expect(await readLocal(target.key)).toBeNull();
     expect(await w.d.query("select * from doc_uploads")).toEqual([]);
+  });
+});
+
+describe("issued keys, once each", () => {
+  it("apply one of two concurrent records of a key, and keep its bytes", async () => {
+    const key = await issueUpload(w.d, "p", "I1", "plan.md", 2);
+    await saveLocal(key, new TextEncoder().encode("v1"));
+    const rec = () => recordDoc(w.d, "p", "alice", { item_uid: "I1", name: "plan.md", file_key: key, base: null });
+    const res = await Promise.allSettled([rec(), rec()]);
+    expect(res.filter((r) => r.status === "fulfilled" && r.value.status === "applied")).toHaveLength(1);
+    expect(res.filter((r) => r.status === "rejected" && (r.reason as { status?: number }).status === 422)).toHaveLength(1);
+    const [row] = await w.d.query("select file_key from docs where project = 'p'");
+    expect(row.file_key).toBe(key);
+    expect(await readLocal(key)).not.toBeNull();
+  });
+
+  it("refuse a replayed record and keep the doc's bytes", async () => {
+    const key = await issueUpload(w.d, "p", "I1", "plan.md", 2);
+    await saveLocal(key, new TextEncoder().encode("v1"));
+    await recordDoc(w.d, "p", "alice", { item_uid: "I1", name: "plan.md", file_key: key, base: null });
+    await expect(recordDoc(w.d, "p", "alice", { item_uid: "I1", name: "plan.md", file_key: key, base: null }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(await readLocal(key)).not.toBeNull();
+  });
+
+  it("take uploads through the app only for a key issued and still pending", async () => {
+    const t = w.tokens.alice;
+    const send = (key: string) => {
+      const fd = new FormData();
+      fd.append("file", new File(["x"], "a.md"));
+      return filePOST(new Request(`http://x/api/files/${key}`, { method: "POST", headers: auth(t), body: fd }), { params: Promise.resolve({ key: key.split("/") }) });
+    };
+    expect((await send(newDocKey("p", "a.md"))).status).toBe(403);
+    const key = await issueUpload(w.d, "p", "I1", "a.md", 1);
+    expect((await send(key)).status).toBe(204);
+    await recordDoc(w.d, "p", "alice", { item_uid: "I1", name: "a.md", file_key: key, base: null });
+    const late = await issueUpload(w.d, "p", "I1", "b.md", 1);
+    await w.d.query("delete from doc_uploads where file_key = $1", [late]);
+    expect((await send(late)).status).toBe(403);
+  });
+
+  it("sweep stale uploads after a request at most once an hour", async () => {
+    const key = await issueUpload(w.d, "p", "I1", "a.md", 1);
+    await w.d.query("update doc_uploads set created = now() - interval '25 hours'");
+    const t0 = 10_000_000;
+    expect(await sweepDocUploadsIfDue(w.d, t0)).toBe(1);
+    await issueUpload(w.d, "p", "I1", "b.md", 1);
+    await w.d.query("update doc_uploads set created = now() - interval '25 hours'");
+    expect(await sweepDocUploadsIfDue(w.d, t0 + 30 * 60_000)).toBeNull();
+    expect(await sweepDocUploadsIfDue(w.d, t0 + 61 * 60_000)).toBe(1);
+    expect(key).toBeTruthy();
   });
 });

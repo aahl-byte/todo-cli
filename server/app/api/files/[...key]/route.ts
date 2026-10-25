@@ -1,3 +1,4 @@
+import { pendingUpload } from "@/lib/docs";
 import { authed, json } from "@/lib/http";
 import { DOC_MAX_BYTES, docType, fileResponse, hasObject, isDocKey, KEY_RE, MAX_BYTES, putObject, viaApp, typeOf } from "@/lib/files";
 
@@ -24,9 +25,10 @@ export async function POST(req: Request, p: Params) {
   if (a instanceof Response) return a;
   const key = await keyOf(p, true);
   if (!key) return json({ error: "bad key" }, 400);
-  const file = (await req.formData()).get("file");
   // A doc is any type: it is stored as the type its name gives, whatever the form says.
   const doc = isDocKey(key);
+  if (doc && !(await pendingUpload(a.d, key))) return json({ error: "not an upload this server issued" }, 403);
+  const file = (await req.formData()).get("file");
   if (!(file instanceof File)) return json({ error: "no file" }, 400);
   if (doc ? file.size > DOC_MAX_BYTES : file.size === 0 || file.size > MAX_BYTES) {
     return json({ error: doc ? "docs are limited to 25 MB" : "images are limited to 10 MB" }, 413);
