@@ -64,7 +64,7 @@ const hostOnly = (name: string) =>
   `\`${name}\` is this host's connection, whose credentials only plugins shipped with todo get; declare a repo connection named ${name} and store a repo credential for it`;
 
 /** Why this host won't run the plugin, if it won't: a connection it lacks, can't authorize, or mustn't start. */
-function connectionProblem(input: RunInput): string | undefined {
+function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
   for (const name of input.plugin.connections ?? []) {
     const c = input.connections?.[name];
     if (c?.kind === "http" && c.auth && !input.shipped && c.origin === "host") return hostOnly(name);
@@ -74,6 +74,14 @@ function connectionProblem(input: RunInput): string | undefined {
     }
   }
   return undefined;
+}
+
+/** Why this host would skip an instance whatever the item: a connection it can't use, or a required setting with no value. */
+export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
+  const problem = connectionProblem(input);
+  if (problem) return problem;
+  const { missing } = resolveSettings(input.plugin, input.instance, { item: {}, event: {} });
+  return missing ? `setting ${missing} is not set` : undefined;
 }
 
 /** Text that must never leave the host: connection secrets and secret settings. */
@@ -160,7 +168,7 @@ function resolveConnection(def: ConnectionDef, origin: ConnectionOrigin, secret:
 }
 
 /** The host's connections, then the repo's over them, each with only the secret stored for its own origin. */
-function connectionsFor(input: EventInput, file: PluginsFile): Record<string, ResolvedConnection> {
+export function connectionsFor(input: Pick<EventInput, "hostConnections" | "secrets">, file: PluginsFile): Record<string, ResolvedConnection> {
   const out: Record<string, ResolvedConnection> = {};
   const add = (defs: Record<string, ConnectionDef> | undefined, origin: ConnectionOrigin) => {
     for (const [name, def] of Object.entries(defs ?? {})) {

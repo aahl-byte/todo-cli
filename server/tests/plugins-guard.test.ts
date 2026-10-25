@@ -70,13 +70,23 @@ describe("the address guard", () => {
     }
   });
 
-  it("lets public addresses through, and private ones listed in the allow list", async () => {
+  it("lets public addresses through, and private ones the allow list for the connection's origin names", async () => {
     const { sent, fetch } = recorder();
     expect((await runInstance(plugin("https://hooks.example"), guarded(fetch))).error).toBeUndefined();
-    expect((await runInstance(plugin("http://127.0.0.1:8710"), guarded(fetch, { allow: ["127.0.0.1:8710"] }))).error).toBeUndefined();
-    expect((await runInstance(plugin("http://lan.example"), guarded(fetch, { allow: ["lan.example"] }))).error).toBeUndefined();
-    expect((await runInstance(plugin("http://127.0.0.1:9999"), guarded(fetch, { allow: ["127.0.0.1:8710"] }))).error).toMatch(/isn't an address/);
+    expect((await runInstance(plugin("http://127.0.0.1:8710"), guarded(fetch, { repoAllow: ["127.0.0.1:8710"] }))).error).toBeUndefined();
+    expect((await runInstance(plugin("http://lan.example"), guarded(fetch, { repoAllow: ["lan.example"] }))).error).toBeUndefined();
+    expect((await runInstance(plugin("http://127.0.0.1:9999"), guarded(fetch, { repoAllow: ["127.0.0.1:8710"] }))).error).toMatch(/isn't an address/);
     expect(sent.map((s) => s.url)).toEqual(["https://hooks.example/x", "http://127.0.0.1:8710/x", "http://lan.example/x"]);
+  });
+
+  it("keeps a host-wide allowance from a repo's connections, and a repo's from the host's", async () => {
+    const { sent, fetch } = recorder();
+    const repoConn = plugin("http://127.0.0.1:8710");
+    const hostConn: RunInput = { ...repoConn, shipped: true, connections: { c: { kind: "http", url: "http://127.0.0.1:8710", origin: "host" } } };
+    expect((await runInstance(repoConn, guarded(fetch, { allow: ["127.0.0.1:8710"] }))).error).toMatch(/isn't an address/);
+    expect((await runInstance(hostConn, guarded(fetch, { repoAllow: ["127.0.0.1:8710"] }))).error).toMatch(/isn't an address/);
+    expect((await runInstance(hostConn, guarded(fetch, { allow: ["127.0.0.1:8710"] }))).error).toBeUndefined();
+    expect(sent.length).toBe(1);
   });
 
   it("is off unless the host turns it on, as on the CLI", async () => {
@@ -84,10 +94,29 @@ describe("the address guard", () => {
     expect((await runInstance(plugin("http://127.0.0.1:5432"), { fetch })).error).toBeUndefined();
   });
 
+  it("refuses the IPv6 forms that carry a private IPv4 address, and other reserved ranges", () => {
+    for (const a of ["::7f00:1", "::127.0.0.1", "::ffff:0:7f00:1", "64:ff9b::7f00:1", "64:ff9b:1::1", "2002:7f00:1::", "2002:a00:1::1",
+                     "fec0::1", "fe80::1%eth0", "192.0.2.1", "198.51.100.7", "203.0.113.9"]) expect(blockedAddress(a), a).toBe(true);
+    expect(blockedAddress("2002:5db8:d822::1")).toBe(false);
+  });
+
   it("classifies addresses", () => {
     expect(["127.0.0.1", "10.1.2.3", "100.127.255.255", "::1", "fc00::1", "fe80::2", "::ffff:10.0.0.1", "::", "::ffff:7f00:1", "::ffff:a00:1"].map(blockedAddress))
       .toEqual(Array(10).fill(true));
-    expect(["93.184.216.34", "100.128.0.1", "2606:4700::1111", "8.8.8.8", "::ffff:808:808"].map(blockedAddress)).toEqual(Array(5).fill(false));
+    expect(["93.184.216.34", "100.128.0.1", "2606:4700::1111", "8.8.8.8"].map(blockedAddress)).toEqual(Array(4).fill(false));
+    expect(blockedAddress("::ffff:808:808")).toBe(true);
+  });
+
+  it("refuses a redirect when asked to, as an MCP connection does", async () => {
+    const server = createServer((_req, res) => res.writeHead(302, { location: "http://169.254.169.254/" }).end());
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(pinnedFetch({ address: "127.0.0.1", family: 4 }, { refuseRedirects: true })(`http://x.invalid:${port}/`)).rejects.toThrow(/redirect/);
+      expect((await pinnedFetch({ address: "127.0.0.1", family: 4 })(`http://x.invalid:${port}/`)).status).toBe(302);
+    } finally {
+      server.close();
+    }
   });
 
   it("connects to the address it checked, whatever the name resolves to later", async () => {
