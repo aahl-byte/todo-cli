@@ -58,6 +58,7 @@ FLOOR_EVERY = 60                    # seconds between checks for due `every:` fl
 DEFS_KEPT = 32
 LOG_KEPT = 50
 REMOVED = "~removed"                # in the runs file: item → plugin uids a person removed
+RUNNER = "~runner"                  # in the runs file: uids the runner removed, until the server has the remove
 REMOVED_KEPT = 500
 REPLACED = ("link", "dependency")   # note kinds a run replaces; logs and requests only add
 GIT_TRIGGERS = ("push", "pr", "deployment")
@@ -350,6 +351,7 @@ def _norm_stored(raw) -> dict:
             "grants": {str(k): [str(g) for g in v] for k, v in grants.items() if isinstance(v, list)},
             "plugins": [p for p in raw.get("plugins") or [] if isinstance(p, dict)],
             "secrets": [str(s) for s in raw.get("secrets") or [] if isinstance(s, str)],
+            "host_secrets": [str(s) for s in raw.get("host_secrets") or [] if isinstance(s, str)],
             "runs": raw.get("runs") if isinstance(raw.get("runs"), dict) else {}}
 
 
@@ -590,7 +592,7 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
     if not it.get("uid"):
         store.ensure_uid(root, it["id"])
         it = store.get_item(root, it["id"])
-    stored = copy.deepcopy(ctx.stored(key)["instances"])
+    stored = {name: [_without_secrets(i) for i in rows] for name, rows in ctx.stored(key)["instances"].items()}
     for p, insts in view:
         for i in insts:
             if not allowed(p, i):
@@ -604,6 +606,18 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
     if repo["payload"]:
         payload["repo"] = repo["payload"]
     return {"job": job, "item": it, "wanted": wanted, "payload": payload}
+
+
+def is_secret_value(v) -> bool:
+    """A secret setting the server holds: it answers `{set: true}`, never the value."""
+    return isinstance(v, dict) and v.get("set") is True
+
+
+def _without_secrets(inst: dict) -> dict:
+    out = copy.deepcopy(inst)
+    if isinstance(out.get("settings"), dict):
+        out["settings"] = {k: v for k, v in out["settings"].items() if not is_secret_value(v)}
+    return out
 
 
 def _execute(ctx: Context, plans: list, *, dry_run: bool, lock: bool) -> list:
@@ -761,7 +775,9 @@ def _apply(root: Path, it: dict, iid: str, result: dict, event: dict, dry_run: b
     else:
         adds = {e["meta"].get("uid") for e in notes + logs
                 if e["meta"].get("plugin") == iid and e["meta"].get("kind") not in REPLACED}
-        kept, attached = _attach(root, it, iid, result, item_dir, notes, present, gone, log, changes)
+        kept, attached, dropped = _attach(root, it, iid, result, item_dir, notes, present, gone, log, changes)
+        if dropped and sync.enabled(root):
+            runs.setdefault(RUNNER, {}).update({u: ikey for u in dropped})
         owned = sorted((kept | adds) - set(gone) - {None})
         rec["attached"] = attached
     if owned:
@@ -785,6 +801,7 @@ def _attach(root: Path, it: dict, iid: str, result: dict, item_dir: Path, notes:
     linked: set = set()
     wrote_docs: set = set()
     attached = []
+    dropped = []
     for a in result.get("attached") or []:
         if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc") or not a.get("key"):
             continue
@@ -828,9 +845,10 @@ def _attach(root: Path, it: dict, iid: str, result: dict, item_dir: Path, notes:
         m = e["meta"]
         if m.get("plugin") == iid and m.get("kind") in REPLACED and m.get("uid") not in kept:
             store.remove_note(root, it["id"], e["id"])
+            dropped.append(m.get("uid"))
             changes["removed"] += 1
     _drop_docs(it, iid, item_dir, wrote_docs, log, changes)
-    return kept, attached
+    return kept, attached, dropped
 
 
 def _put_note(root: Path, it: dict, uid: str, a: dict, tag: dict, e: dict | None, changes: dict) -> None:
@@ -921,6 +939,22 @@ def forget(root: Path, item_uid: str, uid: str) -> None:
         if uid not in gone:
             gone.append(uid)
         runs[REMOVED][item_uid] = gone[-REMOVED_KEPT:]
+
+
+def mark_runner_removes(root: Path, ops: list, synced_uids, local_uids) -> None:
+    """Tag the remove ops for notes the runner removed with `plugin: true`, so the
+    server lets the plugin make them again; forget the ones the server has."""
+    f = _state(root, RUNS_FILE)
+    if not _read(f).get(RUNNER):
+        return
+    with _updating(root, RUNS_FILE) as runs:
+        mine = runs.get(RUNNER) or {}
+        for op in ops:
+            if op.get("op") == "remove" and op.get("uid") in mine:
+                op["plugin"] = True
+        runs[RUNNER] = {u: k for u, k in mine.items() if u in synced_uids and u not in local_uids}
+        if not runs[RUNNER]:
+            del runs[RUNNER]
 
 
 def removed(root: Path, it: dict) -> list:
@@ -1017,7 +1051,7 @@ def run_jobs(ctx: Context, jobs: list, *, lock: bool = True, report: bool = Fals
     out, done = [], set()
     for _ in range(2):
         plans = []
-        for job in [j if isinstance(j, Job) else Job(*j) for j in jobs]:
+        for job in _merged([j if isinstance(j, Job) else Job(*j) for j in jobs]):
             if job.sig() in done:
                 continue
             done.add(job.sig())
@@ -1044,6 +1078,18 @@ def run_jobs(ctx: Context, jobs: list, *, lock: bool = True, report: bool = Fals
             for line in run_lines(it, runs):
                 print(line)
     return out
+
+
+def _merged(jobs: list) -> list:
+    """One job per item, event and host rule; narrowed ones join, and an un-narrowed one covers them all."""
+    out: dict = {}
+    for j in jobs:
+        k = (j.item_id, json.dumps(j.event, sort_keys=True), j.anywhere)
+        if k not in out:
+            out[k] = Job(j.item_id, j.event, None if j.only is None else set(j.only), j.anywhere)
+        elif out[k].only is not None:
+            out[k].only = None if j.only is None else out[k].only | set(j.only)
+    return list(out.values())
 
 
 def _has_repo(ctx: Context, job: Job) -> bool:

@@ -650,6 +650,8 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
         for uid in local.busy:
             mark_changed(root, local.item_dirs[uid].name)
         ops = diff(local, snap)
+        from . import plugins
+        plugins.mark_runner_removes(root, ops, set(snap["entities"]), set(local.entities))
         if ops:
             save_snapshot(root, snap)
         _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status)
@@ -667,7 +669,6 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             checkout.report(sync_dir(root), remote, project)
         except RemoteError:
             pass                    # a server without checkout reports, or a blip; the next round retries
-        from . import plugins
         plugins.after_round(root, remote, project, seen)
     except RemoteError as e:
         report.error = str(e)

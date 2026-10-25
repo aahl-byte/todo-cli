@@ -932,3 +932,65 @@ def test_an_item_without_a_uid_gets_one_on_its_first_run(fx, host):
 def test_a_store_wide_refresh_holds_items_one_at_a_time():
     from todo.cli import _named_items, build_parser
     assert _named_items(Path("/nowhere"), build_parser().parse_args(["refresh"])) == []
+
+
+# ── the server's wire ─────────────────────────────────────────────────────────
+def _removes(server):
+    return [op for batch in server.pushes for op in batch if op["op"] == "remove"]
+
+
+def test_a_runner_removal_tells_the_server_and_a_person_s_does_not(fx, synced, host):
+    cli_runs(synced, fx.root, "p/default")
+    a = item_with_branch(fx)
+    sync.run_round(fx.root, synced.client("alice"))
+    other = {**LINK, "key": "link:https://x.test/2", "url": "https://x.test/2"}
+    host.results({"refresh": [ran("p", [LINK, other])]})
+    refresh(fx.root, a)
+    sync.run_round(fx.root, synced.client("alice"))
+    host.results({"refresh": [ran("p", [other])]})
+    refresh(fx.root, a)                                            # the runner drops LINK
+    sync.run_round(fx.root, synced.client("alice"))
+    [runner] = _removes(synced)
+    assert runner["plugin"] is True
+    [mine] = [n for n in plugin_notes(fx.root, a, "p/default")]
+    run_cli(fx.root, ["unnote", a, str(mine["id"])])               # a person drops the other
+    sync.run_round(fx.root, synced.client("alice"))
+    assert "plugin" not in _removes(synced)[1]
+    host.results({"refresh": [ran("p", [LINK, other])]})
+    refresh(fx.root, a)
+    sync.run_round(fx.root, synced.client("alice"))
+    assert [n["meta"]["url"] for n in plugin_notes(fx.root, a, "p/default")] == [LINK["url"]]
+    assert hash_uid("plugin", "p/default", store.resolve_item(fx.root, a)["uid"], LINK["key"]) in synced.rows
+
+
+def test_secret_settings_show_as_set_and_never_reach_the_host(fx, synced, host, capsys):
+    key = gitfacts.store_repo(fx.root)[0]
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": ["push"],
+                    "settings": {"token": {"label": "Token", "type": "secret", "optional": True}}}])
+    synced.plugin_config[key] = {
+        "instances": {"p": [{"id": "default", "name": "default", "settings": {"token": {"set": True}, "n": 1}}]},
+        "plugins": [{"name": "p", "instances": [{"id": "default", "name": "default", "server_runs": False}]}]}
+    run_cli(fx.root, ["plugin", "list"])
+    assert "settings: token=(set), n=1" in capsys.readouterr().out
+    a = item_with_branch(fx)
+    refresh(fx.root, a)
+    [call] = host.calls()
+    assert call["storedInstances"]["p"][0]["settings"] == {"n": 1}
+
+
+def test_connection_list_reads_repo_and_host_secrets_on_the_server(fx, synced, host, capsys):
+    key = gitfacts.store_repo(fx.root)[0]
+    host.describe([], connections_=VERCEL)
+    synced.plugin_creds.append((key, "vercel", "x"))
+    synced.host_secrets = ["github"]
+    run_cli(fx.root, ["connection", "list"])
+    out = capsys.readouterr().out
+    assert "github" in out and "built in · secret here: none · on the server: yes" in out
+    assert "vercel" in out and f"repo {key} · secret here: none · on the server: yes" in out
+
+
+def test_adding_an_item_runs_one_refresh(fx, host):
+    host.describe([{"name": "poll", "shipped": False, "connections": [], "on": [], "every": "1h", "settings": {}}])
+    run_cli(fx.root, ["add", "New thing"])
+    plugins.after_command(fx.root)
+    assert [(c["item"]["id"], c["event"]) for c in host.calls()] == [("new-thing", {"type": "refresh"})]

@@ -862,6 +862,7 @@ def cmd_add(root: Path, args) -> None:
     if request:
         store.add_note(root, it["id"], request, now(), kind="ticket-request", extra={"url": url} if url else None)
     print(f'added {it["id"]}: {it["title"]}' + ("  (requested)" if request else ""))
+    plugins_mod.queue(it["id"], {"type": "refresh"})
 
 
 def cmd_archive(root: Path, args) -> None:
@@ -1175,10 +1176,12 @@ def _conn_target(definition: dict) -> str:
     return f'mcp {m.get("url")}' if m.get("url") else f'mcp command {" ".join([m.get("command") or "", *(m.get("args") or [])]).strip()}'
 
 
-def _server_secrets(root: Path | None, key: str) -> set | None:
+def _server_secrets(root: Path | None, key: str) -> tuple | None:
+    """(the repo's connections, the host-wide ones) the server holds a secret for."""
     if root is None or not root.is_dir() or not sync.enabled(root):
         return None
-    return set(plugins_mod.Context(root).stored(key)["secrets"])
+    stored = plugins_mod.Context(root).stored(key)
+    return set(stored["secrets"]), set(stored["host_secrets"])
 
 
 def cmd_connection_list(root: Path, args) -> None:
@@ -1198,7 +1201,7 @@ def cmd_connection_list(root: Path, args) -> None:
         secret = connections_mod.secret_source(name, repo)
         line = f"{name:<14} {_conn_target(d)}  · {source} · secret here: {secret or 'none'}"
         if held is not None:
-            line += f" · on the server: {'yes' if name in held else 'no'}"
+            line += f" · on the server: {'yes' if name in held[0 if repo else 1] else 'no'}"
         print(line)
 
 
@@ -1345,7 +1348,7 @@ def cmd_plugin_list(root: Path, args) -> None:
                 if i.get("on") is not None:
                     extra.append("on: " + (", ".join(_trigger_text(t) for t in i["on"]) or "nothing"))
                 if i.get("settings"):
-                    extra.append("settings: " + ", ".join(f"{k}={v}" for k, v in i["settings"].items()))
+                    extra.append("settings: " + ", ".join(f"{k}={_setting_text(p, k, v)}" for k, v in i["settings"].items()))
                 if i.get("dry_run"):
                     extra.append("dry-run")
                 if i.get("implicit"):
@@ -1354,6 +1357,13 @@ def cmd_plugin_list(root: Path, args) -> None:
                 print(f'    {i.get("id")}{name}  {state}' + "".join(f"  · {e}" for e in extra))
             if not insts:
                 print("    (no instances: add one with `todo plugin add`)")
+
+
+def _setting_text(plugin: dict, key: str, value) -> str:
+    """A setting as `plugin list` shows it; a secret only ever as set."""
+    if plugins_mod.is_secret_value(value) or ((plugin.get("settings") or {}).get(key) or {}).get("type") == "secret":
+        return "(set)"
+    return str(value)
 
 
 def _split_iid(raw: str) -> tuple:

@@ -42,6 +42,8 @@ class FakeServer:
         self.plugin_config = {}  # repo → {instances, grants}; None answers 404, like an older server
         self.plugin_creds = []   # (repo, connection, secret) per credential posted
         self.plugin_gets = 0
+        self.plugin_tombs = set()
+        self.host_secrets = []
         self.plugins_down = False
         self.creds_unkeyed = False   # no TODO_SECRET_KEY: credentials answer 503
 
@@ -109,9 +111,12 @@ class FakeServer:
     def _create(self, op, author):
         e, uid, data = op["entity"], op["uid"], dict(op.get("data") or {})
         res = {"op_id": op["op_id"], "status": "applied"}
-        if uid in self.tombs:
+        plugin_made = e in ("note", "log") and bool((data.get("meta") or {}).get("plugin"))
+        if uid in self.tombs and not (plugin_made and uid in self.plugin_tombs):
             seq, by = self.tombs[uid]
             return {"op_id": op["op_id"], "status": "rejected", "reason": "removed", "by": by}
+        self.tombs.pop(uid, None)
+        self.plugin_tombs.discard(uid)
         if uid in self.rows:
             existing = self.rows[uid]
             same = all(existing.get(k) == v for k, v in data.items()
@@ -245,6 +250,8 @@ class FakeServer:
         seq = self._bump(row["_entity"], row["uid"], row["item_uid"], deleted=True, author=author)
         del self.rows[op["uid"]]
         self.tombs[op["uid"]] = (seq, author)
+        if op.get("plugin"):
+            self.plugin_tombs.add(op["uid"])         # the runner's removal: the plugin may make it again
         return {"op_id": op["op_id"], "status": "applied", "versions": {}}
 
     # ── docs (server/lib/docs.ts) ────────────────────────────────────────────
@@ -382,7 +389,8 @@ class FakeServer:
                 return {"instances": copy.deepcopy(got.get("instances") or {}),
                         "grants": copy.deepcopy(got.get("grants") or {}),
                         "plugins": copy.deepcopy(got.get("plugins") or []),
-                        "secrets": [c for r, c, _ in server.plugin_creds if r == repo], "runs": {}}
+                        "secrets": [c for r, c, _ in server.plugin_creds if r == repo],
+                        "host_secrets": list(server.host_secrets), "runs": {}}
 
             def put_plugins(self, project, repo, plugin, instances=None, grants=None):
                 got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
