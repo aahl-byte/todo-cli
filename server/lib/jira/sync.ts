@@ -74,7 +74,7 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   return out;
 }
 
-/** Projects in `links` mode, for a poll that covers them all. */
+/** Every project, for a poll that covers them all. */
 export async function linkedProjects(db: Db): Promise<string[]> {
-  return (await db.query("select key from projects where jira_mode = 'links' order by key")).map((r) => r.key);
+  return (await db.query("select key from projects order by key")).map((r) => r.key);
 }

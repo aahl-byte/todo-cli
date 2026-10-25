@@ -636,7 +636,7 @@ describe("role filters", () => {
     await w.one("alice", item("S1", { status: "todo", title: "Fix the Login form" }));
     await w.one("alice", item("S2", { status: "todo", extra: { branch: "feat/login-sso" } }));
     await w.one("alice", item("S3", { status: "todo" }));
-    await w.d.query("insert into jira_links (project, item_uid, jira_key) values ('p', 'S3', 'OPS-412')");
+    await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'S3', 'OPS-412', 'field')");
     const p = (await project(w.d, "p"))!;
     const ids = async (search: string) => (await board(w.d, p, { search }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
     expect(await ids("login")).toEqual(["s1", "s2"]);

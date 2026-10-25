@@ -7,7 +7,7 @@ import { linkedProjects, syncJira } from "@/lib/jira/sync";
 import { flushJira } from "@/lib/jira/flush";
 import { loadJiraSettings, saveJiraSettings } from "@/lib/jira/settings";
 import { outboundRules } from "@/lib/jira/rules";
-import { item as itemView } from "@/lib/views";
+import { cards, item as itemView, searchMatches } from "@/lib/views";
 import { jiraConfig } from "@/lib/jira/config";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -104,6 +104,21 @@ describe("jira links schema", () => {
     await d.close?.();
   });
 
+  it("defaults a new link's source to field, keeping existing rows' sources", async () => {
+    const d = await pglite();
+    await migrate(d);
+    await d.exec(`alter table jira_links alter column source set default 'import';
+                  insert into projects (key) values ('a');
+                  insert into items (project, uid, id, title, created) values ('a', 'I1', 'i1', 'one', 'x');
+                  insert into jira_links (project, item_uid, jira_key) values ('a', 'I1', 'WEB-1');`);
+    await migrate(d);
+    await migrate(d);
+    await d.query("insert into jira_links (project, item_uid, jira_key) values ('a', 'I1', 'CNS-1')");
+    expect(await d.query("select jira_key, source from jira_links order by jira_key"))
+      .toEqual([{ jira_key: "CNS-1", source: "field" }, { jira_key: "WEB-1", source: "import" }]);
+    await d.close?.();
+  });
+
   it("puts every project in links mode, idempotently", async () => {
     const d = await pglite();
     await migrate(d);
@@ -137,15 +152,25 @@ describe("jira field links", () => {
     expect(await links()).toEqual([]);
   });
 
-  it("leaves an imported link alone and lets linked items move freely", async () => {
+  it("turns an imported link into a field link, and lets linked items move freely", async () => {
     await w.apply("alice", item("A"), item("B", { extra: { jira: ["CNS-1"] } }));
-    await w.d.query("insert into jira_links (project, item_uid, jira_key) values ('p', 'A', 'WEB-1')");
+    await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'A', 'WEB-1', 'import'), ('p', 'A', 'WEB-2', 'import')");
     await link("A", ["WEB-1", "CNS-2"]);
+    expect(await links()).toEqual(["p/A/CNS-2/field", "p/A/WEB-1/field", "p/A/WEB-2/import", "p/B/CNS-1/field"]);
     await link("A", null);
-    expect(await links()).toEqual(["p/A/WEB-1/import", "p/B/CNS-1/field"]);
+    expect(await links()).toEqual(["p/A/WEB-2/import", "p/B/CNS-1/field"]);
     const [b] = await w.d.query("select versions from items where uid = 'B'");
     expect((await w.one("alice", set("item", "B", "B", { status: "in-progress" }, { status: b.versions.status }))).rejected).toBeUndefined();
     expect(await status("B")).toBe("in-progress");
+  });
+
+  it("leaves imported link rows off cards and out of search", async () => {
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'A', 'WEB-1', 'import')");
+    const [card] = await cards(w.d, "p");
+    expect(card.jira).toEqual([{ key: "CNS-1", status: null }]);
+    expect(searchMatches(card, "web-1")).toBe(false);
+    expect(searchMatches(card, "cns-1")).toBe(true);
   });
 
   it("lists every linked key on the card and every linked issue's files on the item", async () => {
@@ -260,6 +285,24 @@ describe("jira links mode", () => {
     delete process.env.TODO_FILES_DIR;
   });
 
+  it("skips comments carrying the (via todo) mark", async () => {
+    const jira = fakeJira();
+    jira.issues["CNS-1"].fields.comment = { total: 2, comments: [
+      { id: "c1", author: pat, body: adf("alice (via todo):\nhi"), created: "2026-10-01T09:00:00.000+0000" },
+      { id: "c2", author: pat, body: adf("from Jira"), created: "2026-10-01T09:05:00.000+0000" }] as any[] };
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    expect((await sync(jira.impl)).comments).toBe(1);
+    expect((await w.d.query("select text from notes where kind = 'comment'")).map((n) => n.text)).toEqual(["from Jira"]);
+  });
+
+  it("accepts a wiki-markup string description", async () => {
+    const jira = fakeJira();
+    (jira.issues["CNS-1"].fields as any).description = "plain *wiki* text";
+    await w.apply("alice", item("A", { extra: { jira: ["CNS-1"] } }));
+    await sync(jira.impl);
+    expect((await requests("A"))[0].text).toContain("· Export totals\n\nplain *wiki* text\n\n---");
+  });
+
   it("skips a key Jira doesn't know and still mirrors the rest", async () => {
     const jira = fakeJira();
     await w.apply("alice", item("A", { extra: { jira: ["CNS-1", "GONE-1"] } }));
@@ -269,6 +312,7 @@ describe("jira links mode", () => {
 
   it("lists the links-mode projects for a poll of all of them", async () => {
     await addProject(w.d, "r");
+    await w.d.query("update projects set jira_mode = 'import' where key = 'r'");
     expect(await linkedProjects(w.d)).toEqual(["p", "q", "r"]);
   });
 });

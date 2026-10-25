@@ -193,7 +193,9 @@ begin
   end if;
 end $$;
 create index if not exists jira_links_key on jira_links (jira_key);
+-- Rows that predate the column were imports; new rows are field links.
 alter table jira_links add column if not exists source text not null default 'import';
+alter table jira_links alter column source set default 'field';
 alter table jira_links add column if not exists linked_at timestamptz not null default now();
 alter table jira_links add column if not exists backfilled_at timestamptz;
 alter table jira_links add column if not exists jira_status text;

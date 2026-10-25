@@ -90,7 +90,7 @@ export async function cards(d: Db, key: string, where = "", params: unknown[] = 
   const rows = await d.query(
     `select i.*,
        coalesce((select jsonb_agg(jsonb_build_object('key', l.jira_key, 'status', l.jira_status) order by l.linked_at, l.jira_key)
-                   from jira_links l where l.item_uid = i.uid and l.project = i.project), '[]'::jsonb) as jira,
+                   from jira_links l where l.item_uid = i.uid and l.project = i.project and l.source = 'field'), '[]'::jsonb) as jira,
        coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_statuses,
        coalesce((select array_agg(coalesce(t.phase, -1) order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_phases,
        ${viewer ? "" : "(select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,"}
