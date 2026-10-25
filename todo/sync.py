@@ -279,7 +279,7 @@ def _backfill_children(d: Path, uid: str) -> None:
             fixed.append(t)
         store._write_tasks(d, tasks, fixed)
     for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
-        for e in store._read_entries(d / sub):
+        for e in store.read_entries(d / sub):
             if e["meta"].get("uid"):
                 continue
             meta2 = dict(e["meta"])
@@ -447,7 +447,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
                 local.entities[t["uid"]] = {"entity": "task", "item_uid": uid, "data": {
                     "n": t["id"], "title": t["title"], "status": t["status"],
                     "phase": t["phase"], "position": pos}}
-        for e in store._read_entries(d / store.NOTES_DIR):
+        for e in store.read_entries(d / store.NOTES_DIR):
             m = e["meta"]
             if not m.get("uid"):
                 continue
@@ -460,7 +460,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
             local.files[m["uid"]] = e["file"]
             if m.get("via"):
                 local.via[m["uid"]] = m["via"]
-        for e in store._read_entries(d / store.LOG_DIR):
+        for e in store.read_entries(d / store.LOG_DIR):
             if e["meta"].get("uid"):
                 flat = {"n": e["id"], "ts": e["ts"], "text": e["text"]}
                 for k, v in e["meta"].items():
@@ -476,7 +476,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
                     "n": c["id"], "kind": c["kind"], "title": c["title"],
                     "payload": c["payload"], "timing": c["timing"], "status": c["status"],
                     "envs": store.env_text(c["envs"])}}
-        for e in store._read_entries(d / store.HISTORY_DIR):
+        for e in store.read_entries(d / store.HISTORY_DIR):
             if e["meta"].get("uid"):
                 local.files[e["meta"]["uid"]] = e["file"]
             if not e["meta"].get("server"):
@@ -979,7 +979,7 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
     for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
         if entity not in entities:
             continue
-        for e in store._read_entries(d / sub):
+        for e in store.read_entries(d / sub):
             if e["meta"].get("uid") and new(e["meta"]["uid"]) != e["meta"]["uid"]:
                 meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
                 yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))

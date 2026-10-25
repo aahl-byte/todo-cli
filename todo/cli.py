@@ -449,7 +449,7 @@ def cmd_docs(root: Path, args) -> None:
     w = max(len(d["name"]) for d in it["docs"])
     for d in it["docs"]:
         where = _doc_url(root, it, d["name"]) or str(d["path"].resolve())
-        when = render._stamp(d["at"]) if d["at"] else "—"
+        when = render.stamp(d["at"]) if d["at"] else "—"
         print(f'{d["name"]:<{w}}  {docs.human_size(d["size"]):>9}  {d["by"] or "?"}  {when}  {where}')
 
 
@@ -1123,7 +1123,7 @@ def _here_repo(root: Path | None) -> str:
     here = checkout.local()["repo"]
     if here:
         return here
-    return gitfacts._store_repo(root)[0] if root is not None and root.is_dir() else ""
+    return gitfacts.store_repo(root)[0] if root is not None and root.is_dir() else ""
 
 
 def _repo_arg(root: Path, args) -> str:
@@ -1511,12 +1511,12 @@ def cmd_plugins(root: Path, args) -> None:
         print(f'{it["id"]}: no plugin has run on it here')
         return
     for iid, rec in sorted(recs.items()):
-        print(f'{iid}  {render._stamp(rec.get("at") or "")}  ({rec.get("event") or "?"})')
+        print(f'{iid}  {render.stamp(rec.get("at") or "")}  ({rec.get("event") or "?"})')
         for line in render.plugin_record_lines(rec):
             print("  " + line)
     for iid, rec in sorted(server.items()):
         what = f'error: {rec["error"]}' if rec.get("error") else f'skipped: {rec["skipped"]}' if rec.get("skipped") else "ran"
-        print(f'{iid}  {render._stamp(str(rec.get("at") or ""))}  (on the server)  {what}')
+        print(f'{iid}  {render.stamp(str(rec.get("at") or ""))}  (on the server)  {what}')
 
 
 # ── argument parsing ──────────────────────────────────────────────────────────

@@ -116,8 +116,8 @@ def save_credential(key: str, secret: str) -> None:
 
 
 def _github_fallback() -> str | None:
-    from .gitfacts import _github_token
-    return _github_token()
+    from .gitfacts import github_token
+    return github_token()
 
 
 def secrets_for(repo: str) -> dict:

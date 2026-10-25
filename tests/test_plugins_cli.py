@@ -148,7 +148,7 @@ def test_a_rerun_replaces_the_instance_set_and_keeps_seen_state(fx, github):
     assert sorted(n["meta"]["url"] for n in plugin_notes(fx.root, a)) == sorted([gone, kept])
     note = next(n for n in plugin_notes(fx.root, a) if n["meta"]["url"] == kept)
     item_dir = fx.root / store.OPEN / a
-    raw = next(e for e in store._read_entries(item_dir / "notes") if e["id"] == note["id"])
+    raw = next(e for e in store.read_entries(item_dir / "notes") if e["id"] == note["id"])
     store.rewrite_entry(fx.root, a, "notes", note["id"], raw["text"], {**raw["meta"], "seen_by": ["human:tester", "human:bob"]})
     github.prs["feat/a"] = [{"number": 7, "title": "Fix login, for real", "html_url": kept}]
     [(_, [run])] = refresh(fx.root, a)
@@ -332,7 +332,7 @@ def test_an_every_floor_runs_a_refresh_once_its_interval_passes(fx, host, monkey
 def test_a_local_only_store_keeps_instances_in_its_plugins_file(fx, host, capsys):
     host.describe([{"name": "p", "shipped": False, "connections": [], "on": ["manual"],
                     "settings": {"to": {"label": "To", "type": "text"}}}])
-    key = gitfacts._store_repo(fx.root)[0]
+    key = gitfacts.store_repo(fx.root)[0]
     run_cli(fx.root, ["plugin", "add", "p", "go", "--set", "to=review", "--on", "manual", "--name", "Go"])
     run_cli(fx.root, ["plugin", "set", "p/go", "--set", "n=3", "--disable"])
     data = yamlio.read(fx.root / ".plugins.yaml")
@@ -355,7 +355,7 @@ def test_a_synced_store_keeps_instances_on_the_server(fx, host, monkeypatch):
     server = FakeServer()
     remote.save_sync_config(fx.root, {"url": "http://fake", "project": "p", "deploy_step": True})
     monkeypatch.setattr(plugins, "remote_for", lambda root: server.client("alice"))
-    key = gitfacts._store_repo(fx.root)[0]
+    key = gitfacts.store_repo(fx.root)[0]
     run_cli(fx.root, ["plugin", "add", "p", "go", "--set", "to=review"])
     assert server.plugin_config[key]["instances"]["p"] == [{"id": "go", "name": "go", "settings": {"to": "review"}}]
     cache = json.loads((fx.root / ".sync" / "plugins.json").read_text())
@@ -540,7 +540,7 @@ def test_connection_add_and_list(fx, host, capsys):
 
 
 def test_the_payload_keeps_repo_and_host_secrets_apart(fx, host):
-    key = gitfacts._store_repo(fx.root)[0]
+    key = gitfacts.store_repo(fx.root)[0]
     connections.save_credential("*/github", "ghp_host")
     connections.save_credential(f"{key}/vercel", "vc")
     connections.save_credential("other/repo/vercel", "not-ours")

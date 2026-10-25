@@ -62,14 +62,14 @@ def print_grouped(groups) -> None:
 LOG_PREVIEW = 3   # entries `todo get` shows before eliding the rest
 
 
-def _stamp(ts: str) -> str:
+def stamp(ts: str) -> str:
     """`2026-08-14T15:02:11.483Z` → `2026-08-14 15:02`; anything else passes
     through as-is."""
     return ts[:16].replace("T", " ") if len(ts) >= 16 else ts
 
 
 def _log_lines(entries) -> list:
-    return [f'  [{e["id"]}] {_stamp(e["ts"])}  ' + _plugin_tag(e) + str(e["text"]).replace("\n", "\n      ")
+    return [f'  [{e["id"]}] {stamp(e["ts"])}  ' + _plugin_tag(e) + str(e["text"]).replace("\n", "\n      ")
             for e in entries]
 
 
@@ -331,7 +331,7 @@ def update_lines(rows, every=None) -> list:
             out += note_lines([e], prefix="n", every=every)
         else:
             who = f'({e["author"]}{" · AI" if e.get("via") == "agent" else ""}) ' if e.get("author") else ""
-            out.append(f'  [l{e["id"]}] log {_stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
+            out.append(f'  [l{e["id"]}] log {stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
     return out
 
 
@@ -357,7 +357,7 @@ def _history_lines(entries, color) -> list:
         forced = "  forced" if h.get("forced") else ""
         frm = colorize(h["from"] or "", h["from"] or "—", color)
         to = colorize(h["to"] or "", h["to"] or "—", color)
-        out.append(f'  [{h["id"]}] {_stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
+        out.append(f'  [{h["id"]}] {stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
     return out
 
 
@@ -465,7 +465,7 @@ def print_tasks(it) -> None:
 def print_inbox(rows) -> None:
     for r in rows:
         mark = " " if r.get("read_at") else "•"
-        when = _stamp(str(r.get("created") or ""))
+        when = stamp(str(r.get("created") or ""))
         what = {"mention": "mentioned you", "qa-rejection": "QA rejected",
                 "clarification": "asked a question", "answer": "answered your question",
                 "ready-for-qa": "ready for your QA", "deployed": "deployed"}.get(r["kind"], r["kind"])

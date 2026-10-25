@@ -216,7 +216,7 @@ class Repo:
 _token: list = []
 
 
-def _github_token() -> str | None:
+def github_token() -> str | None:
     if not _token:
         tok = os.environ.get("GITHUB_TOKEN", "").strip()
         if not tok and shutil.which("gh"):
@@ -230,7 +230,7 @@ def _github_token() -> str | None:
 
 def gh_get(path: str):
     """GitHub REST GET: the parsed body, None with no token, GH_ERROR when GitHub failed."""
-    tok = _github_token()
+    tok = github_token()
     if not tok:
         return None
     req = urllib.request.Request(API + path, headers={
@@ -314,11 +314,11 @@ def _save(root: Path, it: dict, facts: dict) -> None:
     yamlio.write_atomic(f, yamlio.dump(y, facts))
 
 
-def _state_file(root: Path, name: str) -> Path:
+def state_file(root: Path, name: str) -> Path:
     return sync_dir(root) / name if sync_config(root) else root / ("." + name)
 
 
-def _read_json(f: Path) -> dict:
+def read_json(f: Path) -> dict:
     try:
         data = json.loads(f.read_text())
     except (OSError, ValueError):
@@ -350,7 +350,7 @@ def _store_dirs(root: Path) -> list:
     return out
 
 
-def _store_repo(root: Path) -> tuple:
+def store_repo(root: Path) -> tuple:
     """(repo key, folder) for the store's own repo, or ("", None)."""
     for d in _store_dirs(root):
         here = checkout.local(d)
@@ -361,7 +361,7 @@ def _store_repo(root: Path) -> tuple:
 
 def repo_dir(root: Path, key: str) -> Path | None:
     """A local checkout of `key`: the store's own repo, then the one around the working directory."""
-    own, d = _store_repo(root)
+    own, d = store_repo(root)
     if own == key:
         return d
     here = checkout.local()
@@ -376,14 +376,14 @@ def _groups(root: Path, items: list) -> dict:
         key = checkout.repo_key(it.get("repo"))
         if not key:
             if own is None:
-                own = _store_repo(root)[0]
+                own = store_repo(root)[0]
             key = own
         if key:
             out.setdefault(key, []).append(it)
     return out
 
 
-def _archived(root: Path, it: dict) -> bool:
+def is_archived(root: Path, it: dict) -> bool:
     if it["folder"] == store.ARCHIVED:
         return True
     try:
@@ -921,7 +921,7 @@ def _others(root: Path, repo: Repo, items: list) -> dict:
     group = _groups(root, store.list_todos(root)).get(repo.key) or []
     out = {}
     for it in group:
-        if it["status"] == "cancelled" or _archived(root, it):
+        if it["status"] == "cancelled" or is_archived(root, it):
             last = {b.get("name"): b for b in load(root, it).get("branches") or [] if isinstance(b, dict)}
             for b in it["branches"]:
                 if b not in repo.fixed:
@@ -1038,11 +1038,11 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
     changed when given a server. Each repo's ls-remote answer goes into `seen`
     as `{tips, default, dir}`.
     Returns the ids of changed items."""
-    all_items = [it for it in store.list_todos(root) if not _archived(root, it)]
+    all_items = [it for it in store.list_todos(root) if not is_archived(root, it)]
     groups = _groups(root, all_items)
-    tips_file, cache_file = _state_file(root, TIPS_FILE), _state_file(root, CACHE_FILE)
-    state = _read_json(tips_file)
-    cache = _read_json(cache_file)
+    tips_file, cache_file = state_file(root, TIPS_FILE), state_file(root, CACHE_FILE)
+    state = read_json(tips_file)
+    cache = read_json(cache_file)
     used: dict = {}
     changed = []
     for key, group in groups.items():
@@ -1129,7 +1129,7 @@ def refresh(root: Path, items=None) -> list:
     if items is None:
         return on_round(root, force=True, fetch_prs="force")
     if items is not None:
-        items = [it for it in items if not _archived(root, it)]
+        items = [it for it in items if not is_archived(root, it)]
         repos = set(_groups(root, items))
         prs_for = {it["id"] for it in items}
         for it in items:
@@ -1142,8 +1142,8 @@ def post_pending(root: Path) -> None:
     """Post the facts a synced store hasn't sent yet."""
     cfg = sync_config(root)
     r = remote_for(root) if cfg else None
-    f = _state_file(root, TIPS_FILE)
-    state = _read_json(f)
+    f = state_file(root, TIPS_FILE)
+    state = read_json(f)
     if r is None or not state.get("unposted"):
         return
     state["unposted"] = sorted(_post(root, r, cfg.get("project"), set(state["unposted"])))
@@ -1155,8 +1155,8 @@ def maybe_local(root: Path, seen: dict | None = None) -> None:
     local git alone: PRs wait for `todo refresh`. `seen` gets each repo's tips."""
     if sync_config(root) is not None or not root.is_dir():
         return
-    f = _state_file(root, TIPS_FILE)
-    state = _read_json(f)
+    f = state_file(root, TIPS_FILE)
+    state = read_json(f)
     if time.time() - state.get("local_at", 0) < LOCAL_EVERY:
         return
     state["local_at"] = time.time()

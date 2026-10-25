@@ -133,11 +133,11 @@ def call_host(payload: dict) -> dict:
 
 # ── state files ───────────────────────────────────────────────────────────────
 def _state(root: Path, name: str) -> Path:
-    return gitfacts._state_file(root, name)
+    return gitfacts.state_file(root, name)
 
 
 def _read(f: Path) -> dict:
-    return gitfacts._read_json(f)
+    return gitfacts.read_json(f)
 
 
 def _write(f: Path, data: dict) -> None:
@@ -156,11 +156,11 @@ def _plain(v):
 # ── where an item's plugins come from ─────────────────────────────────────────
 def repo_key(root: Path, it: dict) -> str:
     """owner/name of the item's repo: its repo field, else the store's own repo."""
-    return checkout.repo_key(it.get("repo")) or gitfacts._store_repo(root)[0]
+    return checkout.repo_key(it.get("repo")) or gitfacts.store_repo(root)[0]
 
 
 def is_open(root: Path, it: dict) -> bool:
-    return it["folder"] in (store.OPEN, store.DEFERRED) and not gitfacts._archived(root, it)
+    return it["folder"] in (store.OPEN, store.DEFERRED) and not gitfacts.is_archived(root, it)
 
 
 def _git(d: Path, *args: str, timeout: float = 30):
@@ -577,8 +577,8 @@ def apply(root: Path, it: dict, iid: str, result: dict, event: dict, *, dry_run:
         rec["would_send"] = len(result["wouldSend"])
     item_uid = it.get("uid") or it["id"]
     item_dir = root / it["folder"] / it["id"]
-    notes = store._read_entries(item_dir / store.NOTES_DIR)
-    logs = store._read_entries(item_dir / store.LOG_DIR)
+    notes = store.read_entries(item_dir / store.NOTES_DIR)
+    logs = store.read_entries(item_dir / store.LOG_DIR)
     present = {e["meta"].get("uid") for e in notes + logs if e["meta"].get("uid")}
     gone = runs.setdefault(REMOVED, {}).setdefault(ikey, [])
     gone += [u for u in (prev or {}).get("uids") or [] if u not in present and u not in gone]   # removed by a person
