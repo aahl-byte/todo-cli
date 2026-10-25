@@ -6,6 +6,7 @@
 // target; pairs are related by intersecting those sets in memory. A failure
 // never reads as "no edge": the stored facts stay, marked unknown.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
+import { parse } from "yaml";
 import { db as appDb, type Db, type Row } from "./db";
 import { repoKey } from "./checkouts";
 import { later } from "./http";
@@ -55,7 +56,8 @@ const CANT_LAND = ["cancelled", "deferred"];
 const COMPLETE = ["done", "deployed"];
 const OPEN_PR = ["open", "draft"];
 const API = "https://api.github.com";
-const PLUGINS_FILE = ".todo-plugins/plugins.yaml";
+export const PLUGINS_DIR = ".todo-plugins";
+const PLUGINS_FILE = `${PLUGINS_DIR}/plugins.yaml`;
 const TIMEOUT_MS = 5_000;
 const STALE_MS = 2 * 60_000;
 const UNLANDED_CAP = 2_000;
@@ -65,7 +67,7 @@ const SHA_KEY = 12;
 const SHOWN_COMMITS = 3;
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
-class NotFound extends Error {}
+export class NotFound extends Error {}
 
 /** A bounded LRU of the few fields each compare is read for. */
 const cache = new Map<string, unknown>();
@@ -93,6 +95,11 @@ async function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
   return v;
 }
 
+/** A GitHub API GET with GITHUB_TOKEN; NotFound on a 404. */
+export async function githubGet(path: string, f: Fetch): Promise<any> {
+  return get(path, f);
+}
+
 async function get(path: string, f: Fetch): Promise<any> {
   const token = process.env.GITHUB_TOKEN;
   const res = await f(API + path, {
@@ -104,27 +111,25 @@ async function get(path: string, f: Fetch): Promise<any> {
   return res.json();
 }
 
-const orNull = <T>(p: Promise<T>): Promise<T | null> => p.catch((e) => { if (e instanceof NotFound) return null; throw e; });
+export const orNull = <T>(p: Promise<T>): Promise<T | null> => p.catch((e) => { if (e instanceof NotFound) return null; throw e; });
 
-/** The `track:` list of a plugins file: flow (`[a, b]`, over one line or several) or block style. */
+/** The `track:` list of a plugins file; empty when the file has none or isn't YAML. */
 export function trackList(text: string): string[] {
-  const lines = text.split(/\r?\n/).map((l) => l.replace(/\s+#.*$/, ""));
-  const at = lines.findIndex((l) => /^track\s*:/.test(l));
-  if (at < 0) return [];
-  const unquote = (s: string) => s.trim().replace(/^(['"])(.*)\1$/, "$2");
-  let rest = lines[at].replace(/^track\s*:\s*/, "").trim();
-  if (rest.startsWith("[")) {
-    for (let i = at + 1; !rest.includes("]") && i < lines.length; i++) rest += " " + lines[i].trim();
-    return rest.replace(/^\[/, "").replace(/\].*$/, "").split(",").map(unquote).filter(Boolean);
+  let raw: unknown;
+  try {
+    raw = parse(text);
+  } catch {
+    return [];
   }
-  if (rest) return [];
-  const out: string[] = [];
-  for (const l of lines.slice(at + 1)) {
-    const m = l.match(/^\s*-\s+(.+?)\s*$/);
-    if (m) out.push(unquote(m[1]));
-    else if (l.trim()) break;
-  }
-  return out;
+  const track = raw && typeof raw === "object" ? (raw as { track?: unknown }).track : undefined;
+  return Array.isArray(track) ? track.filter((t): t is string => typeof t === "string" && !!t.trim()).map((t) => t.trim()) : [];
+}
+
+/** A text file of the repo at `ref`, or null when there's none. */
+export async function repoFile(owner: string, name: string, path: string, ref: string, f: Fetch): Promise<string | null> {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  const file = await orNull(get(`/repos/${owner}/${name}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, f));
+  return file?.content ? Buffer.from(file.content, "base64").toString("utf8") : null;
 }
 
 function prFact(pr: any): PrFact {
@@ -151,10 +156,7 @@ class GitHubRepo {
     }
   }
   track(branch: string, tip: string): Promise<string[]> {
-    return cached(`track:${this.key}:${tip}`, async () => {
-      const file = await orNull(get(`${this.base}/contents/${PLUGINS_FILE}?ref=${encodeURIComponent(branch)}`, this.f));
-      return file?.content ? trackList(Buffer.from(file.content, "base64").toString("utf8")) : [];
-    });
+    return cached(`track:${this.key}:${tip}`, async () => trackList((await repoFile(this.owner, this.name, PLUGINS_FILE, branch, this.f)) ?? ""));
   }
   /** The PRs most recently closed into `base`, by head branch, from one call. */
   async closedInto(base: string): Promise<Map<string, PrFact[]>> {
