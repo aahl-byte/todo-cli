@@ -3,11 +3,12 @@
 import type { Db, Row } from "./db";
 import {
   CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE, TERMINAL,
-  SEEN, deriveCalcStatus, isSettable, mentions, nowIso, party, type Entity,
+  SEEN, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
 import { queueAutoActions } from "./actions/runs";
+import { queuePluginEvent } from "./plugins/queue";
 import { jiraReadOnly } from "./jira/config";
 import { inboundRules, jiraStatusFor } from "./jira/rules";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
@@ -345,6 +346,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "item" && row.extra.jira) await syncFieldLinks(ctx.t, ctx.project, itemUid, row.extra.jira);
+  if (entity === "item") await branchesAdded(ctx, itemUid, row.extra.repo, [], itemBranches(row.extra));
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
   if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
@@ -632,6 +634,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       await syncFieldLinks(ctx.t, ctx.project, itemUid, json?.jira ?? []);
     }
     if (statusChange) await statusChanged(ctx, op, row, statusChange);
+    if (entity === "item" && json && accepted.some(([f]) => f === "extra.branches")) {
+      await branchesAdded(ctx, itemUid, json.repo, itemBranches(row.extra), itemBranches(json));
+    }
     if (entity === "task") await recalc(ctx, itemUid);
     if (entity === "note" && json && json.state === "answered" && (row.meta ?? {}).state !== "answered") {
       await ctx.notify(row.author, "answer", itemUid, row.uid);
@@ -678,6 +683,14 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
   await queueJira(ctx.t, ctx.actor, { kind: "status", project: ctx.project, itemUid: item.uid, from: item.status, status: to });
   await queueAutoActions(ctx.t, ctx.project, item.uid, item.status, to, ctx.actor.handle);
+  await queuePluginEvent(ctx.t, ctx.project, item.uid, item.extra?.repo, { type: "status", from: item.status, to }, ctx.actor.handle);
+}
+
+/** A branch an item gains runs its plugins as if the branch had been pushed. */
+async function branchesAdded(ctx: Ctx, itemUid: string, repo: unknown, before: string[], after: string[]): Promise<void> {
+  for (const branch of after.filter((b) => !before.includes(b))) {
+    await queuePluginEvent(ctx.t, ctx.project, itemUid, repo, { type: "push", branch }, ctx.actor.handle);
+  }
 }
 
 /** Status history an item gathered before it was ever synced. */

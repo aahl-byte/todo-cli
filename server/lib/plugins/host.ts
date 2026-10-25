@@ -154,10 +154,10 @@ function connectionsFor(input: EventInput, file: PluginsFile): Record<string, Re
   return out;
 }
 
-interface Resolved { name: string; def: PluginDef; code?: string; shipped: boolean }
+export interface Resolved { name: string; def: PluginDef; code?: string; shipped: boolean }
 
 /** The repo file's plugins with shipped ones resolved, after the always-on shipped plugins. */
-function pluginsFor(input: EventInput, file: PluginsFile, errors: string[]): Resolved[] {
+export function pluginsFor(input: Pick<EventInput, "repo">, file: PluginsFile, errors: string[]): Resolved[] {
   const out = new Map<string, Resolved>();
   const fromRegistry = (name: string) => out.set(name, { name, def: SHIPPED[name].def, code: SHIPPED[name].code, shipped: true });
   for (const name of ALWAYS_ON) fromRegistry(name);
@@ -184,13 +184,18 @@ const needsNoSettings = (def: PluginDef) => Object.values(def.settings ?? {})
  * none, nothing must be set, and load dropped none of the repo's.
  */
 export function instancesFor(def: PluginDef, repo: InstanceDef[], stored: InstanceDef[], droppedSome = false): InstanceDef[] {
+  return allInstances(def, repo, stored, droppedSome).filter((i) => i.enabled !== false);
+}
+
+/** Like instancesFor, keeping the ones switched off. */
+export function allInstances(def: PluginDef, repo: InstanceDef[], stored: InstanceDef[], droppedSome = false): InstanceDef[] {
   const merged = repo.map((r) => {
     const s = stored.find((x) => x.id === r.id);
     return s ? { ...r, ...s, settings: { ...r.settings, ...s.settings } } : r;
   });
   merged.push(...stored.filter((s) => !repo.some((r) => r.id === s.id)));
   if (!merged.length && !droppedSome && needsNoSettings(def)) merged.push({ ...DEFAULT_INSTANCE });
-  return merged.filter((i) => i.enabled !== false);
+  return merged;
 }
 
 /** Given a repo's plugin file and an event on an item, run every instance the event fires, one after another. */
