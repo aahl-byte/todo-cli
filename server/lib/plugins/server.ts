@@ -12,6 +12,7 @@ import { checkoutDir, repoKey } from "../checkouts";
 import { DocError, docByName, issueUpload, listDocs, recordDoc, removeDoc } from "../docs";
 import { docType, putObject } from "../files";
 import { PLUGINS_DIR, githubGet, NotFound, repoFile, scheduleRecompute, type Fetch } from "../gitfacts";
+import { githubApi } from "../github";
 import { itemBranches } from "../model";
 import { hashUid, ulid } from "../ulid";
 import { allInstances, pluginsFor, runEvent, type EventRun, type HostDeps, type Resolved } from "./host";
@@ -27,7 +28,6 @@ import {
 
 export const PLUGIN_HANDLE = "plugin";
 const ACTOR = { handle: PLUGIN_HANDLE, bridge: true, unconditional: true };
-const GITHUB_API = "https://api.github.com";
 const PLUGINS_YAML = "plugins.yaml";
 export const MAX_ATTEMPTS = 4;
 const LEASE_MINUTES = 10;
@@ -198,7 +198,7 @@ const envName = (connection: string) => connection.toUpperCase().replace(/[^A-Z0
 /** Connections this server offers every repo: github, and those in TODO_PLUGIN_CONNECTIONS. */
 export function hostConnections(): Record<string, ConnectionDef> {
   const out: Record<string, ConnectionDef> = {
-    github: { http: { url: GITHUB_API, ...(process.env.GITHUB_TOKEN ? { auth: "bearer" as const } : {}) } },
+    github: { http: { url: githubApi(), ...(process.env.GITHUB_TOKEN ? { auth: "bearer" as const } : {}) } },
   };
   const raw = process.env.TODO_PLUGIN_CONNECTIONS;
   if (!raw) return out;
@@ -627,7 +627,7 @@ async function branchTips(repo: string, etag: string | null, f: Fetch): Promise<
   const tips: Record<string, string> = {};
   let first: string | null = null;
   for (let page = 1; ; page++) {
-    const res = await f(`${GITHUB_API}/repos/${repo}/branches?per_page=${BRANCH_PAGE}&page=${page}`, {
+    const res = await f(`${githubApi()}/repos/${repo}/branches?per_page=${BRANCH_PAGE}&page=${page}`, {
       signal: AbortSignal.timeout(10_000), headers: { ...headers, ...(page === 1 && etag ? { "if-none-match": etag } : {}) },
     });
     if (page === 1 && res.status === 304) return null;

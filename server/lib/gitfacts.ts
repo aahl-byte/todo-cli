@@ -9,6 +9,7 @@
 import { parse } from "yaml";
 import { db as appDb, type Db, type Row } from "./db";
 import { repoKey } from "./checkouts";
+import { githubApi } from "./github";
 import { later } from "./http";
 import { itemBranches } from "./model";
 
@@ -55,7 +56,6 @@ const EDGE_STATES = ["waiting", "landed", "stale", "unknown"];
 const CANT_LAND = ["cancelled", "deferred"];
 const COMPLETE = ["done", "deployed"];
 const OPEN_PR = ["open", "draft"];
-const API = "https://api.github.com";
 export const PLUGINS_DIR = ".todo-plugins";
 const PLUGINS_FILE = `${PLUGINS_DIR}/plugins.yaml`;
 const TIMEOUT_MS = 5_000;
@@ -102,7 +102,7 @@ export async function githubGet(path: string, f: Fetch): Promise<any> {
 
 async function get(path: string, f: Fetch): Promise<any> {
   const token = process.env.GITHUB_TOKEN;
-  const res = await f(API + path, {
+  const res = await f(githubApi() + path, {
     signal: AbortSignal.timeout(TIMEOUT_MS),
     headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(token ? { authorization: `Bearer ${token}` } : {}) },
   });
