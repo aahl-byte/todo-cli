@@ -171,6 +171,10 @@ def pair(tmp_path, server, monkeypatch):
     return a, b
 
 
+def blob(server, name):
+    return server.blobs[server_doc(server, name)["file_key"]]
+
+
 def server_doc(server, name):
     hits = [r for r in server.rows.values() if r["_entity"] == "doc" and r["name"] == name]
     return hits[0] if hits else None
@@ -481,17 +485,40 @@ def test_a_symlink_in_docs_is_never_followed(pair, server, tmp_path):
     assert [d["name"] for d in store.resolve_item(a, "login-bug")["docs"]] == ["plan.md"]
 
 
-def test_a_corrupt_sidecar_keeps_a_local_edit_without_a_conflict(pair, server):
+def test_a_corrupt_sidecar_keeps_a_differing_copy_beside_the_servers(pair, server):
     a, b = pair
     d = doc_dir(a, "login-bug")
     (d / docs.META_FILE).write_text("{{{ not yaml")
     (d / "plan.md").write_text("alice v2\n")
     report = rnd(a, server, "alice")
-    assert report.error is None and report.messages == []
-    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["plan.md"]
+    assert report.error is None
     assert (d / ".meta.yaml.bad").read_text() == "{{{ not yaml"
-    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"alice v2\n")
-    assert sidecar(a, "login-bug")["plan.md"]["base"] == docs.sha256_bytes(b"alice v2\n")
+    assert (d / "plan.md").read_text() == "v1\n"
+    assert (d / "plan.conflict-alice.md").read_text() == "alice v2\n"
+    assert blob(server, "plan.md") == b"v1\n"
+    assert blob(server, "plan.conflict-alice.md") == b"alice v2\n"
+
+
+def test_a_corrupt_sidecar_never_reverts_a_teammates_edit(pair, server):
+    a, _ = pair
+    server.dashboard_put(item_uid(a), "plan.md", b"carol's v2\n", "carol")
+    d = doc_dir(a, "login-bug")
+    (d / docs.META_FILE).write_text("{{{ not yaml")
+    assert rnd(a, server, "alice").error is None
+    assert blob(server, "plan.md") == b"carol's v2\n"
+    assert (d / "plan.md").read_text() == "carol's v2\n"
+    assert (d / "plan.conflict-alice.md").read_text() == "v1\n"
+
+
+def test_a_corrupt_sidecar_never_reverts_an_edit_still_waiting_to_come_down(pair, server):
+    a, _ = pair
+    big = b"x" * (sync.QUICK_DOC_BYTES + 1)
+    server.dashboard_put(item_uid(a), "plan.md", big, "carol")
+    assert rnd(a, server, "alice", doc_limit=sync.QUICK_DOC_BYTES).error is None
+    (doc_dir(a, "login-bug") / docs.META_FILE).write_text("{{{ not yaml")
+    assert rnd(a, server, "alice").error is None
+    assert blob(server, "plan.md") == big
+    assert (doc_dir(a, "login-bug") / "plan.md").read_bytes() == big
 
 
 def test_a_corrupt_sidecar_doesnt_undo_a_dashboard_delete(pair, server):
@@ -551,13 +578,44 @@ def test_the_same_new_doc_on_both_sides_is_no_conflict(pair, server):
     assert sorted(p.name for p in doc_dir(b, "login-bug").iterdir() if not p.name.startswith(".")) == ["plan.md", "same.md"]
 
 
-def test_a_case_twin_is_refused_and_the_round_goes_on(pair, server):
+def test_a_case_twin_beside_a_doc_syncs_as_its_own_copy(pair, server):
     a, _ = pair
-    (doc_dir(a, "login-bug") / "PLAN.md").write_text("twin\n")
+    d = doc_dir(a, "login-bug")
+    (d / "PLAN.md").write_text("twin\n")
     report = rnd(a, server, "alice")
-    assert report.error is None
-    assert any("PLAN.md" in f for f in report.doc_failures)
-    assert server_doc(server, "plan.md")["sha256"] == docs.sha256_bytes(b"v1\n")
+    assert report.error is None and report.doc_failures == []
+    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["PLAN.conflict-alice.md", "plan.md"]
+    assert blob(server, "plan.md") == b"v1\n"
+    assert blob(server, "PLAN.conflict-alice.md") == b"twin\n"
+    assert rnd(a, server, "alice").doc_failures == []
+
+
+def test_add_under_another_spelling_writes_into_the_doc(pair, server, tmp_path, capsys):
+    a, _ = pair
+    src = tmp_path / "PLAN.md"
+    src.write_text("v2 respelled\n")
+    run_cli(a, ["doc", "add", "login-bug", str(src)])
+    assert "plan.md" in capsys.readouterr().out.splitlines()[-1]
+    for _ in range(2):
+        report = rnd(a, server, "alice")
+        assert report.error is None and report.doc_failures == []
+    assert sorted(p.name for p in doc_dir(a, "login-bug").iterdir() if not p.name.startswith(".")) == ["plan.md"]
+    assert server_doc(server, "plan.md")["name"] == "plan.md"
+    assert blob(server, "plan.md") == b"v2 respelled\n"
+
+
+def test_a_case_only_rename_keeps_syncing_under_the_recorded_name(pair, server):
+    a, b = pair
+    d = doc_dir(a, "login-bug")
+    (d / "plan.md").rename(d / "Plan.md")
+    (d / "Plan.md").write_text("edited after the rename\n")
+    for _ in range(2):
+        report = rnd(a, server, "alice")
+        assert report.error is None and report.doc_failures == []
+    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["plan.md"]
+    assert blob(server, "plan.md") == b"edited after the rename\n"
+    assert rnd(b, server, "bob").error is None
+    assert (doc_dir(b, "login-bug") / "plan.md").read_text() == "edited after the rename\n"
 
 
 def test_a_server_doc_matches_a_local_file_in_another_unicode_form(tmp_path, server, monkeypatch):
@@ -613,18 +671,59 @@ def test_a_big_doc_from_elsewhere_comes_down_when_its_item_is_looked_at(pair, se
         assert (doc_dir(a, "login-bug") / "big.bin").read_bytes() == big, argv
 
 
-def test_a_doc_for_an_item_never_here_is_dropped_after_its_wait(pair, server):
+def test_a_doc_for_an_item_never_here_is_dropped_after_its_wait(pair, server, monkeypatch):
     a, _ = pair
+    clock = [1_000_000.0]
+    monkeypatch.setattr(sync, "_clock", lambda: clock[0])
     snap = sync.load_snapshot(a)
     snap["docs"]["ZDOC"] = {"entity": "doc", "uid": "ZDOC", "item_uid": "ZNOWHERE", "deleted": False,
                             "data": {"uid": "ZDOC", "name": "lost.md", "sha256": "0", "size": 1}}
     sync.save_snapshot(a, snap)
-    for _ in range(sync.DOC_WAIT_ROUNDS):
-        report = rnd(a, server, "alice")
-        assert "ZDOC" in sync.load_snapshot(a)["docs"]
+    for _ in range(30):
+        assert rnd(a, server, "alice").error is None
+    assert "ZDOC" in sync.load_snapshot(a)["docs"]
+    clock[0] += sync.DOC_WAIT_SECONDS + 1
     report = rnd(a, server, "alice")
     assert "ZDOC" not in sync.load_snapshot(a)["docs"]
     assert any("lost.md" in m for m in report.messages)
+
+
+def test_a_change_that_keeps_failing_is_dropped_after_a_day_and_backfilled_again(pair, server, monkeypatch):
+    a, _ = pair
+    clock = [1_000_000.0]
+    monkeypatch.setattr(sync, "_clock", lambda: clock[0])
+    server.dashboard_put(item_uid(a), "plan.md", b"carol v2\n", "carol")
+    real = docs.write_bytes
+
+    def full(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(docs, "write_bytes", full)
+    for _ in range(25):
+        assert rnd(a, server, "alice").error is None
+    clock[0] += sync.DOC_WAIT_SECONDS + 1
+    report = rnd(a, server, "alice")
+    assert any("plan.md" in m and "dropped" in m for m in report.messages)
+    assert not sync.load_snapshot(a).get(sync.DOCS_BACKFILLED)
+    monkeypatch.setattr(docs, "write_bytes", real)
+    assert rnd(a, server, "alice").error is None
+    assert (doc_dir(a, "login-bug") / "plan.md").read_text() == "carol v2\n"
+
+
+def test_a_big_doc_moves_after_a_command_that_marked_nothing(pair, server, monkeypatch):
+    a, _ = pair
+    monkeypatch.setattr(sync, "SWEEP_EVERY", 10_000)
+    (remote.sync_dir(a) / sync.SWEPT_FILE).touch()
+    big = b"z" * (sync.QUICK_DOC_BYTES + 10)
+    (doc_dir(a, "login-bug") / "big.bin").write_bytes(big)
+    assert rnd(a, server, "alice", doc_limit=sync.QUICK_DOC_BYTES).error is None
+    assert server_doc(server, "big.bin") is None
+    assert rnd(a, server, "alice", push_only=True).error is None
+    assert blob(server, "big.bin") == big
+    server.dashboard_put(item_uid(a), "big2.bin", big, "carol")
+    assert rnd(a, server, "alice", doc_limit=sync.QUICK_DOC_BYTES).error is None
+    assert rnd(a, server, "alice", push_only=True).error is None
+    assert (doc_dir(a, "login-bug") / "big2.bin").read_bytes() == big
 
 
 def test_docs_a_store_missed_before_it_upgraded_are_backfilled(pair, server):

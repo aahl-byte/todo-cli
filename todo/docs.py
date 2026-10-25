@@ -208,18 +208,17 @@ def record(item_dir: Path, item_uid: str, now_iso: str, meta: dict | None = None
     return meta
 
 
-def add(item_dir: Path, item_uid: str, name: str, data: bytes, now_iso: str) -> dict:
+def add(item_dir: Path, item_uid: str, name: str, data: bytes, now_iso: str) -> str:
+    """Write a doc, into the existing doc when `name` is another spelling of
+    one. Returns the name it went under."""
     meta = read_meta(item_dir)
-    same = find(files(item_dir), name)
-    if same and same != name:
-        os.unlink(item_dir / DOCS_DIR / same)       # one doc, under its new spelling
-        meta[name] = meta.pop(same, {})
+    name = find(set(files(item_dir)) | set(meta), name) or name
     write_bytes(item_dir, name, data)
     base = (meta.get(name) or {}).get("base")
     meta[name] = entry(item_uid, name, sha256_bytes(data), len(data), now_iso, base)
     meta = record(item_dir, item_uid, now_iso, meta)
     write_meta(item_dir, meta)
-    return meta[name]
+    return name
 
 
 def remove(item_dir: Path, item_uid: str, name: str, now_iso: str) -> bool:

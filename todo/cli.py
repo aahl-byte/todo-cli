@@ -356,8 +356,9 @@ def cmd_doc_add(root: Path, args) -> None:
         _check_doc(name, src.stat().st_size)
         data = src.read_bytes()
     _check_doc(name, len(data))
-    docs.add(_item_dir(root, it), it["uid"], name, data, now())
-    print(f'{it["id"]}: doc {name} added ({docs.human_size(len(data))})')
+    used = docs.add(_item_dir(root, it), it["uid"], name, data, now())
+    note = f" — {name} is another spelling of {used}, so it went there" if used != name else ""
+    print(f'{it["id"]}: doc {used} added ({docs.human_size(len(data))}){note}')
 
 
 def _check_doc(name: str, size: int) -> None:
