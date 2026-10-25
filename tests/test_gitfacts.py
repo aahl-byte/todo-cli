@@ -1098,3 +1098,80 @@ def test_a_dependency_notes_branch_moving_triggers_a_recompute(fx, monkeypatch):
     fx.commit("feat/x", "x2.txt", "x2\n")
     gitfacts.on_round(fx.root)
     assert fx.facts(b)["needs"][0]["state"] == "waiting"
+
+
+def amended_parent(fx):
+    a, b = stacked(fx)
+    fx.refresh()
+    git(fx.work, "checkout", "-q", "feat/a")
+    git(fx.work, "commit", "-q", "--amend", "-m", "amended")
+    git(fx.work, "push", "-q", "-f", "origin", "feat/a")
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "waiting"
+    return a, b
+
+
+def demoted(fx, a, b):
+    f = fx.facts(b)
+    assert f["needs"] == [] and f["waits_on"] == []
+    [s] = f["shares"]
+    assert s["id"] == a and s["rewritten"] and "still carries its old commits" in s["evidence"]
+    assert "merge staging into feat/b" in s["evidence"]
+
+
+def test_a_rewritten_parent_landing_by_squash_pr_demotes_the_edge(fx):
+    a, b = amended_parent(fx)
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
+    demoted(fx, a, b)
+    fx.delete("feat/a")
+    gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
+    demoted(fx, a, b)
+
+
+def test_a_rewritten_parent_merged_without_a_pr_demotes_the_edge(fx):
+    a, b = amended_parent(fx)
+    fx.merge("feat/a", "staging")
+    fx.refresh()
+    demoted(fx, a, b)
+    fx.delete("feat/a")
+    fx.refresh()
+    demoted(fx, a, b)
+    store.update_todo(fx.root, a, {"status": "done"}, "2026-10-23T00:00:00.000Z")
+    fx.refresh()
+    demoted(fx, a, b)
+
+
+def test_a_rewritten_parent_landing_by_merge_commit_pr_demotes_the_edge(fx):
+    a, b = amended_parent(fx)
+    m = fx.merge("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=m)
+    gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
+    demoted(fx, a, b)
+
+
+def test_a_chain_dependency_merged_without_a_pr_lands(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/b", 8, base="feat/a")
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "waiting"
+    fx.merge("feat/a", "staging")
+    fx.refresh()
+    assert fx.facts(b)["needs"][0]["state"] == "landed"
+
+
+def test_a_chain_onto_an_archived_dependency_that_landed_is_landed(fx):
+    a, b = stacked(fx)
+    fx.pr("feat/a", 7)
+    fx.pr("feat/b", 8, base="feat/a")
+    fx.refresh()
+    sq = fx.squash("feat/a", "staging")
+    fx.pr("feat/a", 7, state="merged", merge_commit=sq)
+    gitfacts.refresh(fx.root)
+    assert fx.facts(b)["needs"][0]["state"] == "landed"
+    store.update_todo(fx.root, a, {"status": "done"}, "2026-10-23T00:00:00.000Z")
+    store.archive_todos(fx.root)
+    gitfacts.refresh(fx.root)
+    [e] = fx.facts(b)["needs"]
+    assert (e["id"], e["state"]) == (a, "landed")

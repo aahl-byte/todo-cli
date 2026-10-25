@@ -529,18 +529,34 @@ def _mirror(e: dict, b_it: dict, bb: dict, ab: dict) -> dict:
     return {**e, "id": b_it["id"], "item": b_it.get("uid"), "branch": bb["name"], "via": ab["name"]}
 
 
-def _chain_state(repo: Repo, dep: dict, ab: dict, tip: str | None) -> tuple:
-    """(state, why) of "B needs A" through B's PR base chain: landed once a
-    merged PR of A's branch carried its head into T(B)."""
-    if not tip:
-        return "unknown", "T(B) isn't on the remote"
+def _reached(repo: Repo, dep: dict, ab: dict, tip: str, target: str) -> tuple:
+    """Whether A's current work reached T(B): (True, why), (False, ""), or
+    (None, why) when it couldn't be checked. Through a merged PR that carried
+    A's head, A's head itself, or A's finished item landed-in."""
     for p in ab.get("prs") or []:
         if p["state"] == "merged" and p.get("head") == ab.get("head") and p.get("merge_commit"):
             reached = repo.is_ancestor(p["merge_commit"], tip)
             if reached is None:
-                return "unknown", f'couldn\'t check PR #{p["number"]}'
+                return None, f'couldn\'t check PR #{p["number"]}'
             if reached:
-                return "landed", f'{ab["name"]} landed through PR #{p["number"]} ({p["merge_commit"][:7]})'
+                return True, f'{ab["name"]} landed through PR #{p["number"]} ({p["merge_commit"][:7]})'
+    if ab.get("head") and repo.is_ancestor(ab["head"], tip):
+        return True, f'{ab["name"]} is in {target}'
+    if dep["status"] in COMPLETE and (ab.get("in") or {}).get(target) is True:
+        return True, f'{dep["id"]} is {dep["status"]} and landed in {target}'
+    return False, ""
+
+
+def _chain_state(repo: Repo, dep: dict, ab: dict, tip: str | None, target: str = "") -> tuple:
+    """(state, why) of "B needs A" through B's PR base chain: landed once A's
+    current work reached T(B)."""
+    if not tip:
+        return "unknown", "T(B) isn't on the remote"
+    reached, why = _reached(repo, dep, ab, tip, target)
+    if reached is None:
+        return "unknown", why
+    if reached:
+        return "landed", why
     if dep["status"] in CANT_LAND:
         return "stale", f'{dep["id"]} is {dep["status"]}'
     if (ab.get("pr") or {}).get("state") == "closed":
@@ -588,19 +604,23 @@ def _chain_edges(repo: Repo, items: list, facts: dict, u: dict, others: dict) ->
                 chained.add(tuple(sorted(((b_it["id"], bb["name"]), (a_it["id"], name)))))
                 ub, ua = u.get((b_it["id"], bb["name"])), u.get((a_it["id"], name))
                 common = [x for x in ub if x in set(ua)] if ub is not None and ua is not None else []
-                state, why = _resolve(repo, a_it, ab, tip, common[0]) if common and tip else _chain_state(repo, a_it, ab, tip)
+                state, why = (_resolve(repo, a_it, ab, tip, common[0]) if common and tip
+                              else _chain_state(repo, a_it, ab, tip, bb["target"]))
                 e = {**_edge(a_it, ab, bb, state, why or f'{bb["name"]}\'s PR is based on {name}', common), "chain": True}
                 facts[b_it["id"]]["needs"].append(e)
                 facts[a_it["id"]]["needed_by"].append(_mirror(e, b_it, bb, ab))
             name = bb.get("orphan")
             if not name:
                 continue
-            dep = others.get(name)
+            dep, ab = others.get(name, (None, None))
             if dep is not None:
-                why = f'{bb["name"]}\'s PR is based on {name}, whose item {dep["id"]} is ' + (
-                    "archived" if dep["folder"] == store.ARCHIVED else dep["status"])
+                ab = next((x for x in (facts.get(dep["id"]) or {}).get("branches") or [] if x["name"] == name), ab)
+                state, why = _chain_state(repo, dep, ab, tip, bb["target"]) if tip else ("unknown", "T(B) isn't on the remote")
+                if state not in ("landed", "unknown"):
+                    state, why = "stale", f'{bb["name"]}\'s PR is based on {name}, whose item {dep["id"]} is ' + (
+                        "archived" if dep["folder"] == store.ARCHIVED else dep["status"])
                 e = {"id": dep["id"], "item": dep.get("uid"), "branch": name, "via": bb["name"], "target": bb["target"],
-                     "state": "stale", "source": "git", "evidence": why, "chain": True}
+                     "state": state, "source": "git", "evidence": why, "chain": True}
                 facts[b_it["id"]]["needs"].append(e)
                 if dep["id"] in facts:
                     facts[dep["id"]]["needed_by"].append(_mirror(e, b_it, bb, {"name": name}))
@@ -688,9 +708,7 @@ def _carry(repo: Repo, items: list, facts: dict, prev: dict, u: dict, related: s
             if branch[other].get("merged_gone") and tip:
                 landed = repo.is_ancestor(branch[other]["landed"], tip)
             elif mb and mb in set(u.get(me) or ()):
-                _add_pair(facts, it, dep, {**e, "state": "waiting", "target": branch[me]["target"],
-                                           "evidence": f'{e.get("branch")} was rewritten, and {e.get("via")} still carries '
-                                                       f'its old commits ({mb[:7]})'})
+                _rewritten(repo, facts, it, dep, e, branch[other], branch[me]["target"], tip)
                 continue
             else:
                 landed = repo.is_ancestor(mb, tip) if mb and tip else False
@@ -703,9 +721,29 @@ def _carry(repo: Repo, items: list, facts: dict, prev: dict, u: dict, related: s
             me, other = (it["id"], s.get("via")), (s.get("id"), s.get("branch"))
             if me not in branch or other not in branch or tuple(sorted((me, other))) in related:
                 continue
+            if s.get("rewritten") and s.get("mb") in set(u.get(me) or ()):
+                facts[it["id"]]["shares"].append(s)
+                continue
             why = unknown_of(me) or unknown_of(other)
             if why:
                 facts[it["id"]]["shares"].append({**s, "state": "unknown", "reason": why})
+
+
+def _rewritten(repo: Repo, facts: dict, b_it: dict, a_it: dict, e: dict, ab: dict, target: str, tip: str | None) -> None:
+    """B still carries commits A dropped when it was rewritten: B waits until
+    A's current work reaches T(B), then keeps only a hint to merge it in."""
+    mb, old = e["mb"], f'{e.get("via")} still carries its old commits ({e["mb"][:7]})'
+    reached, why = _reached(repo, a_it, ab, tip, target) if tip else (None, "T(B) isn't on the remote")
+    if reached:
+        facts[b_it["id"]]["shares"].append({
+            "id": a_it["id"], "item": a_it.get("uid"), "branch": e.get("branch"), "via": e.get("via"), "shared": 1,
+            "commits": [mb[:7]], "mb": mb, "rewritten": True,
+            "evidence": f'{e.get("branch")} was rewritten and has landed in {target}, but {old}: merge {target} into {e.get("via")}'})
+    elif reached is None:
+        _add_pair(facts, b_it, a_it, {**e, "state": "unknown", "reason": why, "target": target})
+    else:
+        _add_pair(facts, b_it, a_it, {**e, "state": "waiting", "target": target,
+                                      "evidence": f'{e.get("branch")} was rewritten, and {old}'})
 
 
 def _add_pair(facts: dict, b_it: dict, a_it: dict, e: dict) -> None:
@@ -868,14 +906,25 @@ def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, fa
 
 
 def _others(root: Path, repo: Repo, items: list) -> dict:
-    """Branch → the cancelled or archived item of this repo that lists it."""
+    """Branch → (the cancelled or archived item of this repo that lists it, its last branch facts)."""
     group = _groups(root, store.list_todos(root)).get(repo.key) or []
-    return {b: it for it in group if it["status"] == "cancelled" or _archived(root, it)
-            for b in it["branches"] if b not in repo.fixed}
+    out = {}
+    for it in group:
+        if it["status"] == "cancelled" or _archived(root, it):
+            last = {b.get("name"): b for b in load(root, it).get("branches") or [] if isinstance(b, dict)}
+            for b in it["branches"]:
+                if b not in repo.fixed:
+                    out[b] = (it, last.get(b) or {"name": b})
+    return out
 
 
 def _and(names: list) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _arrow(e: dict) -> str:
+    """`a1←b1`: the needed branch, then the one that needs it."""
+    return f'{e.get("branch")}←{e.get("via")}'
 
 
 def _cycles(facts: dict) -> None:
@@ -911,8 +960,7 @@ def _cycles(facts: dict) -> None:
             visit(v)
     for ring in sccs:
         edges = [e for i in ring for e in facts[i]["needs"] if e.get("id") in ring and e["state"] in UNRESOLVED]
-        text = (f'{_and(ring)} wait on each other through '
-                f'{_and([f"{e.get(chr(98) + "ranch")}←{e.get(chr(118) + "ia")}" for e in edges])}: '
+        text = (f'{_and(ring)} wait on each other through {_and([_arrow(e) for e in edges])}: '
                 "merge them in one order, or split the items")
         for i in ring:
             for k in ("needs", "needed_by"):
