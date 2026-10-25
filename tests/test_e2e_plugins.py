@@ -158,6 +158,9 @@ def test_built_server_runs_shipped_and_code_plugins(server, fake):
     url, token, log_path = server
     _, seen = fake
     _call(url, token, "/api/projects", {"key": "p"})
+    req = urllib.request.Request(url + "/api/projects/p/plugins/repos", method="PUT", data=json.dumps({"repos": ["acme/web"]}).encode(),
+                                 headers={"authorization": f"Bearer {token}", "content-type": "application/json"})
+    urllib.request.urlopen(req, timeout=30).close()
     [created] = _call(url, token, "/api/projects/p/ops", {"ops": [{
         "op_id": "c1", "op": "create", "entity": "item", "uid": "I1", "item_uid": "I1",
         "data": {"id": "fix-login", "title": "Fix login", "status": "in-progress", "created": "2026-10-25T00:00:00Z",
