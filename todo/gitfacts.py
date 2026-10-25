@@ -25,8 +25,8 @@ import urllib.request
 from itertools import combinations
 from pathlib import Path
 
-from . import checkout, store, yamlio
-from .remote import RemoteError, remote_for, sync_config, sync_dir
+from . import checkout, statelock, store, yamlio
+from .remote import RemoteError, remote_for, sync_config
 from .util import now, to_str
 
 FACTS_FILE = "git.yaml"
@@ -216,7 +216,7 @@ class Repo:
 _token: list = []
 
 
-def _github_token() -> str | None:
+def github_token() -> str | None:
     if not _token:
         tok = os.environ.get("GITHUB_TOKEN", "").strip()
         if not tok and shutil.which("gh"):
@@ -230,7 +230,7 @@ def _github_token() -> str | None:
 
 def gh_get(path: str):
     """GitHub REST GET: the parsed body, None with no token, GH_ERROR when GitHub failed."""
-    tok = _github_token()
+    tok = github_token()
     if not tok:
         return None
     req = urllib.request.Request(API + path, headers={
@@ -314,11 +314,10 @@ def _save(root: Path, it: dict, facts: dict) -> None:
     yamlio.write_atomic(f, yamlio.dump(y, facts))
 
 
-def _state_file(root: Path, name: str) -> Path:
-    return sync_dir(root) / name if sync_config(root) else root / ("." + name)
+state_file = statelock.state_file
 
 
-def _read_json(f: Path) -> dict:
+def read_json(f: Path) -> dict:
     try:
         data = json.loads(f.read_text())
     except (OSError, ValueError):
@@ -326,9 +325,7 @@ def _read_json(f: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _write_json(f: Path, data: dict) -> None:
-    f.parent.mkdir(exist_ok=True)
-    yamlio.write_atomic(f, json.dumps(data, sort_keys=True))
+_write_json = statelock.write_json
 
 
 # ── where each repo is checked out ────────────────────────────────────────────
@@ -350,7 +347,7 @@ def _store_dirs(root: Path) -> list:
     return out
 
 
-def _store_repo(root: Path) -> tuple:
+def store_repo(root: Path) -> tuple:
     """(repo key, folder) for the store's own repo, or ("", None)."""
     for d in _store_dirs(root):
         here = checkout.local(d)
@@ -361,7 +358,7 @@ def _store_repo(root: Path) -> tuple:
 
 def repo_dir(root: Path, key: str) -> Path | None:
     """A local checkout of `key`: the store's own repo, then the one around the working directory."""
-    own, d = _store_repo(root)
+    own, d = store_repo(root)
     if own == key:
         return d
     here = checkout.local()
@@ -376,14 +373,14 @@ def _groups(root: Path, items: list) -> dict:
         key = checkout.repo_key(it.get("repo"))
         if not key:
             if own is None:
-                own = _store_repo(root)[0]
+                own = store_repo(root)[0]
             key = own
         if key:
             out.setdefault(key, []).append(it)
     return out
 
 
-def _archived(root: Path, it: dict) -> bool:
+def is_archived(root: Path, it: dict) -> bool:
     if it["folder"] == store.ARCHIVED:
         return True
     try:
@@ -921,7 +918,7 @@ def _others(root: Path, repo: Repo, items: list) -> dict:
     group = _groups(root, store.list_todos(root)).get(repo.key) or []
     out = {}
     for it in group:
-        if it["status"] == "cancelled" or _archived(root, it):
+        if it["status"] == "cancelled" or is_archived(root, it):
             last = {b.get("name"): b for b in load(root, it).get("branches") or [] if isinstance(b, dict)}
             for b in it["branches"]:
                 if b not in repo.fixed:
@@ -1028,19 +1025,23 @@ def _merged_into(repo: Repo, root: Path, group: list, moved_tracked: set) -> set
 
 
 def on_round(root: Path, remote=None, project: str | None = None, *, force: bool = False,
-             repos: set | None = None, fetch_prs=True, prs_for: set | None = None) -> list:
+             repos: set | None = None, fetch_prs=True, prs_for: set | None = None,
+             seen: dict | None = None) -> list:
     """Recompute the repos whose relevant branches moved (one ls-remote each)
     or whose items' branches changed; with `force`, every repo asked for. PRs
     are refetched for branches whose head moved since their last fetch, and
     for the items in `prs_for`; when a tracked branch moved, one list of the
     PRs closed into it stands in for refetching each open one. Posts what
-    changed when given a server.
+    changed when given a server. Each repo's ls-remote answer goes into `seen`
+    as `{tips, default, dir}`.
     Returns the ids of changed items."""
-    all_items = [it for it in store.list_todos(root) if not _archived(root, it)]
+    all_items = [it for it in store.list_todos(root) if not is_archived(root, it)]
     groups = _groups(root, all_items)
-    tips_file, cache_file = _state_file(root, TIPS_FILE), _state_file(root, CACHE_FILE)
-    state = _read_json(tips_file)
-    cache = _read_json(cache_file)
+    tips_file, cache_file = state_file(root, TIPS_FILE), state_file(root, CACHE_FILE)
+    state = read_json(tips_file)
+    cache = read_json(cache_file)
+    started_unposted = set(state.get("unposted") or [])
+    done: set = set()               # the repos whose entry this round rewrites
     used: dict = {}
     changed = []
     for key, group in groups.items():
@@ -1059,10 +1060,13 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
         tips = repo.ls_remote()
         if tips is None:
             continue
+        if seen is not None:
+            seen[key] = {"tips": tips, "default": repo.default, "dir": d}
         old_tips = saved.get("tips") or {}
         moved = {n for n in set(tips) | set(old_tips) if tips.get(n) != old_tips.get(n)}
         if saved.get("default") not in (None, repo.default):
             moved.add("HEAD")
+        done.add(key)
         if not (force or touched or moved & _relevant(root, group) or saved.get("incomplete")):
             state[key] = {**saved, "at": time.time(), "tips": tips, "default": repo.default}
             continue
@@ -1091,13 +1095,16 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
             if _strip(new) != _strip(load(root, it)):
                 _save(root, it, {"at": stamp, **new} if new else {})
                 changed.append(it["id"])
-    if used:
-        _write_json(cache_file, used)
-    unposted = set(state.get("unposted") or []) | set(changed) if sync_config(root) else set()
+    unposted = started_unposted | set(changed) if sync_config(root) else set()
     if remote is not None and unposted:
         unposted = _post(root, remote, project, unposted)
-    state["unposted"] = sorted(unposted)
-    _write_json(tips_file, state)
+    with statelock.locked(root):
+        if used:
+            _write_json(cache_file, used)
+        fresh = read_json(tips_file)
+        fresh.update({k: state[k] for k in done})
+        fresh["unposted"] = sorted(unposted | (set(fresh.get("unposted") or []) - started_unposted))
+        _write_json(tips_file, fresh)
     return changed
 
 
@@ -1125,7 +1132,7 @@ def refresh(root: Path, items=None) -> list:
     if items is None:
         return on_round(root, force=True, fetch_prs="force")
     if items is not None:
-        items = [it for it in items if not _archived(root, it)]
+        items = [it for it in items if not is_archived(root, it)]
         repos = set(_groups(root, items))
         prs_for = {it["id"] for it in items}
         for it in items:
@@ -1138,27 +1145,31 @@ def post_pending(root: Path) -> None:
     """Post the facts a synced store hasn't sent yet."""
     cfg = sync_config(root)
     r = remote_for(root) if cfg else None
-    f = _state_file(root, TIPS_FILE)
-    state = _read_json(f)
-    if r is None or not state.get("unposted"):
+    f = state_file(root, TIPS_FILE)
+    sending = set(read_json(f).get("unposted") or [])
+    if r is None or not sending:
         return
-    state["unposted"] = sorted(_post(root, r, cfg.get("project"), set(state["unposted"])))
-    _write_json(f, state)
+    left = _post(root, r, cfg.get("project"), sending)
+    with statelock.locked(root):
+        state = read_json(f)
+        state["unposted"] = sorted(left | (set(state.get("unposted") or []) - sending))
+        _write_json(f, state)
 
 
-def maybe_local(root: Path) -> None:
+def maybe_local(root: Path, seen: dict | None = None) -> None:
     """A local-only store's recompute, at most every LOCAL_EVERY seconds, from
-    local git alone: PRs wait for `todo refresh`."""
+    local git alone: PRs wait for `todo refresh`. `seen` gets each repo's tips."""
     if sync_config(root) is not None or not root.is_dir():
         return
-    f = _state_file(root, TIPS_FILE)
-    state = _read_json(f)
-    if time.time() - state.get("local_at", 0) < LOCAL_EVERY:
-        return
-    state["local_at"] = time.time()
-    _write_json(f, state)
+    f = state_file(root, TIPS_FILE)
+    with statelock.locked(root):
+        state = read_json(f)
+        if time.time() - state.get("local_at", 0) < LOCAL_EVERY:
+            return
+        state["local_at"] = time.time()
+        _write_json(f, state)
     try:
-        on_round(root, fetch_prs=False)
+        on_round(root, fetch_prs=False, seen=seen)
     except Exception as e:  # noqa: BLE001 — facts must never break a command
         print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
 

@@ -19,6 +19,7 @@ shape changes.
 
 import argparse
 import contextlib
+import copy
 import getpass
 import io
 import re
@@ -34,6 +35,8 @@ from . import identity
 from . import init as init_mod
 from . import link as link_mod
 from . import checkout, docs, filecache, gitfacts, migrate, remote, render, store, sync
+from . import connections as connections_mod
+from . import plugins as plugins_mod
 from .status import ACTIVE, COMPLETE, REASONED, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
 from .util import die, now
 
@@ -81,6 +84,8 @@ def _set_status(root: Path, query: str, status: str, force: bool = False, reason
     if forced_edges:
         flag += "  (forced past unresolved dependencies)"
     print(f'{it["id"]}: {it["status"]} → {status}' + flag + note)
+    if changed:
+        plugins_mod.queue(it["id"], {"type": "status", "from": it["status"], "to": status})
     if status in ("in-progress", "review") and sync.enabled(root):
         _warn_empty_fields(it)
     if status != it["status"]:
@@ -203,7 +208,7 @@ def cmd_get(root: Path, args) -> None:
     it = _item_with_docs(root, args.query)
     cfg = remote.sync_config(root) or {}
     render.print_item(it, full_log=args.log, related=related_items(root, it), server=cfg.get("url"),
-                      git=gitfacts.view(root, it))
+                      git=gitfacts.view(root, it), plugins=plugins_mod.notices(root, it))
     waiting = store.unseen(it, identity.party())
     if waiting:
         print(f'updates:   {len(waiting)} not yet acknowledged by {identity.party()} (todo updates {it["id"]})')
@@ -244,6 +249,7 @@ def cmd_reject(root: Path, args) -> None:
     if it["status"] not in REJECTABLE:
         die(f'{it["id"]} is {it["status"]}; QA rejects from {", ".join(REJECTABLE)}.', 2)
     store.update_todo(root, it["id"], {"status": "qa-rejected"}, now())
+    plugins_mod.queue(it["id"], {"type": "status", "from": it["status"], "to": "qa-rejected"})
     new_id = store.add_note(root, it["id"], text, now(), kind="qa-rejection",
                             extra={"with_status": "qa-rejected"})
     print(f'{it["id"]}: {it["status"]} → qa-rejected  (qa-rejection note [{new_id}])')
@@ -306,6 +312,7 @@ def cmd_request(root: Path, args) -> None:
         print(f'{it["id"]}: posted request [{new_id}]; on sync the server moves it back to requested for triage')
     else:
         store.update_todo(root, it["id"], {"status": "requested"}, now())
+        plugins_mod.queue(it["id"], {"type": "status", "from": it["status"], "to": "requested"})
         print(f'{it["id"]}: posted request [{new_id}]; {it["status"]} → requested for triage')
 
 
@@ -338,6 +345,9 @@ def cmd_set(root: Path, args) -> None:
 def _set_branches(root: Path, it, branches: list) -> None:
     store.update_todo(root, it["id"], {"branches": branches})
     print(f'{it["id"]}: branches = {", ".join(branches) or "—"}')
+    for b in branches:
+        if b not in it["branches"]:
+            plugins_mod.queue(it["id"], {"type": "push", "branch": b})
 
 
 _EMPTY_BRANCH = "A branch name can't be empty."
@@ -439,7 +449,7 @@ def cmd_docs(root: Path, args) -> None:
     w = max(len(d["name"]) for d in it["docs"])
     for d in it["docs"]:
         where = _doc_url(root, it, d["name"]) or str(d["path"].resolve())
-        when = render._stamp(d["at"]) if d["at"] else "—"
+        when = render.stamp(d["at"]) if d["at"] else "—"
         print(f'{d["name"]:<{w}}  {docs.human_size(d["size"]):>9}  {d["by"] or "?"}  {when}  {where}')
 
 
@@ -679,6 +689,16 @@ def cmd_refresh(root: Path, args) -> None:
     changed = gitfacts.refresh(root, items)
     gitfacts.post_pending(root)
     print(f'git facts: {len(changed)} item(s) changed' + (f' ({", ".join(changed)})' if changed else ""))
+    if plugins_mod.off():
+        print(f"plugins: off on this host ({plugins_mod.OFF_ENV})")
+        return
+    targets = items if items is not None else [it for it in store.list_todos(root, [store.OPEN, store.DEFERRED])
+                                               if plugins_mod.is_open(root, it)]
+    # A store-wide refresh holds each item only while writing it; a named item is held by the command.
+    ran = plugins_mod.run_jobs(plugins_mod.Context(root, fresh=True), [(it["id"], {"type": "refresh"}) for it in targets],
+                               lock=items is None, report=True)
+    if not ran and plugins_mod.host_command() is not None:
+        print("plugins: nothing to run")
 
 
 def cmd_renote(root: Path, args) -> None:
@@ -694,8 +714,15 @@ def cmd_renote(root: Path, args) -> None:
 def cmd_unnote(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _note_id(it, args.id)
+    _forget_plugin_entry(root, it, next(n for n in it["notes"] if n["id"] == args.id))
     store.remove_note(root, it["id"], args.id)
     print(f'{it["id"]}: removed note [{args.id}]')
+
+
+def _forget_plugin_entry(root: Path, it, entry) -> None:
+    """A person removing what a plugin attached: the plugin never makes it again."""
+    if (entry.get("meta") or {}).get("plugin") and it.get("uid") and entry.get("uid"):
+        plugins_mod.forget(root, it["uid"], entry["uid"])
 
 
 def cmd_log(root: Path, args) -> None:
@@ -714,6 +741,7 @@ def cmd_logs(root: Path, args) -> None:
 def cmd_unlog(root: Path, args) -> None:
     it = store.resolve_item(root, args.query)
     _log_id(it, args.id)
+    _forget_plugin_entry(root, it, next(e for e in it["log"] if e["id"] == args.id))
     store.remove_log(root, it["id"], args.id)
     print(f'{it["id"]}: removed log [{args.id}]')
 
@@ -842,6 +870,7 @@ def cmd_add(root: Path, args) -> None:
     if request:
         store.add_note(root, it["id"], request, now(), kind="ticket-request", extra={"url": url} if url else None)
     print(f'added {it["id"]}: {it["title"]}' + ("  (requested)" if request else ""))
+    plugins_mod.queue(it["id"], {"type": "refresh"})
 
 
 def cmd_archive(root: Path, args) -> None:
@@ -1098,6 +1127,439 @@ def cmd_init(root: Path, args) -> None:
         print(f"{label}\n    {status}")
 
 
+# ── connections and plugins ──────────────────────────────────────────────────
+def _here_repo(root: Path | None) -> str:
+    """The repo around the working directory, else the store's own."""
+    here = checkout.local()["repo"]
+    if here:
+        return here
+    return gitfacts.store_repo(root)[0] if root is not None and root.is_dir() else ""
+
+
+def _repo_arg(root: Path, args) -> str:
+    key = checkout.repo_key(getattr(args, "repo", None)) if getattr(args, "repo", None) else _here_repo(root)
+    if not key:
+        die("Which repo? Pass --repo owner/name, or run this inside the repo's checkout.", 2)
+    return key
+
+
+def _plugins_on() -> None:
+    if plugins_mod.off():
+        die(f"Plugins are off on this host ({plugins_mod.OFF_ENV}=0).", 2)
+
+
+def _repo_declared(root: Path | None, key: str) -> dict:
+    """The connections a repo's plugins file declares, read from its default branch here."""
+    if not key or root is None or not root.is_dir():
+        return {}
+    try:
+        described = plugins_mod.Context(root).repo(key)["described"]
+    except plugins_mod.HostError:
+        return {}
+    return (described or {}).get("connections") or {}
+
+
+def cmd_connection_add(root: Path, args) -> None:
+    if bool(args.http) == bool(args.mcp_url):
+        die("Give one of --http URL or --mcp-url URL.", 2)
+    err = connections_mod.auth_error(args.auth)
+    if err:
+        die(err, 2)
+    if args.mcp_url and args.auth:
+        die("--auth goes with --http; an MCP connection sends its secret as a bearer token.", 2)
+    for url in (args.http, args.mcp_url):
+        if url and not re.match(r"^https?://\S+$", url):
+            die("The URL must start with http:// or https://", 2)
+    definition = {"http": {"url": args.http, **({"auth": args.auth} if args.auth else {})}} if args.http \
+        else {"mcp": {"url": args.mcp_url}}
+    connections_mod.save_connection(args.name, definition)
+    print(f"connection {args.name}: {_conn_target(definition)} (host-wide, ~/.todo/{connections_mod.CONNECTIONS_FILE})")
+
+
+def _conn_target(definition: dict) -> str:
+    if "http" in definition:
+        h = definition["http"] or {}
+        return f'http {h.get("url")}' + (f' ({h["auth"]})' if h.get("auth") else "")
+    m = definition.get("mcp") or {}
+    return f'mcp {m.get("url")}' if m.get("url") else f'mcp command {" ".join([m.get("command") or "", *(m.get("args") or [])]).strip()}'
+
+
+def _server_secrets(root: Path | None, key: str) -> tuple | None:
+    """(the repo's connections, the host-wide ones) the server holds a secret for."""
+    if root is None or not root.is_dir() or not sync.enabled(root):
+        return None
+    stored = plugins_mod.Context(root).stored(key)
+    return set(stored["secrets"]), set(stored["host_secrets"])
+
+
+def cmd_connection_list(root: Path, args) -> None:
+    key = checkout.repo_key(args.repo) if args.repo else _here_repo(root)
+    rows = []
+    declared = _repo_declared(root, key)
+    held = _server_secrets(root, key) if key else None
+    for name, d in sorted(connections_mod.host_connections().items()):
+        if name not in declared:
+            rows.append((name, d, connections_mod.host_source(name), None))
+    for name, d in sorted(declared.items()):
+        rows.append((name, d, f"repo {key}", key))
+    if not rows:
+        print("(no connections)")
+        return
+    for name, d, source, repo in rows:
+        secret = connections_mod.secret_source(name, repo)
+        line = f"{name:<14} {_conn_target(d)}  · {source} · secret here: {secret or 'none'}"
+        if held is not None:
+            line += f" · on the server: {'yes' if name in held[0 if repo else 1] else 'no'}"
+        print(line)
+
+
+def _find_connection(root: Path | None, name: str, repo: str | None) -> tuple:
+    """(definition, the repo it belongs to or None for the host's)."""
+    declared = _repo_declared(root, repo or _here_repo(root))
+    if name in declared:
+        return declared[name], repo or _here_repo(root)
+    host = connections_mod.host_connections()
+    if name in host and not repo:
+        return host[name], None
+    if repo:
+        die(f"{repo}'s plugins file declares no connection {name}.", 2)
+    die(f"No connection {name}: add one with `todo connection add {name} --http URL`, "
+        "or declare it in the repo's .todo-plugins/plugins.yaml.", 2)
+
+
+def cmd_connection_test(root: Path, args) -> None:
+    repo = checkout.repo_key(args.repo) if args.repo else None
+    definition, owner = _find_connection(root, args.name, repo)
+    secrets = connections_mod.secrets_for(owner or "")
+    secret = (secrets["repo"] if owner else secrets["host"]).get(args.name)
+    ok, what = connections_mod.test(definition, secret)
+    print(f"{args.name}: {'ok' if ok else 'failed'} — {what}")
+    if not ok:
+        sys.exit(1)
+
+
+def _read_secret(name: str) -> str:
+    if sys.stdin.isatty():
+        secret = getpass.getpass(f"secret for {name} (hidden): ")
+    else:
+        secret = sys.stdin.readline()
+    secret = secret.strip()
+    if not secret:
+        die("No secret given.", 2)
+    return secret
+
+
+def cmd_connection_auth(root: Path, args) -> None:
+    repo = checkout.repo_key(args.repo) if args.repo else None
+    cfg = None
+    if args.server:
+        cfg = remote.sync_config(root) if root is not None and root.is_dir() else None
+        if not cfg:
+            die("--server needs a synced store (todo link --remote URL).", 2)
+        repo = repo or _here_repo(root)
+        if not repo:
+            die("--server needs the repo: pass --repo owner/name.", 2)
+        if args.name not in _repo_declared(root, repo):
+            die(f"{repo}'s plugins file declares no connection {args.name}, so this would be a host-wide secret, "
+                "and those stay on this host. Declare the connection in the repo, or drop --server.", 2)
+    elif repo is None and args.name not in connections_mod.host_connections():
+        if args.name in _repo_declared(root, _here_repo(root)):
+            repo = _here_repo(root)
+    secret = _read_secret(args.name)
+    try:
+        connections_mod.save_credential(connections_mod.cred_key(args.name, repo), secret)
+    except connections_mod.CredentialsError as e:
+        die(str(e), 1)
+    print(f"connection {args.name}: secret saved for {repo or 'this host'} (~/.todo/{connections_mod.CREDENTIALS_FILE})")
+    if not args.server:
+        return
+    target = repo
+    try:
+        remote.remote_for(root).plugin_credential(cfg["project"], target, args.name, secret)
+    except remote.RemoteError as e:
+        if e.status == 503:
+            die("The server has no key to encrypt credentials with (TODO_SECRET_KEY); it kept nothing.", 1)
+        die(f"The server didn't take it: {e}", 1)
+    print(f"connection {args.name}: secret sent to {cfg['url']} for {target}")
+
+
+def _trigger_text(t) -> str:
+    if isinstance(t, dict):
+        st = t.get("status") or {}
+        return f'status:{st.get("from") or "*"}:{st.get("to") or "*"}'
+    return str(t)
+
+
+_TRIGGERS = "push, pr, deployment, manual or status:<from>:<to> (* for any)"
+
+
+def _status_pair(raw: str) -> tuple:
+    """(from, to) from `status:<from>:<to>`, or None."""
+    parts = raw.split(":")
+    if len(parts) != 3 or parts[0] != "status" or not parts[1] or not parts[2]:
+        return None
+    return parts[1], parts[2]
+
+
+def _parse_trigger(raw: str):
+    if raw in ("push", "pr", "deployment", "manual"):
+        return raw
+    pair = _status_pair(raw)
+    if pair is None:
+        die(f"Unknown trigger {raw!r}: {_TRIGGERS}.", 2)
+    return {"status": {"from": pair[0], "to": pair[1]}}
+
+
+def _parse_settings(pairs) -> dict:
+    out = {}
+    for pair in pairs or []:
+        k, sep, v = pair.partition("=")
+        if not sep or not k:
+            die(f"--set takes key=value, not {pair!r}", 2)
+        try:
+            from ruamel.yaml import YAML
+            out[k] = YAML(typ="safe").load(v) if v else ""
+        except Exception:  # noqa: BLE001 — anything unparseable is text
+            out[k] = v
+        if not isinstance(out[k], (str, int, float, bool, list)) or out[k] is None:
+            out[k] = v
+    return out
+
+
+def cmd_plugin_list(root: Path, args) -> None:
+    _require_root(root)
+    _plugins_on()
+    ctx = plugins_mod.Context(root, fresh=True)
+    keys = [checkout.repo_key(args.repo)] if args.repo else sorted(
+        {ctx.repo_key(it) for it in store.list_todos(root, [store.OPEN, store.DEFERRED])} - {""}
+        | ({_here_repo(root)} - {""}))
+    if not keys:
+        print("(no repos: give --repo owner/name)")
+        return
+    if plugins_mod.host_command() is None:
+        die(plugins_mod.NO_NODE, 1)
+    for key in keys:
+        repo = ctx.repo(key)
+        print(key + ("" if repo["payload"] else "  (no .todo-plugins/plugins.yaml; shipped defaults only)"))
+        for err in (repo["described"] or {}).get("errors") or []:
+            print(f"  error: {err}")
+        for p, insts in plugins_mod.plugin_view(ctx, key):
+            bits = [", ".join(_trigger_text(t) for t in p.get("on") or []) or "no triggers"]
+            if p.get("every"):
+                bits.append(f'every {p["every"]}')
+            if p.get("connections"):
+                bits.append("needs " + ", ".join(p["connections"]))
+            print(f'  {p["name"]}{" (shipped)" if p.get("shipped") else ""}  on: ' + " · ".join(bits))
+            for i in insts:
+                state = "off" if i.get("enabled") is False else "on"
+                extra = []
+                if i.get("on") is not None:
+                    extra.append("on: " + (", ".join(_trigger_text(t) for t in i["on"]) or "nothing"))
+                if i.get("settings"):
+                    extra.append("settings: " + ", ".join(f"{k}={_setting_text(p, k, v)}" for k, v in i["settings"].items()))
+                if i.get("dry_run"):
+                    extra.append("dry-run")
+                if i.get("implicit"):
+                    extra.append("implicit")
+                name = f' "{i["name"]}"' if i.get("name") and i["name"] != i.get("id") else ""
+                print(f'    {i.get("id")}{name}  {state}' + "".join(f"  · {e}" for e in extra))
+            if not insts:
+                print("    (no instances: add one with `todo plugin add`)")
+
+
+def _setting_text(plugin: dict, key: str, value) -> str:
+    """A setting as `plugin list` shows it; a secret only ever as set."""
+    if plugins_mod.is_secret_value(value) or ((plugin.get("settings") or {}).get(key) or {}).get("type") == "secret":
+        return "(set)"
+    return str(value)
+
+
+def _split_iid(raw: str) -> tuple:
+    plugin, sep, inst = raw.partition("/")
+    if not sep or not plugin or not inst:
+        die(f"Name the instance as <plugin>/<id>, not {raw!r}.", 2)
+    return plugin, inst
+
+
+def _edit_instances(root: Path, args, plugin: str, edit) -> None:
+    ctx = plugins_mod.Context(root, fresh=True)
+    key = _repo_arg(root, args)
+    rows = copy.deepcopy(ctx.stored(key)["instances"].get(plugin) or [])
+    rows = edit(rows, ctx, key)
+    try:
+        ctx.save_stored(key, plugin, rows)
+    except remote.RemoteError as e:
+        die(f"The server didn't take it: {e}", 1)
+
+
+def _known_plugin(ctx, key: str, plugin: str) -> dict | None:
+    try:
+        return next((p for p, _ in plugins_mod.plugin_view(ctx, key) if p["name"] == plugin), None)
+    except plugins_mod.HostError:
+        return None
+
+
+def _instance_patch(args) -> dict:
+    patch = {}
+    if getattr(args, "label", None):
+        patch["name"] = args.label
+    if getattr(args, "on", None):
+        patch["on"] = [] if args.on == ["none"] else [_parse_trigger(t) for t in args.on]
+    if getattr(args, "button", None):
+        patch["button"] = args.button
+    if getattr(args, "enabled", None) is not None:
+        patch["enabled"] = args.enabled
+    if getattr(args, "dry_run", None) is not None:
+        patch["dry_run"] = args.dry_run
+    return patch
+
+
+def cmd_plugin_add(root: Path, args) -> None:
+    _require_root(root)
+    _plugins_on()
+
+    def edit(rows, ctx, key):
+        if _known_plugin(ctx, key, args.plugin) is None and plugins_mod.host_command() is not None:
+            die(f"{key} runs no plugin {args.plugin} (see `todo plugin list --repo {key}`).", 2)
+        if any(r.get("id") == args.id for r in rows):
+            die(f"{args.plugin}/{args.id} exists; change it with `todo plugin set {args.plugin}/{args.id}`.", 2)
+        row = {"id": args.id, "name": args.id, **_instance_patch(args)}
+        settings = _parse_settings(args.set)
+        if settings:
+            row["settings"] = settings
+        return rows + [row]
+    _edit_instances(root, args, args.plugin, edit)
+    print(f"plugin {args.plugin}: added instance {args.id}")
+
+
+def cmd_plugin_set(root: Path, args) -> None:
+    _require_root(root)
+    _plugins_on()
+    plugin, inst = _split_iid(args.instance)
+
+    def edit(rows, ctx, key):
+        row = next((r for r in rows if r.get("id") == inst), None)
+        if row is None:
+            known = next((i for p, insts in plugins_mod.plugin_view(ctx, key) if p["name"] == plugin
+                          for i in insts if i.get("id") == inst), None) if plugins_mod.host_command() else None
+            if known is None and plugins_mod.host_command() is not None:
+                die(f"No instance {plugin}/{inst} in {key} (see `todo plugin list`).", 2)
+            row = {"id": inst, "name": (known or {}).get("name") or inst}
+            rows = rows + [row]
+        row.update(_instance_patch(args))
+        settings = {**(row.get("settings") or {}), **_parse_settings(args.set)}
+        for k in args.unset or []:
+            settings.pop(k, None)
+        if settings:
+            row["settings"] = settings
+        else:
+            row.pop("settings", None)
+        return rows
+    _edit_instances(root, args, plugin, edit)
+    print(f"plugin {plugin}: set instance {inst}")
+
+
+def cmd_plugin_rm(root: Path, args) -> None:
+    _require_root(root)
+    _plugins_on()
+    plugin, inst = _split_iid(args.instance)
+
+    def edit(rows, ctx, key):
+        if not any(r.get("id") == inst for r in rows):
+            die(f"No stored instance {plugin}/{inst} in {key}; one the repo file declares is turned off with "
+                f"`todo plugin set {plugin}/{inst} --disable`.", 2)
+        return [r for r in rows if r.get("id") != inst]
+    _edit_instances(root, args, plugin, edit)
+    print(f"plugin {plugin}: removed instance {inst}")
+
+
+def _parse_event(raw: str | None, it) -> dict:
+    """refresh | push[:branch] | pr[:branch] | deployment[:branch] | status:<from>:<to> | manual:<instance>"""
+    raw = raw or "refresh"
+    kind, _, rest = raw.partition(":")
+    if kind == "refresh" and not rest:
+        return {"type": "refresh"}
+    if kind in plugins_mod.GIT_TRIGGERS:
+        branch = rest or (it["branches"][0] if it["branches"] else "")
+        if not branch:
+            die(f"{it['id']} has no branch; give one as {kind}:<branch>.", 2)
+        return {"type": kind, "branch": branch}
+    if kind == "status":
+        pair = _status_pair(raw)
+        if pair is None or "*" in pair:
+            die(f"An event names both statuses: status:<from>:<to>, not {raw!r}.", 2)
+        return {"type": "status", "from": pair[0], "to": pair[1]}
+    if kind == "manual" and rest:
+        return {"type": "manual", "instance": rest}
+    die(f"Unknown event {raw!r}: refresh, push[:branch], pr[:branch], deployment[:branch], "
+        "status:<from>:<to> or manual:<instance>.", 2)
+
+
+def _item_on_branch(root: Path):
+    r = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True)
+    branch = r.stdout.strip() if r.returncode == 0 else ""
+    found = [it for it in store.list_todos(root, [store.OPEN, store.DEFERRED]) if branch and branch in it["branches"]]
+    if len(found) != 1:
+        die("Name the item to test against: todo plugin test <plugin> <query>.", 2)
+    return store.resolve_item(root, found[0]["id"])
+
+
+def cmd_plugin_test(root: Path, args) -> None:
+    _require_root(root)
+    _plugins_on()
+    it = store.resolve_item(root, args.query) if args.query else _item_on_branch(root)
+    event = _parse_event(args.event, it)
+    ctx = plugins_mod.Context(root, local=args.local, fresh=True)
+    runs = plugins_mod.run(ctx, it, event, dry_run=True, only=args.plugin, anywhere=True)
+    if runs is None:
+        sys.exit(1)
+    print(f'{it["id"]}: {args.plugin} on {plugins_mod.event_label(event)}'
+          + (" (working tree)" if args.local else "") + " — dry run")
+    if not runs:
+        print("  fires no instance for this event")
+        return
+    for r in runs:
+        print("  " + "\n  ".join(render.plugin_run_lines(plugins_mod.instance_id(r["plugin"], r["instance"]), r["result"])))
+
+
+def cmd_plugin_run(root: Path, args) -> None:
+    _require_root(root)
+    _plugins_on()
+    it = store.resolve_item(root, args.query)
+    inst = args.instance.rpartition("/")[2]
+    event = {"type": "manual", "instance": inst}
+    ctx = plugins_mod.Context(root, fresh=True)
+    key = ctx.repo_key(it)
+    candidates = [plugins_mod.instance_id(p["name"], i) for p, insts in (plugins_mod.plugin_view(ctx, key) if key else [])
+                  for i in insts if plugins_mod.fires(p, i, event)
+                  and args.instance in (i.get("id"), plugins_mod.instance_id(p["name"], i))]
+    if not candidates:
+        die(f"No manual instance {args.instance} for {it['id']} (see `todo plugin list`).", 2)
+    if len(candidates) > 1:
+        die(f"{args.instance} names more than one manual instance: {', '.join(candidates)}; give one of them.", 2)
+    runs = plugins_mod.run(ctx, it, event, only=candidates[0], anywhere=True, lock=False)
+    if runs is None:
+        sys.exit(1)
+    for line in plugins_mod.run_lines(it, runs, " (ran on this host)"):
+        print(line)
+
+
+def cmd_plugins(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    recs = plugins_mod.records(root, it)
+    server = plugins_mod.server_runs(root, it)
+    if not recs and not server:
+        print(f'{it["id"]}: no plugin has run on it here')
+        return
+    for iid, rec in sorted(recs.items()):
+        print(f'{iid}  {render.stamp(rec.get("at") or "")}  ({rec.get("event") or "?"})')
+        for line in render.plugin_record_lines(rec):
+            print("  " + line)
+    for iid, rec in sorted(server.items()):
+        what = f'error: {rec["error"]}' if rec.get("error") else f'skipped: {rec["skipped"]}' if rec.get("skipped") else "ran"
+        print(f'{iid}  {render.stamp(str(rec.get("at") or ""))}  (on the server)  {what}')
+
+
 # ── argument parsing ──────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1301,9 +1763,80 @@ def build_parser() -> argparse.ArgumentParser:
                    help="list every prereq-branch check, to drop or confirm")
     p.set_defaults(func=cmd_deps)
 
-    p = sub.add_parser("refresh", parents=[common], help="recompute git facts now")
-    p.add_argument("query", nargs="?", help="id or part of a title (default: every repo)")
+    p = sub.add_parser("refresh", parents=[common], help="recompute git facts and run refreshed plugins now")
+    p.add_argument("query", nargs="?", help="id or part of a title (default: every open item)")
     p.set_defaults(func=cmd_refresh)
+
+    cp = sub.add_parser("connection", parents=[common], help="endpoints plugins call, and this host's secrets for them")
+    csub = cp.add_subparsers(dest="conncmd", metavar="<conncmd>")
+    ca = csub.add_parser("add", parents=[common], help="add or replace a host-wide connection")
+    ca.add_argument("name")
+    ca.add_argument("--http", metavar="URL", help="an HTTP API's base URL")
+    ca.add_argument("--auth", help="how the secret is sent: bearer, basic (user:password) or header:<name>")
+    ca.add_argument("--mcp-url", metavar="URL", help="an MCP server's streamable-HTTP URL")
+    ca.set_defaults(func=cmd_connection_add)
+    cl = csub.add_parser("list", parents=[common], help="each connection, where it's declared, and who holds its secret")
+    cl.add_argument("--repo", help="owner/name (default: the repo here)")
+    cl.set_defaults(func=cmd_connection_list)
+    ct = csub.add_parser("test", parents=[common], help="make one read-only call through a connection")
+    ct.add_argument("name")
+    ct.add_argument("--repo", help="the repo that declares it (owner/name)")
+    ct.set_defaults(func=cmd_connection_test)
+    cu = csub.add_parser("auth", parents=[common], help="store a connection's secret (read hidden, or from stdin)")
+    cu.add_argument("name")
+    cu.add_argument("--repo", help="for this repo's connection of that name (owner/name); default: the host's")
+    cu.add_argument("--server", action="store_true", help="also send it to the server, which keeps it encrypted")
+    cu.set_defaults(func=cmd_connection_auth)
+
+    pp = sub.add_parser("plugin", parents=[common], help="list, configure, test and run a repo's plugins")
+    psub = pp.add_subparsers(dest="plugincmd", metavar="<plugincmd>")
+    pl = psub.add_parser("list", parents=[common], help="each repo's plugins, instances, triggers and on/off state")
+    pl.add_argument("--repo", help="owner/name (default: every repo with open items)")
+    pl.set_defaults(func=cmd_plugin_list)
+
+    def instance_flags(q, adding: bool):
+        q.add_argument("--repo", help="owner/name (default: the repo here)")
+        q.add_argument("--name", dest="label", help="the instance's display name")
+        q.add_argument("--on", action="append", metavar="TRIGGER",
+                       help="push, pr, deployment, manual or status:<from>:<to> (* for any); repeat for more "
+                            "(overrides the plugin's own; `none` for no triggers)")
+        q.add_argument("--set", action="append", metavar="KEY=VALUE", help="a setting; repeat for more")
+        q.add_argument("--button", help="the label of its manual button")
+        q.add_argument("--enable", dest="enabled", action="store_const", const=True, default=None)
+        q.add_argument("--disable", dest="enabled", action="store_const", const=False)
+        q.add_argument("--dry-run", dest="dry_run", action="store_const", const=True, default=None,
+                       help="only make read-only calls; log the rest as would-send")
+        if not adding:
+            q.add_argument("--live", dest="dry_run", action="store_const", const=False, help="turn dry-run off")
+            q.add_argument("--unset", action="append", metavar="KEY", help="drop a setting back to its default")
+    pa = psub.add_parser("add", parents=[common], help="add an instance of a plugin")
+    pa.add_argument("plugin")
+    pa.add_argument("id", help="the instance's id, unique within the plugin")
+    instance_flags(pa, True)
+    pa.set_defaults(func=cmd_plugin_add)
+    ps = psub.add_parser("set", parents=[common], help="change an instance, or override one the repo file declares")
+    ps.add_argument("instance", help="<plugin>/<id>")
+    instance_flags(ps, False)
+    ps.set_defaults(func=cmd_plugin_set)
+    pr = psub.add_parser("rm", parents=[common], help="remove a stored instance")
+    pr.add_argument("instance", help="<plugin>/<id>")
+    pr.add_argument("--repo", help="owner/name (default: the repo here)")
+    pr.set_defaults(func=cmd_plugin_rm)
+    pt = psub.add_parser("test", parents=[common], help="dry-run one plugin against an item: what it would attach and send")
+    pt.add_argument("plugin", help="<plugin> or <plugin>/<id>")
+    pt.add_argument("query", nargs="?", help="id or part of a title (default: the item on the current branch)")
+    pt.add_argument("--local", action="store_true", help="read .todo-plugins/ from the working tree, not the default branch")
+    pt.add_argument("--event", help="refresh (default), push[:branch], pr[:branch], deployment[:branch], "
+                                    "status:<from>:<to> or manual:<instance>")
+    pt.set_defaults(func=cmd_plugin_test)
+    pn = psub.add_parser("run", parents=[common], help="run a manual instance on an item now")
+    pn.add_argument("query", help="id or part of a title")
+    pn.add_argument("instance", help="<id> or <plugin>/<id>")
+    pn.set_defaults(func=cmd_plugin_run)
+
+    p = sub.add_parser("plugins", parents=[common], help="an item's plugin results: what each attached, skipped or failed")
+    p.add_argument("query", help="id or part of a title")
+    p.set_defaults(func=cmd_plugins)
 
     p = sub.add_parser("renote", parents=[common], help="replace a note's text, keeping its id")
     p.add_argument("query", help="id or part of a title")
@@ -1538,7 +2071,7 @@ def main():
     if not getattr(args, "command", None):
         parser.print_help()
         sys.exit(0)
-    if args.command in ("task", "check", "jira", "doc") and not getattr(args, "func", None):
+    if args.command in ("task", "check", "jira", "doc", "connection", "plugin") and not getattr(args, "func", None):
         parser.parse_args([args.command, "--help"])
         sys.exit(0)
     if getattr(args, "via", None):
@@ -1562,7 +2095,9 @@ def main():
             return
         args.func(root, args)
         if root is not None:
-            gitfacts.maybe_local(root)
+            seen: dict = {}
+            gitfacts.maybe_local(root, seen)
+            plugins_mod.after_command(root, seen)
     finally:
         if root is not None and root.is_dir():
             filecache.save(root)
@@ -1581,6 +2116,7 @@ def run_synced(root: Path, args) -> int:
             args.func(root, args)
     finally:
         _mark_changes(root, named, existing)
+    plugins_mod.after_command(root)
     sync.flag_changes(root)
     after = sync.rounds(root)
     rejected = any(r is not None and r.rejected for r in (before, after))
@@ -1600,7 +2136,7 @@ def _mark_changes(root: Path, named, existing: set) -> None:
             sync.mark_changed(root, d.name)
 
 
-READ_ONLY = {"list", "ls", "deploy-plan", "deps"}
+READ_ONLY = {"list", "ls", "deploy-plan", "deps", "connection", "plugin"}
 
 
 def _lock_keys(args, named) -> list | None:
@@ -1617,7 +2153,7 @@ def _named_items(root: Path, args) -> list | None:
         return []
     queries = [q for q in (getattr(args, "query", None), getattr(args, "other", None)) if q]
     if not queries:
-        return [] if args.command in READ_ONLY else None
+        return [] if args.command in READ_ONLY or args.command == "refresh" else None
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             items = [store.resolve_item(root, q) for q in queries]

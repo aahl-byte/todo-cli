@@ -79,15 +79,16 @@ def _stop(proc):
         pass
 
 
-def cli(home: Path, cwd: Path, *argv, offline=False, code=0):
-    env = {k: v for k, v in os.environ.items() if k not in ("TODO_USER", "CLAUDECODE")}
+def cli(home: Path, cwd: Path, *argv, offline=False, code=0, plugins=False):
+    env = {k: v for k, v in os.environ.items() if k not in ("TODO_USER", "CLAUDECODE")
+           and not (plugins and k == "TODO_PLUGINS")}
     # This checkout's todo, not whichever one is installed.
     env.update(HOME=str(home), TODO_VIA="human", PYTHONPATH=str(SERVER.parent))
     if offline:
         env["TODO_OFFLINE"] = "1"
     out = subprocess.run([sys.executable, "-c", "from todo.cli import main; main()", *argv],
                          cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
-    assert out.returncode == code, f"todo {' '.join(argv)}\n{out.stdout}\n{out.stderr}"
+    assert code is None or out.returncode == code, f"todo {' '.join(argv)}\n{out.stdout}\n{out.stderr}"
     return out
 
 
@@ -324,3 +325,21 @@ def test_docs_round_trip_and_conflict(server, tmp_path):
     cli(ha, ra, "doc", "rm", "cart-totals", "plan.conflict-bob.md")
     cli(hb, rb, "sync")
     assert not (path_b.parent / "plan.conflict-bob.md").exists()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node isn't installed")
+def test_plugins_list_and_instances_against_the_server(server, tmp_path):
+    url, tokens = server
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    home.mkdir()
+    (repo / ".TODO").mkdir(parents=True)
+    cli(home, repo, "login", url, tokens["alice"])
+    cli(home, repo, "link", "--remote", url, "--project", "web")
+    out = cli(home, repo, "plugin", "list", "--repo", "acme/web", plugins=True)
+    assert "pr-link (shipped)  on: push, pr · needs github" in out.stdout
+    assert "    default  on  · implicit" in out.stdout
+    added = cli(home, repo, "plugin", "add", "pr-link", "x", "--repo", "acme/web", plugins=True, code=None)
+    if added.returncode != 0:
+        assert "404" in added.stderr        # a server without the plugins routes yet
+    else:
+        assert "    x  on" in cli(home, repo, "plugin", "list", "--repo", "acme/web", plugins=True).stdout

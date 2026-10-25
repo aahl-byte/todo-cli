@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { describeRepo } from "@/lib/plugins/describe";
 import { runEvent, runInstance, type EventInput, type EventResult } from "@/lib/plugins/host";
 import { loadPlugins } from "@/lib/plugins/load";
 import type { ConnectionDef, InstanceDef, PluginEvent, ResolvedConnection, RunInput, RunResult } from "@/lib/plugins/types";
@@ -170,5 +171,37 @@ describe.each(EVENT_HOSTS)("runEvent conformance (%s)", (_, host) => {
     });
     expect({ errors: out.errors, track: out.track, results: out.results.map((r) => ({ plugin: r.plugin, instance: r.instance.id, result: r.result })) },
            c.about).toEqual(c.expect);
+  });
+});
+
+describe("the bundle's describe mode", () => {
+  it("answers what a repo's plugin file declares", async () => {
+    const text = "plugins:\n  mine: {on: [manual], attach: [{log: hi}]}\n";
+    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "describe", repo: { text } }));
+    expect(code, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(describeRepo({ text, files: {} }));
+    expect(JSON.parse(stdout).plugins.map((p: { name: string }) => p.name)).toEqual(["pr-link", "mine"]);
+  });
+
+  it("refuses a repo that isn't {text, files}", async () => {
+    const { code, stderr } = await bundled(JSON.stringify({ mode: "describe", repo: 1 }));
+    expect([code, stderr.trim()]).toEqual([2, "plugin host: repo must be {text, files}"]);
+  });
+});
+
+describe("the bundle's events mode", () => {
+  it("runs each event input in order in one process", async () => {
+    const repo = { text: "plugins:\n  mine: {on: [manual], attach: [{log: \"{{event.instance}}\"}]}\ninstances:\n  mine: [{id: a, name: A}, {id: b, name: B}]\n" };
+    const one = (instance: string) => ({ repo, item: ITEM, event: { type: "manual", instance } });
+    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "events", runs: [one("b"), one("a")] }));
+    expect(code, stderr).toBe(0);
+    const out = JSON.parse(stdout) as { runs: EventResult[] };
+    expect(out.runs.map((r) => r.results.map((x) => [x.instance.id, x.result.attached.map((a) => (a as { text: string }).text)])))
+      .toEqual([[["b", ["b"]]], [["a", ["a"]]]]);
+  });
+
+  it("refuses a run that isn't an event input", async () => {
+    const { code, stderr } = await bundled(JSON.stringify({ mode: "events", runs: [{ item: ITEM }] }));
+    expect([code, stderr.trim()]).toEqual([2, "plugin host: runs[0]: input needs event as an object"]);
   });
 });

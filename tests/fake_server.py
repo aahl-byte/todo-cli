@@ -39,6 +39,14 @@ class FakeServer:
         self.doc_tombs = {}      # deleted doc uid → its last sha256
         self.git_facts = []
         self.git_facts_offline = False
+        self.plugin_config = {}  # repo → {instances, grants}; None answers 404, like an older server
+        self.plugin_creds = []   # (repo, connection, secret) per credential posted
+        self.plugin_gets = 0
+        self.plugin_tombs = set()
+        self.host_secrets = []
+        self.feed_by_plugin = True   # False: an older server, whose feed doesn't say who removed a note
+        self.plugins_down = False
+        self.creds_unkeyed = False   # no TODO_SECRET_KEY: credentials answer 503
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -104,9 +112,12 @@ class FakeServer:
     def _create(self, op, author):
         e, uid, data = op["entity"], op["uid"], dict(op.get("data") or {})
         res = {"op_id": op["op_id"], "status": "applied"}
-        if uid in self.tombs:
+        plugin_made = e in ("note", "log") and bool((data.get("meta") or {}).get("plugin"))
+        if uid in self.tombs and not (plugin_made and uid in self.plugin_tombs):
             seq, by = self.tombs[uid]
             return {"op_id": op["op_id"], "status": "rejected", "reason": "removed", "by": by}
+        self.tombs.pop(uid, None)
+        self.plugin_tombs.discard(uid)
         if uid in self.rows:
             existing = self.rows[uid]
             same = all(existing.get(k) == v for k, v in data.items()
@@ -240,6 +251,8 @@ class FakeServer:
         seq = self._bump(row["_entity"], row["uid"], row["item_uid"], deleted=True, author=author)
         del self.rows[op["uid"]]
         self.tombs[op["uid"]] = (seq, author)
+        if op.get("plugin"):
+            self.plugin_tombs.add(op["uid"])         # the runner's removal: the plugin may make it again
         return {"op_id": op["op_id"], "status": "applied", "versions": {}}
 
     # ── docs (server/lib/docs.ts) ────────────────────────────────────────────
@@ -292,7 +305,7 @@ class FakeServer:
                           "size": len(data), "sha256": sha, "file_key": rec["file_key"],
                           "content_type": "application/octet-stream", "by": author,
                           "via": rec.get("via") or "human", "at": f"2026-10-02T12:{seq % 60:02d}:00.000Z",
-                          "versions": {"sha256": seq}}
+                          "plugin": rec.get("plugin"), "versions": {"sha256": seq}}
         return {"status": "applied", "doc": self._public(self.rows[uid])}
 
     def remove_doc(self, uid, base, author):
@@ -366,6 +379,35 @@ class FakeServer:
                 return {"ok": True, "stored": len(known),
                         "skipped": [f["item_uid"] for f in facts if f["item_uid"] not in server.rows]}
 
+            def plugins(self, project, repo):
+                from todo.remote import RemoteError
+                server.plugin_gets += 1
+                if server.offline or server.plugins_down:
+                    raise RemoteError("fake offline")
+                if server.plugin_config is None:
+                    raise RemoteError("no such route", 404)
+                got = server.plugin_config.get(repo) or {}
+                return {"instances": copy.deepcopy(got.get("instances") or {}),
+                        "grants": copy.deepcopy(got.get("grants") or {}),
+                        "plugins": copy.deepcopy(got.get("plugins") or []),
+                        "secrets": [c for r, c, _ in server.plugin_creds if r == repo],
+                        "host_secrets": list(server.host_secrets), "runs": {}}
+
+            def put_plugins(self, project, repo, plugin, instances=None, grants=None):
+                got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
+                if instances is not None:
+                    got["instances"][plugin] = copy.deepcopy(instances)
+                if grants is not None:
+                    got["grants"][plugin] = list(grants)
+                return {"ok": True}
+
+            def plugin_credential(self, project, repo, connection, secret):
+                if server.creds_unkeyed:
+                    from todo.remote import RemoteError
+                    raise RemoteError("no TODO_SECRET_KEY", 503)
+                server.plugin_creds.append((repo, connection, secret))
+                return {"ok": True}
+
             def changes(self, project, since, limit=500):
                 if server.offline:
                     from todo.remote import RemoteError
@@ -382,6 +424,8 @@ class FakeServer:
                                 "deleted": row is None, "data": data})
                     if e == "doc" and row is None and uid in server.doc_tombs:
                         out[-1]["last_sha256"] = server.doc_tombs[uid]
+                    if e in ("note", "log") and row is None and server.feed_by_plugin:
+                        out[-1]["by_plugin"] = uid in server.plugin_tombs
                 return {"changes": out, "cursor": rows[-1][0] if rows else since,
                         "more": len(rows) == limit, "deploy_step": server.deploy_step,
                         "actions": server.actions}

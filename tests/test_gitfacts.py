@@ -667,7 +667,7 @@ def test_a_shallow_clone_skips_facts_with_a_notice(fx, tmp_path):
     gitfacts.refresh(root)
     f = gitfacts.load(root, store.resolve_item(root, a))
     assert "shallow" in f["notice"] and "unknown" in f["branches"][0] and "in" not in f["branches"][0]
-    cache = gitfacts._read_json(root / ".git-cache.json")
+    cache = gitfacts.read_json(root / ".git-cache.json")
     assert not cache.get("anc") and not cache.get("u")
 
 

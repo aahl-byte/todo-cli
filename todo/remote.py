@@ -181,6 +181,26 @@ class Remote:
         path = f"/api/projects/{urllib.parse.quote(project)}/git-facts"
         return self.request("POST", path, {"facts": facts})
 
+    def _plugins_path(self, project: str, rest: str = "") -> str:
+        return f"/api/projects/{urllib.parse.quote(project)}/plugins{rest}"
+
+    def plugins(self, project: str, repo: str) -> dict:
+        """The repo's stored instances and grants, its plugins as the server reads them, the
+        connections the server holds a secret for, and each instance's last server run."""
+        return self.request("GET", self._plugins_path(project, "?" + urllib.parse.urlencode({"repo": repo})))
+
+    def put_plugins(self, project: str, repo: str, plugin: str, instances=None, grants=None) -> dict:
+        body = {"repo": repo, "plugin": plugin}
+        if instances is not None:
+            body["instances"] = instances
+        if grants is not None:
+            body["grants"] = grants
+        return self.request("PUT", self._plugins_path(project), body)
+
+    def plugin_credential(self, project: str, repo: str, connection: str, secret: str) -> dict:
+        return self.request("POST", self._plugins_path(project, "/credentials"),
+                            {"repo": repo, "connection": connection, "secret": secret})
+
     def run_action(self, project: str, item: str, action: str) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/actions/run"
         return self.request("POST", path, {"item": item, "action": action})

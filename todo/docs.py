@@ -1,8 +1,9 @@
 """An item's docs: files it keeps on purpose, in `<item dir>/docs/<name>`.
 
-`docs/.meta.yaml` maps each name to `{uid, sha256, size, by, via, at, base}`:
-the content's hash and size, who wrote it and when, and `base`, the sha256 the
-server last confirmed (None until the doc has synced). A file the sidecar
+`docs/.meta.yaml` maps each name to `{uid, sha256, size, by, via, at, base, plugin}`:
+the content's hash and size, who wrote it and when, `base`, the sha256 the
+server last confirmed (None until the doc has synced), and the plugin instance
+that wrote it, if one did. A file the sidecar
 doesn't list is still a doc; its author is unknown until a `todo` write
 records it. A sidecar that can't be read is kept as `.meta.yaml.bad`, and the
 next sync rebuilds each doc's base from the server's records.
@@ -28,7 +29,7 @@ BAD_META_FILE = ".meta.yaml.bad"
 REBUILD_FILE = ".rebuild"          # present while bases wait to be rebuilt from the server
 MAX_NAME_BYTES = 200
 MAX_BYTES = 25 * 1024 * 1024
-FIELDS = ("uid", "sha256", "size", "by", "via", "at", "base")
+FIELDS = ("uid", "sha256", "size", "by", "via", "at", "base", "plugin")
 
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 _RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$", re.IGNORECASE)
@@ -183,10 +184,10 @@ def write_bytes(item_dir: Path, name: str, data: bytes) -> Path:
     return target
 
 
-def entry(item_uid: str, name: str, sha: str, size: int, now_iso: str, base=None) -> dict:
-    """A sidecar entry crediting the current user with this content."""
+def entry(item_uid: str, name: str, sha: str, size: int, now_iso: str, base=None, plugin: str | None = None) -> dict:
+    """A sidecar entry crediting the current user, or `plugin`, with this content."""
     return {"uid": doc_uid(item_uid, name) if item_uid else None, "sha256": sha, "size": size,
-            "by": identity.user(), "via": identity.via(), "at": now_iso, "base": base}
+            "by": identity.user(), "via": identity.via(), "at": now_iso, "base": base, "plugin": plugin}
 
 
 def record(item_dir: Path, item_uid: str, now_iso: str, meta: dict | None = None) -> dict:
@@ -208,14 +209,14 @@ def record(item_dir: Path, item_uid: str, now_iso: str, meta: dict | None = None
     return meta
 
 
-def add(item_dir: Path, item_uid: str, name: str, data: bytes, now_iso: str) -> str:
+def add(item_dir: Path, item_uid: str, name: str, data: bytes, now_iso: str, plugin: str | None = None) -> str:
     """Write a doc, into the existing doc when `name` is another spelling of
-    one. Returns the name it went under."""
+    one, credited to `plugin` when a plugin wrote it. Returns the name it went under."""
     meta = read_meta(item_dir)
     name = find(set(files(item_dir)) | set(meta), name) or name
     write_bytes(item_dir, name, data)
     base = (meta.get(name) or {}).get("base")
-    meta[name] = entry(item_uid, name, sha256_bytes(data), len(data), now_iso, base)
+    meta[name] = entry(item_uid, name, sha256_bytes(data), len(data), now_iso, base, plugin)
     meta = record(item_dir, item_uid, now_iso, meta)
     write_meta(item_dir, meta)
     return name

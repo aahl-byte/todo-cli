@@ -2,6 +2,7 @@
 (purple `review`, red `blocked`, etc.) only when stdout is a real TTY, so piped
 or redirected output stays plain."""
 
+import json
 import re
 import sys
 
@@ -61,15 +62,64 @@ def print_grouped(groups) -> None:
 LOG_PREVIEW = 3   # entries `todo get` shows before eliding the rest
 
 
-def _stamp(ts: str) -> str:
+def stamp(ts: str) -> str:
     """`2026-08-14T15:02:11.483Z` → `2026-08-14 15:02`; anything else passes
     through as-is."""
     return ts[:16].replace("T", " ") if len(ts) >= 16 else ts
 
 
 def _log_lines(entries) -> list:
-    return [f'  [{e["id"]}] {_stamp(e["ts"])}  ' + str(e["text"]).replace("\n", "\n      ")
+    return [f'  [{e["id"]}] {stamp(e["ts"])}  ' + _plugin_tag(e) + str(e["text"]).replace("\n", "\n      ")
             for e in entries]
+
+
+def _plugin_tag(e) -> str:
+    plugin = (e.get("meta") or {}).get("plugin")
+    return f"(plugin {plugin}) " if plugin else ""
+
+
+def _attachment_text(a: dict) -> str:
+    kind = a.get("kind")
+    if kind == "link":
+        return f'link · {a.get("type")}  {a.get("url")}' + (f'  "{a["label"]}"' if a.get("label") else "")
+    if kind == "edge":
+        return f'edge · needs {a.get("needs")}' + (f' in {a["in"]}' if a.get("in") else "") + f' — {a.get("because")}'
+    if kind == "doc":
+        return f'doc · {a.get("name")}' + (f' from {a["url"]}' if a.get("url") else "")
+    return f'{kind} · {a.get("text")}'
+
+
+def plugin_run_lines(iid: str, result: dict) -> list:
+    """What one instance's run attached, would send and logged, as `todo plugin test` prints it."""
+    if result.get("error"):
+        head = [f"{iid}: error: {result['error']}"]
+    elif result.get("skipped"):
+        head = [f"{iid}: skipped: {result['skipped']}"]
+    else:
+        head = [f"{iid}: would attach " + (f"{len(result.get('attached') or [])}:" if result.get("attached") else "nothing")]
+    out = head + [f"  {_attachment_text(a)}" for a in result.get("attached") or []]
+    sends = result.get("wouldSend") or []
+    if sends:
+        out.append(f"  would send {len(sends)}:")
+        for c in sends:
+            what = c.get("tool") or f'{c.get("method", "")} {c.get("path", "")}'.strip()
+            body = f'  {json.dumps(c["input"], sort_keys=True)}' if c.get("input") is not None else ""
+            out.append(f'    {c.get("connection")}: {what}{body}')
+    out += [f"  log: {line}" for line in result.get("log") or []]
+    return out
+
+
+def plugin_record_lines(rec: dict) -> list:
+    """An instance's last run on an item, as `todo plugins` prints it."""
+    if rec.get("error"):
+        out = [f"error: {rec['error']}"]
+    elif rec.get("skipped"):
+        out = [f"skipped: {rec['skipped']}"]
+    else:
+        out = [f"attached {len(rec.get('attached') or [])}"] + [f"  {_attachment_text(a)}" for a in rec.get("attached") or []]
+    if rec.get("would_send"):
+        out.append(f"held back {rec['would_send']} call(s) in dry-run")
+    return out + [f"log: {line}" for line in rec.get("log") or []]
 
 
 FILES = re.compile(r"\]\((/api/files/[^)\s]+)\)")
@@ -122,7 +172,7 @@ def dep_lines(facts: dict) -> list:
     return out
 
 
-def print_item(it, full_log: bool = False, related=(), server: str | None = None, git=None) -> None:
+def print_item(it, full_log: bool = False, related=(), server: str | None = None, git=None, plugins=()) -> None:
     color = _use_color()
     print(f'id:        {it["id"]}')
     print(f'title:     {it["title"]}')
@@ -194,6 +244,10 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
         for d in it["docs"]:
             who = f' · {d["by"]}' if d.get("by") else ""
             print(f'  {d["name"]}  ({human_size(d["size"])}{who})')
+    if plugins:
+        print("plugins:")
+        for iid, kind, why in plugins:
+            print(f"  {iid}: {'skipped' if kind == 'skipped' else 'failed'} — {why}")
     if it.get("history"):
         print("history:")
         entries = it["history"][-LOG_PREVIEW:]
@@ -237,7 +291,9 @@ def _note_tag(n) -> str:
         parts[0] = f'link · {meta["type"]}'
     if kind == "clarification":
         parts.append(meta.get("state") or "open")
-    if n.get("author"):
+    if meta.get("plugin"):
+        parts.append(f'plugin {meta["plugin"]}')
+    elif n.get("author"):
         parts.append(n["author"])
     if n.get("via") == "agent":
         parts.append("AI")
@@ -275,7 +331,7 @@ def update_lines(rows, every=None) -> list:
             out += note_lines([e], prefix="n", every=every)
         else:
             who = f'({e["author"]}{" · AI" if e.get("via") == "agent" else ""}) ' if e.get("author") else ""
-            out.append(f'  [l{e["id"]}] log {_stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
+            out.append(f'  [l{e["id"]}] log {stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
     return out
 
 
@@ -301,7 +357,7 @@ def _history_lines(entries, color) -> list:
         forced = "  forced" if h.get("forced") else ""
         frm = colorize(h["from"] or "", h["from"] or "—", color)
         to = colorize(h["to"] or "", h["to"] or "—", color)
-        out.append(f'  [{h["id"]}] {_stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
+        out.append(f'  [{h["id"]}] {stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
     return out
 
 
@@ -409,7 +465,7 @@ def print_tasks(it) -> None:
 def print_inbox(rows) -> None:
     for r in rows:
         mark = " " if r.get("read_at") else "•"
-        when = _stamp(str(r.get("created") or ""))
+        when = stamp(str(r.get("created") or ""))
         what = {"mention": "mentioned you", "qa-rejection": "QA rejected",
                 "clarification": "asked a question", "answer": "answered your question",
                 "ready-for-qa": "ready for your QA", "deployed": "deployed"}.get(r["kind"], r["kind"])

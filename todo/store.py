@@ -148,7 +148,7 @@ def _dir_phase(name: str):
 
 
 # ── reading ───────────────────────────────────────────────────────────────────
-def _read_entries(d: Path) -> list:
+def read_entries(d: Path) -> list:
     """`{id, ts, text, meta, file}` for each `{ts}-{id}.md` in `d`, ordered by
     id. `meta` is the front matter ({} for a legacy file). A history
     `{ts}-{id}.yaml` puts its whole map in `meta` and leaves `text` empty."""
@@ -296,9 +296,9 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "jira_status": {to_str(k): to_str(v) for k, v in (meta.get("jira_status") or {}).items()}
                        if isinstance(meta.get("jira_status"), dict) else {},
         "phases": phase_titles(meta.get("phases")),
-        "notes": [_note(e) for e in _read_entries(item_dir / NOTES_DIR)] if full else [],
-        "log": [_log(e) for e in _read_entries(item_dir / LOG_DIR)] if full else [],
-        "history": [_history(e) for e in _read_entries(item_dir / HISTORY_DIR)]
+        "notes": [_note(e) for e in read_entries(item_dir / NOTES_DIR)] if full else [],
+        "log": [_log(e) for e in read_entries(item_dir / LOG_DIR)] if full else [],
+        "history": [_history(e) for e in read_entries(item_dir / HISTORY_DIR)]
                    if full else [],
         "tasks": _read_tasks(item_dir),
         "checks": _read_checks(item_dir),
@@ -397,6 +397,21 @@ def add_todo(root: Path, title: str, now_iso: str, status: str = "todo"):
     return get_item(root, item_id)
 
 
+def ensure_uid(root: Path, item_id: str, project: str | None = None) -> str | None:
+    """The item's uid, written into its TODO.yaml first when it has none: the
+    one sync backfills for `project`, or a local one derived the same way."""
+    from .uids import hash_uid
+
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return None
+    y, meta = _load_meta(item_dir)
+    if not to_str(meta.get("uid")):
+        meta["uid"] = hash_uid(project or "local", item_dir.name, to_str(meta.get("created")))
+        yamlio.save(y, item_dir / ITEM_FILE, meta)
+    return to_str(meta["uid"])
+
+
 def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
                 forced: bool = False) -> bool:
     """Patch status/priority/type/title or a people field on an item. `now_iso`
@@ -448,7 +463,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
 def _write_history(item_dir: Path, was: str, new: str, ts, forced: bool) -> None:
     d = item_dir / HISTORY_DIR
     d.mkdir(exist_ok=True)
-    ids = [e["id"] for e in _read_entries(d)]
+    ids = [e["id"] for e in read_entries(d)]
     new_id = max(ids) + 1 if ids else 1
     ts = ts or _now()
     entry = {"uid": ulid.new(), "from": was, "to": new, "by": identity.user(),
@@ -487,15 +502,15 @@ def archive_todos(root: Path):
 
 
 # ── notes and dev log (one file per entry) ────────────────────────────────────
-def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict):
+def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict, uid: str | None = None):
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return None
     d = item_dir / sub
     d.mkdir(exist_ok=True)
-    ids = [e["id"] for e in _read_entries(d)]
+    ids = [e["id"] for e in read_entries(d)]
     new_id = max(ids) + 1 if ids else 1
-    full = {"uid": ulid.new(), **meta, "author": identity.user(), "via": identity.via(),
+    full = {"uid": uid or ulid.new(), **meta, "author": identity.user(), "via": identity.via(),
             SEEN: [identity.party()]}
     yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.md",
                         frontmatter.join(full, text + "\n"))
@@ -525,7 +540,7 @@ def mentions(text: str) -> list:
 
 
 def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "context",
-             extra: dict | None = None):
+             extra: dict | None = None, uid: str | None = None):
     """Append a note of `kind` with a fresh per-item id. `comment` and
     `qa-rejection` notes record their @mentions; `clarification` notes start
     open. Returns the id, or None if the item is missing."""
@@ -536,7 +551,7 @@ def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "con
             meta["mentions"] = found
     if kind == "clarification":
         meta.setdefault("state", "open")
-    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta)
+    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta, uid)
 
 
 def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: str) -> bool:
@@ -544,7 +559,7 @@ def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: st
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return False
-    for e in _read_entries(item_dir / NOTES_DIR):
+    for e in read_entries(item_dir / NOTES_DIR):
         if e["id"] == note_id:
             meta = dict(e["meta"]) or {"uid": None, "kind": "context"}
             meta.update(state="answered", answer=answer, answered_by=identity.user(), answered_via=identity.via(),
@@ -559,7 +574,7 @@ def edit_note(root: Path, item_id: str, note_id: int, text: str) -> bool:
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return False
-    for e in _read_entries(item_dir / NOTES_DIR):
+    for e in read_entries(item_dir / NOTES_DIR):
         if e["id"] == note_id:
             meta = {**e["meta"], SEEN: [identity.party()]}
             yamlio.write_atomic(e["file"], frontmatter.join(meta, text + "\n"))
@@ -571,10 +586,23 @@ def remove_note(root: Path, item_id: str, note_id: int) -> bool:
     return _remove_entry(root, item_id, NOTES_DIR, note_id)
 
 
-def add_log(root: Path, item_id: str, text: str, now_iso: str):
+def add_log(root: Path, item_id: str, text: str, now_iso: str, extra: dict | None = None,
+            uid: str | None = None):
     """Append a dated log entry with a fresh per-item id. Returns the id, or None
     if the item is missing."""
-    return _add_entry(root, item_id, LOG_DIR, text, now_iso, {})
+    return _add_entry(root, item_id, LOG_DIR, text, now_iso, dict(extra or {}), uid)
+
+
+def rewrite_entry(root: Path, item_id: str, sub: str, entry_id: int, text: str, meta: dict) -> bool:
+    """Replace a note's or log entry's text and front matter as given, keeping its file and id."""
+    item_dir = _find_dir(root, item_id)
+    if item_dir is None:
+        return False
+    for e in read_entries(item_dir / sub):
+        if e["id"] == entry_id:
+            yamlio.write_atomic(e["file"], frontmatter.join(meta, text + "\n"))
+            return True
+    return False
 
 
 def remove_log(root: Path, item_id: str, log_id: int) -> bool:
@@ -608,7 +636,7 @@ def acknowledge(root: Path, item_id: str, refs: list, party: str) -> list:
     missing = []
     for kind, entry_id in refs:
         sub = NOTES_DIR if kind == "n" else LOG_DIR
-        e = next((e for e in _read_entries(item_dir / sub) if e["id"] == entry_id), None)
+        e = next((e for e in read_entries(item_dir / sub) if e["id"] == entry_id), None)
         if e is None:
             missing.append((kind, entry_id))
             continue
@@ -861,7 +889,7 @@ def relating_to(root: Path, uid: str) -> list:
     out = []
     for d in _item_dirs(root):
         if any(e["meta"].get("kind") == "relation" and (e["meta"].get("item") == uid)
-               for e in _read_entries(d / NOTES_DIR)):
+               for e in read_entries(d / NOTES_DIR)):
             meta = yamlio.read(d / ITEM_FILE)
             if isinstance(meta, dict) and meta.get("uid") and meta["uid"] != uid:
                 out.append(to_str(meta["uid"]))

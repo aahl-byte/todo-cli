@@ -279,7 +279,7 @@ def _backfill_children(d: Path, uid: str) -> None:
             fixed.append(t)
         store._write_tasks(d, tasks, fixed)
     for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
-        for e in store._read_entries(d / sub):
+        for e in store.read_entries(d / sub):
             if e["meta"].get("uid"):
                 continue
             meta2 = dict(e["meta"])
@@ -447,7 +447,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
                 local.entities[t["uid"]] = {"entity": "task", "item_uid": uid, "data": {
                     "n": t["id"], "title": t["title"], "status": t["status"],
                     "phase": t["phase"], "position": pos}}
-        for e in store._read_entries(d / store.NOTES_DIR):
+        for e in store.read_entries(d / store.NOTES_DIR):
             m = e["meta"]
             if not m.get("uid"):
                 continue
@@ -460,7 +460,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
             local.files[m["uid"]] = e["file"]
             if m.get("via"):
                 local.via[m["uid"]] = m["via"]
-        for e in store._read_entries(d / store.LOG_DIR):
+        for e in store.read_entries(d / store.LOG_DIR):
             if e["meta"].get("uid"):
                 flat = {"n": e["id"], "ts": e["ts"], "text": e["text"]}
                 for k, v in e["meta"].items():
@@ -476,7 +476,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
                     "n": c["id"], "kind": c["kind"], "title": c["title"],
                     "payload": c["payload"], "timing": c["timing"], "status": c["status"],
                     "envs": store.env_text(c["envs"])}}
-        for e in store._read_entries(d / store.HISTORY_DIR):
+        for e in store.read_entries(d / store.HISTORY_DIR):
             if e["meta"].get("uid"):
                 local.files[e["meta"]["uid"]] = e["file"]
             if not e["meta"].get("server"):
@@ -650,6 +650,8 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
         for uid in local.busy:
             mark_changed(root, local.item_dirs[uid].name)
         ops = diff(local, snap)
+        from . import plugins
+        plugins.mark_runner_removes(root, ops, set(snap["entities"]), set(local.entities))
         if ops:
             save_snapshot(root, snap)
         _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status)
@@ -974,7 +976,7 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
     for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
         if entity not in entities:
             continue
-        for e in store._read_entries(d / sub):
+        for e in store.read_entries(d / sub):
             if e["meta"].get("uid") and new(e["meta"]["uid"]) != e["meta"]["uid"]:
                 meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
                 yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
@@ -983,6 +985,14 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
         changed = [dict(c, uid=new(c["uid"]) if c.get("uid") else c.get("uid")) for c in checks]
         if changed != checks:
             _write_checks(d, changed)
+
+
+def _plugin_owned(entity: str, data: dict) -> str | None:
+    """The plugin instance that made a note or log entry, from its create op."""
+    if entity not in ("note", "log"):
+        return None
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    return meta.get("plugin") or data.get("meta.plugin")
 
 
 def _whole_op_rejected(root, op, r, local, snap, report) -> None:
@@ -1004,6 +1014,15 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         return
     if reason == "removed" and op["op"] == "remove":
         snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
+        return
+    if reason == "removed" and op["op"] == "create" and _plugin_owned(entity, data):
+        # A plugin entity someone removed stays removed: no new uid, no retry.
+        snap["entities"].pop(uid, None)
+        _delete_local(local, entity, uid, op["item_uid"])
+        from . import plugins
+        plugins.forget(root, op["item_uid"], uid)
+        report.messages.append(f"{item_id}: {what} from plugin {_plugin_owned(entity, data)} not applied; "
+                               f"{r.get('by') or 'someone'} removed it")
         return
     if reason == "removed" and op["op"] == "create" and uid in snap.get("removed", []):
         # This store already saw that uid removed (it pushed or pulled the
@@ -1200,10 +1219,14 @@ def _write_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
         if entity != "item" and ((item_uid not in now.item_dirs and item_uid in ents)
                                   or item_uid in now.incomplete):
             return False            # its item is unreadable or only partly read: delete once it's fixed
+        owner = _plugin_owned(entity, (now.entities.get(uid) or ents.get(uid) or {}).get("data") or {})
         try:
             _delete_local(now, entity, uid, item_uid)
         except Exception:  # noqa: BLE001 — a malformed child file: delete once it's fixed
             return False
+        if owner and ch.get("by_plugin") is False:
+            from . import plugins
+            plugins.forget(root, item_uid, uid)         # a person removed it: the plugin never makes it again
         ents.pop(uid, None)
         _undefer(snap, uid)
         removed = snap.setdefault("removed", [])
@@ -1447,7 +1470,7 @@ def _trouble(e: RemoteError, name: str, report: Report) -> None:
 
 def _from_row(row: dict) -> dict:
     return {"uid": row["uid"], "sha256": row["sha256"], "size": row["size"], "by": row.get("by"),
-            "via": row.get("via"), "at": row.get("at"), "base": row["sha256"]}
+            "via": row.get("via"), "at": row.get("at"), "base": row["sha256"], "plugin": row.get("plugin")}
 
 
 def _queue_doc(snap: dict, item_uid: str, row: dict, keep: bool = False) -> None:
@@ -1652,8 +1675,11 @@ def _push_doc(root, remote, project, d: Path, item_uid: str, name: str, meta: di
         return None                 # still being written; the next round has it
     try:
         key = remote.doc_upload(project, item_uid, name, data)
-        r = remote.doc_record(project, {"item_uid": item_uid, "name": name, "sha256": sha, "size": size,
-                                        "file_key": key, "base": e.get("base"), "via": e.get("via")})
+        record = {"item_uid": item_uid, "name": name, "sha256": sha, "size": size,
+                  "file_key": key, "base": e.get("base"), "via": e.get("via")}
+        if e.get("plugin"):
+            record["plugin"] = e["plugin"]
+        r = remote.doc_record(project, record)
     except RemoteError as err:
         if err.status != 409:
             raise
