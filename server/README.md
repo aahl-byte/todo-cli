@@ -19,7 +19,12 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_WEBHOOK_SECRET` | the Jira bridge |
    | `JIRA_ACCOUNT_ID` | optional; the integration's own account, else fetched from `/myself` |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
-   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses) |
+   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses). Also turns on git facts and repo plugins, which read each repo's `.todo-plugins/` through it; only plugins shipped with todo receive it |
+   | `GITHUB_WEBHOOK_SECRET` | optional; GitHub webhooks (`push`, `pull_request`, `deployment_status`) at `/api/github/webhook` |
+   | `GITHUB_API_URL` | optional; GitHub's REST base, for GitHub Enterprise |
+   | `TODO_SECRET_KEY` | optional; 32 bytes (`openssl rand -base64 32`) that encrypt plugin connection credentials and secret settings |
+   | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; host-wide plugin connections as a JSON map, and their secrets, which only shipped plugins receive |
+   | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated `host` or `host:port` plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses, e.g. `leaf-rain:10011` for Watchtower on the tailnet |
    | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
 
 4. **Create the schema, then users and projects**, from your machine with the

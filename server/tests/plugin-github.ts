@@ -14,7 +14,7 @@ export interface Spec {
   tips?: Record<string, string>;
   etag?: string;
   /** Anything outside GitHub, such as a repo connection's endpoint. */
-  other?: (url: string, init: RequestInit | undefined) => Response | Promise<Response> | undefined;
+  other?: (url: string, init: RequestInit | undefined) => Response | undefined | Promise<Response | undefined>;
 }
 
 export interface Sent { url: string; method: string; headers: Record<string, string>; body: unknown }
