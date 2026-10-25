@@ -12,6 +12,7 @@ import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { useReadOnly } from "../ReadOnly";
 import { Glance } from "./Glance";
+import { GitFacts } from "./GitFacts";
 import { AppFields } from "../AppFields";
 import { CopyButton } from "../Copy";
 import { withBase } from "@/lib/base";
@@ -87,6 +88,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
       </section>
       <Related rows={data.related} ctx={ctx} />
       <Links rows={data.links} prs={data.prs ?? {}} ctx={ctx} />
+      <GitFacts facts={data.git} base={ctx.readOnly?.base ?? `/p/${ctx.project}`} />
       {data.files?.length > 0 && <Files rows={data.files} jiraBase={ctx.jiraBase} />}
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
       {ctx.actions.length > 0 && <Actions ctx={ctx} itemId={it.id} />}

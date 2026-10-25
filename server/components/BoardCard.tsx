@@ -53,6 +53,13 @@ function Flags({ c }: { c: Card }) {
   );
 }
 
+/** The "waits on" flag, from the item's git facts; anything but a list of ids shows nothing. */
+function WaitsOn({ c }: { c: Card }) {
+  const ids = Array.isArray(c.waits_on) ? c.waits_on.filter((w): w is string => typeof w === "string") : [];
+  if (!ids.length) return null;
+  return <span className="tag hot" data-tip={`waits on ${ids.join(", ")}, which hasn't landed`}>waits on {ids[0]}{ids.length > 1 && ` +${ids.length - 1}`}</span>;
+}
+
 /** Whose initials a card shows in a board column: QA's in the QA column, else the developer's, else a request's author. */
 export function columnWho(column: string, c: Card): string | null {
   return column === "qa" ? c.qa_assignee : c.developer ?? (c.status === "requested" ? c.creator : null);
@@ -80,6 +87,7 @@ export function BoardCard({ c, project, who, led, current, base = `/p/${project}
         {(c.priority === "high" || c.priority === "urgent") && <span className="tag hot">{c.priority}</span>}
         {untriaged(c) && <span className="tag hot" data-tip="the request being worked on never went through triage">v{c.request_meta!.version} untriaged</span>}
         {c.pending_pre > 0 && <span className="tag" data-tip="pending pre-deploy checks">checks {c.pending_pre}</span>}
+        <WaitsOn c={c} />
         {c.last_via === "agent" && <span className="ai" data-tip="last moved by an agent">AI</span>}
         <Glance c={c} />
       </div>

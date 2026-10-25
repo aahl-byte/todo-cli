@@ -37,6 +37,8 @@ class FakeServer:
         self.uploads = []        # file keys, in upload order
         self.doc_lists = []      # (item, after) per doc list request
         self.doc_tombs = {}      # deleted doc uid → its last sha256
+        self.git_facts = []
+        self.git_facts_offline = False
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -180,6 +182,14 @@ class FakeServer:
             if f == "status" and row["_entity"] == "task" and v not in VALID_STATUSES:
                 rejected.append({"field": f, "reason": "invalid", "server_value": cur, "version": ver})
                 continue
+            if f == "status" and row["_entity"] == "item" and v in ("ready-to-deploy", "deployed") \
+                    and cur != v and not op.get("force") and self._waits(row["uid"]):
+                seen = self._waits(row["uid"])
+                rejected.append({"field": f, "reason": "waits-on", "server_value": cur, "version": ver,
+                                 "edges": [f'{e.get("id")} ({e.get("branch")}) {e["state"]}' for e in seen.get("needs") or []
+                                           if e["state"] in ("waiting", "stale", "unknown")],
+                                 "facts_at": seen.get("at")})
+                continue
             if cur == v:
                 out[f] = ver or 0
             elif f != "position" and ver is not None and (op.get("base") or {}).get(f) != ver:
@@ -204,6 +214,11 @@ class FakeServer:
         if rejected:
             res["rejected"] = rejected
         return res
+
+    def _waits(self, item_uid):
+        """Like the server's guard: the item's latest posted git facts wait on something."""
+        posted = [f["data"] for f in self.git_facts if f["item_uid"] == item_uid]
+        return posted[-1] if posted and posted[-1].get("waits_on") else None
 
     def _history(self, item, frm, to, author, op):
         import uuid
@@ -341,6 +356,15 @@ class FakeServer:
             def checkout(self, project, dir_, repo):
                 server.checkouts.append((author, project, dir_, repo))
                 return {"ok": True}
+
+            def git_facts(self, project, facts):
+                if server.git_facts_offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                known = [f for f in facts if f["item_uid"] in server.rows]
+                server.git_facts.extend(copy.deepcopy(known))
+                return {"ok": True, "stored": len(known),
+                        "skipped": [f["item_uid"] for f in facts if f["item_uid"] not in server.rows]}
 
             def changes(self, project, since, limit=500):
                 if server.offline:

@@ -200,7 +200,8 @@ async function stamp(db: Db, link: any, payload: any): Promise<void> {
 
 /** Jira moved the issue somewhere todo refused (the deploy gate): say so on both sides. */
 async function gated(db: Db, link: any, key: string, to: string, reason: string, actor: Actor, id: string) {
-  const why = reason === "checks-pending" ? "pre-deploy checks are still pending" : reason;
+  const why = reason === "checks-pending" ? "pre-deploy checks are still pending"
+    : reason === "waits-on" ? "it waits on a dependency that hasn't landed" : reason;
   await applyOps(db, link.project, [{
     op_id: `jira:gated:${id}`, op: "create", entity: "log", uid: jiraUid("gated", id),
     item_uid: link.item_uid,

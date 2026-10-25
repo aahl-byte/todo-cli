@@ -5,6 +5,7 @@ or redirected output stays plain."""
 import re
 import sys
 
+from .gitfacts import HINT, SHARES_HINT, describe
 from .status import COMPLETE, PAST_TRIAGE, colorize
 
 
@@ -27,14 +28,15 @@ def _item_line(it, w, color, indent="") -> str:
     return f'{indent}{it["id"]:<{w}}  {cell} {(it["priority"] or "—"):<8} {it["title"]}{mark}'
 
 
-def print_list(items) -> None:
+def print_list(items, waits=None) -> None:
     if not items:
         print("(no items)")
         return
     color = _use_color()
     w = min(28, max(len(i["id"]) for i in items))
     for it in items:
-        print(_item_line(it, w, color))
+        on = (waits or {}).get(it["id"])
+        print(_item_line(it, w, color) + (f'  waits on {", ".join(on)}' if on else ""))
 
 
 def print_grouped(groups) -> None:
@@ -78,7 +80,49 @@ def absolute_files(text: str, base: str | None) -> str:
     return FILES.sub(lambda m: f"]({base.rstrip('/')}{m.group(1)})", text) if base else text
 
 
-def print_item(it, full_log: bool = False, related=(), server: str | None = None) -> None:
+def git_lines(facts: dict) -> list:
+    """`todo get`'s git block: each branch with its PR and where it landed, then the edges and hints."""
+    if not facts:
+        return []
+    out = ["git:"]
+    for b in facts.get("branches") or []:
+        line = "  " + b["name"] + ("  (deleted)" if b.get("gone") else "")
+        mark = {True: "✓", False: "✗"}
+        pr = b.get("pr")
+        if pr:
+            line += f'  PR #{pr.get("number")} {pr.get("state")} → {pr.get("base") or b.get("target")}'
+        if b.get("in"):
+            line += " · " + " · ".join(f'in {t} {mark.get(ok, "?")}' for t, ok in b["in"].items())
+        if b.get("unknown"):
+            line += f'  (unknown: {b["unknown"]})'
+        out.append(line)
+    return out + dep_lines(facts)
+
+
+def dep_lines(facts: dict) -> list:
+    """Needs, needed by, conflicts and overlaps, indented under a heading each."""
+    out = []
+    for label, key in (("needs", "needs"), ("needed by", "needed_by")):
+        if facts.get(key):
+            out.append(f"  {label}:")
+            out += [f"    {describe(e)}" for e in facts[key]]
+    if facts.get("shares"):
+        out.append("  shares unlanded commits with:")
+        out += [f'    {s["id"]} ({s["branch"]}) via {s["via"]}: {s.get("shared", "?")} commit(s)'
+                + (f' (unknown: {s["reason"]})' if s.get("state") == "unknown" else "") for s in facts["shares"]]
+        out.append(f"  hint: {SHARES_HINT}")
+    for key in ("conflicts", "overlaps"):
+        if facts.get(key):
+            out.append(f"  {key}:")
+            out += [f'    {r["id"]} ({r["branch"]}) with {r["via"]}: {", ".join(r["files"])}' for r in facts[key]]
+    if facts.get("conflicts") or facts.get("overlaps"):
+        out.append(f"  hint: {HINT}")
+    if facts.get("notice"):
+        out.append(f'  note: {facts["notice"]}')
+    return out
+
+
+def print_item(it, full_log: bool = False, related=(), server: str | None = None, git=None) -> None:
     color = _use_color()
     print(f'id:        {it["id"]}')
     print(f'title:     {it["title"]}')
@@ -89,6 +133,8 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
     print(f'priority:  {it["priority"] or "—"}')
     print(f'app:       {it.get("app") or "—"} · {it.get("section") or "—"}')
     print(f'branches:  {it.get("repo") or "—"} · {", ".join(it.get("branches") or []) or "—"}')
+    for line in git_lines(git or {}):
+        print(line)
     if it.get("jira"):
         status = it.get("jira_status") or {}
         print("jira:      " + ", ".join(f"{k} ({status[k]})" if status.get(k) else k for k in it["jira"]))

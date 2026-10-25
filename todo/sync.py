@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import checkout, docs, frontmatter, identity, store, ulid, yamlio
+from . import checkout, docs, frontmatter, gitfacts, identity, store, ulid, yamlio
 from .uids import hash_uid as _hash_uid  # noqa: F401 — the name callers know
 from .remote import Remote, RemoteError, sync_config, sync_dir
 from .util import to_str
@@ -631,6 +631,7 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     pushed_status: set = set()
     try:
         ensure_uids(root, project, ids)
+        _git_facts(root, remote, project)       # before the push: the server's guard reads them
         if adopt and not snap["entities"]:
             # First link: the server's state wins over the clone, and every
             # field it replaces is reported.
@@ -673,6 +674,14 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             for item_id in marks:
                 mark_changed(root, item_id)
     return report
+
+
+def _git_facts(root: Path, remote: Remote, project: str) -> None:
+    """Recompute git facts for branches that moved, and post what changed."""
+    try:
+        gitfacts.on_round(root, remote, project)
+    except Exception as e:  # noqa: BLE001 — git facts must never break a round
+        print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
 
 
 BATCH_BYTES = 1_000_000          # well under Vercel's 4.5 MB request limit
@@ -920,6 +929,10 @@ def _log_rejection(root, op, x, local, report) -> None:
         at = f' at {x["at"][:16].replace("T", " ")}' if x.get("at") else ""
         text = (f'offline {label}{x["field"]} → {value} not applied; '
                 f'{who} set {x.get("server_value")}{at}')
+    elif x.get("reason") == "waits-on" and x.get("edges"):
+        at = f' (facts from {x["facts_at"][:16].replace("T", " ")})' if x.get("facts_at") else ""
+        text = (f'{label}{x["field"]} → {value} not applied; the server still sees {", ".join(x["edges"])}{at}; '
+                "it's rechecking — retry in a minute, or use --force")
     else:
         text = f'{label}{x["field"]} → {value} not applied ({x.get("reason")})'
     report.messages.append(f"{item_id}: {text}")

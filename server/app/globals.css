@@ -701,3 +701,10 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .hljs-title, .hljs-title.function_ { color: var(--hl-title); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 700; }
+
+.git-facts .label.sub { margin: 8px 0 2px; font-size: 9px; }
+.git-facts .rrow + .rrow { margin-top: 4px; }
+.git-in { font: 10px var(--mono); color: var(--faint); white-space: nowrap; }
+.git-in.yes { color: var(--s-ready-to-deploy); }
+.git-hint { font-size: 11px; margin-top: 6px; }
+.git-facts .mono { font-family: var(--mono); font-size: 11px; }
