@@ -1,7 +1,7 @@
 // The Plugins settings form as data: a field per `settings:` entry, drafts of a
 // plugin's instances as the dashboard edits them, and the instance list those
 // drafts save as. Pure, so the page and the tests share it.
-import type { InstanceDef, SettingDef, Trigger } from "./plugins/types";
+import type { Attachment, InstanceDef, SettingDef, Trigger } from "./plugins/types";
 
 export const ANY = "*";
 export const TRIGGER_KINDS = ["status", "push", "pr", "deployment", "manual"] as const;
@@ -316,4 +316,15 @@ export function savedInstances(plugin: PluginShape, draft: PluginDraft): Saved {
     }
   }
   return { instances, errors, warnings };
+}
+
+// ── run log ───────────────────────────────────────────────────────────────────
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+const KIND_NAME: Record<Attachment["kind"], string> = { link: "link", edge: "edge", doc: "doc", log: "log line", request: "request" };
+
+/** "2 links, 1 log line". */
+export function attachedSummary(attached: Attachment[]): string {
+  const n = new Map<Attachment["kind"], number>();
+  for (const a of attached) n.set(a.kind, (n.get(a.kind) ?? 0) + 1);
+  return [...n].map(([k, c]) => plural(c, KIND_NAME[k])).join(", ");
 }
