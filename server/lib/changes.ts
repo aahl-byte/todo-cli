@@ -8,6 +8,8 @@ export interface Change {
   item_uid: string;
   deleted: boolean;
   data: Row | null;
+  /** For a deleted doc: its last content's sha256. */
+  last_sha256?: string;
 }
 
 const TABLES: Record<string, string> = { ...TABLE, doc: "docs" };
@@ -31,10 +33,15 @@ export async function changesSince(db: Db, project: string, since: number, limit
   for (const r of latest.values()) {
     const table = TABLES[r.entity];
     const [data] = await db.query(`select * from ${table} where uid = $1 and project = $2`, [r.uid, project]);
-    changes.push({
+    const change: Change = {
       seq: Number(r.seq), entity: r.entity, uid: r.uid, item_uid: r.item_uid,
       deleted: !data, data: data ? clean(data) : null,
-    });
+    };
+    if (!data && r.entity === "doc") {
+      const [tomb] = await db.query("select sha256 from doc_tombstones where project = $1 and uid = $2", [project, r.uid]);
+      if (tomb) change.last_sha256 = tomb.sha256;
+    }
+    changes.push(change);
   }
   return {
     changes,

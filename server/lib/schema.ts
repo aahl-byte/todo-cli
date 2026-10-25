@@ -363,6 +363,15 @@ create table if not exists docs (
   foreign key (project, item_uid) references items (project, uid) on delete cascade
 );
 
+-- A deleted doc's last sha256, so a client can tell whether its copy was edited since.
+create table if not exists doc_tombstones (
+  project  text not null,
+  uid      text not null,
+  item_uid text not null,
+  sha256   text not null,
+  primary key (project, uid)
+);
+
 -- Doc upload keys the server issued and nothing has recorded yet. A record
 -- takes only one of these; keys left over a day are swept with their bytes.
 create table if not exists doc_uploads (

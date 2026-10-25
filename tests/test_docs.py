@@ -503,6 +503,18 @@ def test_a_corrupt_sidecar_doesnt_undo_a_dashboard_delete(pair, server):
     assert not (doc_dir(a, "login-bug") / "plan.md").exists()
 
 
+def test_a_corrupt_sidecar_keeps_an_edit_a_dashboard_delete_would_lose(pair, server):
+    a, _ = pair
+    d = doc_dir(a, "login-bug")
+    (d / docs.META_FILE).write_text("{{{ not yaml")
+    (d / "plan.md").write_text("alice's edit\n")
+    server.dashboard_delete(item_uid(a), "plan.md")
+    assert rnd(a, server, "alice").error is None
+    assert not (d / "plan.md").exists() and server_doc(server, "plan.md") is None
+    assert (d / "plan.conflict-alice.md").read_text() == "alice's edit\n"
+    assert server.blobs[server_doc(server, "plan.conflict-alice.md")["file_key"]] == b"alice's edit\n"
+
+
 def test_a_corrupt_sidecar_takes_an_unchanged_doc_as_synced(pair, server):
     a, _ = pair
     (doc_dir(a, "login-bug") / docs.META_FILE).write_text("- just a list")

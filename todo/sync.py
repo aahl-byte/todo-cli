@@ -1460,7 +1460,7 @@ def sync_docs(root: Path, remote, project, local: Local, snap: dict, report: Rep
                 for row in _doc_rows(remote, project):
                     _queue_doc(snap, row["item_uid"], row, keep=True)
                 snap[DOCS_BACKFILLED] = True
-            _rebuild_sidecars(root, remote, project, local, snap)
+            _rebuild_sidecars(root, remote, project, local, snap, report)
         except RemoteError as e:
             _trouble(e, "doc list", report)
             return
@@ -1484,10 +1484,12 @@ def _doc_items(root: Path, local: Local):
             yield item_uid, d
 
 
-def _rebuild_sidecars(root: Path, remote, project, local: Local, snap: dict) -> None:
+def _rebuild_sidecars(root: Path, remote, project, local: Local, snap: dict, report: Report) -> None:
     """Rebuild the bases of an item whose sidecar couldn't be read, from the
     server's records: the same hash is unchanged, another hash an edit on top
-    of the server's version, a doc the server doesn't know a new one."""
+    of the server's version, a doc the server doesn't know a new one. A doc
+    the server deleted goes, unless it was edited here since: that edit is
+    kept as its conflict copy."""
     for item_uid, d in _doc_items(root, local):
         with _hold(root, item_uid, wait=False) as free:
             if not free:
@@ -1497,10 +1499,15 @@ def _rebuild_sidecars(root: Path, remote, project, local: Local, snap: dict) -> 
                 continue
             rows = {docs.name_key(r["name"]): r for r in _doc_rows(remote, project, item_uid)} \
                 if item_uid in snap["entities"] else {}
-            deleted = {ch["uid"] for ch in (snap.get("docs") or {}).values()
+            deleted = {ch["uid"]: ch.get("last_sha256") for ch in (snap.get("docs") or {}).values()
                        if ch["item_uid"] == item_uid and (ch.get("deleted") or not ch.get("data"))}
-            for name, path in docs.files(d).items():
+            for name, path in list(docs.files(d).items()):
                 sha, size = docs.sha256_file(path), path.stat().st_size
+                uid = docs.doc_uid(item_uid, name)
+                if uid in deleted and deleted[uid] != sha:
+                    # Deleted there, edited here: the edit stays, as a doc of its own.
+                    _keep_as_conflict(root, d, item_uid, name, meta, report)
+                    continue
                 e = meta.get(name) if (meta.get(name) or {}).get("sha256") == sha else None
                 e = e or docs.entry(item_uid, name, sha, size, _now())
                 row = rows.get(docs.name_key(name))
@@ -1508,7 +1515,7 @@ def _rebuild_sidecars(root: Path, remote, project, local: Local, snap: dict) -> 
                     e = _from_row(row)
                 elif row:
                     e["base"] = row["sha256"]
-                elif docs.doc_uid(item_uid, name) in deleted:
+                elif uid in deleted:
                     e["base"] = sha             # unchanged since: the server's delete applies
                 else:
                     e["base"] = None

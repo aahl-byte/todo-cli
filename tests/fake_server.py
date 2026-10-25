@@ -36,6 +36,7 @@ class FakeServer:
         self.blobs = {}          # file key → bytes
         self.uploads = []        # file keys, in upload order
         self.doc_lists = []      # (item, after) per doc list request
+        self.doc_tombs = {}      # deleted doc uid → its last sha256
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -271,6 +272,7 @@ class FakeServer:
             return {"status": "conflict", "doc": self._public(row)}
         uid = docs.doc_uid(rec["item_uid"], rec["name"])
         seq = self._bump("doc", uid, rec["item_uid"], author=author)
+        self.doc_tombs.pop(uid, None)
         self.rows[uid] = {"_entity": "doc", "uid": uid, "item_uid": rec["item_uid"], "name": rec["name"],
                           "size": len(data), "sha256": sha, "file_key": rec["file_key"],
                           "content_type": "application/octet-stream", "by": author,
@@ -286,6 +288,7 @@ class FakeServer:
             return {"status": "conflict", "doc": self._public(row)}
         self._bump("doc", uid, row["item_uid"], deleted=True, author=author)
         del self.rows[uid]
+        self.doc_tombs[uid] = row["sha256"]
         return {"status": "applied", "doc": None}
 
     def dashboard_put(self, item_uid, name, data, author):
@@ -353,6 +356,8 @@ class FakeServer:
                     data = None if row is None else {k: copy.deepcopy(v) for k, v in row.items() if k != "_entity"}
                     out.append({"seq": seq, "entity": e, "uid": uid, "item_uid": item_uid,
                                 "deleted": row is None, "data": data})
+                    if e == "doc" and row is None and uid in server.doc_tombs:
+                        out[-1]["last_sha256"] = server.doc_tombs[uid]
                 return {"changes": out, "cursor": rows[-1][0] if rows else since,
                         "more": len(rows) == limit, "deploy_step": server.deploy_step,
                         "actions": server.actions}

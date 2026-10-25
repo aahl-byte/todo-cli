@@ -114,6 +114,11 @@ describe("docs routes", () => {
     expect((await docGET(new Request(`http://x/api/projects/p/docs/${doc.uid}`, { headers: auth(t) }), one("p", doc.uid))).status).toBe(404);
     const [c] = await w.d.query("select deleted from changes where entity = 'doc' order by seq desc limit 1");
     expect(c.deleted).toBe(true);
+    const feed = await (await changesGET(new Request("http://x/api/projects/p/changes?since=0&docs=1", { headers: auth(t) }), proj("p"))).json();
+    expect(feed.changes.find((x: any) => x.uid === doc.uid)).toMatchObject({ deleted: true, data: null, last_sha256: doc.sha256 });
+    await put(t, "plan.md", "back", null);
+    const again = await (await changesGET(new Request("http://x/api/projects/p/changes?since=0&docs=1", { headers: auth(t) }), proj("p"))).json();
+    expect(again.changes.find((x: any) => x.uid === doc.uid).last_sha256).toBeUndefined();
   });
 
   it("needs a token, and keeps each project's docs to itself", async () => {

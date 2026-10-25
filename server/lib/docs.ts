@@ -145,6 +145,7 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
     if ((input.base ?? null) !== current) return { result: { status: "conflict" as const, doc: clean(row) }, superseded: key };
     const uid = docUid(input.item_uid, name);
     const seq = await bump(t, project, uid, input.item_uid, false, handle);
+    await t.query("delete from doc_tombstones where project = $1 and uid = $2", [project, uid]);
     const [saved] = await t.query(
       `insert into docs (project, uid, item_uid, name, name_key, size, sha256, file_key, content_type, by, via, at, versions)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
@@ -168,6 +169,9 @@ export async function removeDoc(d: Db, project: string, handle: string, uid: str
     if (row.sha256 !== base) return { result: { status: "conflict" as const, doc: clean(row) }, gone: null };
     await bump(t, project, uid, row.item_uid, true, handle);
     await t.query("delete from docs where project = $1 and uid = $2", [project, uid]);
+    await t.query(
+      `insert into doc_tombstones (project, uid, item_uid, sha256) values ($1, $2, $3, $4)
+       on conflict (project, uid) do update set sha256 = excluded.sha256`, [project, uid, row.item_uid, row.sha256]);
     return { result: { status: "applied" as const, doc: null }, gone: row.file_key as string };
   });
   await discard(gone);
