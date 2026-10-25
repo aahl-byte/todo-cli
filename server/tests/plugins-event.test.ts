@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runEvent, type EventInput } from "@/lib/plugins/host";
+import { describeRepo, runEvent, type EventInput } from "@/lib/plugins/host";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import type { PluginItem } from "@/lib/plugins/types";
 // @ts-expect-error a plain-JS build script
@@ -189,5 +189,33 @@ instances:
   button: [{id: go, name: Go}, {id: other, name: Other}]
 ` } });
     expect(summary(out)).toEqual([["button", "go", ["pressed"]]]);
+  });
+});
+
+describe("describeRepo", () => {
+  it("lists shipped and repo plugins with the repo's own instances, connections and load errors", () => {
+    const out = describeRepo({ files: {}, text: `
+track: [main]
+connections:
+  vercel: {http: {url: "https://api.vercel.com", auth: bearer}}
+plugins:
+  preview: {connections: [vercel], on: [push], every: 1h, settings: {project: {label: Project, type: text}}, attach: [{log: x}]}
+  vercel-preview: {use: shipped}
+instances:
+  preview: [{id: p, name: P, settings: {project: web}}]
+` });
+    expect(out.plugins).toEqual([
+      { name: "pr-link", shipped: true, connections: ["github"], on: ["push", "pr"], per: "branch", settings: {} },
+      { name: "preview", shipped: false, connections: ["vercel"], on: ["push"], every: "1h",
+        settings: { project: { label: "Project", type: "text" } } },
+    ]);
+    expect(out.instances).toEqual({ preview: [{ id: "p", name: "P", settings: { project: "web" } }] });
+    expect(out.connections).toEqual({ vercel: { http: { url: "https://api.vercel.com", auth: "bearer" } } });
+    expect(out.errors).toEqual(["plugin vercel-preview: no plugin named vercel-preview ships with todo"]);
+    expect(out.track).toEqual(["main"]);
+  });
+
+  it("gives the shipped defaults for a repo without a plugins file", () => {
+    expect(describeRepo().plugins.map((p) => p.name)).toEqual(["pr-link"]);
   });
 });

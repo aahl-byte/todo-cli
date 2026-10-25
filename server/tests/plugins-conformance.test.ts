@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { runEvent, runInstance, type EventInput, type EventResult } from "@/lib/plugins/host";
+import { describeRepo, runEvent, runInstance, type EventInput, type EventResult } from "@/lib/plugins/host";
 import { loadPlugins } from "@/lib/plugins/load";
 import type { ConnectionDef, InstanceDef, PluginEvent, ResolvedConnection, RunInput, RunResult } from "@/lib/plugins/types";
 import { fakeServer, type FakeServer, type Recorded, type RecordedTool } from "./plugin-fakes";
@@ -170,5 +170,20 @@ describe.each(EVENT_HOSTS)("runEvent conformance (%s)", (_, host) => {
     });
     expect({ errors: out.errors, track: out.track, results: out.results.map((r) => ({ plugin: r.plugin, instance: r.instance.id, result: r.result })) },
            c.about).toEqual(c.expect);
+  });
+});
+
+describe("the bundle's describe mode", () => {
+  it("answers what a repo's plugin file declares", async () => {
+    const text = "plugins:\n  mine: {on: [manual], attach: [{log: hi}]}\n";
+    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "describe", repo: { text } }));
+    expect(code, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(describeRepo({ text, files: {} }));
+    expect(JSON.parse(stdout).plugins.map((p: { name: string }) => p.name)).toEqual(["pr-link", "mine"]);
+  });
+
+  it("refuses a repo that isn't {text, files}", async () => {
+    const { code, stderr } = await bundled(JSON.stringify({ mode: "describe", repo: 1 }));
+    expect([code, stderr.trim()]).toEqual([2, "plugin host: repo must be {text, files}"]);
   });
 });
