@@ -1,4 +1,4 @@
-# Links each of the item's branches to its pull requests on GitHub.
+description: Links each of the item's branches to its pull requests on GitHub.
 connections: [github]
 on: [push, pr]
 per: branch

@@ -1,5 +1,5 @@
-# Moves each Jira issue the item links to the instance's status, as a Jira
-# trigger did: one instance per todo move, the first that fires wins.
+# As a Jira trigger did: one instance per todo move, the first that fires wins.
+description: Moves each Jira issue the item links to a Jira status when the item moves.
 connections: [jira]
 per: jira
 exclusive: true

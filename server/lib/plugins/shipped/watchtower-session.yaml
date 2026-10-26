@@ -1,5 +1,6 @@
-# Hands the item to a Claude session in Watchtower, as a watchtower Action did:
-# sends to the item's live session, resumes its stopped one, or starts one.
+# As a watchtower Action did: sends to the item's live session, resumes its
+# stopped one, or starts one.
+description: Adds a button that hands the item to a Claude session in Watchtower.
 connections: [watchtower]
 on: [manual]
 code: watchtower-session.js

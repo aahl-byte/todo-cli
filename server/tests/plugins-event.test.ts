@@ -40,6 +40,10 @@ describe("shipped plugins", () => {
     expect(readFileSync(path.join(import.meta.dirname, "../lib/plugins/shipped/sources.ts"), "utf8")).toBe(shippedSources());
   });
 
+  it("describes each shipped plugin in one line", () => {
+    for (const [name, p] of Object.entries(SHIPPED)) expect(p.def.description, name).toMatch(/^[^\n]+\.$/);
+  });
+
   it("keeps the worker bundle in step with code-worker.mjs", async () => {
     const out = await build({ ...workerBuild, write: false });
     expect(readFileSync(workerBuild.outfile, "utf8") === out.outputFiles![0].text, "run npm run build:plugin-host").toBe(true);

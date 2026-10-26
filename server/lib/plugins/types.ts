@@ -110,6 +110,8 @@ export type AttachDef = {
 } & { [K in AttachmentKind]?: Record<string, unknown> | string };
 
 export interface PluginDef {
+  /** What the plugin does, in one line, for the dashboard. */
+  description?: string;
   connections?: string[];
   on?: Trigger[];
   every?: string;

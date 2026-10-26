@@ -1,6 +1,7 @@
 # Sends one HTTP request, as a rest Action did. The connection an instance names
 # fixes the host; its path, headers and body are templates filled from the item
 # where they land: the path URL-encoded, headers as text, a JSON body as JSON.
+description: Adds a button to the item that sends one HTTP request, filled in from the item.
 connections: ["{{settings.connection}}"]
 on: [manual]
 gave_up: "action {{instance.name}} ({{trigger}}) gave up after {{attempts}} attempts: {{error}}"

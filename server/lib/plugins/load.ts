@@ -14,7 +14,7 @@ export class PluginsFileError extends Error {
 }
 
 const FILE_KEYS = ["track", "connections", "plugins", "instances"];
-const PLUGIN_KEYS = ["connections", "on", "every", "exclusive", "capabilities", "settings", "per", "when", "steps", "attach", "code", "use", "gave_up"];
+const PLUGIN_KEYS = ["description", "connections", "on", "every", "exclusive", "capabilities", "settings", "per", "when", "steps", "attach", "code", "use", "gave_up"];
 const YAML_BODY = ["per", "steps", "attach"];
 const STEP_KEYS = ["name", "when", "connection", "tool", "input", "http", "value", "fail"];
 const STEP_ACTIONS = ["tool", "http", "value", "fail"] as const;
@@ -170,6 +170,7 @@ export function pluginErrors(name: string, def: unknown, opts: LoadOptions = {})
     if (typeof def.use !== "string") errors.push("use names where the plugin comes from, e.g. shipped");
     return errors.map((e) => `plugin ${name}: ${e}`);
   }
+  if ("description" in def && (typeof def.description !== "string" || def.description.includes("\n"))) errors.push("description is one line of text");
   const connections = def.connections ?? [];
   if (!isStrings(connections)) errors.push("connections must be a list of names");
   else {
