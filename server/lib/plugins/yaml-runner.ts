@@ -88,9 +88,18 @@ function callFor(step: StepDef, plugin: PluginDef, scope: Scope): Call {
   const headers = headersOf(splice(http.headers, plugin, scope), scope);
   if (headers && Object.keys(headers).length) call.headers = headers;
   const text = splice(http.text, plugin, scope);
-  const body = splice(http.body, plugin, scope);
+  let body = splice(http.body, plugin, scope);
   if (text !== undefined && text !== null && text !== "") call.text = fillString(String(text), scope);
-  else if (body !== undefined && body !== null && body !== "") call.input = fillJson(body, scope);
+  else if (typeof body === "string" && body !== "" && body !== http.body) {
+    // A body setting typed as text: JSON is filled value by value, so no item field can change its shape; other text goes as text.
+    try {
+      body = JSON.parse(body);
+    } catch {
+      call.text = fillString(body as string, scope);
+      return call;
+    }
+    call.input = fillJson(body, scope);
+  } else if (body !== undefined && body !== null && body !== "") call.input = fillJson(body, scope);
   return call;
 }
 

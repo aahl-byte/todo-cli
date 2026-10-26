@@ -8,7 +8,7 @@ settings:
   method:     {label: Method, type: choice, options: [GET, POST, PUT, PATCH, DELETE], default: POST}
   path:       {label: Path and query, type: text, default: "/", template: true}
   headers:    {label: "Headers (Name: value per line)", type: long-text, optional: true, template: true}
-  body:       {label: JSON body, type: long-text, optional: true, template: true}
+  body:       {label: "Body: JSON, filled value by value, or other text", type: long-text, optional: true, template: true}
   text:       {label: Text body, type: long-text, optional: true, template: true}
 steps:
   - name: sent

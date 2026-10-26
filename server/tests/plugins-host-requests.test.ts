@@ -163,6 +163,17 @@ describe("request templates held in settings", () => {
     })]);
   });
 
+  it("sends a body typed as JSON text as that JSON, each value filled safely, and other text as text", async () => {
+    const server = await serve([{ method: "POST", path: "/j", body: {} }, { method: "POST", path: "/t", body: {} }]);
+    const connections = { hooks: { kind: "http" as const, url: server.url } };
+    await run(REST, [], { connections, instance: inst({ path: "/j", body: '{"a": "{{item.id}}", "t": "{{item.title}}", "b": "{{item.branches}}"}' }) });
+    await run(REST, [], { connections, instance: inst({ path: "/t", body: "id={{item.id}}" }) });
+    expect(server.received.map((r) => [r.path, r.body, r.headers["content-type"]])).toEqual([
+      ["/j", { a: "fix-login", t: 'Fix "login"', b: ["feat/x"] }, "application/json"],
+      ["/t", "id=fix-login", "text/plain; charset=utf-8"],
+    ]);
+  });
+
   it("sends a text body as it is, and records headers and text in dry-run", async () => {
     const server = await serve([{ method: "PUT", path: "/t", body: {} }]);
     const instance = inst({ method: "PUT", path: "/t", headers: { "Content-Type": "text/csv" }, text: "{{item.id}},{{item.status}}" });
