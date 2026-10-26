@@ -97,10 +97,8 @@ class Fixture:
         return gitfacts.load(self.root, store.resolve_item(self.root, item_id))
 
 
-@pytest.fixture
-def fx(tmp_path, monkeypatch):
-    f = Fixture(tmp_path)
-
+def fake_github(f, monkeypatch):
+    """PR lists answered from `f.prs`; anything else unanswered."""
     def fake_get(path):
         if "/pulls?state=closed&base=" in path:
             base = path.split("base=")[1].split("&")[0].replace("%2F", "/")
@@ -113,6 +111,11 @@ def fx(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gitfacts, "gh_get", fake_get)
     return f
+
+
+@pytest.fixture
+def fx(tmp_path, monkeypatch):
+    return fake_github(Fixture(tmp_path), monkeypatch)
 
 
 def edge_view(edges):
@@ -900,7 +903,7 @@ def test_a_pr_based_on_a_branch_no_item_tracks_is_unknown_and_blocks(fx, capsys)
     fx.refresh()
     [e] = fx.facts(b)["needs"]
     assert e["state"] == "unknown" and e["reason"] == "PR based on feat/a, which no item tracks"
-    assert "retarget the PR" in e["evidence"] and fx.facts(b)["branches"][0]["target"] == "staging"
+    assert "retarget the PR" in e["evidence"] and fx.facts(b)["branches"][0]["target"] == "feat/a"
     assert "which no item tracks" in refused(fx, b, capsys)
 
 
@@ -1199,3 +1202,235 @@ def test_the_rewritten_hint_clears_after_a_squash_landing_too(fx):
     fx.merge("staging", "feat/b")
     gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
     assert fx.facts(b)["shares"] == [] and fx.facts(b)["needs"] == []
+
+
+# ── a PR based on a branch nothing tracks ────────────────────────────────────
+def staging_ahead_of_main(tmp_path, monkeypatch, track):
+    """Alpha's work merged into staging, which main lacks; Beta cut from staging
+    after that, with a PR based on staging."""
+    fx = fake_github(Fixture(tmp_path, track=track), monkeypatch)
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.merge("feat/a", "staging")
+    fx.commit("staging", "s.txt", "s\n")
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    a, b = fx.item("Alpha", ["feat/a"]), fx.item("Beta", ["feat/b"])
+    fx.pr("feat/b", 8)
+    fx.refresh()
+    return fx, a, b
+
+
+def test_without_track_a_pr_based_on_staging_targets_staging_with_a_hint(tmp_path, monkeypatch):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track=None)
+    f = fx.facts(b)
+    assert f["needs"] == [] and f["shares"] == [] and f["waits_on"] == []
+    assert fx.facts(a)["needed_by"] == []
+    br = f["branches"][0]
+    assert br["target"] == "staging" and "orphan" not in br
+    assert "based on staging" in br["hint"] and "track:" in br["hint"] and ".todo-plugins/plugins.yaml" in br["hint"]
+    approve(fx, b)
+    run_cli(fx.root, ["stage", b])
+    it = store.get_item(fx.root, b)
+    assert it["status"] == "ready-to-deploy" and it["history"][-1]["forced"] is False
+
+
+def test_the_untracked_base_hint_shows_in_get_and_deps_but_not_list(tmp_path, monkeypatch, capsys):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track=None)
+    capsys.readouterr()
+    run_cli(fx.root, ["get", b])
+    assert "hint: feat/b's PR is based on staging" in capsys.readouterr().out
+    run_cli(fx.root, ["deps"])
+    out = capsys.readouterr().out
+    assert b in out and "if staging is long-lived" in out and "rebase" not in out
+    run_cli(fx.root, ["list"])
+    assert "waits on" not in capsys.readouterr().out
+
+
+def test_with_staging_tracked_a_pr_based_on_it_has_no_hint_and_no_edge(tmp_path, monkeypatch):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track="[staging, main]")
+    f = fx.facts(b)
+    assert f["needs"] == [] and f["waits_on"] == [] and fx.facts(a)["needed_by"] == []
+    assert f["branches"][0]["target"] == "staging" and "hint" not in f["branches"][0]
+
+
+def test_with_a_track_list_a_pr_based_on_an_untracked_branch_still_blocks(tmp_path, monkeypatch, capsys):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track="[main]")
+    f = fx.facts(b)
+    [e] = f["needs"]
+    assert (e["needs"], e["state"], e["reason"]) == ("branch:staging", "unknown", "PR based on staging, which no item tracks")
+    assert f["branches"][0]["target"] == "staging" and "hint" not in f["branches"][0]
+    assert f["waits_on"] == ["branch:staging"]
+    assert "which no item tracks" in refused(fx, b, capsys)
+
+
+# ── todo needs ───────────────────────────────────────────────────────────────
+DB_PR = "https://github.com/acme/db/pull/3"
+
+
+class OtherRepo:
+    """acme/db on the fake GitHub: PR #3 and whether its merge commit is in each branch."""
+
+    def __init__(self, fx, monkeypatch):
+        self.state, self.merge, self.within, self.compare_fails = "open", "d" * 40, set(), False
+        inner = gitfacts.gh_get
+
+        def fake_get(path):
+            if path == "/repos/acme/db/pulls/3":
+                merged = self.state == "merged"
+                return {"number": 3, "state": "open" if self.state == "open" else "closed", "draft": False,
+                        "merged_at": "2026-10-23T00:00:00Z" if merged else None,
+                        "merge_commit_sha": self.merge if merged else None, "base": {"ref": "main"},
+                        "head": {"sha": "c" * 40, "ref": "migrate"}, "html_url": DB_PR}
+            if path.startswith(f"/repos/acme/db/compare/{self.merge}..."):
+                if self.compare_fails:
+                    return gitfacts.GH_ERROR
+                return {"status": "ahead" if path.rsplit("...", 1)[1] in self.within else "diverged"}
+            return inner(path)
+
+        monkeypatch.setattr(gitfacts, "gh_get", fake_get)
+
+
+def needs_item(fx):
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    return fx.item("Beta", ["feat/b"])
+
+
+def dependency_notes(fx, i):
+    return [n for n in store.get_item(fx.root, i)["notes"] if n["kind"] == "dependency"]
+
+
+def test_needs_an_open_pr_in_another_repo_waits_and_stage_refuses(fx, monkeypatch, capsys):
+    OtherRepo(fx, monkeypatch)
+    b = needs_item(fx)
+    run_cli(fx.root, ["needs", b, DB_PR, "--because", "the migration ships first"])
+    out = capsys.readouterr().out
+    assert f"{b}: added dependency [1]: needs {DB_PR} — waiting" in out
+    [n] = dependency_notes(fx, b)
+    assert n["text"] == "the migration ships first" and n["author"]
+    assert n["meta"]["needs"] == DB_PR and n["meta"]["because"] == "the migration ships first"
+    assert "plugin" not in n["meta"] and "in" not in n["meta"]
+    [e] = fx.facts(b)["needs"]
+    assert (e["needs"], e["state"], e["note"]) == (DB_PR, "waiting", n["uid"])
+    assert DB_PR in refused(fx, b, capsys)
+
+
+def test_needs_a_merged_pr_without_in_has_landed(fx, monkeypatch, capsys):
+    other = OtherRepo(fx, monkeypatch)
+    other.state = "merged"
+    b = needs_item(fx)
+    run_cli(fx.root, ["needs", b, DB_PR])
+    assert "— landed" in capsys.readouterr().out
+    approve(fx, b)
+    run_cli(fx.root, ["stage", b])
+    assert store.get_item(fx.root, b)["status"] == "ready-to-deploy"
+
+
+def test_needs_a_merged_pr_in_a_branch_lands_once_its_merge_commit_is_there(fx, monkeypatch, capsys):
+    other = OtherRepo(fx, monkeypatch)
+    other.state = "merged"
+    b = needs_item(fx)
+    run_cli(fx.root, ["needs", b, DB_PR, "--in", "staging"])
+    assert f"needs {DB_PR} in staging — waiting" in capsys.readouterr().out
+    assert dependency_notes(fx, b)[0]["meta"]["in"] == "staging"
+    refused(fx, b)
+    other.within.add("staging")
+    run_cli(fx.root, ["stage", b])
+    assert store.get_item(fx.root, b)["status"] == "ready-to-deploy"
+
+
+def test_needs_a_merged_pr_whose_branch_github_cant_check_is_unknown_with_why(fx, monkeypatch, capsys):
+    other = OtherRepo(fx, monkeypatch)
+    other.state, other.compare_fails = "merged", True
+    b = needs_item(fx)
+    run_cli(fx.root, ["needs", b, DB_PR, "--in", "staging"])
+    assert "— unknown (couldn't check PR #3 against staging)" in capsys.readouterr().out
+
+
+def test_needs_an_item_records_its_id_and_never_the_item_itself(fx, capsys):
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    a = fx.item("Alpha", ["feat/a"])
+    b = needs_item(fx)
+    run_cli(fx.root, ["needs", b, "alpha"])
+    assert f"needs {a} — waiting" in capsys.readouterr().out
+    assert dependency_notes(fx, b)[0]["meta"]["needs"] == f"item:{a}"
+    assert edge_view(fx.facts(b)["needs"]) == [(a, None, None, "waiting")]
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["needs", b, "beta"])
+    assert "itself" in capsys.readouterr().err
+    run_cli(fx.root, ["needs", b, "alpha"])
+    assert "already" in capsys.readouterr().out and len(dependency_notes(fx, b)) == 1
+
+
+def test_needs_a_branch_and_refuses_a_url_that_isnt_a_pr(fx, capsys):
+    fx.branch("feat/x")
+    fx.commit("feat/x", "x.txt", "x\n")
+    b = needs_item(fx)
+    run_cli(fx.root, ["needs", b, "branch:feat/x", "--in", "staging"])
+    assert "needs branch:feat/x in staging — waiting" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["needs", b, "https://example.com/x"])
+    assert "GitHub PR URL" in capsys.readouterr().err
+
+
+def test_needs_with_no_ref_lists_the_dependencies(fx, monkeypatch, capsys):
+    OtherRepo(fx, monkeypatch)
+    b = needs_item(fx)
+    store.add_note(fx.root, b, "x", "2026-10-23T00:00:00.000Z", kind="dependency",
+                   extra={"needs": "branch:feat/m", "because": "migrations", "plugin": "db-request/default"})
+    run_cli(fx.root, ["needs", b, DB_PR, "--in", "staging"])
+    capsys.readouterr()
+    run_cli(fx.root, ["needs", b])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == f"{b}:"
+    assert out[1].startswith("  [1] needs branch:feat/m — ") and "migrations" in out[1] and "(plugin db-request/default)" in out[1]
+    assert out[2].startswith(f"  [2] needs {DB_PR} in staging — ") and "plugin" not in out[2]
+
+
+def test_needs_rm_removes_a_hand_made_dependency_but_never_a_plugins(fx, monkeypatch, capsys):
+    OtherRepo(fx, monkeypatch)
+    b = needs_item(fx)
+    store.add_note(fx.root, b, "x", "2026-10-23T00:00:00.000Z", kind="dependency",
+                   extra={"needs": "branch:feat/m", "because": "migrations", "plugin": "db-request/default"})
+    store.add_note(fx.root, b, "just context", "2026-10-23T00:00:00.000Z")
+    run_cli(fx.root, ["needs", b, DB_PR])
+    capsys.readouterr()
+    for note_id, says in (("1", "db-request/default"), ("2", "isn't a dependency")):
+        with pytest.raises(SystemExit):
+            run_cli(fx.root, ["needs", "rm", b, note_id])
+        assert says in capsys.readouterr().err
+    run_cli(fx.root, ["needs", "rm", b, "3"])
+    assert f"{b}: removed dependency [3]" in capsys.readouterr().out
+    assert [n["id"] for n in dependency_notes(fx, b)] == [1]
+    assert [e.get("needs") for e in fx.facts(b)["needs"]] == ["branch:feat/m"]
+
+
+def test_needs_usage_errors(fx, capsys):
+    b = needs_item(fx)
+    for argv in (["needs", "rm", b], ["needs", b, DB_PR, "extra"], ["needs", "rm", b, "x"]):
+        with pytest.raises(SystemExit):
+            run_cli(fx.root, argv)
+        assert "usage: todo needs" in capsys.readouterr().err
+
+
+def test_a_hand_made_dependency_syncs_like_any_note(fx, synced, monkeypatch, tmp_path):
+    OtherRepo(fx, monkeypatch)
+    monkeypatch.setattr(gitfacts, "remote_for", lambda root: synced.client("alice"))
+    b = needs_item(fx)
+    sync.run_round(fx.root, synced.client("alice"))
+    run_cli(fx.root, ["needs", b, DB_PR, "--in", "staging", "--because", "migrations first"])
+    sync.run_round(fx.root, synced.client("alice"))
+    [row] = [r for r in synced.rows.values() if r["_entity"] == "note" and r.get("kind") == "dependency"]
+    assert row["meta"]["needs"] == DB_PR and row["meta"]["in"] == "staging" and "plugin" not in row["meta"]
+    other = tmp_path / "other" / store.ROOT_NAME
+    other.mkdir(parents=True)
+    remote.save_sync_config(other, {"url": "http://fake", "project": "p", "deploy_step": True})
+    sync.run_round(other, synced.client("bob"))
+    [n] = [n for n in store.get_item(other, b)["notes"] if n["kind"] == "dependency"]
+    assert (n["text"], n["meta"]["needs"], n["meta"]["in"]) == ("migrations first", DB_PR, "staging")
+    run_cli(other, ["needs", "rm", b, str(n["id"])])
+    sync.run_round(other, synced.client("bob"))
+    sync.run_round(fx.root, synced.client("alice"))
+    assert dependency_notes(fx, b) == []

@@ -45,6 +45,7 @@ OPEN_PR = ("open", "draft")
 HINT = "whichever merges second merges the other in"
 SHARES_HINT = ("can't tell which builds on which; base the dependent PR on the other branch, "
                "or merge one into the other")
+UNTRACKED_HINT = "{branch}'s PR is based on {base}; if {base} is long-lived, add it under track: in " + PLUGINS_FILE
 API = "https://api.github.com"
 SHOWN_COMMITS = 3
 SHA_KEY = 12                    # cached commit sets keep this many hex digits per commit
@@ -271,6 +272,10 @@ def branch_prs(repo_key: str, branch: str):
     return current, [p for p in prs if p["state"] == "merged" or p["state"] in OPEN_PR]
 
 
+def is_pr_url(url: str) -> bool:
+    return bool(_PR_URL.match(url or ""))
+
+
 def url_pr(url: str):
     m = _PR_URL.match(url or "")
     if not m:
@@ -434,11 +439,14 @@ def _branch_facts(repo: Repo, it: dict, old: dict, fetch_prs, track: list) -> li
     return out
 
 
-def _targets(repo: Repo, facts: dict, owners: dict, track: list) -> None:
+def _targets(repo: Repo, facts: dict, owners: dict, track: list, others: dict) -> None:
     """T(B) per branch: follow an open PR's base through branches open items
-    own; a tracked or default branch ends the chain as T(B), and any other
-    branch ends it as an orphan. With no open PR, T(B) is the first tracked
-    branch on the remote, else the default branch."""
+    own, to the first branch none owns. That branch is T(B) when it's tracked,
+    the default, or any other branch on the remote; an untracked one is an
+    orphan beside a `track:` list and a hint without one. A base a cancelled
+    or archived item lists, or one gone from the remote, ends the chain as an
+    orphan. With no open PR, T(B) is the first tracked branch on the remote,
+    else the default branch."""
     by_name = {b["name"]: b for i, fx in facts.items() for b in fx["branches"] if owners.get(b["name"]) == i}
     fallback = next((t for t in track if t in repo.tips), None) or repo.default
     for fx in facts.values():
@@ -455,7 +463,13 @@ def _targets(repo: Repo, facts: dict, owners: dict, track: list) -> None:
                     target = base
                     break
                 if base not in owners:
-                    b["orphan"] = base
+                    untracked = base in repo.tips and base not in others
+                    if untracked:
+                        target = base
+                    if untracked and not track:
+                        b["hint"] = UNTRACKED_HINT.format(branch=b["name"], base=base)
+                    else:
+                        b["orphan"] = base
                     break
                 chain.append(base)
                 seen.add(base)
@@ -826,7 +840,9 @@ def _pr_edge(repo: Repo, url: str, target: str, meta: dict) -> dict:
         return {"state": "landed", "pr": pr}
     landed = repo.is_ancestor(sha, repo.tips[target]) if key == repo.key and target in repo.tips \
         else _gh_in(key, sha, target)
-    return {"state": "landed" if landed else "unknown" if landed is None else "waiting", "pr": pr}
+    if landed is None:
+        return {"state": "unknown", "reason": f'couldn\'t check PR #{pr["number"]} against {target}', "pr": pr}
+    return {"state": "landed" if landed else "waiting", "pr": pr}
 
 
 def _hints(repo: Repo, items: list, facts: dict, notice: list) -> None:
@@ -882,10 +898,11 @@ def _compute(root: Path, repo: Repo, items: list, fetch_prs, all_items: list, fa
     if failure is not None:
         _carry(repo, items, facts, prev, {}, set())
     else:
-        _targets(repo, facts, owners, track)
+        others = _others(root, repo, items)
+        _targets(repo, facts, owners, track, others)
         repo.absent = repo.missing([b.get("head") for f in facts.values() for b in f["branches"]]
                                    + [p.get("head") for f in facts.values() for b in f["branches"] for p in b.get("prs") or []])
-        _git_relations(repo, items, facts, prev, _others(root, repo, items))
+        _git_relations(repo, items, facts, prev, others)
     for it in items:
         if it["status"] == "cancelled":
             continue

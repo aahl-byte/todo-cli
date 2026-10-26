@@ -1,6 +1,7 @@
-// The item's git facts: where each branch landed, what it needs and what needs
-// it, the branches it shares unlanded commits with, then the conflict and
-// overlap hints. Derived from git; nothing here edits.
+// The item's git facts: where each branch landed and any hint about its PR's
+// base, what it needs and what needs it, the branches it shares unlanded
+// commits with, then the conflict and overlap hints. Derived from git; nothing
+// here edits.
 import type { BranchFact, Edge, GitFacts as Facts, Hint, Share } from "@/lib/gitfacts";
 import { withBase } from "@/lib/base";
 import { PluginBy } from "./PluginBy";
@@ -83,6 +84,7 @@ export function GitFacts({ facts, base, pluginEdges = {} }: {
     <section className="git-facts">
       <div className="label">Git</div>
       {branches.map((b) => <BranchRow key={b.name} b={b} />)}
+      {branches.filter((b) => b.hint).map((b) => <div key={`h${b.name}`} className="faint git-hint">{b.hint}</div>)}
       {needs.length > 0 && <div className="label sub">needs</div>}
       {needs.map((e, i) => <EdgeRow key={`n${i}`} e={e} base={base} by={e.note ? pluginEdges[e.note] : undefined} />)}
       {neededBy.length > 0 && <div className="label sub">needed by</div>}

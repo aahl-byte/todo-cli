@@ -108,7 +108,10 @@ Each item branch B has a **target**, T(B): where its work is headed.
 
 - With an open PR, follow the PR's base. A base that another open item's
   branch owns hands off to that branch's own target; stop at a branch no open
-  item owns.
+  item owns. That branch is T(B) when it's on the remote. In a repo with no
+  `track:` list, a base nothing tracks adds a hint that blocks nothing (add it
+  under `track:` if it's long-lived); beside a `track:` list, it's an unknown
+  edge that blocks.
 - With no PR, the first tracked branch, else the default branch.
 
 B's **unlanded commits** are those in `T(B)..B`. Two branches are related only
@@ -161,9 +164,12 @@ The hint names the fix: whichever branch merges second merges the other in.
   in the CLI and on the server. `--force` overrides and history records it.
 - Plugins can add edges for what git can't see, such as a db-request
   migrations PR (§5). Those block the same way.
-- There are no hand-entered edges. The `prereq-branch` check kind retires; a
-  one-off `todo deps --from-checks` lists existing ones for a person to drop
-  or confirm.
+- A person records an edge git can't see with
+  `todo needs <q> <PR URL | branch:<name> | item> [--in <branch>]`, a
+  dependency note like a plugin's that blocks the same way; `todo needs rm`
+  removes a hand-made one, never a plugin's. The `prereq-branch` check kind
+  retires; a one-off `todo deps --from-checks` lists existing ones for a person
+  to drop or confirm.
 
 ### When the facts recompute
 
