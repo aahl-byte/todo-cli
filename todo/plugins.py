@@ -20,6 +20,7 @@ See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §4.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import hashlib
@@ -900,13 +901,26 @@ def _doc_state(item_dir: Path, iid: str, name: str) -> tuple:
     return found, ours, ours and docs.sha256_file(present[found]) == e.get("sha256")
 
 
+def _doc_bytes(a: dict) -> bytes | None:
+    """A doc's content as bytes: base64 when the host fetched bytes that aren't text."""
+    if a.get("encoding") != "base64":
+        return to_str(a["content"]).encode()
+    try:
+        return base64.b64decode(to_str(a["content"]), validate=True)
+    except ValueError:
+        return None
+
+
 def _put_doc(it: dict, iid: str, item_dir: Path, a: dict, log: list, changes: dict) -> str | None:
     name = to_str(a.get("name"))
     why = docs.name_error(name)
     if why or a.get("content") is None:
         log.append(f"skipped doc {name}: " + (why or "the host returned no content for it"))
         return None
-    data = to_str(a["content"]).encode()
+    data = _doc_bytes(a)
+    if data is None:
+        log.append(f"skipped doc {name}: its content isn't valid base64")
+        return None
     found, ours, unchanged = _doc_state(item_dir, iid, name)
     if found is not None and not ours:
         log.append(f"skipped doc {name}: a doc by that name isn't this plugin's")

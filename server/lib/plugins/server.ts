@@ -183,10 +183,10 @@ async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun,
   try {
     for (const a of docs) {
       if (a.content === undefined) {
-        log.push(`doc ${a.name}: the server doesn't fetch a doc by url yet`);
+        log.push(`doc ${a.name}: the host returned no content for it`);
         continue;
       }
-      const bytes = Buffer.from(a.content, "utf8");
+      const bytes = Buffer.from(a.content, a.encoding === "base64" ? "base64" : "utf8");
       const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
       const existing = await docByName(t, project, itemUid, a.name);
       if (existing && !ownDoc(existing, instance)) {

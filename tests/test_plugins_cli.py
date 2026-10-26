@@ -807,6 +807,17 @@ def test_plugin_docs_never_overwrite_or_remove_a_person_s_doc(fx, host):
     assert (item_dir / "docs" / "notes.md").read_text() == "mine\n"
 
 
+def test_a_fetched_doc_keeps_its_bytes(fx, host):
+    import base64
+    a = item_with_branch(fx)
+    item_dir = fx.root / store.OPEN / a
+    png = bytes([0x89, 0x50, 0x4E, 0x47, 0x00, 0xFF])
+    fetched = {**doc("shot.png", base64.b64encode(png).decode()), "encoding": "base64", "url": "/a/1"}
+    host.results({"refresh": [ran("p", [fetched])]})
+    refresh(fx.root, a)
+    assert (item_dir / "docs" / "shot.png").read_bytes() == png
+
+
 def test_a_plugin_doc_syncs_with_its_plugin(fx, synced, host):
     cli_runs(synced, fx.root, "p/default")
     a = item_with_branch(fx)

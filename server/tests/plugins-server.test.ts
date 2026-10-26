@@ -203,6 +203,28 @@ describe("running plugins", () => {
     }
   });
 
+  it("stores a doc the host fetched by url through a host connection, its bytes as they came", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ files: { http: { url: "https://files.example", auth: "bearer" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_FILES", "f-token");
+    SHIPPED["test-fetch"] = { def: { connections: ["files"], on: ["push"], steps: [{ name: "v", value: "`1`" }],
+      attach: [{ doc: { name: "shot.png", url: "/a/1?redirect=false" } }] } };
+    try {
+      const gh = fakeGitHub({ file: "plugins:\n  test-fetch: {use: shipped}\n",
+        other: (url) => (url === "https://files.example/a/1?redirect=false" ? new Response(png, { headers: { "content-type": "image/png" } }) : undefined) });
+      await onBranch("I1", ["feat/x"]);
+      await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
+      await run(gh.impl);
+      expect((await runs()).find((r) => r.plugin === "test-fetch")!.result.error).toBeUndefined();
+      const [doc] = await listDocs(w.d, "p", "I1");
+      expect(doc).toMatchObject({ name: "shot.png", plugin: "test-fetch/default" });
+      expect(Buffer.from(await readLocal(doc.file_key)).equals(png)).toBe(true);
+      expect(gh.sent.find((s) => s.url.startsWith("https://files.example"))!.headers.authorization).toBe("Bearer f-token");
+    } finally {
+      delete SHIPPED["test-fetch"];
+    }
+  });
+
   it("posts a request only once the plugin is granted post-request", async () => {
     SHIPPED["test-request"] = { def: { connections: [], on: ["push"], capabilities: ["post-request"],
       steps: [{ name: "v", value: "`1`" }], attach: [{ request: "From Jira: {{event.branch}}" }] } };
