@@ -577,6 +577,26 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if ((await page.content()).includes("s3cret")) throw new Error("the secret came back to the page");
   });
 
+  await step("plugins: rest offers the connections an instance may use, says its settings are templates, and why a repo-declared one gets no server connection", async () => {
+    await page.goto(base + "/p/web/settings/plugins");
+    const rest = card("rest");
+    await rest.locator(".plugin-head", { hasText: "via the connection each instance names" }).waitFor();
+    const hook = rest.locator('.instance-card[data-instance="hook"]');
+    await hook.locator(".repo-declared", { hasText: "only the repo's own connections" }).waitFor();
+    const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
+    const declared = await offered(hook);
+    if (JSON.stringify(declared) !== JSON.stringify(["hooks"])) throw new Error("a repo-declared instance offered " + declared.join(", "));
+    const note = await hook.locator(".setting[data-setting=path] .hint").textContent();
+    if (!note.startsWith("A template")) throw new Error("no template hint: " + note);
+    await rest.locator("button.add", { hasText: "instance" }).click();
+    const added = rest.locator(".instance-card").last();
+    const stored = await offered(added);
+    if (!stored.includes("github") || !stored.includes("hooks")) throw new Error("a stored instance offered " + stored.join(", "));
+    if (await added.locator(".repo-declared").count()) throw new Error("a stored instance says it's repo-declared");
+    await page.screenshot({ path: out + "/plugins-rest.png", fullPage: true });
+    await page.reload();
+  });
+
   await step("plugins: a stored secret is kept when untouched, and cleared on request", async () => {
     await setting("go", "title").locator("input").fill("Smoke notes 2");
     await savePlugin("notes-link");

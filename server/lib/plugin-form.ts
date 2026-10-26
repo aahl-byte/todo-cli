@@ -25,6 +25,10 @@ export interface Field {
   note?: string;
   /** The instance is skipped while this is empty. */
   required: boolean;
+  /** Its value is a template, filled where the plugin uses it. */
+  template?: boolean;
+  /** Its value names the connection the instance calls: a choice of the connections it may use. */
+  connection?: boolean;
 }
 
 const CONTROL: Record<SettingDef["type"], Control> = {
@@ -33,7 +37,26 @@ const CONTROL: Record<SettingDef["type"], Control> = {
 
 const shown = (v: unknown) => (v === undefined || v === null ? "" : Array.isArray(v) ? v.join(", ") : String(v));
 
-export function fieldOf(key: string, def: SettingDef): Field {
+const TEMPLATE_NOTE = "A template: {{item.id}} and other fields fill in where it's used, URL-encoded in a path and as JSON values in a JSON body.";
+const CONNECTION_NOTE = "The connection it calls; the server's own are offered only to instances stored here.";
+const SETTING_REF = /^\{\{\s*settings\.([A-Za-z_$][\w$-]*)\s*\}\}$/;
+
+/** The settings a plugin's connections list names by {{settings.<key>}}. */
+export function connectionKeysOf(connections: string[] | undefined): string[] {
+  return (connections ?? []).map((c) => c.match(SETTING_REF)?.[1]).filter((k): k is string => !!k);
+}
+
+/** A plugin's connections in words, a settings reference as what it means. */
+export function describeConnections(connections: string[]): string {
+  return connections.map((c) => (SETTING_REF.test(c) ? "the connection each instance names" : c)).join(", ");
+}
+
+/** The connections an instance may name: the repo's own, and, unless the repo file declares the instance, this server's. */
+export function connectionChoices(available: { repo: string[]; host: string[] }, declared: boolean): string[] {
+  return [...new Set(declared ? available.repo : [...available.repo, ...available.host])].sort();
+}
+
+export function fieldOf(key: string, def: SettingDef, opts: { connection?: boolean } = {}): Field {
   const live = def.type === "choice" && !def.options && !!def.options_from;
   const field: Field = {
     key, label: def.label || key, type: def.type, control: live ? "text" : CONTROL[def.type] ?? "text",
@@ -44,12 +67,19 @@ export function fieldOf(key: string, def: SettingDef): Field {
   if (live) field.note = `Its options come from the connection's ${def.options_from!.tool} tool, which the dashboard doesn't list; type the value.`;
   if (def.type === "list") field.note = "One per line.";
   if (def.default !== undefined && def.type !== "toggle" && def.type !== "secret") field.placeholder = `default: ${shown(def.default)}`;
+  if (def.template) {
+    field.template = true;
+    field.note = TEMPLATE_NOTE;
+  }
+  if (opts.connection) {
+    Object.assign(field, { control: "select", connection: true, note: CONNECTION_NOTE });
+  }
   return field;
 }
 
-/** Every setting as a field, in the order the plugin declares them. */
-export function fieldsOf(settings: Record<string, SettingDef> | undefined): Field[] {
-  return Object.entries(settings ?? {}).map(([k, def]) => fieldOf(k, def));
+/** Every setting as a field, in the order the plugin declares them; `connectionKeys` name the ones that pick a connection. */
+export function fieldsOf(settings: Record<string, SettingDef> | undefined, connectionKeys: string[] = []): Field[] {
+  return Object.entries(settings ?? {}).map(([k, def]) => fieldOf(k, def, { connection: connectionKeys.includes(k) }));
 }
 
 // ── values ────────────────────────────────────────────────────────────────────

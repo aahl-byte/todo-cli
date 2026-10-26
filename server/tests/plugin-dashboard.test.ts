@@ -107,6 +107,20 @@ describe("the plugins settings page", () => {
   });
 });
 
+describe("connections an instance names", () => {
+  it("lists the names each rest instance uses as used, offers the repo's and the server's, and says why a repo-declared one gets no server connection", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://93.184.216.34" } } }));
+    vi.stubGlobal("fetch", fakeGitHub({ file: `${FILE}\n  rest: [{id: r, name: R, settings: {connection: jira, path: /a}}]\n`
+      .replace("plugins:\n", "plugins:\n  rest: {use: shipped}\n") }).impl);
+    const [repo] = (await pluginsPage(w.d, "p")).repos;
+    expect(repo.available).toEqual({ repo: ["hooks"], host: ["github", "jira"] });
+    expect(repo.connections.map((c) => [c.name, c.usedBy])).toEqual([["github", ["pr-link"]], ["hooks", ["ping"]], ["jira", ["rest"]]]);
+    const rest = repo.plugins.find((p) => p.name === "rest")!;
+    expect(rest.instances[0]).toMatchObject({ id: "r", from_repo: true, server_runs: false,
+      server_runs_reason: expect.stringContaining("declared in the repo's plugins file") });
+  });
+});
+
 describe("the repo allowlist", () => {
   it("adds and removes a repo, refusing a name that isn't owner/name", async () => {
     expect((await act.addPluginRepo("p", "Acme/API")).ok).toBe(true);
