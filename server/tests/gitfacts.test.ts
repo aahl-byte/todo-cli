@@ -592,7 +592,7 @@ describe("repos a project may use", () => {
     await computeProject(w.d, "p", gh.impl);
     expect(gh.calls).toEqual([]);
     const shown = await itemGitFacts(w.d, "p", "A", gh.impl);
-    expect(shown.blocked).toMatch(/acme\/web isn't one of this project's repos.*Settings → Plugin repos/);
+    expect(shown.blocked).toMatch(/acme\/web isn't one of this project's repos.*Settings → Plugins/);
     expect(gh.calls).toEqual([]);
   });
 

@@ -23,7 +23,7 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `GITHUB_API_URL` | optional; GitHub's REST base, for GitHub Enterprise |
    | `TODO_SECRET_KEY` | optional; 32 bytes (`openssl rand -base64 32`) that encrypt plugin connection credentials and secret settings |
    | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; host-wide plugin connections as a JSON map, and their secrets, which only shipped plugins receive |
-   | `TODO_PLUGIN_OWNERS` | comma-separated GitHub owners whose repos the server reads for git facts and plugins; unset, both are off. A project uses a repo of these owners once a member's CLI reports a checkout of it or it's listed under Settings → Plugin repos |
+   | `TODO_PLUGIN_OWNERS` | comma-separated GitHub owners whose repos the server reads for git facts and plugins; unset, both are off. A project uses a repo of these owners once a member's CLI reports a checkout of it or it's listed under Settings → Plugins |
    | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated hosts plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses. `host[:port]` opens one to the server's own connections, which shipped plugins use; `owner/name=host[:port]` opens it to that repo's connections only, e.g. `acme/web=leaf-rain:10011` for Watchtower on the tailnet |
    | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
 
@@ -144,4 +144,6 @@ TEST_DATABASE_URL=postgres://... npm test             # also runs the real-Postg
 server. `scripts/smoke.cjs` drives the dashboard through its main flows with
 Playwright against a seeded server. Point `BASE_URL` at a real hostname rather
 than localhost: browsers treat localhost as secure, which hides cookie problems
-on plain-http hosts.
+on plain-http hosts. Its plugin steps need the demo repo `acme/web` allowed and
+a secret key, so start that server with
+`TODO_PLUGIN_OWNERS=acme GITHUB_TOKEN=demo TODO_SECRET_KEY=$(openssl rand -base64 32) TODO_PLUGIN_ALLOW_HOSTS=acme/web=hooks.example.com`.

@@ -5,7 +5,6 @@ import { db } from "@/lib/db";
 import { jiraStatusesOf, linkedJiraProjects, saveJiraSettings } from "@/lib/jira/settings";
 import type { OutboundRules, Problem } from "@/lib/jira/rules";
 import { STATUSES } from "@/lib/model";
-import { PluginInputError, putProjectRepos } from "@/lib/plugins/store";
 import { requireUser } from "@/lib/session";
 
 export async function saveJiraSettingsAction(key: string, outbound: OutboundRules):
@@ -31,16 +30,4 @@ export async function saveActionsAction(key: string, drafts: Partial<ActionDef>[
   if (!done.length) return { ok: false, problems: [{ level: "error", message: "No such project." }] };
   revalidatePath(`/p/${key}`, "layout");
   return { ok: true, problems };
-}
-
-/** Replace the project's plugin repos from the settings form: one owner/name per line. */
-export async function savePluginReposAction(key: string, form: FormData): Promise<void> {
-  const user = await requireUser();
-  const repos = String(form.get("repos") ?? "").split(/[\s,]+/).filter(Boolean);
-  try {
-    await putProjectRepos(await db(), key, repos, user.handle);
-  } catch (e) {
-    if (!(e instanceof PluginInputError)) throw e;
-  }
-  revalidatePath(`/p/${key}/settings`);
 }
