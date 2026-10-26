@@ -19,3 +19,12 @@ describe("plugin attachment labels", () => {
     expect(out.match(/plugin-by/g)).toHaveLength(1);
   });
 });
+
+describe("the git facts rail", () => {
+  it("shows a branch's hint quietly, outside the edges", () => {
+    const hint = "feat/b's PR is based on staging; if staging is long-lived, add it under track: in .todo-plugins/plugins.yaml";
+    const out = renderToStaticMarkup(<GitFacts base="/p/p" facts={{ branches: [{ name: "feat/b", target: "staging", hint }], needs: [] }} />);
+    expect(out).toContain(`<div class="faint git-hint">${hint.replace(/'/g, "&#x27;")}</div>`);
+    expect(out).not.toContain("needs");
+  });
+});

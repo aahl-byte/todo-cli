@@ -276,11 +276,11 @@ describe("PR base chains and other edge cases", () => {
 
   it("makes a PR based on a branch no item tracks an unknown edge that blocks", async () => {
     await items(["B", ["feat/b"]]);
-    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: chainPrs })).impl);
+    await computeProject(w.d, "p", fakeGitHub(stackedSpec({ prs: chainPrs, u: u(A, B, [B]) })).impl);
     const b = await facts("B");
     expect(b.needs).toMatchObject([{ needs: "branch:feat/a", state: "unknown", reason: "PR based on feat/a, which no item tracks" }]);
     expect(b.needs![0].evidence).toContain("retarget the PR");
-    expect(b.branches![0].target).toBe("staging");
+    expect(b.branches![0].target).toBe("feat/a");
   });
 
   it("keeps a stacked PR's edge after its parent is rebased", async () => {
@@ -414,6 +414,47 @@ describe("PR base chains and other edge cases", () => {
     expect((await itemGitFacts(w.d, "p", "B", hang)).hints).toBeDefined();
     expect(Date.now() - t).toBeLessThan(1000);
     resetGitFactsCache();
+  });
+});
+
+describe("a PR based on a branch nothing tracks", () => {
+  // Alpha's work is merged into staging, which main lacks; Beta was cut from staging after, with a PR based on it.
+  const aheadSpec = (track?: string): Spec => ({
+    tips: { main: M, staging: S, "feat/a": A, "feat/b": B }, track, prs: { "feat/b": [open(8, B)] },
+    u: { ...u(M, A, [A]), ...u(S, A, []), ...u(M, B, [A, S, B]), ...u(S, B, [B]) },
+  });
+
+  it("without a track list, ends the chain at staging, adds no edge, leaves a hint, and lets it stage", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"], "qa-approved"]);
+    await computeProject(w.d, "p", fakeGitHub(aheadSpec()).impl);
+    const b = await facts("B");
+    expect(b).toMatchObject({ needs: [], shares: [], waits_on: [] });
+    expect((await facts("A")).needed_by).toEqual([]);
+    expect(b.branches![0]).toMatchObject({ name: "feat/b", target: "staging" });
+    expect(b.branches![0].orphan).toBeUndefined();
+    expect(b.branches![0].hint).toBe("feat/b's PR is based on staging; if staging is long-lived, add it under track: in .todo-plugins/plugins.yaml");
+    const [r] = await w.d.query("select versions from items where uid = 'B'");
+    expect((await w.one("alice", set("item", "B", "B", { status: "ready-to-deploy" }, { status: r.versions.status }))).status).toBe("applied");
+  });
+
+  it("with staging tracked, has no hint and no edge", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(aheadSpec(TRACK)).impl);
+    const b = await facts("B");
+    expect(b).toMatchObject({ needs: [], waits_on: [] });
+    expect(b.branches![0].target).toBe("staging");
+    expect(b.branches![0].hint).toBeUndefined();
+  });
+
+  it("with a track list that leaves the base out, keeps the edge blocking", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"], "qa-approved"]);
+    await computeProject(w.d, "p", fakeGitHub(aheadSpec("track: [main]\n")).impl);
+    const b = await facts("B");
+    expect(b.needs).toMatchObject([{ needs: "branch:staging", state: "unknown", reason: "PR based on staging, which no item tracks" }]);
+    expect(b.branches![0].target).toBe("staging");
+    expect(b.branches![0].hint).toBeUndefined();
+    const [r] = await w.d.query("select versions from items where uid = 'B'");
+    expect((await w.one("alice", set("item", "B", "B", { status: "ready-to-deploy" }, { status: r.versions.status }))).rejected![0].reason).toBe("waits-on");
   });
 });
 
