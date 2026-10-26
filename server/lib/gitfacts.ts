@@ -8,7 +8,7 @@
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
 import { parse } from "yaml";
 import { db as appDb, type Db, type Row } from "./db";
-import { repoAllowed, repoKey, repoRefusal } from "./checkouts";
+import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { githubApi } from "./github";
 import { later } from "./http";
 import { itemBranches } from "./model";
@@ -34,6 +34,8 @@ export interface Edge {
   chain?: boolean;
   /** These items wait on each other in a ring. */
   cycle?: string;
+  /** The PR a dependency note names by URL. */
+  pr?: PrFact;
 }
 /** `rewritten`: B still carries commits A dropped, after A's current work landed; `mb` is the newest of them. */
 export interface Share {
@@ -548,20 +550,24 @@ async function noteState(c: Ctx, dep: ItemRow | null, branches: BranchFact[], ti
   return states.every(Boolean) ? "landed" : "waiting";
 }
 
-/** A dependency on a PR by URL: landed once merged (into `into`, when named). */
+/** A dependency on a PR by URL, in any repo: landed once merged, and once its merge commit is in `into` when that's named.
+ * Unknown when GitHub can't answer, and for an owner this server doesn't read. */
 async function prEdge(url: string, into: string | null, f: Fetch): Promise<Partial<Edge>> {
   const m = url.match(/^https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#]|$)/i);
   if (!m) return { state: "waiting" };
-  const repo = new GitHubRepo(m[1], m[2], f);
-  const raw = await orNull(get(`/repos/${m[1]}/${m[2]}/pulls/${m[3]}`, f));
-  if (!raw) return { state: "waiting" };
+  const [, owner, name, number] = m;
+  if (!pluginOwners().includes(owner.toLowerCase())) {
+    return { state: "unknown", reason: `${owner} isn't one of the GitHub owners this server reads (TODO_PLUGIN_OWNERS)` };
+  }
+  const raw = await get(`/repos/${owner}/${name}/pulls/${number}`, f).catch(() => null);
+  if (!raw?.number) return { state: "unknown", reason: "GitHub didn't answer for the PR" };
   const pr = prFact(raw);
-  if (pr.state === "closed") return { state: "stale" };
-  if (pr.state !== "merged") return { state: "waiting" };
-  if (!into || !pr.merge_commit) return { state: "landed" };
-  const tip = (await repo.tips())[into];
-  const reached = tip ? await repo.contains(tip, pr.merge_commit) : false;
-  return { state: reached ? "landed" : reached === null ? "unknown" : "waiting" };
+  if (pr.state === "closed") return { state: "stale", pr };
+  if (pr.state !== "merged") return { state: "waiting", pr };
+  if (!into || !pr.merge_commit) return { state: "landed", pr };
+  const c = await get(`/repos/${owner}/${name}/compare/${pr.merge_commit}...${encodeURIComponent(into)}`, f).catch(() => null);
+  if (!c?.status) return { state: "unknown", reason: `couldn't check PR #${pr.number} against ${into}`, pr };
+  return { state: c.status === "ahead" || c.status === "identical" ? "landed" : "waiting", pr };
 }
 
 /** Files both of two live, unrelated branches change: the overlap hint. */

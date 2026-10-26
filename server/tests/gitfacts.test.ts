@@ -30,6 +30,8 @@ interface Spec {
   /** `sha...tip` → compare status. */
   anc?: Record<string, string>;
   fail?: (path: string) => boolean;
+  /** Answers for paths outside acme/web, such as another repo's PR. */
+  other?: (path: string) => Response | undefined;
 }
 
 /** GitHub as recorded responses: the repo, its branches, PRs, and compares by commit pair; anything else 404s. */
@@ -39,6 +41,8 @@ function fakeGitHub(spec: Spec) {
     const path = String(url).replace("https://api.github.com", "");
     calls.push(path);
     if (spec.fail?.(path)) return new Response("rate limited", { status: 403 });
+    const other = spec.other?.(path);
+    if (other) return other;
     if (path === "/repos/acme/web") return Response.json({ default_branch: "main" });
     if (path.startsWith("/repos/acme/web/branches?")) {
       return Response.json(path.endsWith("page=1") ? Object.entries(spec.tips).map(([name, s]) => ({ name, commit: { sha: s } })) : []);
@@ -455,6 +459,71 @@ describe("a PR based on a branch nothing tracks", () => {
     expect(b.branches![0].hint).toBeUndefined();
     const [r] = await w.d.query("select versions from items where uid = 'B'");
     expect((await w.one("alice", set("item", "B", "B", { status: "ready-to-deploy" }, { status: r.versions.status }))).rejected![0].reason).toBe("waits-on");
+  });
+});
+
+describe("a dependency note on a PR in another repo", () => {
+  const DB_PR = "https://github.com/acme/db/pull/3";
+  const D = sha("d");
+  const dbPr = (state: "open" | "merged" | "closed") => Response.json({
+    number: 3, state: state === "open" ? "open" : "closed", draft: false, merged_at: state === "merged" ? "t" : null,
+    merge_commit_sha: state === "merged" ? D : null, base: { ref: "main" }, head: { sha: C }, html_url: DB_PR });
+  const spec = (other: Spec["other"]): Spec => ({ tips: { main: M, staging: S, "feat/b": B }, track: TRACK, u: u(S, B, [B]), other });
+  async function noted(meta: Record<string, unknown>) {
+    await items(["B", ["feat/b"], "qa-approved"]);
+    await w.one("alice", child("note", "N1", "B", { kind: "dependency", text: "migrations first", meta: { needs: DB_PR, ...meta } }));
+  }
+  const stage = async () => {
+    const [r] = await w.d.query("select versions from items where uid = 'B'");
+    return w.one("alice", set("item", "B", "B", { status: "ready-to-deploy" }, { status: r.versions.status }));
+  };
+
+  it("waits on an open PR, and the guard refuses", async () => {
+    await noted({});
+    await computeProject(w.d, "p", fakeGitHub(spec((p) => (p === "/repos/acme/db/pulls/3" ? dbPr("open") : undefined))).impl);
+    const b = await facts("B");
+    expect(b.needs).toMatchObject([{ needs: DB_PR, note: "N1", state: "waiting", pr: { number: 3, state: "open" }, evidence: "migrations first" }]);
+    expect(b.waits_on).toEqual([DB_PR]);
+    expect((await stage()).rejected![0].reason).toBe("waits-on");
+  });
+
+  it("lands a merged PR without --in", async () => {
+    await noted({});
+    await computeProject(w.d, "p", fakeGitHub(spec((p) => (p === "/repos/acme/db/pulls/3" ? dbPr("merged") : undefined))).impl);
+    expect((await facts("B")).needs).toMatchObject([{ state: "landed" }]);
+    expect((await stage()).status).toBe("applied");
+  });
+
+  it("lands a merged PR with --in staging only once its merge commit is in staging", async () => {
+    await noted({ in: "staging" });
+    const answer = (status: string) => (p: string) => p === "/repos/acme/db/pulls/3" ? dbPr("merged")
+      : p === `/repos/acme/db/compare/${D}...staging` ? Response.json({ status }) : undefined;
+    await computeProject(w.d, "p", fakeGitHub(spec(answer("diverged"))).impl);
+    expect((await facts("B")).needs).toMatchObject([{ needs: DB_PR, target: "staging", state: "waiting" }]);
+    resetGitFactsCache();
+    await computeProject(w.d, "p", fakeGitHub(spec(answer("ahead"))).impl);
+    expect((await facts("B")).needs).toMatchObject([{ state: "landed" }]);
+  });
+
+  it("calls the edge unknown, and nothing else, when GitHub can't answer for the PR or its branch", async () => {
+    await noted({ in: "staging" });
+    await computeProject(w.d, "p", fakeGitHub(spec((p) => (p.startsWith("/repos/acme/db/") ? new Response("", { status: 403 }) : undefined))).impl);
+    const b = await facts("B");
+    expect(b.needs).toMatchObject([{ needs: DB_PR, state: "unknown", reason: "GitHub didn't answer for the PR" }]);
+    expect(b.error).toBeUndefined();
+    expect(b.branches).toMatchObject([{ name: "feat/b", target: "staging" }]);
+    resetGitFactsCache();
+    await computeProject(w.d, "p", fakeGitHub(spec((p) => (p === "/repos/acme/db/pulls/3" ? dbPr("merged") : undefined))).impl);
+    expect((await facts("B")).needs).toMatchObject([{ state: "unknown", reason: "couldn't check PR #3 against staging" }]);
+  });
+
+  it("reads no PR of an owner the server doesn't read", async () => {
+    await noted({});
+    await w.d.query("update notes set meta = jsonb_set(meta, '{needs}', '\"https://github.com/elsewhere/db/pull/3\"') where uid = 'N1'");
+    const gh = fakeGitHub(spec(() => undefined));
+    await computeProject(w.d, "p", gh.impl);
+    expect((await facts("B")).needs).toMatchObject([{ state: "unknown", reason: expect.stringContaining("TODO_PLUGIN_OWNERS") }]);
+    expect(gh.calls.some((c) => c.includes("elsewhere"))).toBe(false);
   });
 });
 
