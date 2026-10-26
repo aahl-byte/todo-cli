@@ -210,6 +210,8 @@ export async function item(d: Db, key: string, id: string) {
     comments: notes.filter((n) => (n.kind === "comment" && !n.meta?.thread) || n.kind === "qa-rejection"),
     notes: by("context"),
     links: by("link"),
+    /** The plugin instance behind each dependency note a plugin wrote, for its edge in the git facts. */
+    pluginEdges: Object.fromEntries(by("dependency").filter((n) => n.meta?.plugin).map((n) => [n.uid, String(n.meta.plugin)])) as Record<string, string>,
     logs,
     tasks,
     checks,
@@ -266,7 +268,7 @@ export async function choices(d: Db, key: string) {
 }
 
 /** The page adds live PR statuses, keyed by link uid. */
-export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts };
+export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts; pluginNotices?: string[] };
 
 const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
 
