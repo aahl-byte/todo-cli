@@ -1272,3 +1272,13 @@ def test_a_plugin_sees_every_request_version_newest_first(fx):
         {"id": "n3", "kind": "comment", "text": "hi", "meta": {}},
         {"id": "n2", "kind": "ticket-request", "text": "second", "meta": {"version": 2}}]}
     assert plugins.item_json(it, "o/r", None)["requests"] == ["second", "first"]
+
+
+def test_jira_read_only_holds_back_the_host_jira_connection(fx, host, monkeypatch):
+    a = item_with_branch(fx)
+    monkeypatch.setenv("JIRA_READ_ONLY", "1")
+    refresh(fx.root, a)
+    assert [r.get("dryRunConnections") for r in host.calls()] == [["jira"]]
+    monkeypatch.delenv("JIRA_READ_ONLY")
+    refresh(fx.root, a)
+    assert host.calls()[-1].get("dryRunConnections") is None

@@ -3,7 +3,7 @@
 import { Calls, type ConnectionOptions } from "./connections";
 import { hostCodeSlots, REPO_CODE_DEADLINE_MS, runCode, type CodeSlots, type Isolation } from "./code-runner";
 import { test } from "./expr";
-import { Attached, finish } from "./limits";
+import { addLog, Attached, finish } from "./limits";
 import { parsePlugins, pluginErrors, settingRef } from "./load";
 import { fetchDocs } from "./docs";
 import { ALWAYS_ON, SHIPPED } from "./shipped";
@@ -133,7 +133,12 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
 
   const repoCode = !!plugin.code && !input.shipped;
   const deadline = Date.now() + (input.limits?.deadlineMs ?? (repoCode ? REPO_CODE_DEADLINE_MS : DEFAULT_DEADLINE_MS));
-  const dryRun = input.dryRun || !!instance.dry_run;
+  const readOnly = (plugin.connections ?? []).find((n) => input.dryRunConnections?.includes(n) && connectionsOf(input)[n]?.origin === "host");
+  const dryRun = input.dryRun || !!instance.dry_run || !!readOnly;
+  if (readOnly && !input.dryRun && !instance.dry_run) {
+    result.dryRun = true;
+    addLog(result, `${readOnly} is read-only on this host, so every write is held back`);
+  }
   const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun, deadline });
   const attached = new Attached();
   const mayRequest = !!plugin.capabilities?.includes(POST_REQUEST) && !!input.grants?.includes(POST_REQUEST);
@@ -177,6 +182,8 @@ export interface EventInput {
   dryRun?: boolean;
   allowRepoCommands?: boolean;
   limits?: Limits;
+  /** Host connections this host never writes through, e.g. jira under JIRA_READ_ONLY. */
+  dryRunConnections?: string[];
 }
 
 export interface EventRun { plugin: string; instance: InstanceDef; result: RunResult }
@@ -278,7 +285,7 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: Ev
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
-        repoKey: input.repoKey, track: file.track ?? [], repoInstance: declared.includes(instance.id),
+        repoKey: input.repoKey, track: file.track ?? [], repoInstance: declared.includes(instance.id), dryRunConnections: input.dryRunConnections,
       }, deps);
       results.push({ plugin: name, instance, result });
       await hooks.after?.(results[results.length - 1]);

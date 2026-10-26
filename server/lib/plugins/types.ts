@@ -30,6 +30,8 @@ export interface RunResult {
   log: string[];
   skipped?: string;
   error?: string;
+  /** The host held back every write, though the run wasn't asked to be a dry run. */
+  dryRun?: boolean;
   /** The error was a network failure, a 5xx or a 429, and every call the run made only read, so running it again is safe. */
   transient?: boolean;
 }
@@ -184,6 +186,8 @@ export interface RunInput {
   track?: string[];
   /** The repo's plugins file declares this instance, alone or under a stored override, so it gets none of the host's connections. */
   repoInstance?: boolean;
+  /** Host connections this host never writes through: a run that uses one is held back as in dry-run. */
+  dryRunConnections?: string[];
 }
 
 export const POST_REQUEST = "post-request";

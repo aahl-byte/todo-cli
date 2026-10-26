@@ -14,7 +14,7 @@ let close: (() => void) | null = null;
 afterEach(() => { close?.(); close = null; });
 
 /** A server that records what reaches it and answers {}. */
-async function recorder() {
+async function recorder(answer: (url: string) => unknown = () => ({})) {
   const got: { method: string; url: string; auth?: string; body: string }[] = [];
   const srv = http.createServer((req, res) => {
     let body = "";
@@ -22,7 +22,7 @@ async function recorder() {
     req.on("end", () => {
       got.push({ method: req.method!, url: req.url!, auth: req.headers.authorization, body });
       res.setHeader("content-type", "application/json");
-      res.end("{}");
+      res.end(JSON.stringify(answer(req.url!)));
     });
   });
   await new Promise<void>((done) => srv.listen(0, "127.0.0.1", done));
@@ -101,5 +101,23 @@ instances:
     const out = await run({ repo: { text, files: {} } }, "x");
     expect(out.results[0].result.error).toMatch(/isn't an address this host connects to/);
     expect(srv.got).toEqual([]);
+  });
+});
+
+describe("a read-only connection", () => {
+  const TRANSITION = `plugins:\n  jira-transition: {use: shipped}\n`;
+
+  it("holds back every write of a run through the host's connection of that name, as dry-run does", async () => {
+    const srv = await recorder((url) => (url.endsWith("/transitions") ? { transitions: [{ id: "161", to: { name: "QA" } }] } : {}));
+    const out = await runEvent({
+      repo: { text: TRANSITION, files: {} }, hostConnections: { jira: { http: { url: srv.url, auth: "basic" } } }, secrets: { host: { jira: "a:b" } },
+      storedInstances: { "jira-transition": [{ id: "qa", name: "QA", on: [{ status: { to: "in-qa" } }], settings: { to: "QA" } }] },
+      item: { ...ITEM, jira: ["SR-1"] }, event: { type: "status", from: "review", to: "in-qa" }, dryRunConnections: ["jira"],
+    }, { guard: { allow: ["127.0.0.1"], repoAllow: [] } });
+    const result = out.results[0].result;
+    expect(result.dryRun).toBe(true);
+    expect(result.log[0]).toBe("jira is read-only on this host, so every write is held back");
+    expect(result.wouldSend).toEqual([{ connection: "jira", method: "POST", path: "/rest/api/3/issue/SR-1/transitions", input: { transition: { id: "161" } } }]);
+    expect(srv.got.map((g) => g.method)).toEqual(["GET", "GET"]);
   });
 });

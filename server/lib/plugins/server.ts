@@ -12,6 +12,7 @@ import { docType, putObject } from "../files";
 import { PLUGINS_DIR, scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { itemBranches } from "../model";
+import { jiraReadOnly } from "../jira/config";
 import { hashUid, ulid } from "../ulid";
 import { runEvent, type EventRun, type HostDeps } from "./host";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
@@ -315,7 +316,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     secrets: { repo: await repoSecrets(d, row.project, row.repo), host: hostSecrets(connections) },
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
-    allowRepoCommands: false,
+    allowRepoCommands: false, dryRunConnections: jiraReadOnly() ? ["jira"] : undefined,
   }, hostDeps(deps, row.repo), {
     before: async (plugin, instance) => {
       if (done.has(instanceKey(plugin, instance))) return false;

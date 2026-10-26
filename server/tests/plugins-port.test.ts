@@ -79,18 +79,21 @@ describe("plugins-port", () => {
       settings: { connection: "rest-hooks-example", method: "POST", path: "/notify/{{item.id}}?from={{event.from}}",
                   headers: "X-Token: abc\nContent-Type: application/json",
                   body: { text: "{{item.title}}", status: "{{item.status}}", dev: "{{item.developer}}" } },
+      dry_run: true,
     }]);
     expect(plan.instances["watchtower-session"]).toEqual([{
       id: "action-send-to-watchtower", name: "ROSM", on: ["manual"],
       settings: { dir: "/work/web", prompt: LONG_PROMPT, link: WT, model: "opus", resumePrompt: "/todo {{item.id}}" },
+      dry_run: true,
     }]);
     expect(plan.instances["jira-transition"].map((i) => [i.id, i.on, i.settings])).toEqual([
       ["jira-review-in-qa", [{ status: { from: "review", to: "in-qa" } }], { to: "QA", never: ["Done", "UAT"] }],
       ["jira-in-qa-qa-rejected", [{ status: { from: "in-qa", to: "qa-rejected" } }], { to: "In Development", never: ["Done", "UAT"] }],
       ["jira-ready-to-deploy-deployed", [{ status: { from: "ready-to-deploy", to: "deployed" } }], { to: "Done", never: ["Done", "UAT"] }],
     ]);
-    expect(plan.instances["jira-issue"]).toEqual([{ id: "default", name: "Jira issues" }]);
+    expect(plan.instances["jira-issue"]).toEqual([{ id: "default", name: "Jira issues", dry_run: true }]);
     expect(plan.grants).toEqual({ "jira-issue": ["post-request"] });
+    expect(Object.values(plan.instances).flat().every((i) => i.dry_run === true)).toBe(true);
     expect(plan.connections).toEqual({
       "rest-hooks-example": { http: { url: "https://hooks.example" } },
       watchtower: { http: { url: WT_API } },
@@ -104,6 +107,7 @@ describe("plugins-port", () => {
     expect(text).toContain("    jira-transition: {use: shipped}");
     expect(text).toContain("TODO_PLUGIN_SECRET_JIRA=<JIRA_EMAIL:JIRA_API_TOKEN>");
     expect(text).toContain("TODO_PLUGIN_ALLOW_HOSTS needs 127.0.0.1:10010");
+    expect(text).toContain("every instance is stored in dry-run");
   });
 
   it("writes only with --write, beside instances already stored, and refuses a plugin the repo doesn't enable", async () => {

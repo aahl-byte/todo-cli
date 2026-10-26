@@ -201,9 +201,9 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
       while (ids.has(id)) id += "-x";
       ids.add(id);
       return { id, name: `${t.from} → ${t.to}: Jira ${t.jira}`, on: [{ status: { from: t.from, to: t.to } }],
-               settings: { to: t.jira, never: rules.never }, ...(rules.writes ? {} : { dry_run: true }) };
+               settings: { to: t.jira, never: rules.never } };
     });
-    if (!rules.writes) plan.notes.push("Jira writes are off for this project, so its jira-transition instances run in dry-run");
+    if (!rules.writes) plan.notes.push("Jira writes are off for this project: keep its jira-transition instances in dry-run at the cutover");
   }
   const [linked] = await d.query("select count(*)::int as n from jira_links where project = $1 and source = 'field'", [project]);
   if (rules || linked.n > 0) {
@@ -214,6 +214,9 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
     const cfg = jiraConfig();
     plan.connections.jira = { http: { url: cfg?.baseUrl ?? "https://<site>.atlassian.net", auth: "basic" } };
   }
+
+  // The old Actions and Jira bridge keep running until the cutover, so a live instance would send twice.
+  for (const list of Object.values(plan.instances)) for (const i of list) i.dry_run = true;
 
   // Only what the server lacks is left to add.
   const host = hostConnections();
@@ -244,6 +247,8 @@ export function describePlan(plan: PortPlan): string {
   for (const [name, what] of Object.entries(plan.secrets)) lines.push(`TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}=<${what}>`);
   if (plan.allowHosts.length) lines.push(`TODO_PLUGIN_ALLOW_HOSTS needs ${plan.allowHosts.join(",")}`);
   for (const n of [...new Set(plan.notes)]) lines.push(`note: ${n}`);
+  lines.push("every instance is stored in dry-run, since the Actions and Jira bridge it replaces still run. The cutover: turn those off,",
+             "then clear dry_run on each instance (Settings → Plugins), which makes it send.");
   return lines.join("\n");
 }
 

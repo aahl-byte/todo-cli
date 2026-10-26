@@ -251,6 +251,26 @@ describe("running plugins", () => {
     expect(await w.d.query("select 1 from notes where item_uid = 'I1' and kind = 'ticket-request'")).toHaveLength(2);
   });
 
+  it("holds back every Jira write under JIRA_READ_ONLY", async () => {
+    vi.stubEnv("JIRA_READ_ONLY", "1");
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    const gh = fakeGitHub({ file: "plugins:\n  jira-transition: {use: shipped}\n", other: (url) => {
+      if (!url.startsWith("https://acme.atlassian.net/")) return undefined;
+      return Response.json(url.endsWith("/transitions") ? { transitions: [{ id: "161", to: { name: "QA" } }] } : { fields: { status: { name: "Open" } } });
+    } });
+    vi.stubGlobal("fetch", gh.impl);
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "jira-transition",
+      instances: [{ id: "qa", name: "QA", on: [{ status: { from: "in-progress", to: "review" } }], settings: { to: "QA" } }] }), params("p"));
+    await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
+    await w.d.query("delete from plugin_events");
+    await w.one({ handle: "alice", unconditional: true }, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { status: "review" } });
+    await run(gh.impl);
+    const ran = (await runs()).find((r) => r.plugin === "jira-transition")!;
+    expect(ran.result).toMatchObject({ dryRun: true, wouldSend: [{ method: "POST", path: "/rest/api/3/issue/SR-1/transitions" }] });
+    expect(gh.sent.filter((s) => s.url.startsWith("https://acme.atlassian.net") && s.method !== "GET")).toEqual([]);
+  });
+
   it("posts a request only once the plugin is granted post-request", async () => {
     SHIPPED["test-request"] = { def: { connections: [], on: ["push"], capabilities: ["post-request"],
       steps: [{ name: "v", value: "`1`" }], attach: [{ request: "From Jira: {{event.branch}}" }] } };

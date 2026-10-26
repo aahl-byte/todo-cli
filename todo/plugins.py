@@ -42,6 +42,7 @@ from .util import now, to_str
 
 HOST_ENV = "TODO_PLUGIN_HOST"       # a command that stands in for `node plugin_host.mjs`
 OFF_ENV = "TODO_PLUGINS"            # "0" or "off" turns plugins off on this host
+JIRA_READ_ONLY_ENV = "JIRA_READ_ONLY"  # "1": the host jira connection is never written through
 BUNDLE = Path(__file__).with_name("plugin_host.mjs")
 HOST_TIMEOUT = 360
 PLUGINS_DIR = ".todo-plugins"
@@ -609,6 +610,8 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
                "storedInstances": stored, "grants": ctx.stored(key)["grants"],
                "item": item_json(it, key, repo["dir"]), "event": job.event, "repoKey": key,
                "dryRun": dry_run, "allowRepoCommands": True}
+    if os.environ.get(JIRA_READ_ONLY_ENV) == "1":
+        payload["dryRunConnections"] = ["jira"]
     if repo["payload"]:
         payload["repo"] = repo["payload"]
     plan["payload"] = payload
