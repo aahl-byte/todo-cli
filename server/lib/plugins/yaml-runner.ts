@@ -4,7 +4,8 @@ import { AttachError, makeAttachment } from "./attachments";
 import { withQuery, type Calls } from "./connections";
 import { search, test } from "./expr";
 import { addLog, type Attached } from "./limits";
-import { fillJson, fillString, fillUrl, type Scope } from "./template";
+import { METHODS, settingRef } from "./load";
+import { fillJson, fillString, fillUrl, templateErrors, TemplateError, type Scope } from "./template";
 import { ATTACHMENT_KINDS, type Attachment, type Call, type PluginDef, type PluginItem, type PluginEvent, type RunResult, type StepDef } from "./types";
 
 export interface YamlRun {
@@ -13,6 +14,8 @@ export interface YamlRun {
   item: PluginItem;
   event: PluginEvent;
   settings: Record<string, unknown>;
+  /** The branches the repo's plugins file tracks. */
+  track: string[];
   calls: Calls;
   result: RunResult;
   attached: Attached;
@@ -33,13 +36,61 @@ function passes(plugin: PluginDef, item: PluginItem): { label: string; extra: Sc
   return [{ label: "", extra: {} }];
 }
 
+/** A field that is exactly {{settings.<key>}} for a template setting takes that setting's value as its own template. */
+function splice(field: unknown, plugin: PluginDef, scope: Scope): unknown {
+  const key = settingRef(field);
+  if (!key || !plugin.settings?.[key]?.template) return field;
+  const raw = (scope.settings as Record<string, unknown>)[key];
+  const bad = templateErrors(raw);
+  if (bad.length) throw new TemplateError(`setting ${key}: ${bad.join("; ")}`);
+  return raw ?? undefined;
+}
+
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+/** Headers that would change where or how a request goes, rather than what it says. */
+const FIXED_HEADERS = ["host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "keep-alive"];
+
+/** A step's headers as a map of lowercase names to filled values. */
+function headersOf(raw: unknown, scope: Scope): Record<string, string> | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  let pairs: [string, string][];
+  if (typeof raw === "string") {
+    pairs = raw.split(/\r?\n/).filter((l) => l.trim()).map((line) => {
+      const at = line.indexOf(":");
+      if (at <= 0) throw new TemplateError(`headers: ${JSON.stringify(line)} isn't Name: value`);
+      return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
+    });
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    pairs = Object.entries(raw).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
+  } else throw new TemplateError("headers must be a map or Name: value lines");
+  const out: Record<string, string> = {};
+  for (const [name, template] of pairs) {
+    if (!HEADER_NAME.test(name)) throw new TemplateError(`${JSON.stringify(name)} isn't a header name`);
+    if (FIXED_HEADERS.includes(name.toLowerCase())) throw new TemplateError(`header ${name} can't be set by a plugin`);
+    const value = fillString(template, scope);
+    if (/[\r\n\0]/.test(value)) throw new TemplateError(`header ${name} would hold a line break`);
+    out[name.toLowerCase()] = value;
+  }
+  return out;
+}
+
 function callFor(step: StepDef, plugin: PluginDef, scope: Scope): Call {
   const connection = step.connection ?? plugin.connections![0];
-  if (step.tool) return { connection, tool: step.tool, input: fillJson(step.input ?? {}, scope) };
+  if (step.tool) return { connection, tool: step.tool, input: fillJson(splice(step.input ?? {}, plugin, scope), scope) };
   const http = step.http!;
-  const query = http.query ? (fillJson(http.query, scope) as Record<string, unknown>) : undefined;
-  const call: Call = { connection, method: http.method.toUpperCase(), path: withQuery(fillUrl(http.path, scope), query) };
-  if (http.body !== undefined) call.input = fillJson(http.body, scope);
+  const method = fillString(String(splice(http.method, plugin, scope) ?? ""), scope).trim().toUpperCase();
+  if (!METHODS.includes(method)) throw new TemplateError(`http method ${JSON.stringify(method)} isn't one of ${METHODS.join(", ")}`);
+  const path = String(splice(http.path, plugin, scope) ?? "");
+  if (!path.startsWith("/")) throw new TemplateError(`setting ${settingRef(http.path)} must start with /`);
+  const rawQuery = splice(http.query, plugin, scope);
+  const query = rawQuery ? (fillJson(rawQuery, scope) as Record<string, unknown>) : undefined;
+  const call: Call = { connection, method, path: withQuery(fillUrl(path, scope), query) };
+  const headers = headersOf(splice(http.headers, plugin, scope), scope);
+  if (headers && Object.keys(headers).length) call.headers = headers;
+  const text = splice(http.text, plugin, scope);
+  const body = splice(http.body, plugin, scope);
+  if (text !== undefined && text !== null && text !== "") call.text = fillString(String(text), scope);
+  else if (body !== undefined && body !== null && body !== "") call.input = fillJson(body, scope);
   return call;
 }
 
@@ -84,7 +135,7 @@ export async function runYaml(run: YamlRun): Promise<{ skipped?: string }> {
   if (!all.length) return { skipped: plugin.per === "branch" ? "the item has no branches" : "the item has no Jira issues" };
   let gated = 0;
   for (const { label, extra } of all) {
-    const scope: Scope = { item, event: run.event, settings: run.settings, ...extra };
+    const scope: Scope = { item, event: run.event, settings: run.settings, track: run.track, ...extra };
     try {
       if (plugin.when !== undefined && !test(plugin.when, scope)) {
         gated++;

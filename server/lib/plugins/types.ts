@@ -4,7 +4,7 @@
 export type Attachment =
   | { kind: "link"; key: string; type: string; url: string; label?: string }
   | { kind: "edge"; key: string; needs: string; in?: string; because: string }
-  | { kind: "doc"; key: string; name: string; content?: string; url?: string }
+  | { kind: "doc"; key: string; name: string; content?: string; url?: string; connection?: string; encoding?: "base64" }
   | { kind: "log"; key: string; text: string }
   | { kind: "request"; key: string; text: string };
 
@@ -18,6 +18,10 @@ export interface Call {
   tool?: string;
   path?: string;
   input?: unknown;
+  /** Headers an http call adds to the connection's own. */
+  headers?: Record<string, string>;
+  /** A body sent as text rather than as JSON. */
+  text?: string;
 }
 
 export interface RunResult {
@@ -56,9 +60,20 @@ export interface SettingDef {
   options?: string[];
   options_from?: { tool: string; input?: unknown };
   scope?: "plugin" | "instance";
+  /** The value is a template itself: left unfilled until a step field that is exactly {{settings.<key>}} takes it as its own. */
+  template?: boolean;
 }
 
-export interface HttpStep { method: string; path: string; query?: Record<string, unknown>; body?: unknown }
+export interface HttpStep {
+  method: string;
+  path: string;
+  query?: Record<string, unknown>;
+  body?: unknown;
+  /** Header name → template, or `Name: value` lines. */
+  headers?: Record<string, string> | string;
+  /** A body sent as text, in place of a JSON body. */
+  text?: string;
+}
 
 export interface StepDef {
   name?: string;
@@ -127,6 +142,8 @@ export interface PluginItem {
   qa_assignee?: string | null;
   dir?: string | null;
   links: { type: string; url: string }[];
+  /** The item's request, every version's text, newest first. */
+  requests?: string[];
 }
 
 export type PluginEvent =
@@ -163,6 +180,8 @@ export interface RunInput {
   shipped?: boolean;
   /** The repo the plugin came from, e.g. owner/name, for its share of code-run slots. */
   repoKey?: string;
+  /** The branches the repo's plugins file tracks, as {{track}}. */
+  track?: string[];
 }
 
 export const POST_REQUEST = "post-request";

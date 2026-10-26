@@ -40,8 +40,13 @@ export interface ConnectionOptions {
   guard?: AddressGuard;
 }
 
+/** A file a connection fetched as it is, for a doc. */
+export interface Fetched { bytes: Buffer; type: string | null }
+
 export interface Connection {
   send(call: Call): Promise<unknown>;
+  /** GET a path's bytes, up to `max`; null when the answer is longer. */
+  fetchBytes?(path: string, max: number): Promise<Fetched | null>;
   isReadOnly(call: Call): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -209,34 +214,62 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
   const secrets = c.secret ? [c.secret, Buffer.from(c.secret).toString("base64")] : [];
   /** An answer can echo the credentials back; they never reach the plugin. */
   const hide = (t: string) => secrets.reduce((out, s) => out.split(s).join("***"), t);
+  /** One request: headers the call adds under the connection's own, an answer that isn't a redirect or an error. */
+  const request = async (call: Call, accept: string): Promise<{ res: Response; what: string }> => {
+    const method = (call.method ?? "GET").toUpperCase();
+    const path = call.path?.startsWith("/") ? call.path : `/${call.path ?? ""}`;
+    const what = `${name}: ${method} ${path}`;
+    const headers: Record<string, string> = { accept, "user-agent": "todo-plugin-host" };
+    if (call.text !== undefined) headers["content-type"] = "text/plain; charset=utf-8";
+    else if (call.input !== undefined) headers["content-type"] = "application/json";
+    Object.assign(headers, call.headers ?? {}, authHeaders(c));
+    const f = await (fetcher ??= fetchFor(name, base, c.origin, opts));
+    let res: Response;
+    try {
+      res = await f(base + path, { method, headers, body: call.text ?? (call.input === undefined ? undefined : JSON.stringify(call.input)),
+                                   redirect: "manual", signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS) });
+    } catch (e) {
+      throw new CallError(`${what} failed: ${(e as Error).message}`, undefined, true);
+    }
+    if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel().catch(() => {});
+      throw new CallError(`${what} answered ${res.status}, a redirect, which isn't followed`, res.status);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new CallError(`${what} answered ${res.status}${text ? `: ${hide(text).slice(0, SNIPPET)}` : ""}`, res.status);
+    }
+    return { res, what };
+  };
   return {
     async send(call) {
       if (call.tool) throw new CallError(`${name}: an http connection takes method calls, not the tool ${call.tool}`);
-      const method = (call.method ?? "GET").toUpperCase();
-      const path = call.path?.startsWith("/") ? call.path : `/${call.path ?? ""}`;
-      const what = `${name}: ${method} ${path}`;
-      const headers: Record<string, string> = { accept: "application/json", "user-agent": "todo-plugin-host", ...authHeaders(c) };
-      if (call.input !== undefined) headers["content-type"] = "application/json";
-      const f = await (fetcher ??= fetchFor(name, base, c.origin, opts));
-      let res: Response;
-      try {
-        res = await f(base + path, { method, headers, body: call.input === undefined ? undefined : JSON.stringify(call.input),
-                                     redirect: "manual", signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_MS) });
-      } catch (e) {
-        throw new CallError(`${what} failed: ${(e as Error).message}`, undefined, true);
-      }
-      if (res.status >= 300 && res.status < 400) {
-        await res.body?.cancel().catch(() => {});
-        throw new CallError(`${what} answered ${res.status}, a redirect, which isn't followed`, res.status);
-      }
+      const { res } = await request(call, "application/json");
       const text = await res.text().catch(() => "");
-      if (!res.ok) throw new CallError(`${what} answered ${res.status}${text ? `: ${hide(text).slice(0, SNIPPET)}` : ""}`, res.status);
       if (!text) return null;
       try {
         return JSON.parse(text);
       } catch {
         return text;
       }
+    },
+    async fetchBytes(path, max) {
+      const { res, what } = await request({ connection: name, method: "GET", path }, "*/*");
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        for await (const chunk of (res.body ?? []) as AsyncIterable<Uint8Array>) {
+          size += chunk.byteLength;
+          if (size > max) {
+            await res.body?.cancel().catch(() => {});
+            return null;
+          }
+          chunks.push(chunk);
+        }
+      } catch (e) {
+        throw new CallError(`${what} failed: ${(e as Error).message}`, undefined, true);
+      }
+      return { bytes: Buffer.concat(chunks), type: res.headers.get("content-type") };
     },
     async isReadOnly(call) {
       return READ_ONLY_METHODS.includes((call.method ?? "GET").toUpperCase());
@@ -387,6 +420,20 @@ export class Calls {
     if (!readOnly) this.wrote = true;
     try {
       return await this.withinDeadline(c.send(call), call);
+    } catch (e) {
+      if (e instanceof CallError) this.failure = e;
+      throw e;
+    }
+  }
+
+  /** GET a file through an http connection, as bytes; null past `max`. A fetch only reads, so dry-run sends it too. */
+  async fetchBytes(connection: string, path: string, max: number): Promise<Fetched | null> {
+    this.checkDeadline();
+    const c = this.connection(connection);
+    if (!c.fetchBytes) throw new CallError(`${connection}: only an http connection fetches a doc`);
+    const call: Call = { connection, method: "GET", path };
+    try {
+      return await this.withinDeadline(c.fetchBytes(path, max), call);
     } catch (e) {
       if (e instanceof CallError) this.failure = e;
       throw e;

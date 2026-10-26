@@ -4,7 +4,8 @@ import { Calls, type ConnectionOptions } from "./connections";
 import { hostCodeSlots, REPO_CODE_DEADLINE_MS, runCode, type CodeSlots, type Isolation } from "./code-runner";
 import { test } from "./expr";
 import { Attached, finish } from "./limits";
-import { parsePlugins, pluginErrors } from "./load";
+import { parsePlugins, pluginErrors, settingRef } from "./load";
+import { fetchDocs } from "./docs";
 import { ALWAYS_ON, SHIPPED } from "./shipped";
 import { pickInstances } from "./triggers";
 import { fillJson } from "./template";
@@ -41,7 +42,28 @@ export function resolveSettings(plugin: PluginDef, instance: InstanceDef, scope:
     settings[k] = v;
   }
   for (const [k, v] of Object.entries(given)) if (!(k in settings)) settings[k] = v;
-  return { settings: fillJson(settings, scope) as Record<string, unknown>, missing };
+  const templates = Object.entries(plugin.settings ?? {}).filter(([, d]) => d.template).map(([k]) => k);
+  const filled = fillJson(Object.fromEntries(Object.entries(settings).filter(([k]) => !templates.includes(k))), scope) as Record<string, unknown>;
+  for (const k of templates) filled[k] = settings[k];
+  return { settings: filled, missing };
+}
+
+/** The plugin with each {{settings.<key>}} in its connections replaced by the instance's value, which must be a plain name. */
+export function bindConnections(plugin: PluginDef, instance: InstanceDef): { plugin: PluginDef; problem?: string } {
+  if (!plugin.connections?.some((c) => settingRef(c))) return { plugin };
+  const names: string[] = [];
+  for (const c of plugin.connections) {
+    const key = settingRef(c);
+    if (!key) {
+      names.push(c);
+      continue;
+    }
+    const v = instance.settings?.[key] ?? plugin.settings?.[key]?.default;
+    if (v === undefined || v === null || v === "") return { plugin, problem: `setting ${key} is not set` };
+    if (typeof v !== "string" || v.includes("{{")) return { plugin, problem: `setting ${key} must name a connection, not a template` };
+    names.push(v);
+  }
+  return { plugin: { ...plugin, connections: names } };
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -78,7 +100,9 @@ function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shi
 
 /** Why this host would skip an instance whatever the item: a connection it can't use, or a required setting with no value. */
 export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
-  const problem = connectionProblem(input);
+  const bound = bindConnections(input.plugin, input.instance);
+  if (bound.problem) return bound.problem;
+  const problem = connectionProblem({ ...input, plugin: bound.plugin });
   if (problem) return problem;
   const { missing } = resolveSettings(input.plugin, input.instance, { item: {}, event: {} });
   return missing ? `setting ${missing} is not set` : undefined;
@@ -96,13 +120,16 @@ function secretsOf(input: RunInput): string[] {
 
 export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise<RunResult> {
   const result: RunResult = { attached: [], wouldSend: [], log: [] };
-  const { plugin, instance, item, event } = input;
+  const { instance, item, event } = input;
   const name = input.name ?? "(unnamed)";
   const skip = (why: string) => finish({ ...result, skipped: input.name ? `${input.name}: ${why}` : why }, secretsOf(input));
-  if (plugin.use !== undefined) return { ...result, error: `plugin ${name}: use: ${plugin.use} must be resolved before it runs` };
-  const errors = pluginErrors(name, plugin, { shipped: input.shipped === true });
+  if (input.plugin.use !== undefined) return { ...result, error: `plugin ${name}: use: ${input.plugin.use} must be resolved before it runs` };
+  const errors = pluginErrors(name, input.plugin, { shipped: input.shipped === true });
   if (errors.length) return { ...result, error: errors.join("; ") };
-  const problem = connectionProblem(input);
+  const bound = bindConnections(input.plugin, instance);
+  if (bound.problem) return skip(bound.problem);
+  const plugin = bound.plugin;
+  const problem = connectionProblem({ ...input, plugin });
   if (problem) return skip(problem);
   const { settings, missing } = resolveSettings(plugin, instance, { item, event });
   if (missing) return skip(`setting ${missing} is not set`);
@@ -119,12 +146,12 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
       await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline,
                       memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl,
                       slots: deps.codeSlots ?? hostCodeSlots(), repoKey: input.repoKey ?? "" });
-      result.attached = attached.list;
     } else {
-      const { skipped } = await runYaml({ name, plugin, item, event, settings, calls, result, attached, mayRequest });
-      result.attached = attached.list;
+      const { skipped } = await runYaml({ name, plugin, item, event, settings, track: input.track ?? [], calls, result, attached, mayRequest });
       if (skipped) return skip(skipped);
     }
+    await fetchDocs(plugin, connectionsOf(input), calls, attached, result);
+    result.attached = attached.list;
   } catch (e) {
     result.attached = [];
     result.error = message(e);
@@ -253,7 +280,7 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: Ev
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
-        repoKey: input.repoKey,
+        repoKey: input.repoKey, track: file.track ?? [],
       }, deps);
       results.push({ plugin: name, instance, result });
       await hooks.after?.(results[results.length - 1]);

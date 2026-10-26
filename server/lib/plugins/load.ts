@@ -18,19 +18,26 @@ const PLUGIN_KEYS = ["connections", "on", "every", "exclusive", "capabilities", 
 const YAML_BODY = ["per", "steps", "attach"];
 const STEP_KEYS = ["name", "when", "connection", "tool", "input", "http", "value"];
 const STEP_ACTIONS = ["tool", "http", "value"] as const;
-const HTTP_KEYS = ["method", "path", "query", "body"];
+const HTTP_KEYS = ["method", "path", "query", "body", "headers", "text"];
 export const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 const ATTACH_KEYS = ["each", "when", "key"];
-const SETTING_KEYS = ["label", "type", "default", "optional", "options", "options_from", "scope"];
+const SETTING_KEYS = ["label", "type", "default", "optional", "options", "options_from", "scope", "template"];
 const SETTING_TYPES = ["text", "long-text", "choice", "toggle", "number", "list", "secret"];
 const INSTANCE_KEYS = ["id", "name", "enabled", "on", "button", "dry_run", "settings"];
 const CAPABILITIES = [POST_REQUEST];
 const TRIGGERS = ["push", "pr", "deployment", "manual"];
 /** Names a step can't take, because the scope already has them or they'd reach an object's prototype. */
-const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "__proto__", "constructor", "prototype"];
+const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "track", "__proto__", "constructor", "prototype"];
 /** Names a connection can't take, because a code plugin's run() argument already has them. */
 const RESERVED_CONNECTIONS = ["item", "event", "settings", "attach", "wait"];
 const STEP_NAME = /^[A-Za-z_]\w*$/;
+/** A field that is exactly one settings reference, which an instance's value fills. */
+const SETTING_REF = /^\{\{\s*settings\.([A-Za-z_$][\w$-]*)\s*\}\}$/;
+
+/** The setting a field names when it is exactly {{settings.<key>}}, else null. */
+export function settingRef(v: unknown): string | null {
+  return typeof v === "string" ? v.match(SETTING_REF)?.[1] ?? null : null;
+}
 const takenConnection = (name: string) => `the name "${name}" is taken by the plugin's run() argument`;
 
 /** Where a plugin comes from: only plugins shipped with todo may declare capabilities. */
@@ -94,10 +101,18 @@ function stepErrors(step: unknown, connections: string[]): string[] {
   const http = step.http;
   if (!isMap(http)) return [...errors, "http must be a map of method, path, query and body"];
   errors.push(...unknownKeys(http, HTTP_KEYS));
-  if (typeof http.method !== "string" || !METHODS.includes(http.method.toUpperCase())) errors.push(`http method must be one of ${METHODS.join(", ")}`);
-  if (typeof http.path !== "string" || !http.path.startsWith("/")) errors.push("http path must start with /");
+  if (typeof http.method !== "string" || !(METHODS.includes(http.method.toUpperCase()) || settingRef(http.method))) {
+    errors.push(`http method must be one of ${METHODS.join(", ")}, or a setting`);
+  }
+  if (typeof http.path !== "string" || !(http.path.startsWith("/") || settingRef(http.path))) errors.push("http path must start with /, or be a setting");
   if ("query" in http && !isMap(http.query)) errors.push("http query must be a map");
-  errors.push(...templateErrors(http.path), ...templateErrors(http.query), ...templateErrors(http.body));
+  if ("headers" in http && !(typeof http.headers === "string" || (isMap(http.headers) && Object.values(http.headers).every((v) => typeof v === "string")))) {
+    errors.push("http headers must be a map of names to text, or Name: value lines");
+  }
+  if ("text" in http && typeof http.text !== "string") errors.push("http text must be a string");
+  if ("text" in http && "body" in http) errors.push("an http step sends a body or a text, not both");
+  errors.push(...templateErrors(http.path), ...templateErrors(http.query), ...templateErrors(http.body), ...templateErrors(http.headers),
+              ...templateErrors(http.text));
   return errors;
 }
 
@@ -133,6 +148,7 @@ function settingErrors(key: string, s: unknown): string[] {
   if ("options" in s && !isStrings(s.options)) errors.push("options must be a list of strings");
   if ("options_from" in s && !(isMap(s.options_from) && typeof s.options_from.tool === "string")) errors.push("options_from needs a tool");
   if ("scope" in s && s.scope !== "plugin" && s.scope !== "instance") errors.push("scope is plugin or instance");
+  if ("template" in s && typeof s.template !== "boolean") errors.push("template is true or false");
   errors.push(...templateErrors(s.default));
   return errors.map((e) => `settings.${key}: ${e}`);
 }
@@ -147,7 +163,15 @@ export function pluginErrors(name: string, def: unknown, opts: LoadOptions = {})
   }
   const connections = def.connections ?? [];
   if (!isStrings(connections)) errors.push("connections must be a list of names");
-  else errors.push(...connections.filter((c) => RESERVED_CONNECTIONS.includes(c)).map((c) => `connection name "${c}" is taken by the plugin's run() argument`));
+  else {
+    errors.push(...connections.filter((c) => RESERVED_CONNECTIONS.includes(c)).map((c) => `connection name "${c}" is taken by the plugin's run() argument`));
+    for (const c of connections) {
+      const ref = settingRef(c);
+      if (c.includes("{{") && !ref) errors.push(`connections: ${JSON.stringify(c)} must be a name or exactly {{settings.<key>}}`);
+      else if (ref && "code" in def) errors.push("a code plugin names its connections, since its clients take their names");
+      else if (ref && !(isMap(def.settings) && ref in def.settings)) errors.push(`connections: ${c} names no setting of the plugin`);
+    }
+  }
   if ("on" in def) errors.push(...triggerErrors(def.on));
   if ("every" in def) {
     try { parseDuration(def.every as string); } catch (e) { errors.push(`every: ${(e as Error).message}`); }

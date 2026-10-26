@@ -28,6 +28,7 @@ export function recordWouldSend(result: RunResult, call: Call): void {
     const text = JSON.stringify(call.input) ?? "null";
     if (text.length > MAX_WOULD_SEND_INPUT) kept.input = clip(text, MAX_WOULD_SEND_INPUT);
   }
+  if (call.text !== undefined) kept.text = clip(call.text, MAX_WOULD_SEND_INPUT);
   const size = (recorded.get(result) ?? 2) + JSON.stringify(kept).length + 1;
   if (size > MAX_WOULD_SEND_BYTES) return;
   recorded.set(result, size);
@@ -41,6 +42,13 @@ export class Attached {
   private size = 0;
   /** Set once a cap is passed, so a plugin that catches the error still fails. */
   failure?: string;
+
+  /** Room for `size` more bytes under the size cap, taken when there is. */
+  grow(size: number): boolean {
+    if (this.size + size > MAX_ATTACHED_BYTES) return false;
+    this.size += size;
+    return true;
+  }
 
   add(a: Attachment, result: RunResult): void {
     if (this.failure) throw new LimitError(this.failure);

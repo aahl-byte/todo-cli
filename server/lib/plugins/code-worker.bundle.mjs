@@ -5160,6 +5160,7 @@ Attempted to suspend at:`);this.suspended=new ux(`(${this.suspendedCount++})`),B
   const UNITS = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 };
   const DURATION = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)\s*$/;
   const exec = RegExp.prototype.exec;
+  const isArray = Array.isArray;
   const ms = (d) => {
     if (typeof d === "number" && d >= 0) return d;
     const m = typeof d === "string" ? exec.call(DURATION, d) : null;
@@ -5203,13 +5204,16 @@ Attempted to suspend at:`);this.suspended=new ux(`(${this.suspendedCount++})`),B
     },
     async retry(fn, opts = {}) {
       const attempts = opts.attempts === undefined ? 3 : opts.attempts;
-      const every = ms(opts.every === undefined ? "1s" : opts.every);
+      const given = opts.every === undefined ? "1s" : opts.every;
+      // A list waits each duration in turn, then its last one again.
+      const waits = isArray(given) ? given.map(ms) : [ms(given)];
+      if (!waits.length) throw new Err("wait.retry needs at least one duration in every");
       for (let i = 1; ; i++) {
         try {
           return await fn();
         } catch (e) {
           if (i >= attempts || (opts.when && !(await opts.when(e)))) throw e;
-          sleep(every);
+          sleep(waits[min(i, waits.length) - 1]);
         }
       }
     },
