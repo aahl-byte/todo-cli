@@ -794,7 +794,7 @@ def _needs_rm(root: Path, it, note_id: int) -> None:
     plugin = (n.get("meta") or {}).get("plugin")
     if plugin:
         die(f"[{note_id}] came from the {plugin} plugin, which makes it again on its next run.\n"
-            f"Change that plugin's settings instead: todo plugin list, or Settings → Plugins on the server.", 2)
+            f"Change that plugin's settings instead: todo plugin list, or Settings → Automation on the server.", 2)
     store.remove_note(root, it["id"], note_id)
     _recheck(root, it)
     print(f'{it["id"]}: removed dependency [{note_id}]: needs {_needs_label(n.get("meta") or {})}')
