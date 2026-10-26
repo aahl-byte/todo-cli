@@ -14,7 +14,8 @@ import { githubApi } from "../github";
 import { itemBranches } from "../model";
 import { jiraReadOnly } from "../jira/config";
 import { hashUid, ulid } from "../ulid";
-import { runEvent, type EventRun, type HostDeps } from "./host";
+import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } from "./host";
+import { fillString } from "./template";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import {
@@ -26,7 +27,8 @@ import { DEFAULT_DEADLINE_MS, POST_REQUEST, type Attachment, type InstanceDef, t
 
 export { PLUGIN_HANDLE } from "./queue";
 const ACTOR = { handle: PLUGIN_HANDLE, bridge: true, unconditional: true };
-export const MAX_ATTEMPTS = 4;
+/** As the Jira bridge's outbox: a run that may run again gets this many tries. */
+export const MAX_ATTEMPTS = 5;
 /** Renewed before each instance runs, so it must outlast one instance's deadline, with room to apply what it attached. */
 export const LEASE_MS = Math.max(DEFAULT_DEADLINE_MS, REPO_CODE_DEADLINE_MS) + 2 * 60_000;
 /** Events delivered by one flush after a request; the tick takes more. */
@@ -287,6 +289,19 @@ function withoutContent(a: Attachment): Record<string, unknown> {
   return { ...rest, size: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
 }
 
+/** The dev-log line for a run given up on, in the plugin's own words (gave_up) when it has them. */
+async function gaveUp(d: Db, row: Row, run: EventRun, resolved: Resolved[]): Promise<string[]> {
+  const def = resolved.find((r) => r.name === run.plugin)?.def;
+  const trigger = triggerLabel(row.event as PluginEvent);
+  const error = run.result.failure?.message ?? run.result.error ?? "";
+  const scope = { instance: { id: run.instance.id, name: run.instance.name }, trigger, attempts: MAX_ATTEMPTS, error, ...run.result.failure?.pass };
+  const text = def?.gave_up ? fillString(def.gave_up, scope)
+    : `${run.plugin} ${run.instance.name} (${trigger}) gave up after ${MAX_ATTEMPTS} attempts: ${error}`;
+  const [r] = await applyOps(d, row.project, [{ op_id: ulid(), op: "create", entity: "log", uid: ulid(), item_uid: row.item_uid,
+                                                 data: { text } } as Op], ACTOR);
+  return r?.status === "applied" ? [`gave up: ${text}`] : [`gave up, but the dev log refused the line: ${r?.reason ?? "unknown"}`];
+}
+
 async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome: Applied | null): Promise<void> {
   const logged = { ...run.result, attached: run.result.attached.map(withoutContent) };
   const result = outcome?.log.length ? { ...logged, log: [...run.result.log, ...outcome.log] } : logged;
@@ -358,15 +373,18 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
           const [fresh] = await d.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
           if (fresh) applied = await applyRun(d, row.project, fresh, run, grants[run.plugin] ?? []);
         }
+        const givingUp = !!run.result.transient && row.attempts >= MAX_ATTEMPTS;
+        if (givingUp) applied = { applied: applied?.applied ?? [], edges: applied?.edges ?? false,
+                                  log: [...(applied?.log ?? []), ...(await gaveUp(d, row, run, merged.resolved))] };
         await recordRun(d, row, run, applied);
-        if (!run.result.transient) {
+        if (!run.result.transient || givingUp) {
           await holds("update plugin_events set finished = array_append(finished, $3) where id = $1 and lease = $2 returning id",
             [row.id, row.lease, key]);
         }
         return applied;
       });
       edges ||= !!outcome?.edges;
-      retry ||= !!run.result.transient;
+      retry ||= !!run.result.transient && row.attempts < MAX_ATTEMPTS;
     },
   });
   if (edges) void scheduleRecompute(d, row.project, f, row.repo);

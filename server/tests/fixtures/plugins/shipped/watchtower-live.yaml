@@ -11,7 +11,7 @@ responses:
     - {method: POST, path: /api/sessions/s1/message, body: {delivered: inbox}}
 expect:
   attached:
-    - {kind: log, key: "watchtower:<now>", text: "sent to Watchtower session todo: fix-login (inbox): s1"}
+    - {kind: log, key: "watchtower:<now>", text: "action Send (manual): sent to Watchtower session todo: fix-login (inbox): s1"}
   wouldSend: []
 received:
   watchtower:

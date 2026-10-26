@@ -310,6 +310,25 @@ describe("delivery", () => {
     expect((await w.d.query("select text from logs order by n")).map((r) => r.text)).toEqual(["steady ran", "flaky ran"]);
   });
 
+  it("gives a failing send up after five attempts with the plugin's own dev-log line", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://hooks.example" } } }));
+    const gh = fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\n",
+      other: (url) => (url.startsWith("https://hooks.example") ? new Response("down", { status: 503 }) : undefined) });
+    vi.stubGlobal("fetch", gh.impl);
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "rest",
+      instances: [{ id: "n", name: "Notify", on: ["push"], settings: { connection: "hooks", path: "/hook" } }] }), params("p"));
+    await onBranch([]);
+    await w.d.query("delete from plugin_events");
+    await push("main");
+    for (let i = 1; i <= 5; i++) {
+      expect(await run(gh.impl)).toEqual(i < 5 ? { ran: 0, failed: 1 } : { ran: 1, failed: 0 });
+      await w.d.query("update plugin_events set next_attempt_at = now()");
+    }
+    expect(gh.sent.filter((x) => x.url.startsWith("https://hooks.example"))).toHaveLength(5);
+    expect((await w.d.query("select text from logs where item_uid = 'I1'")).map((l) => l.text)).toEqual([
+      "action Notify (push main) gave up after 5 attempts: hooks: POST /hook answered 503: down"]);
+  });
+
   it("retries a run whose first write failed for now, and never one whose write went through", async () => {
     const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}", "plugins:",
       "  poster:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: POST, path: /one}}, {http: {method: POST, path: /two}}]",

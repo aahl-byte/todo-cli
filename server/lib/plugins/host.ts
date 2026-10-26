@@ -153,6 +153,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
     if (plugin.code) {
       if (plugin.when !== undefined && !test(plugin.when, { item, event, settings })) return skip(`when is false: ${plugin.when}`);
       await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline, dryRun,
+                      instance: { id: instance.id, name: instance.name }, trigger: triggerLabel(event),
                       memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl,
                       slots: deps.codeSlots ?? hostCodeSlots(), repoKey: input.repoKey ?? "" });
     } else {

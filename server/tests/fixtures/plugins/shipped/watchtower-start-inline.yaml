@@ -10,7 +10,7 @@ responses:
     - {method: POST, path: /api/sessions, body: {id: s9}}
 expect:
   attached:
-    - {kind: log, key: "watchtower:<now>", text: "started Watchtower session todo: fix-login in /src/web: https://wt.example/watchtower/latest/?session=s9"}
+    - {kind: log, key: "watchtower:<now>", text: "action Start agent (manual): started Watchtower session todo: fix-login in /src/web: https://wt.example/watchtower/latest/?session=s9"}
   wouldSend: []
   log: []
 received:

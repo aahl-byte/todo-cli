@@ -3,6 +3,7 @@
 connections: [jira]
 per: jira
 exclusive: true
+gave_up: "Jira transition for {{issue}} gave up after {{attempts}} attempts: {{error}}"
 when: "!contains(settings.never, settings.to)"
 settings:
   to:    {label: Jira status, type: text}
@@ -17,8 +18,10 @@ steps:
     http: {method: GET, path: "/rest/api/3/issue/{{issue}}/transitions"}
   - name: transition
     value: "(listed.transitions[?to.name == {{settings.to}}] | [0]) || (listed.transitions[?name == {{settings.to}}] | [0])"
+  - name: shown
+    value: "current || '?'"
+  # As the Jira bridge did, a missing transition fails the run, which runs again until it gives up.
+  - when: "listed && !transition"
+    fail: "no transition from {{shown}} to {{settings.to}}"
   - when: transition
     http: {method: POST, path: "/rest/api/3/issue/{{issue}}/transitions", body: {transition: {id: "{{transition.id}}"}}}
-attach:
-  - when: "listed && !transition"
-    log: "Jira transition for {{issue}}: no transition from {{current}} to {{settings.to}}"

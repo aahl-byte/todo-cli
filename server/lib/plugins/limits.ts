@@ -31,7 +31,7 @@ const recorded = new WeakMap<RunResult, number>();
 /** Record a call dry-run held back, its path and input clipped; past the caps only the log says so. */
 export function recordWouldSend(result: RunResult, call: Call): void {
   if (result.wouldSend.length >= MAX_WOULD_SEND) return;
-  const kept = { ...call };
+  const { full: _answer, ...kept } = call;
   if (call.path !== undefined) kept.path = clip(call.path, MAX_WOULD_SEND_INPUT);
   if (call.input !== undefined) {
     const text = JSON.stringify(call.input) ?? "null";

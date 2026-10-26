@@ -15,7 +15,11 @@ connections:
 responses:
   hooks:
     - {method: POST, path: /notify/fix-login?branch=feat%2Flogin, status: 202, body: {queued: true}}
-expect: {attached: [], wouldSend: [], log: []}
+expect:
+  attached:
+    - {kind: log, key: "sent:<now>", text: "action Notify (review → in-progress): POST http://fake-hooks/notify/fix-login?branch=feat%2Flogin → 202"}
+  wouldSend: []
+  log: []
 received:
   hooks:
     - method: POST

@@ -3,6 +3,7 @@
 # where they land: the path URL-encoded, headers as text, a JSON body as JSON.
 connections: ["{{settings.connection}}"]
 on: [manual]
+gave_up: "action {{instance.name}} ({{trigger}}) gave up after {{attempts}} attempts: {{error}}"
 settings:
   connection: {label: Connection, type: text}
   method:     {label: Method, type: choice, options: [GET, POST, PUT, PATCH, DELETE], default: POST}
@@ -13,7 +14,11 @@ settings:
 steps:
   - name: sent
     when: "!(settings.text)"
-    http: {method: "{{settings.method}}", path: "{{settings.path}}", headers: "{{settings.headers}}", body: "{{settings.body}}"}
+    http: {method: "{{settings.method}}", path: "{{settings.path}}", headers: "{{settings.headers}}", body: "{{settings.body}}", full: true}
   - name: sent_text
     when: "settings.text"
-    http: {method: "{{settings.method}}", path: "{{settings.path}}", headers: "{{settings.headers}}", text: "{{settings.text}}"}
+    http: {method: "{{settings.method}}", path: "{{settings.path}}", headers: "{{settings.headers}}", text: "{{settings.text}}", full: true}
+attach:
+  - each: "[sent, sent_text][?@]"
+    key: "sent:{{run.at}}"
+    log: "action {{instance.name}} ({{trigger}}): {{each.method}} {{each.url}} → {{each.status}}"

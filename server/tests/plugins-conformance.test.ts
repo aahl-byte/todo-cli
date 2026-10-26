@@ -213,8 +213,12 @@ describe("the bundle's events mode", () => {
 const SHIPPED_CASES = readdirSync(path.join(DIR, "shipped")).filter((f) => f.endsWith(".yaml")).sort()
   .map((f) => [f.replace(/\.yaml$/, ""), parse(readFileSync(path.join(DIR, "shipped", f), "utf8")) as Case] as const);
 
-/** A run's log keys made of the run's time, as a case writes them. */
-const timeless = (r: RunResult) => ({ ...r, attached: r.attached.map((a) => ({ ...a, key: a.key.replace(/:\d{13}$/, ":<now>") })) });
+/** A run as a case writes it: keys made of the run's time as <now>, and each fake's address as http://fake-<connection>. */
+function timeless(r: RunResult, fakes: Record<string, FakeServer>): RunResult {
+  const named = (s: string) => Object.entries(fakes).reduce((t, [conn, f]) => t.split(f.url).join(`http://fake-${conn}`), s);
+  return { ...r, attached: r.attached.map((a) => JSON.parse(named(JSON.stringify({
+    ...a, key: a.key.replace(/:(\d{13}|\d{4}-\d\d-\d\dT[\d:.]+Z)$/, ":<now>") })))) };
+}
 
 describe.each(HOSTS)("shipped plugin conformance (%s)", (_, host) => {
   it.each(SHIPPED_CASES)("%s", async (name, c) => {
@@ -223,7 +227,7 @@ describe.each(HOSTS)("shipped plugin conformance (%s)", (_, host) => {
     const result = timeless(await host({
       plugin, name: c.plugin, code, shipped: true, grants: c.grants, track: c.track,
       instance: c.instance, item: { ...ITEM, ...c.item }, event: c.event, connections, dryRun: !!c.dry_run,
-    }));
+    }), fakes);
     const { log, ...rest } = c.expect;
     expect({ ...result, log: undefined }, c.about).toEqual({ ...rest, log: undefined });
     if (log) expect(result.log).toEqual(log);

@@ -17,7 +17,7 @@ responses:
     - {method: POST, path: /api/sessions/s9/message, body: {delivered: typed}}
 expect:
   attached:
-    - {kind: log, key: "watchtower:<now>", text: "started Watchtower session todo: fix-login in /work/rosm: s9"}
+    - {kind: log, key: "watchtower:<now>", text: "action Start agent (manual): started Watchtower session todo: fix-login in /work/rosm: s9"}
   wouldSend: []
 received:
   watchtower:

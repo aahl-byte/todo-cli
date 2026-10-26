@@ -29,7 +29,7 @@ const TRIGGERS = ["push", "pr", "deployment", "manual"];
 /** Names a step can't take, because the scope already has them or they'd reach an object's prototype. */
 const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "track", "instance", "trigger", "run", "__proto__", "constructor", "prototype"];
 /** Names a connection can't take, because a code plugin's run() argument already has them. */
-const RESERVED_CONNECTIONS = ["item", "event", "settings", "attach", "wait", "dryRun"];
+const RESERVED_CONNECTIONS = ["item", "event", "settings", "attach", "wait", "dryRun", "instance", "trigger"];
 const STEP_NAME = /^[A-Za-z_]\w*$/;
 /** A field that is exactly one settings reference, which an instance's value fills. */
 const SETTING_REF = /^\{\{\s*settings\.([A-Za-z_$][\w$-]*)\s*\}\}$/;

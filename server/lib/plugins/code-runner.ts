@@ -26,6 +26,8 @@ export interface CodeRun {
   deadline: number;
   /** Writes are held back, so a plugin can stop where a write's answer would matter. */
   dryRun?: boolean;
+  instance?: { id: string; name: string };
+  trigger?: string;
   memoryBytes?: number;
   sleep?: (ms: number) => Promise<void>;
   isolation?: Isolation;
@@ -184,6 +186,7 @@ export async function runCode(run: CodeRun): Promise<void> {
   const job: SandboxJob = {
     code: run.code, item: run.item, event: run.event, settings: run.settings, connections: run.plugin.connections ?? [],
     kinds: ATTACHMENT_KINDS, deadline: run.deadline, memoryBytes: run.memoryBytes ?? DEFAULT_MEMORY_BYTES, dryRun: !!run.dryRun,
+    instance: run.instance, trigger: run.trigger,
   };
   const host = hostFor(run);
   if (!(await run.slots.take(run.repoKey, run.deadline))) throw new DeadlineError("the run passed its deadline waiting for a free sandbox");

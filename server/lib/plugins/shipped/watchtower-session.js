@@ -7,10 +7,11 @@ const IDLE_POLL = "2s";
 /** Waits between sends while Watchtower can't see the session's input box yet. */
 const INPUT_RETRY = ["1s", "2s", "3s", "3s", "3s", "3s"];
 
-export async function run({ item, settings, watchtower, attach, wait, dryRun }) {
+export async function run({ item, settings, watchtower, attach, wait, dryRun, instance, trigger }) {
   const name = `todo: ${item.id}`;
   const link = (id) => (settings.link ? `${String(settings.link).replace(/\/+$/, "")}/?session=${encodeURIComponent(id)}` : id);
-  const done = (summary) => attach.log({ text: summary, key: `watchtower:${Date.now()}` });
+  // The dev-log line an Action wrote: `action <name> (<trigger>): <what happened>`.
+  const done = (summary) => attach.log({ text: `action ${instance.name} (${trigger}): ${summary}`, key: `watchtower:${Date.now()}` });
 
   const roster = await watchtower.get("/api/roster");
   const sessions = (roster && roster.sessions) || [];

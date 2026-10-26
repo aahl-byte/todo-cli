@@ -1,4 +1,4 @@
-about: with no transition to the status, one named for it is taken; with neither, the dev log says so
+about: with no transition to the status, one named for it is taken; with neither, the run fails as the Jira bridge did, and a run that already moved an issue isn't run again
 plugin: jira-transition
 instance: {id: done, name: Done, settings: {to: Ready to Deploy}}
 event: {type: status, from: qa-approved, to: ready-to-deploy}
@@ -12,9 +12,10 @@ responses:
     - {method: GET, path: /rest/api/3/issue/SR-102?fields=status, body: {fields: {status: {name: Open}}}}
     - {method: GET, path: /rest/api/3/issue/SR-102/transitions, body: {transitions: [{id: "11", name: Start, to: {name: In Development}}]}}
 expect:
-  attached:
-    - {kind: log, key: "log:Jira transition for SR-102: no transition from Open to Ready to Deploy", text: "Jira transition for SR-102: no transition from Open to Ready to Deploy"}
+  attached: []
   wouldSend: []
+  error: "issue SR-102: no transition from Open to Ready to Deploy"
+  failure: {message: no transition from Open to Ready to Deploy, pass: {issue: SR-102}}
 received:
   jira:
     - {method: GET, path: /rest/api/3/issue/SR-101?fields=status}
