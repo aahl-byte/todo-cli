@@ -1,0 +1,27 @@
+about: vercel-preview links each branch's newest ready preview, asking Vercel by branch, and skips a branch with none
+plugin: vercel-preview
+instance: {id: default, name: (default), settings: {project: prj_1, team: team_9}}
+event: {type: deployment, branch: feat/login}
+connections:
+  vercel: {kind: http, auth: bearer, secret: vtok}
+responses:
+  vercel:
+    - method: GET
+      path: /v7/deployments?projectId=prj_1&teamId=team_9&target=preview&branch=feat%2Flogin&state=READY&limit=20
+      body:
+        deployments:
+          - {uid: dpl_3, url: web-git-other.vercel.app, readyState: READY, meta: {githubCommitRef: feat/other}}
+          - {uid: dpl_2, url: web-abc.vercel.app, readyState: READY, meta: {githubCommitRef: feat/login}}
+          - {uid: dpl_1, url: web-old.vercel.app, readyState: READY, meta: {githubCommitRef: feat/login}}
+    - method: GET
+      path: /v7/deployments?projectId=prj_1&teamId=team_9&target=preview&branch=feat%2Flogin-api&state=READY&limit=20
+      body: {deployments: []}
+expect:
+  attached:
+    - {kind: link, key: "preview:feat/login", type: preview, url: "https://web-abc.vercel.app", label: "preview · feat/login"}
+  wouldSend: []
+  log: []
+received:
+  vercel:
+    - {method: GET, path: /v7/deployments?projectId=prj_1&teamId=team_9&target=preview&branch=feat%2Flogin&state=READY&limit=20, authorization: Bearer vtok}
+    - {method: GET, path: /v7/deployments?projectId=prj_1&teamId=team_9&target=preview&branch=feat%2Flogin-api&state=READY&limit=20}

@@ -137,13 +137,14 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
 
   const repoCode = !!plugin.code && !input.shipped;
   const deadline = Date.now() + (input.limits?.deadlineMs ?? (repoCode ? REPO_CODE_DEADLINE_MS : DEFAULT_DEADLINE_MS));
-  const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun: input.dryRun || !!instance.dry_run, deadline });
+  const dryRun = input.dryRun || !!instance.dry_run;
+  const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun, deadline });
   const attached = new Attached();
   const mayRequest = !!plugin.capabilities?.includes(POST_REQUEST) && !!input.grants?.includes(POST_REQUEST);
   try {
     if (plugin.code) {
       if (plugin.when !== undefined && !test(plugin.when, { item, event, settings })) return skip(`when is false: ${plugin.when}`);
-      await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline,
+      await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline, dryRun,
                       memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl,
                       slots: deps.codeSlots ?? hostCodeSlots(), repoKey: input.repoKey ?? "" });
     } else {

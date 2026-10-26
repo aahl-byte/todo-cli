@@ -553,7 +553,14 @@ def item_json(it: dict, key: str, d: Path | None) -> dict:
             "repo_owner": owner or None, "repo_name": name or None, "branches": list(it.get("branches") or []),
             "jira": list(it.get("jira") or []), "app": it.get("app"), "section": it.get("section"),
             "developer": it.get("developer"), "qa_assignee": it.get("qa_assignee"),
-            "dir": str(d) if d else None, "links": links}
+            "dir": str(d) if d else None, "links": links, "requests": _requests(it)}
+
+
+def _requests(it: dict) -> list:
+    """Every request version's text, newest first, as render.current_request orders them."""
+    notes = [n for n in it.get("notes") or [] if n.get("kind") == "ticket-request"]
+    notes.sort(key=lambda n: (render._version(n), n["id"]), reverse=True)
+    return [to_str(n.get("text")) for n in notes]
 
 
 # ── running ───────────────────────────────────────────────────────────────────

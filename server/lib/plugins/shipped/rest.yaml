@@ -1,0 +1,19 @@
+# Sends one HTTP request, as a rest Action did. The connection an instance names
+# fixes the host; its path, headers and body are templates filled from the item
+# where they land: the path URL-encoded, headers as text, a JSON body as JSON.
+connections: ["{{settings.connection}}"]
+on: [manual]
+settings:
+  connection: {label: Connection, type: text}
+  method:     {label: Method, type: choice, options: [GET, POST, PUT, PATCH, DELETE], default: POST}
+  path:       {label: Path and query, type: text, default: "/", template: true}
+  headers:    {label: "Headers (Name: value per line)", type: long-text, optional: true, template: true}
+  body:       {label: JSON body, type: long-text, optional: true, template: true}
+  text:       {label: Text body, type: long-text, optional: true, template: true}
+steps:
+  - name: sent
+    when: "!(settings.text)"
+    http: {method: "{{settings.method}}", path: "{{settings.path}}", headers: "{{settings.headers}}", body: "{{settings.body}}"}
+  - name: sent_text
+    when: "settings.text"
+    http: {method: "{{settings.method}}", path: "{{settings.path}}", headers: "{{settings.headers}}", text: "{{settings.text}}"}

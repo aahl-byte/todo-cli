@@ -53,8 +53,8 @@ export function adfToText(doc: unknown): string {
   return out.join("").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** How a `media` node renders: an image URL, a link, or null for its name only. */
-export type MediaRef = (attrs: Record<string, any>) => { image?: string; link?: string } | null;
+/** How a `media` node renders: an image URL, a link, an item doc's name, or null for its name only. */
+export type MediaRef = (attrs: Record<string, any>) => { image?: string; link?: string; doc?: string } | null;
 
 type Mark = { type: string; attrs?: Record<string, any> };
 type MdNode = Node & { marks?: Mark[] };
@@ -112,6 +112,7 @@ export function adfToMarkdown(doc: unknown, media?: MediaRef): string {
     const ref = media?.(a);
     if (ref?.image) return `![${name}](${ref.image})`;
     if (ref?.link) return `[📎 ${name}](${encodeHref(ref.link)})`;
+    if (ref?.doc) return `📎 doc:${ref.doc}`;
     return `📎 ${name}`;
   };
 

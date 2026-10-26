@@ -1,0 +1,27 @@
+about: a prompt too long to go inline waits for the new session to go idle, then is sent
+plugin: watchtower-session
+instance:
+  id: start
+  name: Start agent
+  settings:
+    dir: /work/rosm
+    prompt: "/todo {{item.id}}\n\ncontext: line two"
+event: {type: manual, instance: start}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - {method: GET, path: /api/roster, body: {sessions: []}}
+    - {method: POST, path: /api/sessions, body: {id: s9}}
+    - {method: GET, path: /api/sessions/s9, body: {state: active, status: idle}}
+    - {method: POST, path: /api/sessions/s9/message, body: {delivered: typed}}
+expect:
+  attached:
+    - {kind: log, key: "watchtower:<now>", text: "started Watchtower session todo: fix-login in /work/rosm: s9"}
+  wouldSend: []
+received:
+  watchtower:
+    - {method: GET, path: /api/roster}
+    - {method: POST, path: /api/sessions, body: {dir: /work/rosm, name: "todo: fix-login"}}
+    - {method: GET, path: /api/sessions/s9}
+    - {method: POST, path: /api/sessions/s9/message, body: {text: "/todo fix-login\n\ncontext: line two", from: todo}}

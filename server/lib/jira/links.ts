@@ -10,35 +10,16 @@ import type { JiraClient } from "./client";
 import { jiraConfig } from "./config";
 import { commented, jiraUid } from "./inbound";
 import { mediaRef, mirrorAttachments } from "./media";
+import { appendTicketBlock, hasTicketBlock, ticketBlock } from "./ticket-block";
+
+export { appendTicketBlock, hasTicketBlock, ticketBlock };
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
 export interface LinkedResult { backfilled: number; comments: number; files: number }
 
 const BRIDGE: Actor = { handle: "jira-bridge", unconditional: true, bridge: true };
-const SEPARATOR = "---";
 const CHUNK = 50;
-
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** Whether `text` already holds the block for `key`. */
-export function hasTicketBlock(text: string, key: string): boolean {
-  const k = escapeRe(key);
-  return new RegExp(`^## (?:\\[${k}\\]\\([^)]*\\)|${k}) · `, "m").test(text);
-}
-
-/** An issue's block: a heading naming and linking it, then its description. */
-export function ticketBlock(key: string, summary: string, description: string, jiraBase?: string): string {
-  const name = jiraBase ? `[${key}](${jiraBase}/browse/${key})` : key;
-  return [`## ${name} · ${summary}`, description].filter(Boolean).join("\n\n");
-}
-
-/** `text` with `block` appended between separators. */
-export function appendTicketBlock(text: string, block: string): string {
-  const body = text.trimEnd();
-  const lead = !body ? `${SEPARATOR}\n\n` : body.endsWith(`\n${SEPARATOR}`) || body === SEPARATOR ? `${body}\n\n` : `${body}\n\n${SEPARATOR}\n\n`;
-  return `${lead}${block}\n\n${SEPARATOR}`;
-}
 
 /** The issues for `keys`, fetched by `key in (…)`. Keys Jira can't show (deleted,
  * moved, no permission) are skipped. */

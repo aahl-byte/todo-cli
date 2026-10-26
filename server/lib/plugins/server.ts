@@ -65,6 +65,9 @@ async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: st
   const [owner, name] = repo ? repo.split("/") : [null, null];
   const notes = await d.query("select text, meta from notes where project = $1 and item_uid = $2 and kind = 'link' order by n",
     [project, it.uid]);
+  const requests = await d.query(
+    `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
+      order by coalesce((meta->>'version')::int, 1) desc, n desc`, [project, it.uid]);
   const dir = repo ? (await checkoutDir(d as Db, project, repo, by)).dir : "";
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
@@ -72,6 +75,7 @@ async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: st
     repo: repo || null, repo_owner: owner, repo_name: name, branches: itemBranches(x), jira: x.jira ?? null,
     app: str(x.app), section: str(x.section), developer: it.developer ?? null, qa_assignee: it.qa_assignee ?? null, dir: dir || null,
     links: notes.map((n) => ({ type: String(n.meta?.type ?? "link"), url: String(n.meta?.url ?? n.text) })),
+    requests: requests.map((r) => String(r.text ?? "")),
   };
 }
 

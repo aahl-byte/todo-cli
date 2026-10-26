@@ -1,0 +1,18 @@
+about: in dry-run, rest records its text body and headers and sends nothing
+plugin: rest
+instance:
+  id: ping
+  name: Ping
+  settings: {connection: hooks, method: PUT, path: /ping, headers: "Content-Type: text/plain", text: "{{item.id}} is {{item.status}}"}
+event: {type: manual, instance: ping}
+dry_run: true
+connections:
+  hooks: {kind: http}
+responses:
+  hooks: []
+expect:
+  attached: []
+  wouldSend:
+    - {connection: hooks, method: PUT, path: /ping, headers: {content-type: text/plain}, text: fix-login is in-progress}
+received:
+  hooks: []

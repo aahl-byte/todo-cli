@@ -163,7 +163,9 @@ describe("running plugins", () => {
 
   it("runs a repo's code plugin in the worker", async () => {
     const dir = path.join(import.meta.dirname, "fixtures/plugins");
-    const file = readFileSync(path.join(dir, "watchtower.yaml"), "utf8").replace("http://leaf-rain:10011", "https://wt.example");
+    // Named apart from the shipped watchtower-session, which a repo can only enable.
+    const file = readFileSync(path.join(dir, "watchtower.yaml"), "utf8").replace("http://leaf-rain:10011", "https://wt.example")
+      .replaceAll("watchtower-session:", "wt-agent:");
     const answers: Record<string, unknown> = {
       "GET /api/roster": { sessions: [] }, "POST /api/sessions": { id: "s9" }, "GET /api/sessions/s9": { state: "active", status: "idle" },
       "POST /api/sessions/s9/message": {},
@@ -177,10 +179,10 @@ describe("running plugins", () => {
     await onBranch("I1", ["feat/x"], { id: "fix-login" });
     await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "manual", instance: "start" }, "alice");
     await run(gh.impl);
-    const wt = (await runs()).find((r) => r.plugin === "watchtower-session")!;
+    const wt = (await runs()).find((r) => r.plugin === "wt-agent")!;
     expect(wt.result.error).toBeUndefined();
     const [log] = await w.d.query("select uid, text from logs where item_uid = 'I1'");
-    expect(log).toEqual({ uid: pluginUid("watchtower-session/start", "I1", "log:started Watchtower session todo: fix-login: s9"),
+    expect(log).toEqual({ uid: pluginUid("wt-agent/start", "I1", "log:started Watchtower session todo: fix-login: s9"),
                           text: "started Watchtower session todo: fix-login: s9" });
   });
 
@@ -218,7 +220,7 @@ describe("running plugins", () => {
       expect((await runs()).find((r) => r.plugin === "test-fetch")!.result.error).toBeUndefined();
       const [doc] = await listDocs(w.d, "p", "I1");
       expect(doc).toMatchObject({ name: "shot.png", plugin: "test-fetch/default" });
-      expect(Buffer.from(await readLocal(doc.file_key)).equals(png)).toBe(true);
+      expect(Buffer.from((await readLocal(doc.file_key))!).equals(png)).toBe(true);
       expect(gh.sent.find((s) => s.url.startsWith("https://files.example"))!.headers.authorization).toBe("Bearer f-token");
     } finally {
       delete SHIPPED["test-fetch"];

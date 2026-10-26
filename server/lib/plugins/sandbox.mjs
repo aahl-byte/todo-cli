@@ -83,7 +83,7 @@ const PRELUDE = String.raw`
   for (const name of host.connections) ctx[name] = client(name);
   assign(ctx, {
     item: deepFreeze(parse(host.item)), event: deepFreeze(parse(host.event)), settings: deepFreeze(parse(host.settings)),
-    attach: freeze(attach), wait,
+    attach: freeze(attach), wait, dryRun: host.dryRun === true,
   });
   freeze(ctx);
   /** What the plugin threw, as text, read here so no plugin code runs while the host reads it. */
@@ -196,6 +196,7 @@ export async function runSandbox(job, host) {
     ctx.setProp(hostObj, "settings", str(job.settings));
     ctx.setProp(hostObj, "connections", keep(ctx.unwrapResult(ctx.evalCode(JSON.stringify(job.connections)))));
     ctx.setProp(hostObj, "kinds", keep(ctx.unwrapResult(ctx.evalCode(JSON.stringify(job.kinds)))));
+    ctx.setProp(hostObj, "dryRun", job.dryRun ? ctx.true : ctx.false);
     ctx.setProp(hostObj, "call", hostFn("call", ["string", "string"], (name, call) => host.call(name, call)));
     ctx.setProp(hostObj, "attach", hostFn("attach", ["string", "string"], (kind, fields) => host.attach(kind, fields)));
     ctx.setProp(hostObj, "sleep", hostFn("sleep", ["number"], (ms) => host.sleep(ms)));

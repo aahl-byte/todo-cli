@@ -207,7 +207,7 @@ connections:
   vercel: {http: {url: "https://api.vercel.com", auth: bearer}}
 plugins:
   preview: {connections: [vercel], on: [push], every: 1h, settings: {project: {label: Project, type: text}}, attach: [{log: x}]}
-  vercel-preview: {use: shipped}
+  not-shipped: {use: shipped}
 instances:
   preview: [{id: p, name: P, settings: {project: web}}]
 ` });
@@ -218,7 +218,7 @@ instances:
     ]);
     expect(out.instances).toEqual({ preview: [{ id: "p", name: "P", settings: { project: "web" } }] });
     expect(out.connections).toEqual({ vercel: { http: { url: "https://api.vercel.com", auth: "bearer" } } });
-    expect(out.errors).toEqual(["plugin vercel-preview: no plugin named vercel-preview ships with todo"]);
+    expect(out.errors).toEqual(["plugin not-shipped: no plugin named not-shipped ships with todo"]);
     expect(out.track).toEqual(["main"]);
   });
 

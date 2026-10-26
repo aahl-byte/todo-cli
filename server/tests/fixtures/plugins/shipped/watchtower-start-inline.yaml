@@ -1,0 +1,19 @@
+about: watchtower-session starts a session with a short prompt inline, as an Action did, and logs its link
+plugin: watchtower-session
+instance: {id: start, name: Start agent, settings: {model: opus, link: "https://wt.example/watchtower/latest/"}}
+event: {type: manual, instance: start}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - {method: GET, path: /api/roster, body: {sessions: [{id: s1, name: "todo: fix-login", state: active, managed: false}]}}
+    - {method: POST, path: /api/sessions, body: {id: s9}}
+expect:
+  attached:
+    - {kind: log, key: "watchtower:<now>", text: "started Watchtower session todo: fix-login in /src/web: https://wt.example/watchtower/latest/?session=s9"}
+  wouldSend: []
+  log: []
+received:
+  watchtower:
+    - {method: GET, path: /api/roster}
+    - {method: POST, path: /api/sessions, body: {dir: /src/web, name: "todo: fix-login", model: opus, initialPrompt: /todo fix-login}}
