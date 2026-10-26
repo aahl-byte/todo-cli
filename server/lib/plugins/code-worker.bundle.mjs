@@ -5184,6 +5184,7 @@ Attempted to suspend at:`);this.suspended=new ux(`(${this.suspendedCount++})`),B
     return freeze({
       call: async (tool, input) => send({ tool, input: input === undefined ? {} : input }),
       get: async (path, query) => send({ method: "GET", path, query }),
+      locate: async (path) => send({ method: "GET", path, locate: true }),
       post: http("POST"), put: http("PUT"), patch: http("PATCH"), delete: http("DELETE"),
     });
   };

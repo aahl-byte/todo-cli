@@ -3,7 +3,7 @@
 import { adfToMarkdown, adfToText, type MediaRef } from "../../../jira/adf";
 import { appendTicketBlock, hasTicketBlock, ticketBlock } from "../../../jira/ticket-block";
 
-type Client = { get(path: string, query?: Record<string, unknown>): Promise<any> };
+type Client = { get(path: string, query?: Record<string, unknown>): Promise<any>; locate(path: string): Promise<string | null> };
 interface Ctx {
   item: { jira?: string[] | string | null; requests?: string[] };
   jira: Client;
@@ -17,6 +17,8 @@ const MAX_IMAGE = 1024 * 1024;
 /** The host's cap on a log line's text, in UTF-8 bytes. */
 const MAX_TEXT = 8 * 1024;
 const PAGE = 100;
+/** The media id in the media-service URL an attachment's content redirects to. */
+const MEDIA_ID = /\/file\/([0-9a-f-]{36})\//i;
 /** A comment todo itself posted, never mirrored back. */
 const COMMENT_MARK = "(via todo)";
 
@@ -79,16 +81,30 @@ export async function run({ item, jira, attach }: Ctx) {
     const images = files.filter((a) => IMAGES.includes(a?.mimeType) && Number(a.size ?? 0) <= MAX_IMAGE);
     for (const a of images) {
       attach.doc({ name: docName(key, a), url: `/rest/api/3/attachment/content/${encodeURIComponent(String(a.id))}?redirect=false`,
-                   key: `attachment:${key}:${a.id}` });
+                   key: `attachment:${key}:${a.id}`, version: String(a.id) });
+    }
+    const comments = await allComments(jira, key, f.comment);
+    // As links mode: each attachment's media id, from where its content redirects, when anything shows media.
+    const mediaIds = new Map<any, string>();
+    if (JSON.stringify([f.description, comments.map((c) => c?.body)]).includes('"type":"media')) {
+      for (const a of files) {
+        try {
+          const at = await jira.locate(`/rest/api/3/attachment/content/${encodeURIComponent(String(a.id))}`);
+          const id = at?.match(MEDIA_ID)?.[1];
+          if (id) mediaIds.set(a, id);
+        } catch {
+          // matched by its file name instead, as links mode does when Jira won't say
+        }
+      }
     }
     const media: MediaRef = (attrs) => {
-      const a = files.find((x) => attrs.alt && x.filename === attrs.alt);
+      const a = files.find((x) => attrs.id && mediaIds.get(x) === attrs.id) ?? files.find((x) => attrs.alt && x.filename === attrs.alt);
       if (!a) return null;
       if (images.includes(a)) return { doc: docName(key, a) };
       return site ? { link: `${site}/secure/attachment/${a.id}/${encodeURIComponent(a.filename)}` } : null;
     };
 
-    for (const c of await allComments(jira, key, f.comment)) {
+    for (const c of comments) {
       if (!c?.id || adfToText(c.body).includes(COMMENT_MARK)) continue;
       const who = c.author?.displayName ?? "someone";
       attach.log({ text: clip(`Jira comment by ${who} on ${key}:\n\n${adfToMarkdown(c.body, media)}`, MAX_TEXT), key: `comment:${key}:${c.id}` });

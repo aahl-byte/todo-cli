@@ -215,7 +215,7 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
   /** An answer can echo the credentials back; they never reach the plugin. */
   const hide = (t: string) => secrets.reduce((out, s) => out.split(s).join("***"), t);
   /** One request: headers the call adds under the connection's own, an answer that isn't a redirect or an error. */
-  const request = async (call: Call, accept: string): Promise<{ res: Response; what: string }> => {
+  const request = async (call: Call, accept: string, redirects = false): Promise<{ res: Response; what: string }> => {
     const method = (call.method ?? "GET").toUpperCase();
     const path = call.path?.startsWith("/") ? call.path : `/${call.path ?? ""}`;
     const what = `${name}: ${method} ${path}`;
@@ -233,6 +233,7 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
     }
     if (res.status >= 300 && res.status < 400) {
       await res.body?.cancel().catch(() => {});
+      if (redirects) return { res, what };
       throw new CallError(`${what} answered ${res.status}, a redirect, which isn't followed`, res.status);
     }
     if (!res.ok) {
@@ -244,6 +245,12 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
   return {
     async send(call) {
       if (call.tool) throw new CallError(`${name}: an http connection takes method calls, not the tool ${call.tool}`);
+      if (call.locate) {
+        const { res } = await request({ ...call, method: "GET" }, "*/*", true);
+        if (res.status >= 300 && res.status < 400) return res.headers.get("location");
+        await res.body?.cancel().catch(() => {});
+        return null;
+      }
       const { res } = await request(call, "application/json");
       const text = await res.text().catch(() => "");
       let body: unknown = null;
@@ -278,7 +285,7 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
       return { bytes: Buffer.concat(chunks), type: res.headers.get("content-type") };
     },
     async isReadOnly(call) {
-      return READ_ONLY_METHODS.includes((call.method ?? "GET").toUpperCase());
+      return !!call.locate || READ_ONLY_METHODS.includes((call.method ?? "GET").toUpperCase());
     },
     async close() {},
   };

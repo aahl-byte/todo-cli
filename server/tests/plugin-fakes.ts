@@ -10,6 +10,7 @@ export interface Recorded {
   method: string; path: string; status?: number; body?: unknown; text?: string; delayMs?: number;
   /** An answer's bytes, base64, sent as they are. */
   bytes?: string; type?: string;
+  headers?: Record<string, string>;
 }
 export interface Received { method: string; path: string; headers: IncomingHttpHeaders; body: unknown }
 
@@ -44,7 +45,7 @@ export async function fakeServer(responses: Recorded[]): Promise<FakeServer> {
       return;
     }
     const text = r.text ?? (r.body === undefined ? "" : JSON.stringify(r.body));
-    res.writeHead(r.status ?? 200, { "content-type": "application/json" }).end(text);
+    res.writeHead(r.status ?? 200, { "content-type": "application/json", ...r.headers }).end(text);
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const { port } = server.address() as AddressInfo;

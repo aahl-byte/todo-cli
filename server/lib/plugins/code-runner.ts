@@ -113,6 +113,7 @@ function callOf(connection: string, raw: Record<string, unknown>): Call {
   if (typeof raw.tool === "string") return { connection, tool: raw.tool, input: raw.input ?? {} };
   const path = typeof raw.path === "string" ? raw.path : "/";
   const call: Call = { connection, method: String(raw.method), path: withQuery(path, isMap(raw.query) ? raw.query : undefined) };
+  if (raw.locate === true) call.locate = true;
   if (raw.body !== undefined && raw.body !== null) call.input = raw.body;
   return call;
 }

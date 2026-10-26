@@ -26,6 +26,8 @@ export interface Call {
   text?: string;
   /** Answer {status, body, method, url} rather than the body alone. */
   full?: boolean;
+  /** A GET answered with where it redirects, or null, never following it. */
+  locate?: boolean;
 }
 
 export interface RunResult {

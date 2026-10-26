@@ -197,6 +197,7 @@ var IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 var MAX_IMAGE = 1024 * 1024;
 var MAX_TEXT = 8 * 1024;
 var PAGE = 100;
+var MEDIA_ID = /\/file\/([0-9a-f-]{36})\//i;
 var COMMENT_MARK = "(via todo)";
 function utf8Length(s) {
   let n = 0;
@@ -251,16 +252,29 @@ async function run({ item, jira, attach }) {
       attach.doc({
         name: docName(key, a),
         url: `/rest/api/3/attachment/content/${encodeURIComponent(String(a.id))}?redirect=false`,
-        key: `attachment:${key}:${a.id}`
+        key: `attachment:${key}:${a.id}`,
+        version: String(a.id)
       });
     }
+    const comments = await allComments(jira, key, f.comment);
+    const mediaIds = /* @__PURE__ */ new Map();
+    if (JSON.stringify([f.description, comments.map((c) => c?.body)]).includes('"type":"media')) {
+      for (const a of files) {
+        try {
+          const at = await jira.locate(`/rest/api/3/attachment/content/${encodeURIComponent(String(a.id))}`);
+          const id = at?.match(MEDIA_ID)?.[1];
+          if (id) mediaIds.set(a, id);
+        } catch {
+        }
+      }
+    }
     const media = (attrs) => {
-      const a = files.find((x) => attrs.alt && x.filename === attrs.alt);
+      const a = files.find((x) => attrs.id && mediaIds.get(x) === attrs.id) ?? files.find((x) => attrs.alt && x.filename === attrs.alt);
       if (!a) return null;
       if (images.includes(a)) return { doc: docName(key, a) };
       return site ? { link: `${site}/secure/attachment/${a.id}/${encodeURIComponent(a.filename)}` } : null;
     };
-    for (const c of await allComments(jira, key, f.comment)) {
+    for (const c of comments) {
       if (!c?.id || adfToText(c.body).includes(COMMENT_MARK)) continue;
       const who = c.author?.displayName ?? "someone";
       attach.log({ text: clip(`Jira comment by ${who} on ${key}:

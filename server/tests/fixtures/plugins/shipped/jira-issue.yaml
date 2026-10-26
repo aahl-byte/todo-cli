@@ -32,12 +32,15 @@ responses:
             - {id: "10", filename: shot.png, mimeType: image/png, size: 10}
             - {id: "11", filename: spec.pdf, mimeType: application/pdf, size: 100}
             - {id: "12", filename: huge.png, mimeType: image/png, size: 5000000}
+    - {method: GET, path: /rest/api/3/attachment/content/10, status: 303, headers: {location: "https://media.example/file/00000000-0000-0000-0000-000000000010/binary?token=t"}}
+    - {method: GET, path: /rest/api/3/attachment/content/11, status: 404, text: gone}
+    - {method: GET, path: /rest/api/3/attachment/content/12, status: 303, headers: {location: "https://media.example/file/00000000-0000-0000-0000-000000000012/binary?token=t"}}
     - {method: GET, path: "/rest/api/3/attachment/content/10?redirect=false", bytes: "iVBORw0KGgoA/w==", type: image/png}
     - {method: GET, path: /rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment, status: 404, body: {errorMessages: [Issue does not exist]}}
 expect:
   attached:
     - {kind: link, key: "status:SR-101", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-101", label: SR-101 · In Progress}
-    - {kind: doc, key: "attachment:SR-101:10", name: SR-101-10-shot.png, url: "/rest/api/3/attachment/content/10?redirect=false", content: "iVBORw0KGgoA/w==", encoding: base64}
+    - {kind: doc, key: "attachment:SR-101:10", name: SR-101-10-shot.png, url: "/rest/api/3/attachment/content/10?redirect=false", version: "10", content: "iVBORw0KGgoA/w==", encoding: base64}
     - {kind: log, key: "comment:SR-101:501", text: "Jira comment by Pat PM on SR-101:\n\n**Please hurry**"}
     - kind: request
       key: request:jira
@@ -47,5 +50,8 @@ expect:
 received:
   jira:
     - {method: GET, path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment, authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
+    - {method: GET, path: /rest/api/3/attachment/content/10}
+    - {method: GET, path: /rest/api/3/attachment/content/11}
+    - {method: GET, path: /rest/api/3/attachment/content/12}
     - {method: GET, path: "/rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment"}
     - {method: GET, path: "/rest/api/3/attachment/content/10?redirect=false", authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
