@@ -17,6 +17,7 @@ import * as build from "@/lib/ops-builder";
 import { requireUser } from "@/lib/session";
 import type { Db } from "@/lib/db";
 import { ulid } from "@/lib/ulid";
+import { itemWaits } from "@/lib/views";
 
 type Versions = Record<string, number>;
 const fail = (message: string): ActionState => ({ ok: false, message, at: Date.now() });
@@ -57,10 +58,15 @@ export async function moveItem(a: { project: string; uid: string; versions: Vers
   const d = await db();
   const cur = await itemRow(d, a.project, a.uid);
   if (!cur) return fail("No such item.");
-  return apply(a.project, () => build.moveOps(
+  const state = await apply(a.project, () => build.moveOps(
     { uid: a.uid, item_uid: a.uid, versions: a.versions, status: cur.status, qa_assignee: cur.qa_assignee },
     a.to, { me: user.handle, comment: a.comment, force: a.force, deployStep: cur.deploy_step, override: a.override,
             previous: cur.status === "blocked" ? cur.blocked_from : null }), user.handle, d);
+  if (state.reason === "waits-on") {
+    const waits = await itemWaits(d, a.project, a.uid);
+    if (waits.length) return { ...state, waits };
+  }
+  return state;
 }
 
 const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.repo", "extra.branches", "extra.branch"];

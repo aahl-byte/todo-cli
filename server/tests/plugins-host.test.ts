@@ -280,6 +280,12 @@ plugins:
     expect(errors(`plugins: {x: {capabilities: [post-request], attach: [{request: "r"}]}}`))
       .toEqual(["plugin x: only plugins shipped with todo may declare post-request"]);
     expect(errors(`plugins: {x: {when: "a ==", attach: []}}`)[0]).toMatch(/^plugin x: bad expression "a =="/);
+    expect(errors(`plugins: {x: {description: [a], attach: []}}`)).toEqual(["plugin x: description is one line of text"]);
+    expect(errors(`plugins: {x: {description: "a\\nb", attach: []}}`)).toEqual(["plugin x: description is one line of text"]);
+  });
+
+  it("keeps a plugin's one-line description", () => {
+    expect(loadPlugins(`plugins: {x: {description: Posts the item somewhere, attach: []}}`).plugins!.x.description).toBe("Posts the item somewhere");
   });
 
   it("fills settings from defaults and instance values", async () => {

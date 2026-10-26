@@ -508,9 +508,13 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator(".template-ref dt", { hasText: "{{item.repo_name}}" }).waitFor();
   });
 
-  const card = (plugin) => page.locator(`.plugin-card[data-plugin="${plugin}"]`);
+  const card = (plugin) => page.locator(`.plugin-repo[data-repo="acme/web"] .plugin-card[data-plugin="${plugin}"]`);
   const inst = (id) => card("notes-link").locator(`.instance-card[data-instance="${id}"]`);
   const setting = (id, key) => inst(id).locator(`.setting[data-setting="${key}"]`);
+  const configure = async (plugin) => {
+    const d = card(plugin).locator("details.configure");
+    if (!(await d.evaluate((e) => e.open))) await d.locator("> summary").click();
+  };
   const savePlugin = async (plugin) => {
     await card(plugin).locator("button:has-text('save instances')").click();
     await card(plugin).locator("fieldset.plugin-edit:not([disabled]) .save-row .hint", { hasText: "Saved." }).waitFor();
@@ -521,21 +525,61 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator(".settings-tabs").getByRole("link", { name: "Plugins" }).click();
     await page.waitForURL(/\/p\/web\/settings\/plugins$/);
     await page.locator(".repo-row[data-repo='acme/web'] .tag", { hasText: "listed" }).waitFor();
-    await page.fill("input[aria-label='add a repo']", "acme/api");
+    await page.fill("input[aria-label='add a repo']", "acme/extra");
     await page.click("button:has-text('add repo')");
-    const added = page.locator(".repo-row[data-repo='acme/api']");
+    const added = page.locator(".repo-row[data-repo='acme/extra']");
     await added.waitFor();
     await added.hover();
-    await added.locator("button[aria-label='remove acme/api']").click();
+    await added.locator("button[aria-label='remove acme/extra']").click();
     await added.waitFor({ state: "detached" });
+  });
+
+  await step("plugins: the page says what it's for, and folds away repos only a checkout brings in", async () => {
+    await page.locator(".plugins-intro", { hasText: "decides which plugins it can run" }).waitFor();
+    await page.locator(".repo-row[data-repo='acme/api']", { hasText: "1 item" }).waitFor();
+    const folded = page.locator("details.folded-repos");
+    if (await folded.evaluate((e) => e.open)) throw new Error("the checkout-only repos start open");
+    const summary = await folded.locator("> summary").textContent();
+    if (!summary.includes("2 other repos with a reported checkout")) throw new Error("folded summary: " + summary);
+    if (await page.locator(".plugin-repo[data-repo='acme/infra']").isVisible()) throw new Error("a folded repo's setup shows");
+    await folded.locator("> summary").click();
+    await folded.locator(".repo-row[data-repo='acme/infra']").waitFor();
+    await folded.locator(".plugin-repo[data-repo='acme/tools']").waitFor();
+    await folded.locator("> summary").click();
+  });
+
+  await step("plugins: a repo without a plugins file says how to name deploy branches and turn each shipped plugin on", async () => {
+    const api = page.locator(".plugin-repo[data-repo='acme/api']");
+    await api.locator(".repo-source", { hasText: ".todo-plugins/plugins.yaml isn't on main, so only pr-link runs." }).waitFor();
+    await api.locator(".repo-track", { hasText: "measured against its PR's base branch" }).waitFor();
+    await api.locator(".repo-track code", { hasText: "track: [staging, main]" }).waitFor();
+    await api.locator(".plugin-offer[data-offer='vercel-preview'] code", { hasText: "vercel-preview: {use: shipped}" }).waitFor();
+    const desc = await api.locator(".plugin-offer[data-offer='vercel-preview'] .offer-desc").textContent();
+    if (!desc.includes("Vercel preview")) throw new Error("no description: " + desc);
+    if (await api.locator(".plugin-card[data-plugin='pr-link'] details.configure").count()) throw new Error("pr-link offers a form");
+    await api.locator(".plugin-card[data-plugin='pr-link'] .plugin-state", { hasText: "on · runs on the server" }).waitFor();
+  });
+
+  await step("plugins: a repo with deploy branches lists them, and a plugin with settings opens behind Configure", async () => {
+    const web = page.locator(".plugin-repo[data-repo='acme/web']");
+    await web.locator(".repo-track", { hasText: "staging, main" }).waitFor();
+    await web.locator(".repo-source", { hasText: "on main" }).waitFor();
+    if (await web.locator(".plugin-offer[data-offer='rest']").count()) throw new Error("rest is on, yet offered");
+    if (await inst("go").isVisible()) throw new Error("instances show before Configure");
+    await configure("notes-link");
+    await inst("go").locator(".field", { hasText: "Name" }).locator("input").waitFor();
+    await inst("go").locator(".field", { hasText: "Id" }).locator("input").waitFor();
+    if (await inst("go").locator(".order").count()) throw new Error("order arrows on a plugin where order changes nothing");
+    await page.screenshot({ path: out + "/plugins-page.png", fullPage: true });
   });
 
   await step("plugins: each plugin with its triggers, shipped ones marked, connections and where each instance runs", async () => {
     await card("pr-link").locator(".tag", { hasText: "shipped" }).waitFor();
-    await card("notes-link").locator(".plugin-head", { hasText: "on manual" }).waitFor();
-    await page.locator(".conn-row[data-connection=hooks]", { hasText: "no credential on this server" }).waitFor();
+    await card("notes-link").locator(".plugin-meta", { hasText: "runs on manual" }).waitFor();
+    await card("ping").locator(".conn-row[data-connection=hooks]", { hasText: "no credential on this server" }).waitFor();
+    await configure("notes-link");
     await inst("go").locator(".runs-where", { hasText: "Runs on the server." }).waitFor();
-    await card("ping").locator(".runs-where", { hasText: "Runs in a developer's CLI: `hooks` not authorized here" }).waitFor();
+    await card("ping").locator(".plugin-state", { hasText: "runs in a developer's CLI: `hooks` not authorized here" }).waitFor();
     const note = await setting("go", "jira").locator(".hint").textContent();
     if (!note.includes("list_statuses")) throw new Error("no options_from note: " + note);
     if (await setting("go", "jira").locator("select").count()) throw new Error("an options_from choice rendered as a select");
@@ -580,7 +624,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   await step("plugins: rest offers the connections an instance may use, says its settings are templates, and why a repo-declared one gets no server connection", async () => {
     await page.goto(base + "/p/web/settings/plugins");
     const rest = card("rest");
-    await rest.locator(".plugin-head", { hasText: "via the connection each instance names" }).waitFor();
+    await rest.locator(".plugin-meta", { hasText: "calls the connection each instance names" }).waitFor();
+    await configure("rest");
     const hook = rest.locator('.instance-card[data-instance="hook"]');
     await hook.locator(".repo-declared", { hasText: "only the repo's own connections" }).waitFor();
     const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
@@ -598,6 +643,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   });
 
   await step("plugins: a stored secret is kept when untouched, and cleared on request", async () => {
+    await configure("notes-link");
     await setting("go", "title").locator("input").fill("Smoke notes 2");
     await savePlugin("notes-link");
     await setting("go", "title").locator("input[value='Smoke notes 2']").waitFor();
@@ -609,16 +655,14 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await setting("go", "token").locator(".tag", { hasText: "set" }).count()) throw new Error("the secret is still set");
   });
 
-  await step("plugins: add, duplicate, reorder and remove instances; a repo file's instance only switches off", async () => {
+  await step("plugins: add, duplicate and remove instances; a repo file's instance only switches off", async () => {
     await card("notes-link").locator("button.add:has-text('instance')").click();
     await inst("instance").waitFor();
     await inst("go").locator("button[aria-label='duplicate go']").click();
     await inst("go-copy").waitFor();
     const order = () => card("notes-link").locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
     if (JSON.stringify(await order()) !== '["go","go-copy","instance"]') throw new Error("order " + JSON.stringify(await order()));
-    if (await inst("go-copy").locator("button[aria-label='move go-copy up']").isEnabled()) throw new Error("moved above a repo file's instance");
-    await inst("instance").locator("button[aria-label='move instance up']").click();
-    if (JSON.stringify(await order()) !== '["go","instance","go-copy"]') throw new Error("order after move " + JSON.stringify(await order()));
+    if (await card("notes-link").locator(".order").count()) throw new Error("order arrows on a plugin that fires every instance");
     await inst("go").locator("button[aria-label='remove go']").click();
     if (await inst("go").locator("input[aria-label='go on']").isChecked()) throw new Error("removing a repo file's instance didn't switch it off");
     await inst("go").locator("input[aria-label='go on']").check();
@@ -628,14 +672,29 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await inst("go-copy").count()) throw new Error("go-copy wasn't removed");
   });
 
+  await step("plugins: a first-match plugin orders its instances, and names the connection it lacks", async () => {
+    const jt = card("jira-transition");
+    await jt.locator(".plugin-state.hot", { hasText: "no instance yet" }).waitFor();
+    await jt.locator(".conn-row[data-connection=jira]", { hasText: "declared nowhere" }).waitFor();
+    await configure("jira-transition");
+    await jt.locator("button.add:has-text('instance')").click();
+    if (await jt.locator(".order").count()) throw new Error("order arrows with one instance");
+    await jt.locator("button.add:has-text('instance')").click();
+    const order = () => jt.locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
+    if (JSON.stringify(await order()) !== '["instance","instance-2"]') throw new Error("order " + JSON.stringify(await order()));
+    await jt.locator("button[aria-label='move instance-2 up']").click();
+    if (JSON.stringify(await order()) !== '["instance-2","instance"]') throw new Error("order after move " + JSON.stringify(await order()));
+    await page.reload();
+  });
+
   await step("plugins: a connection's credential is set and cleared, never shown", async () => {
-    const row = page.locator(".conn-row[data-connection=hooks]");
+    const row = card("ping").locator(".conn-row[data-connection=hooks]");
     await row.locator("button:has-text('set credential')").click();
     await row.locator("input[type=password]").fill("hook-secret");
     await row.locator("button.primary:has-text('save')").click();
     await row.locator(".grow", { hasText: "credential stored" }).waitFor();
     if ((await page.content()).includes("hook-secret")) throw new Error("the credential came back to the page");
-    await card("ping").locator(".runs-where", { hasText: "Runs on the server." }).waitFor();
+    await card("ping").locator(".plugin-state", { hasText: "on · runs on the server" }).waitFor();
     await row.locator("button:has-text('clear')").click();
     await row.locator(".grow", { hasText: "no credential on this server" }).waitFor();
   });
@@ -659,6 +718,18 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await run.locator(".tag", { hasText: "ran" }).waitFor();
     await run.locator("summary").click();
     await run.locator(".run-detail li", { hasText: "Smoke notes 2" }).waitFor();
+  });
+
+  await step("item: staging past an unresolved dependency lists it and stages anyway", async () => {
+    await page.goto(item("signed-webhook-payloads"));
+    await pickStatus("ready-to-deploy");
+    const dialog = page.locator(".popup", { hasText: "Stage with 1 unresolved dependency?" });
+    await dialog.locator(".wait-list li", { hasText: "per-project-api-tokens" }).waitFor();
+    await dialog.locator(".wait-list li", { hasText: "feat/api-tokens" }).waitFor();
+    await page.screenshot({ path: out + "/stage-anyway.png", fullPage: true });
+    await dialog.locator("button", { hasText: "Stage anyway" }).click();
+    await dialog.waitFor({ state: "detached" });
+    await page.locator(".head .stat-label", { hasText: "ready-to-deploy" }).first().waitFor();
   });
 
   await step("display: a wall shows plugin labels and no plugin buttons", async () => {

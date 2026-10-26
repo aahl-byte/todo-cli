@@ -1,6 +1,7 @@
 // Pure pieces of the dashboard actions, kept out of the "use server" module so
 // they can be tested directly.
 import type { Result } from "./apply";
+import type { WaitLine } from "./waits";
 
 export interface ActionState {
   ok: boolean;
@@ -8,6 +9,10 @@ export interface ActionState {
   at?: number;
   /** When the winning change was made, for the viewer to show in local time. */
   when?: string | null;
+  /** Why the server refused the change, as apply names it. */
+  reason?: string;
+  /** A stage or deploy refused for these unresolved dependencies, which a forced move goes past. */
+  waits?: WaitLine[];
 }
 
 /** Kinds a person may post from the dashboard; the rest come from flows
@@ -53,8 +58,8 @@ export function describe(results: Result[]): ActionState {
         const value = typeof x.server_value === "string" ? x.server_value : JSON.stringify(x.server_value);
         return { ok: false, message: `${x.by ?? "Someone"} set ${x.field.replace(/^meta\./, "")} → ${value}`, when: x.at ?? null, at: Date.now() };
       }
-      if (x.reason === "waits-on" && x.edges?.length) return { ok: false, message: `Not applied: ${waitsOnText(x)}.`, at: Date.now() };
-      return { ok: false, message: `Not applied: ${REASONS[x.reason] ?? x.reason}.`, at: Date.now() };
+      if (x.reason === "waits-on" && x.edges?.length) return { ok: false, reason: x.reason, message: `Not applied: ${waitsOnText(x)}.`, at: Date.now() };
+      return { ok: false, reason: x.reason, message: `Not applied: ${REASONS[x.reason] ?? x.reason}.`, at: Date.now() };
     }
     if (r.status === "rejected") {
       return { ok: false, message: `Not applied: ${REASONS[r.reason ?? ""] ?? r.reason}.`, at: Date.now() };

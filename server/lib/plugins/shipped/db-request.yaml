@@ -1,7 +1,7 @@
-# Links each db-request submission for the item's branches to its migrations PR,
-# and makes the item wait on that PR. db-request has no HTTP endpoint yet: this
-# plugin expects GET /submissions?repo=&branch= answering `db-request status
-# --json`'s list, and is tested against a fake of it.
+# db-request has no HTTP endpoint yet: this plugin expects GET
+# /submissions?repo=&branch= answering `db-request status --json`'s list, and is
+# tested against a fake of it.
+description: Links each db-request submission for the item's branches to its migrations PR, and makes the item wait on that PR.
 connections: [db-request]
 on: [push, pr]
 every: 15m

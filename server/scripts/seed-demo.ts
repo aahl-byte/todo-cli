@@ -96,10 +96,12 @@ await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check report
 
 // A repo with a plugins file, as if read from its default branch, and an item in it: Settings → Plugins and the
 // item's plugin button work without GitHub once the server runs with TODO_PLUGIN_OWNERS=acme.
-const PLUGINS_YAML = `connections:
+const PLUGINS_YAML = `track: [staging, main]
+connections:
   hooks: {http: {url: "https://hooks.example.com", auth: bearer}}
 plugins:
   notes-link:
+    description: Links the item to its page in the team's notes.
     on: [manual]
     settings:
       title: {label: Link title, type: text, default: Notes}
@@ -120,6 +122,7 @@ plugins:
     steps: [{http: {method: GET, path: /}}]
     attach: []
   rest: {use: shipped}
+  jira-transition: {use: shipped}
 instances:
   notes-link: [{id: go, name: Go, button: Link notes}]
   rest: [{id: hook, name: Hook, settings: {connection: hooks, path: "/notify/{{item.id}}"}}]
@@ -129,6 +132,29 @@ await d.query(`insert into plugin_defs (repo, sha, default_branch, files, stale,
               [JSON.stringify({ "plugins.yaml": PLUGINS_YAML })]);
 const playground = await item("web", "Plugin playground", { ...W, priority: "low", extra: { repo: "acme/web" } }, "Try the repo's plugins here.");
 for (const s of ["in-triage", "todo", "in-progress"]) await status(playground, "dev", s);
+
+// A repo with no plugins file that an item names, and two only a teammate's checkout brings in.
+const noFile = (repo: string) => d.query(
+  "insert into plugin_defs (repo, sha, default_branch, files, stale, fetched_at) values ($1, 'demo', 'main', '{}'::jsonb, false, now())", [repo]);
+for (const repo of ["acme/api", "acme/infra", "acme/tools"]) {
+  await noFile(repo);
+  await d.query("insert into checkouts (handle, project, repo, dir) values ('dev', 'web', $1, $2)", [repo, `/src/${repo.split("/")[1]}`]);
+}
+const limiter = await item("web", "Rate limiter for the public API", { ...W, priority: "medium", extra: { repo: "acme/api" } }, "Throttle anonymous calls.");
+await status(limiter, "dev", "in-triage");
+
+// A branch stacked on another item's: staging it waits on that dependency, which "Stage anyway" goes past.
+const apiTokens = await item("web", "Per-project API tokens", { ...W, priority: "medium", extra: { repo: "acme/web", branches: ["feat/api-tokens"] } },
+  "Each project gets its own API tokens.");
+for (const s of ["in-triage", "todo", "in-progress"]) await status(apiTokens, "dev", s);
+const signed = await item("web", "Signed webhook payloads", { ...W, priority: "high", extra: { repo: "acme/web", branches: ["feat/signed-hooks"] } },
+  "Sign each webhook payload with the project's token.");
+for (const s of ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "in-qa", "qa-approved"]) await status(signed, s === "in-qa" || s === "qa-approved" ? "qa" : "dev", s);
+const [dep] = await d.query("select id from items where uid = $1", [apiTokens.uid]);
+await d.query("insert into git_facts (project, item_uid, data, computed_by) values ('web', $1, $2::jsonb, 'dev')", [signed.uid, JSON.stringify({
+  needs: [{ id: dep.id, item: apiTokens.uid, branch: "feat/api-tokens", via: "feat/signed-hooks", target: "staging", state: "waiting", source: "git",
+            chain: true, evidence: "feat/signed-hooks's PR is based on feat/api-tokens" }],
+  waits_on: [dep.id] })]);
 // A wall display of web, signed in at /display/web/enroll?key=wall-test.
 await addDisplay(d, "web", "wall", "dev", "wall-test");
 

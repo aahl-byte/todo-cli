@@ -1,4 +1,4 @@
-# Links each of the item's branches to its newest ready Vercel preview.
+description: Links each of the item's branches to its newest ready Vercel preview.
 connections: [vercel]
 on: [push, deployment]
 every: 1h
