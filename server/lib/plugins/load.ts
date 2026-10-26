@@ -89,7 +89,9 @@ function stepErrors(step: unknown, connections: string[]): string[] {
     return errors;
   }
   if ("connection" in step) {
-    if (!connections.includes(step.connection as string)) errors.push(`connection "${step.connection}" isn't one of the plugin's connections`);
+    if (typeof step.connection === "string" && step.connection.includes("{{")) {
+      errors.push("a step's connection is a name; a setting that picks one goes in the plugin's connections list");
+    } else if (!connections.includes(step.connection as string)) errors.push(`connection "${step.connection}" isn't one of the plugin's connections`);
   } else if (connections.length > 1) errors.push("name its connection, the plugin has several");
   else if (!connections.length) errors.push("the plugin declares no connection to call");
   if (actions[0] === "tool") {

@@ -47,8 +47,9 @@ function splice(field: unknown, plugin: PluginDef, scope: Scope): unknown {
 }
 
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
-/** Headers that would change where or how a request goes, rather than what it says. */
-const FIXED_HEADERS = ["host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "keep-alive"];
+/** Headers that would change where or how a request goes, rather than what it says; the override headers would change its method. */
+const FIXED_HEADERS = ["host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "keep-alive",
+                       "x-http-method-override", "x-http-method", "x-method-override"];
 
 /** A step's headers as a map of lowercase names to filled values. */
 function headersOf(raw: unknown, scope: Scope): Record<string, string> | undefined {

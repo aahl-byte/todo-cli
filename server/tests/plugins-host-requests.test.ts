@@ -241,6 +241,9 @@ describe("request templates held in settings", () => {
     expect(await bad({ path: "/x", method: "{{item.title}}" })).toBe('http method "FIX \\"LOGIN\\"" isn\'t one of GET, HEAD, POST, PUT, PATCH, DELETE');
     expect(await bad({ path: "/x", headers: "X-A: {{item.title}}" }, { title: "a\r\nHost: evil" })).toBe("header X-A would hold a line break");
     expect(await bad({ path: "/x", headers: "Host: evil" })).toBe("header Host can't be set by a plugin");
+    for (const h of ["X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override"]) {
+      expect(await bad({ path: "/x", method: "GET", headers: `${h}: DELETE` })).toBe(`header ${h} can't be set by a plugin`);
+    }
     expect(await bad({ path: "/x", headers: "not a header" })).toBe('headers: "not a header" isn\'t Name: value');
   });
 
@@ -252,6 +255,11 @@ describe("request templates held in settings", () => {
     expect(wouldSkip({ plugin: def, instance: inst({ connection: "{{item.repo}}", path: "/x" }), connections }))
       .toBe("setting connection must name a connection, not a template");
     expect(wouldSkip({ plugin: def, instance: { id: "i1", name: "d", settings: { path: "/x" } }, connections })).toBe("setting connection is not set");
+  });
+
+  it("refuses a settings reference as a step's connection, which names one of the plugin's", () => {
+    const yaml = `plugins:\n  p:\n    connections: ["{{settings.c}}"]\n    settings: {c: {label: C, type: text}}\n    steps: [{connection: "{{settings.c}}", http: {method: GET, path: /}}]\n`;
+    expect(() => loadPlugins(yaml)).toThrow(/steps\[0\]: a step's connection is a name; a setting that picks one goes in the plugin's connections list/);
   });
 
   it("refuses a templated connection outside a settings reference, or in a code plugin", () => {
