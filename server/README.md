@@ -144,4 +144,6 @@ TEST_DATABASE_URL=postgres://... npm test             # also runs the real-Postg
 server. `scripts/smoke.cjs` drives the dashboard through its main flows with
 Playwright against a seeded server. Point `BASE_URL` at a real hostname rather
 than localhost: browsers treat localhost as secure, which hides cookie problems
-on plain-http hosts.
+on plain-http hosts. Its plugin steps need the demo repo `acme/web` allowed and
+a secret key, so start that server with
+`TODO_PLUGIN_OWNERS=acme GITHUB_TOKEN=demo TODO_SECRET_KEY=$(openssl rand -base64 32) TODO_PLUGIN_ALLOW_HOSTS=acme/web=hooks.example.com`.

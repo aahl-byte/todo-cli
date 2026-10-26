@@ -4,6 +4,7 @@
 // fixed (`<handle>-test`); never use them for real data.
 import { applyOps, type Op } from "../lib/apply";
 import { addProject, addUser } from "../lib/auth";
+import { addDisplay } from "../lib/display";
 import { db } from "../lib/db";
 import { ulid } from "../lib/ulid";
 
@@ -92,6 +93,42 @@ for (const s of ["in-triage", "todo", "in-progress", "review", "ready-for-qa", "
 await child(tz, "dev", "check", { kind: "db-script", title: "convert timestamps", payload: "db/2026-10-02-utc.sql" });
 await child(tz, "dev", "check", { kind: "env-var", title: "set TZ", payload: "TZ=UTC" });
 await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check reports", timing: "post-deploy" });
+
+// A repo with a plugins file, as if read from its default branch, and an item in it: Settings → Plugins and the
+// item's plugin button work without GitHub once the server runs with TODO_PLUGIN_OWNERS=acme.
+const PLUGINS_YAML = `connections:
+  hooks: {http: {url: "https://hooks.example.com", auth: bearer}}
+plugins:
+  notes-link:
+    on: [manual]
+    settings:
+      title: {label: Link title, type: text, default: Notes}
+      body: {label: Message, type: long-text, optional: true}
+      model: {label: Model, type: choice, options: [opus, sonnet], optional: true}
+      jira: {label: Jira status, type: choice, options_from: {tool: list_statuses}, optional: true}
+      loud: {label: Loud, type: toggle}
+      retries: {label: Retries, type: number, optional: true}
+      tags: {label: Tags, type: list}
+      token: {label: Token, type: secret, optional: true}
+      never: {label: Never move to, type: list, scope: plugin}
+    steps: [{name: v, value: "\`1\`"}]
+    attach:
+      - link: {type: other, url: "https://example.com/notes/{{item.id}}", label: "{{settings.title}}"}
+  ping:
+    connections: [hooks]
+    on: [push]
+    steps: [{http: {method: GET, path: /}}]
+    attach: []
+instances:
+  notes-link: [{id: go, name: Go, button: Link notes}]
+`;
+await d.query("insert into project_plugin_repos (project, repo, added_by) values ('web', 'acme/web', 'pat')");
+await d.query(`insert into plugin_defs (repo, sha, default_branch, files, stale, fetched_at) values ('acme/web', 'demo', 'main', $1::jsonb, false, now())`,
+              [JSON.stringify({ "plugins.yaml": PLUGINS_YAML })]);
+const playground = await item("web", "Plugin playground", { ...W, priority: "low", extra: { repo: "acme/web" } }, "Try the repo's plugins here.");
+for (const s of ["in-triage", "todo", "in-progress"]) await status(playground, "dev", s);
+// A wall display of web, signed in at /display/web/enroll?key=wall-test.
+await addDisplay(d, "web", "wall", "dev", "wall-test");
 
 // ── the bulk ─────────────────────────────────────────────────────────────────
 // [app, section]
