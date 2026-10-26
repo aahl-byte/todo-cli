@@ -1,5 +1,5 @@
 # Mirrors each Jira issue the item links: its status beside its key, its
-# comments in the dev log, its images as docs, and, once granted post-request,
+# comments as comments by their Jira authors, its images as docs, and, once granted post-request,
 # a newly linked issue's summary and description in the item's request.
 connections: [jira]
 every: 5m

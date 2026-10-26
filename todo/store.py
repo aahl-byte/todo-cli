@@ -502,7 +502,8 @@ def archive_todos(root: Path):
 
 
 # ── notes and dev log (one file per entry) ────────────────────────────────────
-def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict, uid: str | None = None):
+def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dict, uid: str | None = None,
+               author: str | None = None):
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
         return None
@@ -510,7 +511,7 @@ def _add_entry(root: Path, item_id: str, sub: str, text: str, ts: str, meta: dic
     d.mkdir(exist_ok=True)
     ids = [e["id"] for e in read_entries(d)]
     new_id = max(ids) + 1 if ids else 1
-    full = {"uid": uid or ulid.new(), **meta, "author": identity.user(), "via": identity.via(),
+    full = {"uid": uid or ulid.new(), **meta, "author": author or identity.user(), "via": identity.via(),
             SEEN: [identity.party()]}
     yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.md",
                         frontmatter.join(full, text + "\n"))
@@ -540,7 +541,7 @@ def mentions(text: str) -> list:
 
 
 def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "context",
-             extra: dict | None = None, uid: str | None = None):
+             extra: dict | None = None, uid: str | None = None, author: str | None = None):
     """Append a note of `kind` with a fresh per-item id. `comment` and
     `qa-rejection` notes record their @mentions; `clarification` notes start
     open. Returns the id, or None if the item is missing."""
@@ -551,7 +552,7 @@ def add_note(root: Path, item_id: str, text: str, now_iso: str, kind: str = "con
             meta["mentions"] = found
     if kind == "clarification":
         meta.setdefault("state", "open")
-    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta, uid)
+    return _add_entry(root, item_id, NOTES_DIR, text, now_iso, meta, uid, author)
 
 
 def answer_note(root: Path, item_id: str, note_id: int, answer: str, now_iso: str) -> bool:

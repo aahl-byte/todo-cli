@@ -7,6 +7,7 @@ import {
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
+import { jiraHandle } from "./jira/people";
 import { queueAutoActions } from "./actions/runs";
 import { PLUGIN_HANDLE, queuePluginEvent } from "./plugins/queue";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
@@ -310,6 +311,11 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       if (typeof row.text !== "string") return reject(op, "invalid-text");
       row.author = ctx.actor.handle;
       row.via = op.via ?? "human";
+      // A plugin's mirrored comment speaks as its Jira author, whichever runner wrote it.
+      const m = data.meta ?? {};
+      if (entity === "note" && data.kind === "comment" && typeof m.plugin === "string" && m.plugin && (m.jira_account || m.jira_name)) {
+        row.author = (await jiraHandle(ctx.t, { accountId: m.jira_account || undefined, displayName: m.jira_name || undefined })) ?? row.author;
+      }
     }
     if (entity === "note") row.source = data.source ?? null;
 

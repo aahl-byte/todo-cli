@@ -1300,3 +1300,21 @@ def test_a_fetched_doc_keeps_its_version_and_an_unchanged_one_stays(fx, host):
     host.results({"refresh": [ran("p", [kept])]})
     refresh(fx.root, a)
     assert (item_dir / "docs" / "shot.png").read_bytes() == png
+
+
+def test_a_plugin_comment_speaks_as_its_jira_author_and_follows_edits(fx, host):
+    from todo.uids import hash_uid
+    a = item_with_branch(fx)
+    it = store.resolve_item(fx.root, a)
+    c = {"kind": "comment", "key": "comment:SR-1:7", "text": "Looks good", "at": "2026-10-01T10:00:00.000Z",
+         "author": "acc-bob", "author_name": "Bob B"}
+    host.results({"refresh": [ran("p", [c])]})
+    refresh(fx.root, a)
+    [n] = [n for n in store.resolve_item(fx.root, a)["notes"] if n["kind"] == "comment"]
+    assert (n["text"], n["author"], n["uid"], n["meta"]["jira_account"]) == \
+        ("Looks good", "jira:Bob B", hash_uid("plugin", "p/default", it["uid"], "comment:SR-1:7"), "acc-bob")
+    assert n["ts"].startswith("2026-10-01")
+    host.results({"refresh": [ran("p", [{**c, "text": "Looks good, mostly"}])]})
+    refresh(fx.root, a)
+    [n] = [n for n in store.resolve_item(fx.root, a)["notes"] if n["kind"] == "comment"]
+    assert (n["text"], n["author"]) == ("Looks good, mostly", "jira:Bob B")

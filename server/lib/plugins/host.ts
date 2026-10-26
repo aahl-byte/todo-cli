@@ -11,7 +11,7 @@ import { pickInstances } from "./triggers";
 import { fillJson } from "./template";
 import { runYaml } from "./yaml-runner";
 import {
-  DEFAULT_DEADLINE_MS, POST_REQUEST, type ConnectionDef, type ConnectionOrigin, type InstanceDef, type Limits, type PluginDef, type PluginEvent,
+  DEFAULT_DEADLINE_MS, POST_REQUEST, SHIPPED_KINDS, type ConnectionDef, type ConnectionOrigin, type InstanceDef, type Limits, type PluginDef, type PluginEvent,
   type PluginItem, type PluginsFile, type ResolvedConnection, type RunInput, type RunResult,
 } from "./types";
 
@@ -160,6 +160,10 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
       const self = { instance: { id: instance.id, name: instance.name }, trigger: triggerLabel(event), run: { at: new Date().toISOString() } };
       const { skipped } = await runYaml({ name, plugin, item, event, settings, track: input.track ?? [], self, calls, result, attached, mayRequest });
       if (skipped) return skip(skipped);
+    }
+    if (!input.shipped) {
+      for (const a of attached.list.filter((x) => SHIPPED_KINDS.includes(x.kind))) addLog(result, `dropped a ${a.kind}: only plugins shipped with todo attach one`);
+      attached.list.splice(0, attached.list.length, ...attached.list.filter((x) => !SHIPPED_KINDS.includes(x.kind)));
     }
     await fetchDocs(plugin, `${name}/${instance.id}`, item, connectionsOf(input), calls, attached, result);
     result.attached = attached.list;

@@ -203,6 +203,7 @@ function attachmentText(a: Attachment): string {
     case "doc": return `doc ${a.name}`;
     case "log": return `log: ${a.text}`;
     case "request": return "a new request version";
+    case "comment": return `comment${a.author_name ? ` by ${a.author_name}` : ""}: ${a.text}`;
   }
 }
 

@@ -121,3 +121,11 @@ describe("a read-only connection", () => {
     expect(srv.got.map((g) => g.method)).toEqual(["GET", "GET"]);
   });
 });
+
+describe("comments", () => {
+  it("are attached only by plugins shipped with todo, since each speaks as its author", async () => {
+    const text = `plugins:\n  mine: {on: [manual], attach: [{comment: {text: hi, author: acc-boss}}]}\ninstances:\n  mine: [{id: x, name: x}]\n`;
+    const out = await runEvent({ repo: { text, files: {} }, item: ITEM, event: { type: "manual", instance: "x" } });
+    expect([out.results[0].result.attached, out.results[0].result.log]).toEqual([[], ["dropped a comment: only plugins shipped with todo attach one"]]);
+  });
+});

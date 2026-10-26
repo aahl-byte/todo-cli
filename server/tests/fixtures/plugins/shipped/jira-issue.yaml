@@ -26,7 +26,7 @@ responses:
           comment:
             total: 2
             comments:
-              - {id: "501", author: {displayName: Pat PM}, body: {type: doc, version: 1, content: [{type: paragraph, content: [{type: text, text: Please hurry, marks: [{type: strong}]}]}]}}
+              - {id: "501", created: "2026-10-01T10:00:00.000+0000", author: {accountId: acc-pat, displayName: Pat PM}, body: {type: doc, version: 1, content: [{type: paragraph, content: [{type: text, text: Please hurry, marks: [{type: strong}]}]}]}}
               - {id: "502", author: {displayName: Me}, body: {type: doc, version: 1, content: [{type: paragraph, content: [{type: text, text: "Moved to QA (via todo)"}]}]}}
           attachment:
             - {id: "10", filename: shot.png, mimeType: image/png, size: 10}
@@ -41,7 +41,7 @@ expect:
   attached:
     - {kind: link, key: "status:SR-101", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-101", label: SR-101 · In Progress}
     - {kind: doc, key: "attachment:SR-101:10", name: SR-101-10-shot.png, url: "/rest/api/3/attachment/content/10?redirect=false", version: "10", content: "iVBORw0KGgoA/w==", encoding: base64}
-    - {kind: log, key: "comment:SR-101:501", text: "Jira comment by Pat PM on SR-101:\n\n**Please hurry**"}
+    - {kind: comment, key: "comment:SR-101:501", text: "**Please hurry**", at: "2026-10-01T10:00:00.000Z", author: acc-pat, author_name: Pat PM}
     - kind: request
       key: request:jira
       text: "Build the export\n\n---\n\n## [SR-101](https://acme.atlassian.net/browse/SR-101) · Export totals\n\nTotals should export.\n\n📎 doc:SR-101-10-shot.png\n\nSpec: [📎 spec.pdf](https://acme.atlassian.net/secure/attachment/11/spec.pdf)\n\n---"

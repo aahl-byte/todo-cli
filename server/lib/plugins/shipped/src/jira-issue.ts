@@ -7,14 +7,14 @@ type Client = { get(path: string, query?: Record<string, unknown>): Promise<any>
 interface Ctx {
   item: { jira?: string[] | string | null; requests?: string[] };
   jira: Client;
-  attach: Record<"link" | "log" | "doc" | "request", (fields: Record<string, unknown>) => void>;
+  attach: Record<"link" | "comment" | "doc" | "request", (fields: Record<string, unknown>) => void>;
 }
 
 const FIELDS = "summary,description,status,updated,comment,attachment";
 const IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 /** The host's cap on one doc. */
 const MAX_IMAGE = 1024 * 1024;
-/** The host's cap on a log line's text, in UTF-8 bytes. */
+/** The host's cap on a comment's text, in UTF-8 bytes. */
 const MAX_TEXT = 8 * 1024;
 const PAGE = 100;
 /** The media id in the media-service URL an attachment's content redirects to. */
@@ -42,6 +42,13 @@ function clip(s: string, max: number): string {
     n += size;
   }
   return `${out}…`;
+}
+
+/** Jira's `2026-10-01T10:00:00.000+0000` as ISO time, or undefined. */
+function isoTime(t: unknown): string | undefined {
+  if (typeof t !== "string") return undefined;
+  const ms = Date.parse(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
 }
 
 /** A doc name every system accepts, unique per attachment. */
@@ -106,8 +113,8 @@ export async function run({ item, jira, attach }: Ctx) {
 
     for (const c of comments) {
       if (!c?.id || adfToText(c.body).includes(COMMENT_MARK)) continue;
-      const who = c.author?.displayName ?? "someone";
-      attach.log({ text: clip(`Jira comment by ${who} on ${key}:\n\n${adfToMarkdown(c.body, media)}`, MAX_TEXT), key: `comment:${key}:${c.id}` });
+      attach.comment({ text: clip(adfToMarkdown(c.body, media), MAX_TEXT), key: `comment:${key}:${c.id}`, at: isoTime(c.created),
+                       author: c.author?.accountId, author_name: c.author?.displayName });
     }
 
     if (!requests.some((t) => hasTicketBlock(t, key)) && !hasTicketBlock(request, key)) {

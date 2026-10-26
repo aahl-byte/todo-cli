@@ -8,10 +8,14 @@ export type Attachment =
       /** The item holds this doc from the instance already, at this version or because a fetch failed: keep it as it is. */
       unchanged?: boolean }
   | { kind: "log"; key: string; text: string }
+  /** A comment from elsewhere, replaced by key so edits follow; author is its Jira account id, author_name its display name. */
+  | { kind: "comment"; key: string; text: string; at?: string; author?: string; author_name?: string }
   | { kind: "request"; key: string; text: string };
 
 export type AttachmentKind = Attachment["kind"];
-export const ATTACHMENT_KINDS: AttachmentKind[] = ["link", "edge", "doc", "log", "request"];
+export const ATTACHMENT_KINDS: AttachmentKind[] = ["link", "edge", "doc", "log", "request", "comment"];
+/** Kinds only a plugin shipped with todo may attach: a comment speaks as its author. */
+export const SHIPPED_KINDS: AttachmentKind[] = ["comment"];
 
 /** One call a plugin made, or in dry-run would have made. */
 export interface Call {

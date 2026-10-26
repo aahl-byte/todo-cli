@@ -219,6 +219,11 @@ function clip(s, max) {
   }
   return `${out}\u2026`;
 }
+function isoTime(t) {
+  if (typeof t !== "string") return void 0;
+  const ms = Date.parse(t.replace(/([+-]\d\d)(\d\d)$/, "$1:$2"));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : void 0;
+}
 var docName = (key, a) => `${key}-${a.id}-${String(a.filename ?? "image")}`.replace(/[<>:"/\\|?*\s\u0000-\u001f\u007f]/g, "_").replace(/^\.+/, "").slice(0, 180);
 async function allComments(jira, key, embedded) {
   if (embedded && (embedded.comments?.length ?? 0) >= (embedded.total ?? 0)) return embedded.comments ?? [];
@@ -276,10 +281,13 @@ async function run({ item, jira, attach }) {
     };
     for (const c of comments) {
       if (!c?.id || adfToText(c.body).includes(COMMENT_MARK)) continue;
-      const who = c.author?.displayName ?? "someone";
-      attach.log({ text: clip(`Jira comment by ${who} on ${key}:
-
-${adfToMarkdown(c.body, media)}`, MAX_TEXT), key: `comment:${key}:${c.id}` });
+      attach.comment({
+        text: clip(adfToMarkdown(c.body, media), MAX_TEXT),
+        key: `comment:${key}:${c.id}`,
+        at: isoTime(c.created),
+        author: c.author?.accountId,
+        author_name: c.author?.displayName
+      });
     }
     if (!requests.some((t) => hasTicketBlock(t, key)) && !hasTicketBlock(request, key)) {
       request = appendTicketBlock(request, ticketBlock(key, String(f.summary ?? key), adfToMarkdown(f.description, media), site || void 0));

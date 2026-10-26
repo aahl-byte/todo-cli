@@ -65,7 +65,7 @@ SEEN = "~seen"                      # in the tips file: each repo's ls-remote an
 REMOVED = "~removed"                # in the runs file: item → plugin uids a person removed
 RUNNER = "~runner"                  # in the runs file: uids the runner removed, until the server has the remove
 REMOVED_KEPT = 500
-REPLACED = ("link", "dependency")   # note kinds a run replaces; logs and requests only add
+REPLACED = ("link", "dependency", "comment")   # note kinds a run replaces; logs and requests only add
 GIT_TRIGGERS = ("push", "pr", "deployment")
 HOST_FAILED = "the plugin host failed"
 NO_NODE = "plugins skipped: node isn't installed"
@@ -752,7 +752,9 @@ def event_label(event: dict) -> str:
 
 # ── applying a result ─────────────────────────────────────────────────────────
 def _note_fields(a: dict) -> tuple:
-    """(note kind, text, meta fields) for a link or edge attachment."""
+    """(note kind, text, meta fields) for a link, edge or comment attachment."""
+    if a["kind"] == "comment":
+        return "comment", to_str(a.get("text")), {"jira_account": a.get("author"), "jira_name": a.get("author_name")}
     if a["kind"] == "link":
         meta = {"url": a["url"], "type": a.get("type") or "link"}
         if a.get("label"):
@@ -818,7 +820,7 @@ def _attach(root: Path, it: dict, iid: str, result: dict, gone: set, log: list, 
     wrote_docs: set = set()
     attached = []
     for a in result.get("attached") or []:
-        if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc") or not a.get("key"):
+        if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc", "comment") or not a.get("key"):
             continue
         kind = a["kind"]
         key = a["key"]
@@ -841,7 +843,7 @@ def _attach(root: Path, it: dict, iid: str, result: dict, gone: set, log: list, 
                 log.append(f"skipped link {url}: already linked on the item")
                 continue
             linked.add(url)
-        if kind in ("link", "edge"):
+        if kind in ("link", "edge", "comment"):
             _put_note(root, it, uid, a, tag, by_uid.get(uid), changes)
         elif kind == "log":
             if uid not in present:
@@ -877,7 +879,12 @@ def _put_note(root: Path, it: dict, uid: str, a: dict, tag: dict, e: dict | None
     note_kind, text, fields = _note_fields(a)
     fields = {**fields, **tag}
     if e is None:
-        store.add_note(root, it["id"], text, now(), kind=note_kind, extra=fields, uid=uid)
+        if note_kind == "comment":
+            # The server maps a known Jira account to its user when the note syncs.
+            who = f'jira:{a["author_name"]}' if a.get("author_name") else None
+            store.add_note(root, it["id"], text, to_str(a.get("at")) or now(), kind=note_kind, extra=fields, uid=uid, author=who)
+        else:
+            store.add_note(root, it["id"], text, now(), kind=note_kind, extra=fields, uid=uid)
         changes["added"] += 1
     elif e["text"] != text or e["meta"].get("kind") != note_kind or \
             any(e["meta"].get(k) != v for k, v in fields.items()) or \

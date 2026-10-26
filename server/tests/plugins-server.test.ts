@@ -261,11 +261,25 @@ describe("running plugins", () => {
     }
   });
 
+  it("maps a comment a CLI's plugin run synced to its Jira author", async () => {
+    await w.d.query("update users set jira_account_id = 'acc-bob' where handle = 'bob'");
+    await onBranch("I1", ["feat/x"]);
+    const meta = (account: string) => ({ plugin: "jira-issue/default", plugin_key: `comment:SR-1:${account}`, jira_account: account, jira_name: "Some One" });
+    await w.one("alice", child("note", "C1", "I1", { kind: "comment", text: "hi", meta: meta("acc-bob") }));
+    await w.one("alice", child("note", "C2", "I1", { kind: "comment", text: "yo", meta: meta("acc-zed") }));
+    await w.one("alice", child("note", "C3", "I1", { kind: "comment", text: "mine", meta: { jira_account: "acc-bob" } }));
+    expect((await w.d.query("select uid, author from notes where kind = 'comment' order by n")).map((n) => [n.uid, n.author]))
+      .toEqual([["C1", "bob"], ["C2", "jira:Some One"], ["C3", "alice"]]);
+  });
+
   it("runs the shipped jira-issue through a host Jira connection, adding the issue's block to the current request", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
     vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    await w.d.query("update users set jira_account_id = 'acc-bob' where handle = 'bob'");
     const issue = { key: "SR-1", self: "https://acme.atlassian.net/rest/api/3/issue/1", fields: { summary: "Export", status: { name: "QA" },
-      description: "Totals as CSV", comment: { total: 1, comments: [{ id: "7", author: { displayName: "Pat" }, body: "Looks good" }] } } };
+      description: "Totals as CSV", comment: { total: 2, comments: [
+        { id: "7", created: "2026-10-01T10:00:00.000+0000", author: { accountId: "acc-bob", displayName: "Bob B" }, body: "Looks good" },
+        { id: "8", author: { accountId: "acc-pat", displayName: "Pat" }, body: "Ship it" }] } } };
     const gh = fakeGitHub({ file: "plugins:\n  jira-issue: {use: shipped}\n",
       other: (url) => (url.startsWith("https://acme.atlassian.net/rest/api/3/issue/SR-1?") ? Response.json(issue) : undefined) });
     await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
@@ -276,13 +290,19 @@ describe("running plugins", () => {
     await run(gh.impl);
     expect((await runs()).find((r) => r.plugin === "jira-issue")!.result.error).toBeUndefined();
     expect((await linkNotes()).map((n) => [n.text, n.meta.url])).toEqual([["SR-1 · QA", "https://acme.atlassian.net/browse/SR-1"]]);
-    expect((await w.d.query("select text from logs where item_uid = 'I1'")).map((l) => l.text)).toEqual(["Jira comment by Pat on SR-1:\n\nLooks good"]);
+    const comments = () => w.d.query("select uid, text, author, ts from notes where item_uid = 'I1' and kind = 'comment' order by n");
+    expect(await comments()).toEqual([
+      { uid: pluginUid("jira-issue/default", "I1", "comment:SR-1:7"), text: "Looks good", author: "bob", ts: "2026-10-01T10:00:00.000Z" },
+      { uid: pluginUid("jira-issue/default", "I1", "comment:SR-1:8"), text: "Ship it", author: "jira:Pat", ts: expect.any(String) },
+    ]);
     const requests = await w.d.query("select text from notes where item_uid = 'I1' and kind = 'ticket-request' order by n");
     expect(requests.map((r) => r.text)).toEqual(["Build it",
       "Build it\n\n---\n\n## [SR-1](https://acme.atlassian.net/browse/SR-1) · Export\n\nTotals as CSV\n\n---"]);
+    issue.fields.comment.comments[0].body = "Looks good, mostly";
     await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
     await run(gh.impl);
     expect(await w.d.query("select 1 from notes where item_uid = 'I1' and kind = 'ticket-request'")).toHaveLength(2);
+    expect((await comments()).map((c) => [c.text, c.author])).toEqual([["Looks good, mostly", "bob"], ["Ship it", "jira:Pat"]]);
   });
 
   it("holds back every Jira write under JIRA_READ_ONLY", async () => {

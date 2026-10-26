@@ -11,7 +11,7 @@ import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs"
 import { docType, putObject } from "../files";
 import { PLUGINS_DIR, scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
-import { itemBranches } from "../model";
+import { itemBranches, nowIso } from "../model";
 import { jiraReadOnly } from "../jira/config";
 import { hashUid, ulid } from "../ulid";
 import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } from "./host";
@@ -88,15 +88,17 @@ export async function pluginItem(d: Pick<Db, "query">, project: string, it: Row,
 
 // ── applying a run ────────────────────────────────────────────────────────────
 /** Note kinds a run replaces by key; logs and requests are only ever added. */
-const REPLACED = ["link", "dependency"];
+const REPLACED = ["link", "dependency", "comment"];
 
 export const pluginUid = (instance: string, itemUid: string, key: string) => hashUid("plugin", instance, itemUid, key);
 /** A request's uid key names the version it creates, so text that returns to an earlier version is a new one. */
 export const requestKey = (key: string, version: number) => `${key}#v${version}`;
 const sameUrl = (a: unknown, b: unknown) => String(a ?? "").replace(/\/+$/, "") === String(b ?? "").replace(/\/+$/, "");
 
-function noteOf(a: Extract<Attachment, { kind: "link" | "edge" }>, instance: string): { kind: string; text: string; meta: Record<string, unknown> } {
+function noteOf(a: Extract<Attachment, { kind: "link" | "edge" | "comment" }>, instance: string): { kind: string; text: string; meta: Record<string, unknown> } {
   const own = { plugin: instance, plugin_key: a.key };
+  // apply.ts writes a comment as its Jira author, from jira_account and jira_name.
+  if (a.kind === "comment") return { kind: "comment", text: a.text, meta: { jira_account: a.author ?? null, jira_name: a.author_name ?? null, ...own } };
   if (a.kind === "link") return { kind: "link", text: a.label || a.url, meta: { url: a.url, type: a.type, label: a.label ?? null, ...own } };
   return { kind: "dependency", text: a.because, meta: { needs: a.needs, in: a.in ?? null, because: a.because, ...own } };
 }
@@ -117,7 +119,7 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
   const urls = new Set<string>();
   for (const a of run.result.attached) {
     const uid = pluginUid(instance, it.uid, a.key);
-    if (a.kind === "link" || a.kind === "edge") {
+    if (a.kind === "link" || a.kind === "edge" || a.kind === "comment") {
       if (a.kind === "link") {
         const other = notes.find((n) => n.uid !== uid && n.kind === "link" && sameUrl(n.meta?.url ?? n.text, a.url));
         if (other || urls.has(a.url)) {
@@ -131,9 +133,10 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
       const want = noteOf(a, instance);
       const have = notes.find((n) => n.uid === uid);
       if (!have) {
-        op({ op: "create", entity: "note", uid, data: want });
+        op({ op: "create", entity: "note", uid, data: a.kind === "comment" && a.at ? { ...want, ts: a.at } : want });
         continue;
       }
+      if (a.kind === "comment" && have.text !== want.text) want.meta.edited_at = nowIso();
       const data: Record<string, unknown> = {};
       if (have.text !== want.text) data.text = want.text;
       if (have.kind !== want.kind) data.kind = want.kind;

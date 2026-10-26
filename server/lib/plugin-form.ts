@@ -321,7 +321,7 @@ export function savedInstances(plugin: PluginShape, draft: PluginDraft): Saved {
 
 // ── run log ───────────────────────────────────────────────────────────────────
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-const KIND_NAME: Record<Attachment["kind"], string> = { link: "link", edge: "edge", doc: "doc", log: "log line", request: "request" };
+const KIND_NAME: Record<Attachment["kind"], string> = { link: "link", edge: "edge", doc: "doc", log: "log line", request: "request", comment: "comment" };
 
 /** "2 links, 1 log line". */
 export function attachedSummary(attached: Attachment[]): string {
