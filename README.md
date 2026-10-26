@@ -171,6 +171,8 @@ todo doc add <query> <file> [--name N]    # copy a file into the item's docs (re
 todo doc rm|path <query> <name>           # delete a doc, or print its path to edit in place
 todo docs <query>                         # list an item's docs
 todo deps [<query>] [--from-checks]       # what an item needs and what needs it, from git
+todo needs <query> [<ref>] [--in B] [--because T]   # list, or record a dependency git can't see
+todo needs rm <query> <id>                # remove a dependency you recorded
 todo refresh [<query>]                    # recompute git facts and run plugins now
 todo plugins <query>                      # what each plugin attached, skipped or failed on an item
 todo plugin list|add|set|rm|test|run ...  # a repo's plugins and their instances
@@ -338,6 +340,17 @@ prints them with their evidence.
 - **Depends on:** B depends on A when B carries commits of A that B's target
   doesn't have yet, or when B's PR is based on A's branch. The edge resolves
   once A lands in B's target. Whichever merges second merges the other in.
+- **Target:** B's target is its open PR's base, followed through other items'
+  branches to the first branch no open item owns; with no open PR, the first
+  tracked branch, else the default. In a repo with no `track:` list, a PR based
+  on a branch like `staging` gets a hint that blocks nothing: if `staging` is
+  long-lived, add it under `track:`. Beside a `track:` list, a base nothing
+  tracks blocks until it's tracked, added to an item, or the PR is retargeted.
+- **By hand:** `todo needs <q> <ref>` records what git can't see. `ref` is a
+  GitHub PR URL (any repo), `branch:<name>`, or another item. A PR lands once
+  merged; with `--in staging`, once its merge commit is in staging. It blocks
+  like any other edge and syncs as a note. `todo needs <q>` lists them;
+  `todo needs rm <q> <id>` removes one you recorded, never a plugin's.
 - **Conflicts and overlaps** are hints and never block. Conflicts come from
   `git merge-tree` (git 2.38+) in the CLI only.
 
