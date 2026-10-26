@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { describeRepo } from "@/lib/plugins/describe";
 import { runEvent, runInstance, type EventInput, type EventResult } from "@/lib/plugins/host";
 import { loadPlugins } from "@/lib/plugins/load";
+import { SHIPPED } from "@/lib/plugins/shipped";
 import type { ConnectionDef, InstanceDef, PluginEvent, ResolvedConnection, RunInput, RunResult } from "@/lib/plugins/types";
 import { fakeServer, type FakeServer, type Recorded, type RecordedTool } from "./plugin-fakes";
 
@@ -22,6 +23,8 @@ const scratch = mkdtempSync(path.join(tmpdir(), "plugin-conformance-"));
 
 interface Case {
   about: string;
+  grants?: string[];
+  track?: string[];
   plugin: string;
   instance: InstanceDef;
   event: PluginEvent;
@@ -72,7 +75,7 @@ async function connectionsFor(name: string, c: Case) {
     if (def.kind === "mcp") {
       const tools = path.join(scratch, `${name}-${conn}.json`);
       writeFileSync(tools, JSON.stringify(c.tools?.[conn] ?? []));
-      connections[conn] = { ...def, kind: "mcp", command: process.execPath, args: [FAKE_MCP, tools], origin: "host" };
+      connections[conn] = { ...def, kind: "mcp", command: process.execPath, args: [FAKE_MCP, tools], origin: "repo" };
     } else {
       fakes[conn] = await fakeServer(c.responses?.[conn] ?? []);
       servers.push(fakes[conn]);
@@ -88,7 +91,7 @@ describe.each(HOSTS)("plugin conformance (%s)", (_, host) => {
     const { connections, fakes } = await connectionsFor(name, c);
     const result = await host({
       plugin, name: c.plugin, code: plugin.code ? readFileSync(path.join(DIR, plugin.code), "utf8") : undefined,
-      instance: c.instance, item: { ...ITEM, ...c.item }, event: c.event, connections, dryRun: !!c.dry_run,
+      instance: c.instance, item: { ...ITEM, ...c.item }, event: c.event, connections, dryRun: !!c.dry_run, allowRepoCommands: true,
     });
     const { log, ...rest } = c.expect;
     expect({ ...result, log: undefined }, c.about).toEqual({ ...rest, log: undefined });
@@ -203,5 +206,35 @@ describe("the bundle's events mode", () => {
   it("refuses a run that isn't an event input", async () => {
     const { code, stderr } = await bundled(JSON.stringify({ mode: "events", runs: [{ item: ITEM }] }));
     expect([code, stderr.trim()]).toEqual([2, "plugin host: runs[0]: input needs event as an object"]);
+  });
+});
+
+// The plugins shipped with todo, each against recorded answers of the service it calls.
+const SHIPPED_CASES = readdirSync(path.join(DIR, "shipped")).filter((f) => f.endsWith(".yaml")).sort()
+  .map((f) => [f.replace(/\.yaml$/, ""), parse(readFileSync(path.join(DIR, "shipped", f), "utf8")) as Case] as const);
+
+/** A run as a case writes it: keys made of the run's time as <now>, and each fake's address as http://fake-<connection>. */
+function timeless(r: RunResult, fakes: Record<string, FakeServer>): RunResult {
+  const named = (s: string) => Object.entries(fakes).reduce((t, [conn, f]) => t.split(f.url).join(`http://fake-${conn}`), s);
+  return { ...r, attached: r.attached.map((a) => JSON.parse(named(JSON.stringify({
+    ...a, key: a.key.replace(/:(\d{13}|\d{4}-\d\d-\d\dT[\d:.]+Z)$/, ":<now>") })))) };
+}
+
+describe.each(HOSTS)("shipped plugin conformance (%s)", (_, host) => {
+  it.each(SHIPPED_CASES)("%s", async (name, c) => {
+    const { def: plugin, code } = SHIPPED[c.plugin];
+    const { connections, fakes } = await connectionsFor(name, c);
+    const result = timeless(await host({
+      plugin, name: c.plugin, code, shipped: true, grants: c.grants, track: c.track,
+      instance: c.instance, item: { ...ITEM, ...c.item }, event: c.event, connections, dryRun: !!c.dry_run,
+    }), fakes);
+    const { log, ...rest } = c.expect;
+    expect({ ...result, log: undefined }, c.about).toEqual({ ...rest, log: undefined });
+    if (log) expect(result.log).toEqual(log);
+    for (const [conn, want] of Object.entries(c.received ?? {})) {
+      const got = fakes[conn].received.map((r, i) => Object.fromEntries(Object.keys({ method: 1, path: 1, ...want[i] }).map((k) =>
+        [k, k === "method" ? r.method : k === "path" ? r.path : k === "body" ? r.body : r.headers[k]])));
+      expect(got).toEqual(want);
+    }
   });
 });

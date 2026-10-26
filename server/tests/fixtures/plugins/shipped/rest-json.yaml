@@ -1,0 +1,31 @@
+about: rest sends the instance's request through the connection it names, the path encoded and the body JSON
+plugin: rest
+instance:
+  id: notify
+  name: Notify
+  settings:
+    connection: hooks
+    method: POST
+    path: "/notify/{{item.id}}?branch={{item.branches.0}}"
+    headers: "X-Source: todo\nX-Status: {{item.status}}"
+    body: {text: "{{item.title}} moved to {{event.to}}", from: "{{event.from}}", branches: "{{item.branches}}"}
+event: {type: status, from: review, to: in-progress}
+connections:
+  hooks: {kind: http, auth: "header:X-Api-Key", secret: k1}
+responses:
+  hooks:
+    - {method: POST, path: /notify/fix-login?branch=feat%2Flogin, status: 202, body: {queued: true}}
+expect:
+  attached:
+    - {kind: log, key: "sent:<now>", text: "action Notify (review → in-progress): POST http://fake-hooks/notify/fix-login?branch=feat%2Flogin → 202"}
+  wouldSend: []
+  log: []
+received:
+  hooks:
+    - method: POST
+      path: /notify/fix-login?branch=feat%2Flogin
+      x-api-key: k1
+      x-source: todo
+      x-status: in-progress
+      content-type: application/json
+      body: {text: Fix login moved to in-progress, from: review, branches: [feat/login, feat/login-api]}

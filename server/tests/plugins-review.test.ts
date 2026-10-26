@@ -310,13 +310,38 @@ describe("delivery", () => {
     expect((await w.d.query("select text from logs order by n")).map((r) => r.text)).toEqual(["steady ran", "flaky ran"]);
   });
 
-  it("doesn't retry a run that wrote before failing", async () => {
-    const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}", "plugins:",
-      "  poster:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: POST, path: /}}]", "    attach: []"].join("\n");
-    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("https://hooks.example") ? new Response("", { status: 503 }) : undefined) });
+  it("gives a failing send up after five attempts with the plugin's own dev-log line", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://hooks.example" } } }));
+    const gh = fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\n",
+      other: (url) => (url.startsWith("https://hooks.example") ? new Response("down", { status: 503 }) : undefined) });
+    vi.stubGlobal("fetch", gh.impl);
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "rest",
+      instances: [{ id: "n", name: "Notify", on: ["push"], settings: { connection: "hooks", path: "/hook" } }] }), params("p"));
     await onBranch([]);
     await w.d.query("delete from plugin_events");
     await push("main");
+    for (let i = 1; i <= 5; i++) {
+      expect(await run(gh.impl)).toEqual(i < 5 ? { ran: 0, failed: 1 } : { ran: 1, failed: 0 });
+      await w.d.query("update plugin_events set next_attempt_at = now()");
+    }
+    expect(gh.sent.filter((x) => x.url.startsWith("https://hooks.example"))).toHaveLength(5);
+    expect((await w.d.query("select text from logs where item_uid = 'I1'")).map((l) => l.text)).toEqual([
+      "action Notify (push main) gave up after 5 attempts: hooks: POST /hook answered 503: down"]);
+  });
+
+  it("retries a run whose first write failed for now, and never one whose write went through", async () => {
+    const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}", "plugins:",
+      "  poster:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: POST, path: /one}}, {http: {method: POST, path: /two}}]",
+      "    attach: []"].join("\n");
+    let first = 503;
+    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("https://hooks.example")
+      ? new Response("", { status: url.endsWith("/one") ? first : 503 }) : undefined) });
+    await onBranch([]);
+    await w.d.query("delete from plugin_events");
+    await push("main");
+    expect(await run(gh.impl)).toEqual({ ran: 0, failed: 1 });
+    first = 200;
+    await w.d.query("update plugin_events set next_attempt_at = now()");
     expect(await run(gh.impl)).toEqual({ ran: 1, failed: 0 });
   });
 
@@ -576,10 +601,15 @@ describe("server_runs", () => {
     expect((await shownRuns()).ping).toEqual([false]);
   });
 
-  it("is true for a host connection that runs a command, which the server does run", async () => {
+  it("is true for a host connection that runs a command, which the server runs for a shipped plugin", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ local: { mcp: { command: "/bin/true" } } }));
-    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
-    expect((await shownRuns()).loc).toEqual([true]);
+    SHIPPED["test-loc"] = { def: { connections: ["local"], on: ["push"], steps: [{ tool: "t" }], attach: [] } };
+    try {
+      vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  test-loc: {use: shipped}\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
+      expect(await shownRuns()).toMatchObject({ "test-loc": [true], loc: [false] });
+    } finally {
+      delete SHIPPED["test-loc"];
+    }
   });
 });
 
@@ -605,6 +635,36 @@ describe("server_runs_reason", () => {
     });
     vi.stubEnv("GITHUB_TOKEN", "");
     expect((await reasons())["pr-link"]).toBe("GITHUB_TOKEN isn't set on the server");
+  });
+});
+
+describe("instances the repo's file declares", () => {
+  it("show they get no host connection, and why", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://93.184.216.34" } } }));
+    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\ninstances:\n  rest: [{id: x, name: X, settings: {connection: jira, path: /a}}]\n" }).impl);
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice,
+      { repo: "acme/web", plugin: "rest", instances: [{ id: "s", name: "S", settings: { connection: "jira", path: "/b" } }] }), params("p"));
+    const listed = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
+    const rest = listed.plugins.find((p: { name: string }) => p.name === "rest");
+    expect(rest.instances.map((i: Record<string, unknown>) => [i.id, i.from_repo, i.server_runs, i.server_runs_reason])).toEqual([
+      ["x", true, false, "`jira` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection"],
+      ["s", false, true, null],
+    ]);
+  });
+});
+
+describe("server_runs for an instance that names its connection", () => {
+  it("judges the connection the instance names: one the server has runs, a private one waits for an allow entry", async () => {
+    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\n" }).impl);
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://93.184.216.34" } }, lan: { http: { url: "http://192.168.1.4:9000" } } }));
+    for (const connection of ["hooks", "lan", "missing"]) {
+      await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice,
+        { repo: "acme/web", plugin: "rest", instances: [{ id: "r", name: "R", settings: { connection, path: "/x" } }] }), params("p"));
+      const listed = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
+      const rest = listed.plugins.find((p: { name: string }) => p.name === "rest");
+      expect(rest.instances[0].server_runs_reason).toBe({ hooks: null, lan: "connection `lan` is refused by the private-address rule",
+                                                         missing: "`missing` not authorized here" }[connection]);
+    }
   });
 });
 

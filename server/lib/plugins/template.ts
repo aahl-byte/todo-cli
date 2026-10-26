@@ -105,6 +105,12 @@ function leavesSegment(segment: string): boolean {
   return true;
 }
 
+/** A path whose segments, decoded, hold a . or .. part, which would move a request elsewhere on its host. */
+export function pathLeaves(path: string): boolean {
+  const q = path.indexOf("?");
+  return (q < 0 ? path : path.slice(0, q)).split("/").some((seg) => seg !== "" && leavesSegment(seg));
+}
+
 /** For HTTP paths: each value URL-encoded, a slash in it included; a value that makes a . or .. part is refused. */
 export function fillUrl(s: string, scope: Scope): string {
   const q = s.indexOf("?");

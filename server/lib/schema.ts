@@ -373,6 +373,8 @@ create table if not exists docs (
 -- wrote; a doc whose sha256 has moved on since was edited, and the plugin leaves it.
 alter table docs add column if not exists plugin text;
 alter table docs add column if not exists plugin_sha256 text;
+-- plugin_version: the version the plugin gave the doc, so it isn't fetched again while that holds.
+alter table docs add column if not exists plugin_version text;
 
 -- A deleted doc's last sha256, so a client can tell whether its copy was edited since.
 create table if not exists doc_tombstones (

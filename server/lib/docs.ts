@@ -31,7 +31,7 @@ export interface DocWrite {
   doc: Row | null;
 }
 
-const COLUMNS = "uid, item_uid, name, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256";
+const COLUMNS = "uid, item_uid, name, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256, plugin_version";
 
 const clean = (row: Row | undefined): Row | null => (row ? { ...row, size: Number(row.size) } : null);
 
@@ -118,6 +118,8 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
   item_uid: string; name: string; file_key: string; base?: string | null; sha256?: string; via?: string;
   /** The <plugin>/<instance> writing it on a plugin's behalf; a write without it keeps the doc's owner. */
   plugin?: string | null;
+  /** The version that plugin gave it. */
+  plugin_version?: string | null;
 }): Promise<DocWrite> {
   const name = input.name;
   const bad = docNameError(name);
@@ -155,14 +157,17 @@ export async function recordDoc(d: Db, project: string, handle: string, input: {
     const seq = await bump(t, project, uid, input.item_uid, false, handle);
     await t.query("delete from doc_tombstones where project = $1 and uid = $2", [project, uid]);
     const [saved] = await t.query(
-      `insert into docs (project, uid, item_uid, name, name_key, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, case when $14::text is null then null else $7 end)
+      `insert into docs (project, uid, item_uid, name, name_key, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256,
+                         plugin_version)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, case when $14::text is null then null else $7 end,
+               case when $14::text is null then null else $15::text end)
        on conflict (project, uid) do update set size = excluded.size, sha256 = excluded.sha256, file_key = excluded.file_key,
          content_type = excluded.content_type, by = excluded.by, via = excluded.via, at = excluded.at, versions = excluded.versions,
-         plugin = coalesce(excluded.plugin, docs.plugin), plugin_sha256 = coalesce(excluded.plugin_sha256, docs.plugin_sha256)
+         plugin = coalesce(excluded.plugin, docs.plugin), plugin_sha256 = coalesce(excluded.plugin_sha256, docs.plugin_sha256),
+         plugin_version = case when excluded.plugin is null then docs.plugin_version else excluded.plugin_version end
        returning ${COLUMNS}`,
       [project, uid, input.item_uid, name, docNameKey(name), bytes.length, sha256, key, docType(name), handle, via, nowIso(),
-       JSON.stringify({ sha256: seq }), plugin]);
+       JSON.stringify({ sha256: seq }), plugin, plugin && typeof input.plugin_version === "string" ? input.plugin_version.slice(0, 200) : null]);
     return { result: { status: "applied" as const, doc: clean(saved) }, superseded: row?.file_key as string | undefined };
   });
   if (superseded !== result.doc?.file_key) await discard(superseded);

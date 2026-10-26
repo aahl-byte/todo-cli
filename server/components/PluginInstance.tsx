@@ -3,10 +3,11 @@
 // button, dry-run and settings form; and an instance's run log.
 import { withBase } from "@/lib/base";
 import {
-  ANY, TRIGGER_KINDS, canMove, describeTrigger, duplicateInstance, editInstance, fieldsOf, moveInstance, removeInstance,
+  ANY, TRIGGER_KINDS, canMove, connectionChoices, connectionKeysOf, describeTrigger, duplicateInstance, editInstance, fieldsOf, moveInstance,
+  removeInstance,
   attachedSummary, type Field, type InstanceDraft, type PluginDraft, type SecretDraft, type TriggerDraft, type Value,
 } from "@/lib/plugin-form";
-import type { DashPlugin, RunRow } from "@/lib/plugin-views";
+import type { DashPlugin, DashRepo, RunRow } from "@/lib/plugin-views";
 import type { Attachment, Call, PluginEvent } from "@/lib/plugins/types";
 import { Stamp } from "./ui";
 
@@ -14,14 +15,19 @@ const TRIGGER_LABEL: Record<TriggerDraft["kind"], string> = {
   status: "status move", push: "push", pr: "pull request", deployment: "deployment", manual: "manual button",
 };
 
-export function InstanceCard({ plugin, draft, x, index, statuses, onChange, serverRuns }: {
+export function InstanceCard({ plugin, draft, x, index, statuses, onChange, serverRuns, available }: {
   plugin: DashPlugin; draft: PluginDraft; x: InstanceDraft; index: number; statuses: readonly string[];
   onChange: (d: PluginDraft) => void;
+  /** Connection names an instance may pick. */
+  available: DashRepo["available"];
   /** Whether this server runs the saved instance; null until it's saved. */
   serverRuns: { runs: boolean; reason: string | null } | null;
 }) {
   const edit = (patch: Partial<InstanceDraft>) => onChange(editInstance(draft, x.key, patch));
-  const fields = fieldsOf(plugin.settings).filter((f) => f.scope === "instance");
+  // A connection setting offers what this instance may use: a repo-declared one gets the repo's connections only.
+  const choices = connectionChoices(available, x.declared);
+  const fields = fieldsOf(plugin.settings, connectionKeysOf(plugin.connections)).filter((f) => f.scope === "instance")
+    .map((f) => (f.connection ? { ...f, options: choices } : f));
   const manual = (x.inherit ? (plugin.on ?? []) : x.triggers.map((t) => t.kind)).includes("manual");
   return (
     <div className={`instance-card${x.enabled ? "" : " off"}`} data-instance={x.id}>
@@ -61,6 +67,12 @@ export function InstanceCard({ plugin, draft, x, index, statuses, onChange, serv
             <SettingInput key={f.key} field={f} value={x.settings[f.key]} onChange={(v) => edit({ settings: { ...x.settings, [f.key]: v } })} />
           ))}
         </div>
+      )}
+      {x.declared && plugin.shipped && plugin.connections.length > 0 && (
+        <p className="hint repo-declared">
+          Declared in the repo file, so it gets only the repo&apos;s own connections, never this server&apos;s: a repo file can&apos;t point a
+          shipped plugin at the server&apos;s credentials. Add an instance here to use them.
+        </p>
       )}
       {serverRuns && (
         <p className={`hint runs-where${serverRuns.runs ? "" : " cli"}`}>
@@ -203,6 +215,7 @@ function attachmentText(a: Attachment): string {
     case "doc": return `doc ${a.name}`;
     case "log": return `log: ${a.text}`;
     case "request": return "a new request version";
+    case "comment": return `comment${a.author_name ? ` by ${a.author_name}` : ""}: ${a.text}`;
   }
 }
 

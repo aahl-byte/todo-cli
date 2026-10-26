@@ -6,7 +6,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mcpServer } from "./fixtures/plugins/fake-mcp.mjs";
 
 /** One recorded answer; a route answers its list in order and then repeats the last one. */
-export interface Recorded { method: string; path: string; status?: number; body?: unknown; text?: string; delayMs?: number }
+export interface Recorded {
+  method: string; path: string; status?: number; body?: unknown; text?: string; delayMs?: number;
+  /** An answer's bytes, base64, sent as they are. */
+  bytes?: string; type?: string;
+  headers?: Record<string, string>;
+}
 export interface Received { method: string; path: string; headers: IncomingHttpHeaders; body: unknown }
 
 export interface FakeServer { url: string; received: Received[]; close(): Promise<void> }
@@ -35,8 +40,12 @@ export async function fakeServer(responses: Recorded[]): Promise<FakeServer> {
     used.set(k, n + 1);
     const r = list[Math.min(n, list.length - 1)];
     if (r.delayMs) await new Promise((done) => setTimeout(done, r.delayMs));
+    if (r.bytes !== undefined) {
+      res.writeHead(r.status ?? 200, { "content-type": r.type ?? "application/octet-stream" }).end(Buffer.from(r.bytes, "base64"));
+      return;
+    }
     const text = r.text ?? (r.body === undefined ? "" : JSON.stringify(r.body));
-    res.writeHead(r.status ?? 200, { "content-type": "application/json" }).end(text);
+    res.writeHead(r.status ?? 200, { "content-type": "application/json", ...r.headers }).end(text);
   });
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const { port } = server.address() as AddressInfo;

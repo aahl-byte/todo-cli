@@ -29,7 +29,8 @@ BAD_META_FILE = ".meta.yaml.bad"
 REBUILD_FILE = ".rebuild"          # present while bases wait to be rebuilt from the server
 MAX_NAME_BYTES = 200
 MAX_BYTES = 25 * 1024 * 1024
-FIELDS = ("uid", "sha256", "size", "by", "via", "at", "base", "plugin")
+FIELDS = ("uid", "sha256", "size", "by", "via", "at", "base", "plugin", "plugin_version")
+OPTIONAL_FIELDS = ("plugin_version",)       # written only when set
 
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 _RESERVED = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$", re.IGNORECASE)
@@ -169,7 +170,7 @@ def write_meta(item_dir: Path, meta: dict) -> None:
             pass
         return
     d.mkdir(exist_ok=True)
-    body = {name: {k: meta[name].get(k) for k in FIELDS} for name in sorted(meta)}
+    body = {name: {k: meta[name].get(k) for k in FIELDS if k not in OPTIONAL_FIELDS or meta[name].get(k)} for name in sorted(meta)}
     yamlio.write_atomic(f, yamlio.dump(yamlio.yaml(), body))
 
 
@@ -209,17 +210,34 @@ def record(item_dir: Path, item_uid: str, now_iso: str, meta: dict | None = None
     return meta
 
 
-def add(item_dir: Path, item_uid: str, name: str, data: bytes, now_iso: str, plugin: str | None = None) -> str:
+def add(item_dir: Path, item_uid: str, name: str, data: bytes, now_iso: str, plugin: str | None = None,
+        plugin_version: str | None = None) -> str:
     """Write a doc, into the existing doc when `name` is another spelling of
-    one, credited to `plugin` when a plugin wrote it. Returns the name it went under."""
+    one, credited to `plugin` when a plugin wrote it, with the version it gave.
+    Returns the name it went under."""
     meta = read_meta(item_dir)
     name = find(set(files(item_dir)) | set(meta), name) or name
     write_bytes(item_dir, name, data)
     base = (meta.get(name) or {}).get("base")
     meta[name] = entry(item_uid, name, sha256_bytes(data), len(data), now_iso, base, plugin)
+    if plugin and plugin_version:
+        meta[name]["plugin_version"] = plugin_version
     meta = record(item_dir, item_uid, now_iso, meta)
     write_meta(item_dir, meta)
     return name
+
+
+def set_plugin_version(item_dir: Path, name: str, version: str | None) -> None:
+    """Record the version a plugin gave a doc it wrote, when that's all that changed."""
+    meta = read_meta(item_dir)
+    e = meta.get(name)
+    if e is None or not e.get("plugin") or e.get("plugin_version") == version:
+        return
+    if version:
+        e["plugin_version"] = version
+    else:
+        e.pop("plugin_version", None)
+    write_meta(item_dir, meta)
 
 
 def remove(item_dir: Path, item_uid: str, name: str, now_iso: str) -> bool:

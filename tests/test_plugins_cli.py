@@ -807,6 +807,17 @@ def test_plugin_docs_never_overwrite_or_remove_a_person_s_doc(fx, host):
     assert (item_dir / "docs" / "notes.md").read_text() == "mine\n"
 
 
+def test_a_fetched_doc_keeps_its_bytes(fx, host):
+    import base64
+    a = item_with_branch(fx)
+    item_dir = fx.root / store.OPEN / a
+    png = bytes([0x89, 0x50, 0x4E, 0x47, 0x00, 0xFF])
+    fetched = {**doc("shot.png", base64.b64encode(png).decode()), "encoding": "base64", "url": "/a/1"}
+    host.results({"refresh": [ran("p", [fetched])]})
+    refresh(fx.root, a)
+    assert (item_dir / "docs" / "shot.png").read_bytes() == png
+
+
 def test_a_plugin_doc_syncs_with_its_plugin(fx, synced, host):
     cli_runs(synced, fx.root, "p/default")
     a = item_with_branch(fx)
@@ -1253,3 +1264,57 @@ def test_a_uid_written_for_a_run_is_the_one_sync_would_give(fx, synced, host):
     yamlio.save(y, item_file, meta)
     store.ensure_uid(fx.root, a, "p")
     assert store.resolve_item(fx.root, a)["uid"] == hash_uid("p", a, meta["created"])
+
+
+def test_a_plugin_sees_every_request_version_newest_first(fx):
+    it = {"id": "a", "uid": "U", "title": "A", "status": "todo", "branches": [], "notes": [
+        {"id": "n1", "kind": "ticket-request", "text": "first", "meta": {"version": 1}},
+        {"id": "n3", "kind": "comment", "text": "hi", "meta": {}},
+        {"id": "n2", "kind": "ticket-request", "text": "second", "meta": {"version": 2}}]}
+    assert plugins.item_json(it, "o/r", None)["requests"] == ["second", "first"]
+
+
+def test_jira_read_only_holds_back_the_host_jira_connection(fx, host, monkeypatch):
+    a = item_with_branch(fx)
+    monkeypatch.setenv("JIRA_READ_ONLY", "1")
+    refresh(fx.root, a)
+    assert [r.get("dryRunConnections") for r in host.calls()] == [["jira"]]
+    monkeypatch.delenv("JIRA_READ_ONLY")
+    refresh(fx.root, a)
+    assert host.calls()[-1].get("dryRunConnections") is None
+
+
+def test_a_fetched_doc_keeps_its_version_and_an_unchanged_one_stays(fx, host):
+    import base64
+    from todo import docs
+    a = item_with_branch(fx)
+    item_dir = fx.root / store.OPEN / a
+    png = bytes([0x89, 0x50, 0x00, 0xFF])
+    fetched = {**doc("shot.png", base64.b64encode(png).decode()), "encoding": "base64", "url": "/a/1", "version": "9"}
+    host.results({"refresh": [ran("p", [fetched])]})
+    refresh(fx.root, a)
+    assert docs.read_meta(item_dir)["shot.png"]["plugin_version"] == "9"
+    it = store.resolve_item(fx.root, a)
+    assert plugins.item_json(it, "o/r", None, item_dir)["docs"] == [{"name": "shot.png", "plugin": "p/default", "version": "9"}]
+    kept = {"kind": "doc", "key": "doc:shot.png", "name": "shot.png", "url": "/a/1", "version": "9", "unchanged": True}
+    host.results({"refresh": [ran("p", [kept])]})
+    refresh(fx.root, a)
+    assert (item_dir / "docs" / "shot.png").read_bytes() == png
+
+
+def test_a_plugin_comment_speaks_as_its_jira_author_and_follows_edits(fx, host):
+    from todo.uids import hash_uid
+    a = item_with_branch(fx)
+    it = store.resolve_item(fx.root, a)
+    c = {"kind": "comment", "key": "comment:SR-1:7", "text": "Looks good", "at": "2026-10-01T10:00:00.000Z",
+         "author": "acc-bob", "author_name": "Bob B"}
+    host.results({"refresh": [ran("p", [c])]})
+    refresh(fx.root, a)
+    [n] = [n for n in store.resolve_item(fx.root, a)["notes"] if n["kind"] == "comment"]
+    assert (n["text"], n["author"], n["uid"], n["meta"]["jira_account"]) == \
+        ("Looks good", "jira:Bob B", hash_uid("plugin", "p/default", it["uid"], "comment:SR-1:7"), "acc-bob")
+    assert n["ts"].startswith("2026-10-01")
+    host.results({"refresh": [ran("p", [{**c, "text": "Looks good, mostly"}])]})
+    refresh(fx.root, a)
+    [n] = [n for n in store.resolve_item(fx.root, a)["notes"] if n["kind"] == "comment"]
+    assert (n["text"], n["author"]) == ("Looks good, mostly", "jira:Bob B")

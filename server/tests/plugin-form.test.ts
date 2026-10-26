@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  addInstance, canMove, describeTrigger, draftPlugin, draftTrigger, draftValue, duplicateInstance, editInstance, fieldOf, fieldsOf,
+  addInstance, canMove, connectionChoices, connectionKeysOf, describeConnections, describeTrigger, draftPlugin, draftTrigger, draftValue, duplicateInstance, editInstance, fieldOf, fieldsOf,
   moveInstance, removeInstance, savedInstances, storedTrigger, storedValue, type PluginShape,
 } from "@/lib/plugin-form";
 import type { SettingDef } from "@/lib/plugins/types";
@@ -34,6 +34,31 @@ describe("settings fields", () => {
     expect(fieldOf("t", S({ type: "toggle" })).required).toBe(false);
     expect(fieldOf("l", S({ type: "list" })).required).toBe(false);
     expect(fieldOf("n", S({ scope: "plugin" })).scope).toBe("plugin");
+  });
+});
+
+describe("template and connection settings", () => {
+  it("marks a template setting with a hint on how it fills", () => {
+    const f = fieldOf("path", S({ type: "text", template: true }));
+    expect(f.template).toBe(true);
+    expect(f.note).toBe("A template: {{item.id}} and other fields fill in where it's used, URL-encoded in a path and as JSON values in a JSON body.");
+  });
+
+  it("finds the settings a plugin's connections list names, and makes each a choice of connection", () => {
+    expect(connectionKeysOf(["{{settings.connection}}", "github", "{{ settings.other }}"])).toEqual(["connection", "other"]);
+    const [f] = fieldsOf({ connection: S({ label: "Connection" }) }, ["connection"]);
+    expect([f.control, f.connection, f.note]).toEqual(["select", true, "The connection it calls; the server's own are offered only to instances stored here."]);
+  });
+
+  it("offers a repo-declared instance only the repo's connections, and a stored one the server's too", () => {
+    const available = { repo: ["hooks", "jira"], host: ["github", "jira", "watchtower"] };
+    expect(connectionChoices(available, true)).toEqual(["hooks", "jira"]);
+    expect(connectionChoices(available, false)).toEqual(["github", "hooks", "jira", "watchtower"]);
+  });
+
+  it("names a connections list that holds a settings reference in words", () => {
+    expect(describeConnections(["{{settings.connection}}"])).toBe("the connection each instance names");
+    expect(describeConnections(["jira", "github"])).toBe("jira, github");
   });
 });
 

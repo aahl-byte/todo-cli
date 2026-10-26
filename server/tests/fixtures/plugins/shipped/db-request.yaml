@@ -1,0 +1,23 @@
+about: db-request links each submission's PR and makes the item need it in the first tracked branch
+plugin: db-request
+instance: {id: default, name: (default)}
+event: {type: push, branch: feat/login}
+track: [staging, main]
+connections:
+  db-request: {kind: http}
+responses:
+  db-request:
+    - method: GET
+      path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin
+      body:
+        - {submission_id: 41, name: add-sessions, status: approved, pr_url: "https://github.com/acme/moneyball/pull/560", pr_state: open}
+        - {submission_id: 42, name: draft-idea, status: draft, pr_url: null}
+    - method: GET
+      path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin-api
+      body: []
+expect:
+  attached:
+    - {kind: link, key: "link:https://github.com/acme/moneyball/pull/560", type: db-request, url: "https://github.com/acme/moneyball/pull/560", label: "db-request #41 · add-sessions (approved)"}
+    - {kind: edge, key: "edge:https://github.com/acme/moneyball/pull/560 in staging", needs: "https://github.com/acme/moneyball/pull/560", in: staging, because: "db-request #41 add-sessions"}
+  wouldSend: []
+  log: []

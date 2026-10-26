@@ -8,7 +8,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addPluginRepo, removePluginRepo } from "@/app/plugin-actions";
 import { withBase } from "@/lib/base";
-import { addInstance as addInstanceTo, describeTrigger, draftPlugin, fieldsOf, savedInstances, type PluginDraft } from "@/lib/plugin-form";
+import { addInstance as addInstanceTo, describeConnections, describeTrigger, draftPlugin, fieldsOf, savedInstances, type PluginDraft } from "@/lib/plugin-form";
 import type { DashConnection, DashPlugin, DashRepo, PluginsPage } from "@/lib/plugin-views";
 import { notify } from "./Toaster";
 import { Stamp } from "./ui";
@@ -83,7 +83,7 @@ function RepoPlugins({ projectKey, repo, statuses, secretKeySet }: { projectKey:
       <Connections projectKey={projectKey} repo={repo.repo} rows={repo.connections} secretKeySet={secretKeySet} />
       {repo.plugins.map((p) => (
         <PluginCard key={`${p.name}:${JSON.stringify(p.instances)}:${JSON.stringify(p.grant)}`} projectKey={projectKey} repo={repo.repo} plugin={p}
-                    statuses={statuses} />
+                    statuses={statuses} available={repo.available} />
       ))}
     </section>
   );
@@ -161,7 +161,9 @@ function ConnectionRow({ projectKey, repo, c }: { projectKey: string; repo: stri
 /** Cards saved since the page last loaded, so the card the refreshed data remounts still says so. */
 const justSaved = new Set<string>();
 
-function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string; repo: string; plugin: DashPlugin; statuses: readonly string[] }) {
+function PluginCard({ projectKey, repo, plugin, statuses, available }: {
+  projectKey: string; repo: string; plugin: DashPlugin; statuses: readonly string[]; available: DashRepo["available"];
+}) {
   const router = useRouter();
   const id = `${repo}/${plugin.name}`;
   const [draft, setDraft] = useState<PluginDraft>(() => draftPlugin(plugin, plugin.instances, plugin.declared));
@@ -198,7 +200,7 @@ function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string
         <span className="faint">on {on.length ? on.map(describeTrigger).join(", ") : "nothing"}</span>
         {plugin.every && <span className="faint">· every {plugin.every}</span>}
         {plugin.per && <span className="faint">· per {plugin.per}</span>}
-        {plugin.connections.length > 0 && <span className="faint">· via {plugin.connections.join(", ")}</span>}
+        {plugin.connections.length > 0 && <span className="faint">· via {describeConnections(plugin.connections)}</span>}
       </div>
       {plugin.capabilities.includes("post-request") && (
         <Grant projectKey={projectKey} repo={repo} plugin={plugin} />
@@ -216,7 +218,7 @@ function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string
         {draft.instances.map((x, i) => {
           const live = plugin.instances.find((p) => p.id === (x.storedAs ?? x.id));
           return (
-            <InstanceCard key={x.key} plugin={plugin} draft={draft} x={x} index={i} statuses={statuses} onChange={change}
+            <InstanceCard key={x.key} plugin={plugin} draft={draft} x={x} index={i} statuses={statuses} onChange={change} available={available}
                           serverRuns={live && x.storedAs ? { runs: live.server_runs, reason: live.server_runs_reason } : null} />
           );
         })}

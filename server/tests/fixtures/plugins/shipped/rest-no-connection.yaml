@@ -1,0 +1,6 @@
+about: rest skips an instance whose named connection this host doesn't have
+plugin: rest
+instance: {id: notify, name: Notify, settings: {connection: hooks, path: /x}}
+event: {type: manual, instance: notify}
+connections: {}
+expect: {attached: [], wouldSend: [], log: [], skipped: "rest: `hooks` not authorized here"}

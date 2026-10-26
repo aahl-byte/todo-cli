@@ -24,6 +24,10 @@ export interface CodeRun {
   /** The plugin declares post-request and the host granted it. */
   mayRequest: boolean;
   deadline: number;
+  /** Writes are held back, so a plugin can stop where a write's answer would matter. */
+  dryRun?: boolean;
+  instance?: { id: string; name: string };
+  trigger?: string;
   memoryBytes?: number;
   sleep?: (ms: number) => Promise<void>;
   isolation?: Isolation;
@@ -109,6 +113,7 @@ function callOf(connection: string, raw: Record<string, unknown>): Call {
   if (typeof raw.tool === "string") return { connection, tool: raw.tool, input: raw.input ?? {} };
   const path = typeof raw.path === "string" ? raw.path : "/";
   const call: Call = { connection, method: String(raw.method), path: withQuery(path, isMap(raw.query) ? raw.query : undefined) };
+  if (raw.locate === true) call.locate = true;
   if (raw.body !== undefined && raw.body !== null) call.input = raw.body;
   return call;
 }
@@ -181,7 +186,8 @@ function inWorker(job: SandboxJob, host: SandboxHost, url: URL): Promise<{ error
 export async function runCode(run: CodeRun): Promise<void> {
   const job: SandboxJob = {
     code: run.code, item: run.item, event: run.event, settings: run.settings, connections: run.plugin.connections ?? [],
-    kinds: ATTACHMENT_KINDS, deadline: run.deadline, memoryBytes: run.memoryBytes ?? DEFAULT_MEMORY_BYTES,
+    kinds: ATTACHMENT_KINDS, deadline: run.deadline, memoryBytes: run.memoryBytes ?? DEFAULT_MEMORY_BYTES, dryRun: !!run.dryRun,
+    instance: run.instance, trigger: run.trigger,
   };
   const host = hostFor(run);
   if (!(await run.slots.take(run.repoKey, run.deadline))) throw new DeadlineError("the run passed its deadline waiting for a free sandbox");

@@ -163,7 +163,9 @@ describe("running plugins", () => {
 
   it("runs a repo's code plugin in the worker", async () => {
     const dir = path.join(import.meta.dirname, "fixtures/plugins");
-    const file = readFileSync(path.join(dir, "watchtower.yaml"), "utf8").replace("http://leaf-rain:10011", "https://wt.example");
+    // Named apart from the shipped watchtower-session, which a repo can only enable.
+    const file = readFileSync(path.join(dir, "watchtower.yaml"), "utf8").replace("http://leaf-rain:10011", "https://wt.example")
+      .replaceAll("watchtower-session:", "wt-agent:");
     const answers: Record<string, unknown> = {
       "GET /api/roster": { sessions: [] }, "POST /api/sessions": { id: "s9" }, "GET /api/sessions/s9": { state: "active", status: "idle" },
       "POST /api/sessions/s9/message": {},
@@ -177,10 +179,10 @@ describe("running plugins", () => {
     await onBranch("I1", ["feat/x"], { id: "fix-login" });
     await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "manual", instance: "start" }, "alice");
     await run(gh.impl);
-    const wt = (await runs()).find((r) => r.plugin === "watchtower-session")!;
+    const wt = (await runs()).find((r) => r.plugin === "wt-agent")!;
     expect(wt.result.error).toBeUndefined();
     const [log] = await w.d.query("select uid, text from logs where item_uid = 'I1'");
-    expect(log).toEqual({ uid: pluginUid("watchtower-session/start", "I1", "log:started Watchtower session todo: fix-login: s9"),
+    expect(log).toEqual({ uid: pluginUid("wt-agent/start", "I1", "log:started Watchtower session todo: fix-login: s9"),
                           text: "started Watchtower session todo: fix-login: s9" });
   });
 
@@ -201,6 +203,137 @@ describe("running plugins", () => {
     } finally {
       delete SHIPPED["test-doc"];
     }
+  });
+
+  it("stores a doc the host fetched by url through a host connection, its bytes as they came", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ files: { http: { url: "https://files.example", auth: "bearer" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_FILES", "f-token");
+    SHIPPED["test-fetch"] = { def: { connections: ["files"], on: ["push"], steps: [{ name: "v", value: "`1`" }],
+      attach: [{ doc: { name: "shot.png", url: "/a/1?redirect=false" } }] } };
+    try {
+      const gh = fakeGitHub({ file: "plugins:\n  test-fetch: {use: shipped}\n",
+        other: (url) => (url === "https://files.example/a/1?redirect=false" ? new Response(png, { headers: { "content-type": "image/png" } }) : undefined) });
+      await onBranch("I1", ["feat/x"]);
+      await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
+      await run(gh.impl);
+      expect((await runs()).find((r) => r.plugin === "test-fetch")!.result.error).toBeUndefined();
+      const [doc] = await listDocs(w.d, "p", "I1");
+      expect(doc).toMatchObject({ name: "shot.png", plugin: "test-fetch/default" });
+      expect(Buffer.from((await readLocal(doc.file_key))!).equals(png)).toBe(true);
+      expect(gh.sent.find((s) => s.url.startsWith("https://files.example"))!.headers.authorization).toBe("Bearer f-token");
+    } finally {
+      delete SHIPPED["test-fetch"];
+    }
+  });
+
+  it("keeps a fetched doc's version, fetches it again only when the version moves, keeps it when a fetch fails, and records no content", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ files: { http: { url: "https://files.example" } } }));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    let status = 200;
+    SHIPPED["test-fetch"] = { def: { connections: ["files"], on: ["push"], steps: [{ name: "v", value: "`1`" }],
+      attach: [{ doc: { name: "shot.png", url: "/a/1", version: "{{event.branch}}" } }] } };
+    try {
+      const gh = fakeGitHub({ file: "plugins:\n  test-fetch: {use: shipped}\n",
+        other: (url) => (url === "https://files.example/a/1" ? new Response(status === 200 ? png : "gone", { status }) : undefined) });
+      const fetches = () => gh.sent.filter((s) => s.url.startsWith("https://files.example")).length;
+      await onBranch("I1", ["feat/x"]);
+      await w.d.query("delete from plugin_events");
+      const push = async (branch: string) => {
+        await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch }, "alice");
+        await run(gh.impl);
+      };
+      await push("v1");
+      expect(fetches()).toBe(1);
+      const last = async () => (await runs()).filter((r) => r.plugin === "test-fetch").at(-1)!;
+      expect((await last()).result.attached).toEqual([{ kind: "doc", key: "doc:shot.png", name: "shot.png", url: "/a/1", version: "v1",
+        encoding: "base64", size: png.length, sha256: crypto.createHash("sha256").update(png).digest("hex") }]);
+      await push("v1");
+      expect(fetches()).toBe(1);
+      status = 404;
+      await push("v2");
+      expect(fetches()).toBe(2);
+      expect((await last()).result.log).toEqual(["kept doc shot.png as it was: files: GET /a/1 answered 404: gone"]);
+      const [doc] = await listDocs(w.d, "p", "I1");
+      expect(Buffer.from((await readLocal(doc.file_key))!).equals(png)).toBe(true);
+    } finally {
+      delete SHIPPED["test-fetch"];
+    }
+  });
+
+  it("maps a comment a CLI's plugin run synced to its Jira author", async () => {
+    await w.d.query("update users set jira_account_id = 'acc-bob' where handle = 'bob'");
+    await onBranch("I1", ["feat/x"]);
+    const meta = (account: string) => ({ plugin: "jira-issue/default", plugin_key: `comment:SR-1:${account}`, jira_account: account, jira_name: "Some One" });
+    await w.one("alice", child("note", "C1", "I1", { kind: "comment", text: "hi", meta: meta("acc-bob") }));
+    await w.one("alice", child("note", "C2", "I1", { kind: "comment", text: "yo", meta: meta("acc-zed") }));
+    await w.one("alice", child("note", "C3", "I1", { kind: "comment", text: "mine", meta: { jira_account: "acc-bob" } }));
+    expect((await w.d.query("select uid, author from notes where kind = 'comment' order by n")).map((n) => [n.uid, n.author]))
+      .toEqual([["C1", "bob"], ["C2", "jira:Some One"], ["C3", "alice"]]);
+  });
+
+  it("runs the shipped jira-issue through a host Jira connection, adding the issue's block to the current request", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    await w.d.query("update users set jira_account_id = 'acc-bob' where handle = 'bob'");
+    const issue = { key: "SR-1", self: "https://acme.atlassian.net/rest/api/3/issue/1", fields: { summary: "Export", status: { name: "QA" },
+      description: "Totals as CSV", comment: { total: 2, comments: [
+        { id: "7", created: "2026-10-01T10:00:00.000+0000", author: { accountId: "acc-bob", displayName: "Bob B" }, body: "Looks good" },
+        { id: "8", author: { accountId: "acc-pat", displayName: "Pat" }, body: "Ship it" }] } } };
+    const gh = fakeGitHub({ file: "plugins:\n  jira-issue: {use: shipped}\n",
+      other: (url) => (url.startsWith("https://acme.atlassian.net/rest/api/3/issue/SR-1?") ? Response.json(issue) : undefined) });
+    await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
+    await w.one("alice", child("note", "R1", "I1", { kind: "ticket-request", text: "Build it" }));
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "jira-issue", grants: ["post-request"] }), params("p"));
+    await w.d.query("delete from plugin_events");
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
+    await run(gh.impl);
+    expect((await runs()).find((r) => r.plugin === "jira-issue")!.result.error).toBeUndefined();
+    expect((await linkNotes()).map((n) => [n.text, n.meta.url])).toEqual([["SR-1 · QA", "https://acme.atlassian.net/browse/SR-1"]]);
+    const comments = () => w.d.query("select uid, text, author, ts from notes where item_uid = 'I1' and kind = 'comment' order by n");
+    expect(await comments()).toEqual([
+      { uid: pluginUid("jira-issue/default", "I1", "comment:SR-1:7"), text: "Looks good", author: "bob", ts: "2026-10-01T10:00:00.000Z" },
+      { uid: pluginUid("jira-issue/default", "I1", "comment:SR-1:8"), text: "Ship it", author: "jira:Pat", ts: expect.any(String) },
+    ]);
+    const requests = await w.d.query("select text from notes where item_uid = 'I1' and kind = 'ticket-request' order by n");
+    expect(requests.map((r) => r.text)).toEqual(["Build it",
+      "Build it\n\n---\n\n## [SR-1](https://acme.atlassian.net/browse/SR-1) · Export\n\nTotals as CSV\n\n---"]);
+    issue.fields.comment.comments[0].body = "Looks good, mostly";
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
+    await run(gh.impl);
+    expect(await w.d.query("select 1 from notes where item_uid = 'I1' and kind = 'ticket-request'")).toHaveLength(2);
+    expect((await comments()).map((c) => [c.text, c.author])).toEqual([["Looks good, mostly", "bob"], ["Ship it", "jira:Pat"]]);
+  });
+
+  it("holds back every Jira write under JIRA_READ_ONLY", async () => {
+    vi.stubEnv("JIRA_READ_ONLY", "1");
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    const gh = fakeGitHub({ file: "plugins:\n  jira-transition: {use: shipped}\n", other: (url) => {
+      if (!url.startsWith("https://acme.atlassian.net/")) return undefined;
+      return Response.json(url.endsWith("/transitions") ? { transitions: [{ id: "161", to: { name: "QA" } }] } : { fields: { status: { name: "Open" } } });
+    } });
+    vi.stubGlobal("fetch", gh.impl);
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "jira-transition",
+      instances: [{ id: "qa", name: "QA", on: [{ status: { from: "in-progress", to: "review" } }], settings: { to: "QA" } }] }), params("p"));
+    await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
+    await w.d.query("delete from plugin_events");
+    await w.one({ handle: "alice", unconditional: true }, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { status: "review" } });
+    await run(gh.impl);
+    const ran = (await runs()).find((r) => r.plugin === "jira-transition")!;
+    expect(ran.result).toMatchObject({ dryRun: true, wouldSend: [{ method: "POST", path: "/rest/api/3/issue/SR-1/transitions" }] });
+    expect(gh.sent.filter((s) => s.url.startsWith("https://acme.atlassian.net") && s.method !== "GET")).toEqual([]);
+  });
+
+  it("queues no status event for a bridge's move, except its bounce back to requested", async () => {
+    await onBranch("I1", ["feat/x"]);
+    await w.one("alice", child("note", "R1", "I1", { kind: "ticket-request", text: "v1" }));
+    await w.d.query("delete from plugin_events");
+    const bridge = { handle: "jira-bridge", bridge: true, unconditional: true };
+    await w.one(bridge, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { status: "review" } });
+    expect(await events()).toEqual([]);
+    await w.one(bridge, child("note", "R2", "I1", { kind: "ticket-request", text: "v2" }));
+    expect((await events()).map((e) => e.event)).toEqual([{ type: "status", from: "review", to: "requested" }]);
   });
 
   it("posts a request only once the plugin is granted post-request", async () => {
@@ -261,10 +394,11 @@ describe("the plugins API", () => {
     expect(body.host_secrets).toEqual(["github"]);
     expect(body.plugins).toEqual([
       { name: "pr-link", connections: ["github"], on: ["push", "pr"], every: null, settings: {},
-        instances: [{ id: "default", name: "default", server_runs: true, server_runs_reason: null }], shipped: true },
+        instances: [{ id: "default", name: "default", server_runs: true, server_runs_reason: null, from_repo: false }], shipped: true },
       { name: "ping", connections: ["hooks"], on: ["push"], every: "1h", settings: { path: { label: "Path", type: "text" } },
-        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false, server_runs_reason: "`hooks` not authorized here" },
-                    { id: "b", name: "B", enabled: false, server_runs: false, server_runs_reason: "`hooks` not authorized here" }],
+        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false, server_runs_reason: "`hooks` not authorized here",
+                      from_repo: true },
+                    { id: "b", name: "B", enabled: false, server_runs: false, server_runs_reason: "`hooks` not authorized here", from_repo: false }],
         shipped: false },
     ]);
     expect(body.runs["pr-link/default"]).toMatchObject({ item: "I1" });

@@ -2,10 +2,10 @@
 // through their `jira` field (links.ts); every op id derives from Jira ids, so a
 // repeated pass is a no-op.
 import type { Db } from "../db";
-import { addUser } from "../auth";
 import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
 import { syncLinked } from "./links";
+import { ensureUser } from "./people";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
 
@@ -35,21 +35,6 @@ async function allComments(jira: JiraClient, issue: any): Promise<any[]> {
     out.push(...(page.comments ?? []));
     if (out.length >= (page.total ?? 0) || !page.comments?.length) return out;
   }
-}
-
-const slugName = (s: string) => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30) || "user";
-
-/** A user for this Jira account, made on first sight with password `<handle>-test`. */
-async function ensureUser(db: Db, p: Person): Promise<boolean> {
-  if (!p?.accountId || !p.displayName) return false;
-  const [known] = await db.query("select 1 from users where jira_account_id = $1", [p.accountId]);
-  if (known) return false;
-  const base = slugName(p.displayName);
-  let handle = base;
-  for (let i = 2; (await db.query("select 1 from users where handle = $1", [handle])).length; i++) handle = `${base}-${i}`;
-  await addUser(db, handle, p.displayName, `${handle}-test`);
-  await db.query("update users set jira_account_id = $2 where handle = $1", [handle, p.accountId]);
-  return true;
 }
 
 export async function syncJira(db: Db, projectKey: string, opts: { createUsers?: boolean; fetchImpl?: Fetch } = {}):

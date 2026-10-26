@@ -20,6 +20,7 @@ See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §4.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import hashlib
@@ -41,6 +42,7 @@ from .util import now, to_str
 
 HOST_ENV = "TODO_PLUGIN_HOST"       # a command that stands in for `node plugin_host.mjs`
 OFF_ENV = "TODO_PLUGINS"            # "0" or "off" turns plugins off on this host
+JIRA_READ_ONLY_ENV = "JIRA_READ_ONLY"  # "1": the host jira connection is never written through
 BUNDLE = Path(__file__).with_name("plugin_host.mjs")
 HOST_TIMEOUT = 360
 PLUGINS_DIR = ".todo-plugins"
@@ -63,7 +65,7 @@ SEEN = "~seen"                      # in the tips file: each repo's ls-remote an
 REMOVED = "~removed"                # in the runs file: item → plugin uids a person removed
 RUNNER = "~runner"                  # in the runs file: uids the runner removed, until the server has the remove
 REMOVED_KEPT = 500
-REPLACED = ("link", "dependency")   # note kinds a run replaces; logs and requests only add
+REPLACED = ("link", "dependency", "comment")   # note kinds a run replaces; logs and requests only add
 GIT_TRIGGERS = ("push", "pr", "deployment")
 HOST_FAILED = "the plugin host failed"
 NO_NODE = "plugins skipped: node isn't installed"
@@ -543,7 +545,7 @@ def plugin_view(ctx: Context, key: str) -> list:
 
 
 # ── the item a plugin sees ────────────────────────────────────────────────────
-def item_json(it: dict, key: str, d: Path | None) -> dict:
+def item_json(it: dict, key: str, d: Path | None, item_dir: Path | None = None) -> dict:
     owner, _, name = key.partition("/")
     links = [{"type": to_str((n.get("meta") or {}).get("type")) or "link", "url": to_str((n.get("meta") or {}).get("url"))}
              for n in it.get("notes") or [] if n.get("kind") == "link" and (n.get("meta") or {}).get("url")]
@@ -552,7 +554,23 @@ def item_json(it: dict, key: str, d: Path | None) -> dict:
             "repo_owner": owner or None, "repo_name": name or None, "branches": list(it.get("branches") or []),
             "jira": list(it.get("jira") or []), "app": it.get("app"), "section": it.get("section"),
             "developer": it.get("developer"), "qa_assignee": it.get("qa_assignee"),
-            "dir": str(d) if d else None, "links": links}
+            "dir": str(d) if d else None, "links": links, "requests": _requests(it),
+            "docs": _plugin_docs(item_dir) if item_dir else []}
+
+
+def _plugin_docs(item_dir: Path) -> list:
+    """Docs a plugin instance wrote that no one has edited since, with the version it gave each."""
+    present = docs.files(item_dir)
+    return [{"name": name, "plugin": e["plugin"], "version": e.get("plugin_version")}
+            for name, e in sorted(docs.read_meta(item_dir).items())
+            if e.get("plugin") and name in present and docs.sha256_file(present[name]) == e.get("sha256")]
+
+
+def _requests(it: dict) -> list:
+    """Every request version's text, newest first, as render.current_request orders them."""
+    notes = [n for n in it.get("notes") or [] if n.get("kind") == "ticket-request"]
+    notes.sort(key=lambda n: (render._version(n), n["id"]), reverse=True)
+    return [to_str(n.get("text")) for n in notes]
 
 
 # ── running ───────────────────────────────────────────────────────────────────
@@ -599,8 +617,10 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
                 rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
     payload = {"hostConnections": connections.host_connections(), "secrets": connections.secrets_for(key),
                "storedInstances": stored, "grants": ctx.stored(key)["grants"],
-               "item": item_json(it, key, repo["dir"]), "event": job.event, "repoKey": key,
+               "item": item_json(it, key, repo["dir"], root / it["folder"] / it["id"]), "event": job.event, "repoKey": key,
                "dryRun": dry_run, "allowRepoCommands": True}
+    if os.environ.get(JIRA_READ_ONLY_ENV) == "1":
+        payload["dryRunConnections"] = ["jira"]
     if repo["payload"]:
         payload["repo"] = repo["payload"]
     plan["payload"] = payload
@@ -732,7 +752,9 @@ def event_label(event: dict) -> str:
 
 # ── applying a result ─────────────────────────────────────────────────────────
 def _note_fields(a: dict) -> tuple:
-    """(note kind, text, meta fields) for a link or edge attachment."""
+    """(note kind, text, meta fields) for a link, edge or comment attachment."""
+    if a["kind"] == "comment":
+        return "comment", to_str(a.get("text")), {"jira_account": a.get("author"), "jira_name": a.get("author_name")}
     if a["kind"] == "link":
         meta = {"url": a["url"], "type": a.get("type") or "link"}
         if a.get("label"):
@@ -798,7 +820,7 @@ def _attach(root: Path, it: dict, iid: str, result: dict, gone: set, log: list, 
     wrote_docs: set = set()
     attached = []
     for a in result.get("attached") or []:
-        if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc") or not a.get("key"):
+        if not isinstance(a, dict) or a.get("kind") not in ("link", "edge", "log", "request", "doc", "comment") or not a.get("key"):
             continue
         kind = a["kind"]
         key = a["key"]
@@ -821,7 +843,7 @@ def _attach(root: Path, it: dict, iid: str, result: dict, gone: set, log: list, 
                 log.append(f"skipped link {url}: already linked on the item")
                 continue
             linked.add(url)
-        if kind in ("link", "edge"):
+        if kind in ("link", "edge", "comment"):
             _put_note(root, it, uid, a, tag, by_uid.get(uid), changes)
         elif kind == "log":
             if uid not in present:
@@ -857,7 +879,12 @@ def _put_note(root: Path, it: dict, uid: str, a: dict, tag: dict, e: dict | None
     note_kind, text, fields = _note_fields(a)
     fields = {**fields, **tag}
     if e is None:
-        store.add_note(root, it["id"], text, now(), kind=note_kind, extra=fields, uid=uid)
+        if note_kind == "comment":
+            # The server maps a known Jira account to its user when the note syncs.
+            who = f'jira:{a["author_name"]}' if a.get("author_name") else None
+            store.add_note(root, it["id"], text, to_str(a.get("at")) or now(), kind=note_kind, extra=fields, uid=uid, author=who)
+        else:
+            store.add_note(root, it["id"], text, now(), kind=note_kind, extra=fields, uid=uid)
         changes["added"] += 1
     elif e["text"] != text or e["meta"].get("kind") != note_kind or \
             any(e["meta"].get(k) != v for k, v in fields.items()) or \
@@ -900,13 +927,32 @@ def _doc_state(item_dir: Path, iid: str, name: str) -> tuple:
     return found, ours, ours and docs.sha256_file(present[found]) == e.get("sha256")
 
 
+def _doc_bytes(a: dict) -> bytes | None:
+    """A doc's content as bytes: base64 when the host fetched bytes that aren't text."""
+    if a.get("encoding") != "base64":
+        return to_str(a["content"]).encode()
+    try:
+        return base64.b64decode(to_str(a["content"]), validate=True)
+    except ValueError:
+        return None
+
+
 def _put_doc(it: dict, iid: str, item_dir: Path, a: dict, log: list, changes: dict) -> str | None:
     name = to_str(a.get("name"))
     why = docs.name_error(name)
+    if not why and a.get("unchanged"):
+        found, ours, unchanged = _doc_state(item_dir, iid, name)
+        if found is not None and ours and unchanged:
+            return found
+        log.append(f"skipped doc {name}: " + ("edited since the plugin wrote it" if ours else "a doc by that name isn't this plugin's"))
+        return found if ours else None
     if why or a.get("content") is None:
         log.append(f"skipped doc {name}: " + (why or "the host returned no content for it"))
         return None
-    data = to_str(a["content"]).encode()
+    data = _doc_bytes(a)
+    if data is None:
+        log.append(f"skipped doc {name}: its content isn't valid base64")
+        return None
     found, ours, unchanged = _doc_state(item_dir, iid, name)
     if found is not None and not ours:
         log.append(f"skipped doc {name}: a doc by that name isn't this plugin's")
@@ -914,9 +960,11 @@ def _put_doc(it: dict, iid: str, item_dir: Path, a: dict, log: list, changes: di
     if found is not None and not unchanged:
         log.append(f"skipped doc {name}: edited since the plugin wrote it")
         return found
+    version = to_str(a.get("version")) or None
     if found is not None and docs.sha256_file(item_dir / docs.DOCS_DIR / found) == docs.sha256_bytes(data):
+        docs.set_plugin_version(item_dir, found, version)
         return found
-    written = docs.add(item_dir, it["uid"], name, data, now(), plugin=iid)
+    written = docs.add(item_dir, it["uid"], name, data, now(), plugin=iid, plugin_version=version)
     changes["updated" if found else "added"] += 1
     return written
 

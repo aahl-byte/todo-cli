@@ -1,0 +1,24 @@
+about: with a resume prompt, the newest stopped session is resumed, waited on and sent it
+plugin: watchtower-session
+instance: {id: send, name: Send, settings: {resumePrompt: "/todo {{item.id}}", prompt: "/long {{item.id}}"}}
+event: {type: manual, instance: send}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - method: GET
+      path: /api/roster
+      body: {sessions: [{id: s0, name: "todo: fix-login", state: stopped, lastActivity: 1}, {id: s2, name: "todo: fix-login", state: stopped, lastActivity: 5}]}
+    - {method: POST, path: /api/sessions/s2/resume, body: {}}
+    - {method: GET, path: /api/sessions/s2, body: {state: active, status: idle}}
+    - {method: POST, path: /api/sessions/s2/message, body: {}}
+expect:
+  attached:
+    - {kind: log, key: "watchtower:<now>", text: "action Send (manual): resumed Watchtower session todo: fix-login (sent): s2"}
+  wouldSend: []
+received:
+  watchtower:
+    - {method: GET, path: /api/roster}
+    - {method: POST, path: /api/sessions/s2/resume}
+    - {method: GET, path: /api/sessions/s2}
+    - {method: POST, path: /api/sessions/s2/message, body: {text: /todo fix-login, from: todo}}

@@ -21,6 +21,7 @@ const PRELUDE = String.raw`
   const UNITS = { ms: 1, s: 1000, m: 60000, h: 3600000, d: 86400000 };
   const DURATION = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)\s*$/;
   const exec = RegExp.prototype.exec;
+  const isArray = Array.isArray;
   const ms = (d) => {
     if (typeof d === "number" && d >= 0) return d;
     const m = typeof d === "string" ? exec.call(DURATION, d) : null;
@@ -44,6 +45,7 @@ const PRELUDE = String.raw`
     return freeze({
       call: async (tool, input) => send({ tool, input: input === undefined ? {} : input }),
       get: async (path, query) => send({ method: "GET", path, query }),
+      locate: async (path) => send({ method: "GET", path, locate: true }),
       post: http("POST"), put: http("PUT"), patch: http("PATCH"), delete: http("DELETE"),
     });
   };
@@ -64,13 +66,16 @@ const PRELUDE = String.raw`
     },
     async retry(fn, opts = {}) {
       const attempts = opts.attempts === undefined ? 3 : opts.attempts;
-      const every = ms(opts.every === undefined ? "1s" : opts.every);
+      const given = opts.every === undefined ? "1s" : opts.every;
+      // A list waits each duration in turn, then its last one again.
+      const waits = isArray(given) ? given.map(ms) : [ms(given)];
+      if (!waits.length) throw new Err("wait.retry needs at least one duration in every");
       for (let i = 1; ; i++) {
         try {
           return await fn();
         } catch (e) {
           if (i >= attempts || (opts.when && !(await opts.when(e)))) throw e;
-          sleep(every);
+          sleep(waits[min(i, waits.length) - 1]);
         }
       }
     },
@@ -79,7 +84,8 @@ const PRELUDE = String.raw`
   for (const name of host.connections) ctx[name] = client(name);
   assign(ctx, {
     item: deepFreeze(parse(host.item)), event: deepFreeze(parse(host.event)), settings: deepFreeze(parse(host.settings)),
-    attach: freeze(attach), wait,
+    attach: freeze(attach), wait, dryRun: host.dryRun === true,
+    instance: deepFreeze(parse(host.instance)), trigger: parse(host.trigger),
   });
   freeze(ctx);
   /** What the plugin threw, as text, read here so no plugin code runs while the host reads it. */
@@ -192,6 +198,9 @@ export async function runSandbox(job, host) {
     ctx.setProp(hostObj, "settings", str(job.settings));
     ctx.setProp(hostObj, "connections", keep(ctx.unwrapResult(ctx.evalCode(JSON.stringify(job.connections)))));
     ctx.setProp(hostObj, "kinds", keep(ctx.unwrapResult(ctx.evalCode(JSON.stringify(job.kinds)))));
+    ctx.setProp(hostObj, "dryRun", job.dryRun ? ctx.true : ctx.false);
+    ctx.setProp(hostObj, "instance", str(job.instance ?? null));
+    ctx.setProp(hostObj, "trigger", str(job.trigger ?? ""));
     ctx.setProp(hostObj, "call", hostFn("call", ["string", "string"], (name, call) => host.call(name, call)));
     ctx.setProp(hostObj, "attach", hostFn("attach", ["string", "string"], (kind, fields) => host.attach(kind, fields)));
     ctx.setProp(hostObj, "sleep", hostFn("sleep", ["number"], (ms) => host.sleep(ms)));

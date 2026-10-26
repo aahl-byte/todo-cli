@@ -119,8 +119,10 @@ plugins:
     on: [push]
     steps: [{http: {method: GET, path: /}}]
     attach: []
+  rest: {use: shipped}
 instances:
   notes-link: [{id: go, name: Go, button: Link notes}]
+  rest: [{id: hook, name: Hook, settings: {connection: hooks, path: "/notify/{{item.id}}"}}]
 `;
 await d.query("insert into project_plugin_repos (project, repo, added_by) values ('web', 'acme/web', 'pat')");
 await d.query(`insert into plugin_defs (repo, sha, default_branch, files, stale, fetched_at) values ('acme/web', 'demo', 'main', $1::jsonb, false, now())`,

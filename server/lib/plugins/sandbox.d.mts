@@ -8,6 +8,11 @@ export interface SandboxJob {
   /** Epoch ms the run must finish by. */
   deadline: number;
   memoryBytes: number;
+  /** Writes are held back and answer null. */
+  dryRun?: boolean;
+  /** The instance being run, and what set it off in words. */
+  instance?: { id: string; name: string };
+  trigger?: string;
 }
 
 /** Each answers with a JSON envelope: {value} or {error, status?}. */

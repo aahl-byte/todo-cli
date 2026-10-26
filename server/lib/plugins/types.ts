@@ -4,12 +4,18 @@
 export type Attachment =
   | { kind: "link"; key: string; type: string; url: string; label?: string }
   | { kind: "edge"; key: string; needs: string; in?: string; because: string }
-  | { kind: "doc"; key: string; name: string; content?: string; url?: string }
+  | { kind: "doc"; key: string; name: string; content?: string; url?: string; connection?: string; version?: string; encoding?: "base64";
+      /** The item holds this doc from the instance already, at this version or because a fetch failed: keep it as it is. */
+      unchanged?: boolean }
   | { kind: "log"; key: string; text: string }
+  /** A comment from elsewhere, replaced by key so edits follow; author is its Jira account id, author_name its display name. */
+  | { kind: "comment"; key: string; text: string; at?: string; author?: string; author_name?: string }
   | { kind: "request"; key: string; text: string };
 
 export type AttachmentKind = Attachment["kind"];
-export const ATTACHMENT_KINDS: AttachmentKind[] = ["link", "edge", "doc", "log", "request"];
+export const ATTACHMENT_KINDS: AttachmentKind[] = ["link", "edge", "doc", "log", "request", "comment"];
+/** Kinds only a plugin shipped with todo may attach: a comment speaks as its author. */
+export const SHIPPED_KINDS: AttachmentKind[] = ["comment"];
 
 /** One call a plugin made, or in dry-run would have made. */
 export interface Call {
@@ -18,6 +24,14 @@ export interface Call {
   tool?: string;
   path?: string;
   input?: unknown;
+  /** Headers an http call adds to the connection's own. */
+  headers?: Record<string, string>;
+  /** A body sent as text rather than as JSON. */
+  text?: string;
+  /** Answer {status, body, method, url} rather than the body alone. */
+  full?: boolean;
+  /** A GET answered with where it redirects, or null, never following it. */
+  locate?: boolean;
 }
 
 export interface RunResult {
@@ -26,6 +40,10 @@ export interface RunResult {
   log: string[];
   skipped?: string;
   error?: string;
+  /** The host held back every write, though the run wasn't asked to be a dry run. */
+  dryRun?: boolean;
+  /** For a run that failed in one of its passes: the error without the pass's label, and the pass ({issue} or {branch}). */
+  failure?: { message: string; pass: Record<string, string> };
   /** The error was a network failure, a 5xx or a 429, and every call the run made only read, so running it again is safe. */
   transient?: boolean;
 }
@@ -56,9 +74,22 @@ export interface SettingDef {
   options?: string[];
   options_from?: { tool: string; input?: unknown };
   scope?: "plugin" | "instance";
+  /** The value is a template itself: left unfilled until a step field that is exactly {{settings.<key>}} takes it as its own. */
+  template?: boolean;
 }
 
-export interface HttpStep { method: string; path: string; query?: Record<string, unknown>; body?: unknown }
+export interface HttpStep {
+  method: string;
+  path: string;
+  query?: Record<string, unknown>;
+  body?: unknown;
+  /** Header name → template, or `Name: value` lines. */
+  headers?: Record<string, string> | string;
+  /** A body sent as text, in place of a JSON body. */
+  text?: string;
+  /** The step's result is {status, body, method, url}, not the body alone. */
+  full?: boolean;
+}
 
 export interface StepDef {
   name?: string;
@@ -68,6 +99,8 @@ export interface StepDef {
   input?: unknown;
   http?: HttpStep;
   value?: string;
+  /** Stop the run with this message, which a host may retry like a failed send. */
+  fail?: string;
 }
 
 export type AttachDef = {
@@ -90,6 +123,8 @@ export interface PluginDef {
   code?: string;
   /** Where to get the plugin instead of a body here, e.g. shipped; resolved before a run. */
   use?: string;
+  /** The dev-log line a host writes when it stops retrying a run: a template over instance, trigger, attempts, error and the pass. */
+  gave_up?: string;
 }
 
 export interface InstanceDef {
@@ -127,6 +162,10 @@ export interface PluginItem {
   qa_assignee?: string | null;
   dir?: string | null;
   links: { type: string; url: string }[];
+  /** The item's request, every version's text, newest first. */
+  requests?: string[];
+  /** Docs plugin instances wrote and no one has edited since: name, <plugin>/<instance>, and the version it gave. */
+  docs?: { name: string; plugin: string; version?: string | null }[];
 }
 
 export type PluginEvent =
@@ -163,6 +202,12 @@ export interface RunInput {
   shipped?: boolean;
   /** The repo the plugin came from, e.g. owner/name, for its share of code-run slots. */
   repoKey?: string;
+  /** The branches the repo's plugins file tracks, as {{track}}. */
+  track?: string[];
+  /** The repo's plugins file declares this instance, alone or under a stored override, so it gets none of the host's connections. */
+  repoInstance?: boolean;
+  /** Host connections this host never writes through: a run that uses one is held back as in dry-run. */
+  dryRunConnections?: string[];
 }
 
 export const POST_REQUEST = "post-request";

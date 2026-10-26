@@ -1,0 +1,19 @@
+# Links each db-request submission for the item's branches to its migrations PR,
+# and makes the item wait on that PR. db-request has no HTTP endpoint yet: this
+# plugin expects GET /submissions?repo=&branch= answering `db-request status
+# --json`'s list, and is tested against a fake of it.
+connections: [db-request]
+on: [push, pr]
+every: 15m
+per: branch
+steps:
+  - name: submissions
+    http:
+      method: GET
+      path: /submissions
+      query: {repo: "{{item.repo}}", branch: "{{branch}}"}
+attach:
+  - each: "submissions[?pr_url]"
+    link: {type: db-request, url: "{{each.pr_url}}", label: "db-request #{{each.submission_id}} · {{each.name}} ({{each.status}})"}
+  - each: "submissions[?pr_url]"
+    edge: {needs: "{{each.pr_url}}", in: "{{track.0}}", because: "db-request #{{each.submission_id}} {{each.name}}"}

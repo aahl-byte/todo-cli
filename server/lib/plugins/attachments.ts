@@ -6,9 +6,10 @@ import { MAX_DOC_CONTENT, MAX_FIELD, type Attachment, type AttachmentKind } from
 export const ATTACH_FIELDS: Record<AttachmentKind, { required: string[]; optional: string[]; keyFrom: string[] }> = {
   link: { required: ["type", "url"], optional: ["label"], keyFrom: ["url"] },
   edge: { required: ["needs", "because"], optional: ["in"], keyFrom: ["needs", "in"] },
-  doc: { required: ["name"], optional: ["content", "url"], keyFrom: ["name"] },
+  doc: { required: ["name"], optional: ["content", "url", "connection", "version"], keyFrom: ["name"] },
   log: { required: ["text"], optional: [], keyFrom: ["text"] },
   request: { required: ["text"], optional: [], keyFrom: ["text"] },
+  comment: { required: ["text"], optional: ["at", "author", "author_name"], keyFrom: ["text"] },
 };
 
 const NEEDS = /^(item:|branch:)\S|^https?:\/\//;

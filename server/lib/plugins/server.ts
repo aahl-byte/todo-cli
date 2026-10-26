@@ -11,9 +11,11 @@ import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs"
 import { docType, putObject } from "../files";
 import { PLUGINS_DIR, scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
-import { itemBranches } from "../model";
+import { itemBranches, nowIso } from "../model";
+import { jiraReadOnly } from "../jira/config";
 import { hashUid, ulid } from "../ulid";
-import { runEvent, type EventRun, type HostDeps } from "./host";
+import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } from "./host";
+import { fillString } from "./template";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import {
@@ -25,7 +27,8 @@ import { DEFAULT_DEADLINE_MS, POST_REQUEST, type Attachment, type InstanceDef, t
 
 export { PLUGIN_HANDLE } from "./queue";
 const ACTOR = { handle: PLUGIN_HANDLE, bridge: true, unconditional: true };
-export const MAX_ATTEMPTS = 4;
+/** As the Jira bridge's outbox: a run that may run again gets this many tries. */
+export const MAX_ATTEMPTS = 5;
 /** Renewed before each instance runs, so it must outlast one instance's deadline, with room to apply what it attached. */
 export const LEASE_MS = Math.max(DEFAULT_DEADLINE_MS, REPO_CODE_DEADLINE_MS) + 2 * 60_000;
 /** Events delivered by one flush after a request; the tick takes more. */
@@ -59,11 +62,17 @@ function narrowed(stored: Record<string, InstanceDef[]>, plugins: PluginInfo[], 
 }
 
 // ── the item a plugin sees ────────────────────────────────────────────────────
-async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: string): Promise<PluginItem> {
+export async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: string): Promise<PluginItem> {
   const x = it.extra ?? {};
   const repo = repoKey(x.repo);
   const [owner, name] = repo ? repo.split("/") : [null, null];
   const notes = await d.query("select text, meta from notes where project = $1 and item_uid = $2 and kind = 'link' order by n",
+    [project, it.uid]);
+  const requests = await d.query(
+    `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
+      order by coalesce((meta->>'version')::int, 1) desc, n desc`, [project, it.uid]);
+  const docs = await d.query(
+    "select name, plugin, plugin_version from docs where project = $1 and item_uid = $2 and plugin is not null and sha256 = plugin_sha256",
     [project, it.uid]);
   const dir = repo ? (await checkoutDir(d as Db, project, repo, by)).dir : "";
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
@@ -72,20 +81,24 @@ async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: st
     repo: repo || null, repo_owner: owner, repo_name: name, branches: itemBranches(x), jira: x.jira ?? null,
     app: str(x.app), section: str(x.section), developer: it.developer ?? null, qa_assignee: it.qa_assignee ?? null, dir: dir || null,
     links: notes.map((n) => ({ type: String(n.meta?.type ?? "link"), url: String(n.meta?.url ?? n.text) })),
+    requests: requests.map((r) => String(r.text ?? "")),
+    docs: docs.map((r) => ({ name: r.name, plugin: r.plugin, version: r.plugin_version ?? null })),
   };
 }
 
 // ── applying a run ────────────────────────────────────────────────────────────
 /** Note kinds a run replaces by key; logs and requests are only ever added. */
-const REPLACED = ["link", "dependency"];
+const REPLACED = ["link", "dependency", "comment"];
 
 export const pluginUid = (instance: string, itemUid: string, key: string) => hashUid("plugin", instance, itemUid, key);
 /** A request's uid key names the version it creates, so text that returns to an earlier version is a new one. */
 export const requestKey = (key: string, version: number) => `${key}#v${version}`;
 const sameUrl = (a: unknown, b: unknown) => String(a ?? "").replace(/\/+$/, "") === String(b ?? "").replace(/\/+$/, "");
 
-function noteOf(a: Extract<Attachment, { kind: "link" | "edge" }>, instance: string): { kind: string; text: string; meta: Record<string, unknown> } {
+function noteOf(a: Extract<Attachment, { kind: "link" | "edge" | "comment" }>, instance: string): { kind: string; text: string; meta: Record<string, unknown> } {
   const own = { plugin: instance, plugin_key: a.key };
+  // apply.ts writes a comment as its Jira author, from jira_account and jira_name.
+  if (a.kind === "comment") return { kind: "comment", text: a.text, meta: { jira_account: a.author ?? null, jira_name: a.author_name ?? null, ...own } };
   if (a.kind === "link") return { kind: "link", text: a.label || a.url, meta: { url: a.url, type: a.type, label: a.label ?? null, ...own } };
   return { kind: "dependency", text: a.because, meta: { needs: a.needs, in: a.in ?? null, because: a.because, ...own } };
 }
@@ -106,7 +119,7 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
   const urls = new Set<string>();
   for (const a of run.result.attached) {
     const uid = pluginUid(instance, it.uid, a.key);
-    if (a.kind === "link" || a.kind === "edge") {
+    if (a.kind === "link" || a.kind === "edge" || a.kind === "comment") {
       if (a.kind === "link") {
         const other = notes.find((n) => n.uid !== uid && n.kind === "link" && sameUrl(n.meta?.url ?? n.text, a.url));
         if (other || urls.has(a.url)) {
@@ -120,9 +133,10 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
       const want = noteOf(a, instance);
       const have = notes.find((n) => n.uid === uid);
       if (!have) {
-        op({ op: "create", entity: "note", uid, data: want });
+        op({ op: "create", entity: "note", uid, data: a.kind === "comment" && a.at ? { ...want, ts: a.at } : want });
         continue;
       }
+      if (a.kind === "comment" && have.text !== want.text) want.meta.edited_at = nowIso();
       const data: Record<string, unknown> = {};
       if (have.text !== want.text) data.text = want.text;
       if (have.kind !== want.kind) data.kind = want.kind;
@@ -182,11 +196,17 @@ async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun,
   const before = ((prev?.applied ?? []) as string[]).filter((a) => a.startsWith("doc:")).map((a) => a.slice(4));
   try {
     for (const a of docs) {
-      if (a.content === undefined) {
-        log.push(`doc ${a.name}: the server doesn't fetch a doc by url yet`);
+      if (a.unchanged) {
+        const held = await docByName(t, project, itemUid, a.name);
+        if (ownDoc(held, instance)) applied.push(`doc:${a.name}`);
+        else log.push(`doc ${a.name} was written or edited by someone else, so the plugin leaves it alone`);
         continue;
       }
-      const bytes = Buffer.from(a.content, "utf8");
+      if (a.content === undefined) {
+        log.push(`doc ${a.name}: the host returned no content for it`);
+        continue;
+      }
+      const bytes = Buffer.from(a.content, a.encoding === "base64" ? "base64" : "utf8");
       const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
       const existing = await docByName(t, project, itemUid, a.name);
       if (existing && !ownDoc(existing, instance)) {
@@ -194,11 +214,16 @@ async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun,
         continue;
       }
       applied.push(`doc:${a.name}`);
-      if (existing?.sha256 === sha256) continue;
+      if (existing?.sha256 === sha256) {
+        if ((existing.plugin_version ?? null) !== (a.version ?? null)) {
+          await t.query("update docs set plugin_version = $3 where project = $1 and uid = $2", [project, existing.uid, a.version ?? null]);
+        }
+        continue;
+      }
       const key = await issueUpload(t, project, itemUid, a.name, bytes.length);
       await putObject(key, bytes, docType(a.name));
       const r = await recordDoc(t, project, PLUGIN_HANDLE, { item_uid: itemUid, name: a.name, file_key: key, base: existing?.sha256 ?? null,
-                                                           sha256, plugin: instance });
+                                                           sha256, plugin: instance, plugin_version: a.version ?? null });
       if (r.status === "conflict") log.push(`doc ${a.name} changed while it was written; kept the newer one`);
     }
     const now = new Set(applied.map((a) => a.slice(4)));
@@ -259,8 +284,30 @@ class LeaseLost extends Error {}
 const STILL_OPEN = `i.uid is not null and i.status not in ('done', 'deployed', 'cancelled')
   and coalesce(i.extra->'archived', 'null'::jsonb) in ('null'::jsonb, 'false'::jsonb)`;
 
+/** A doc's content as its size and hash, for the run log. */
+function withoutContent(a: Attachment): Record<string, unknown> {
+  if (a.kind !== "doc" || a.content === undefined) return a;
+  const { content, ...rest } = a;
+  const bytes = Buffer.from(content, a.encoding === "base64" ? "base64" : "utf8");
+  return { ...rest, size: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+}
+
+/** The dev-log line for a run given up on, in the plugin's own words (gave_up) when it has them. */
+async function gaveUp(d: Db, row: Row, run: EventRun, resolved: Resolved[]): Promise<string[]> {
+  const def = resolved.find((r) => r.name === run.plugin)?.def;
+  const trigger = triggerLabel(row.event as PluginEvent);
+  const error = run.result.failure?.message ?? run.result.error ?? "";
+  const scope = { instance: { id: run.instance.id, name: run.instance.name }, trigger, attempts: MAX_ATTEMPTS, error, ...run.result.failure?.pass };
+  const text = def?.gave_up ? fillString(def.gave_up, scope)
+    : `${run.plugin} ${run.instance.name} (${trigger}) gave up after ${MAX_ATTEMPTS} attempts: ${error}`;
+  const [r] = await applyOps(d, row.project, [{ op_id: ulid(), op: "create", entity: "log", uid: ulid(), item_uid: row.item_uid,
+                                                 data: { text } } as Op], ACTOR);
+  return r?.status === "applied" ? [`gave up: ${text}`] : [`gave up, but the dev log refused the line: ${r?.reason ?? "unknown"}`];
+}
+
 async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome: Applied | null): Promise<void> {
-  const result = outcome?.log.length ? { ...run.result, log: [...run.result.log, ...outcome.log] } : run.result;
+  const logged = { ...run.result, attached: run.result.attached.map(withoutContent) };
+  const result = outcome?.log.length ? { ...logged, log: [...run.result.log, ...outcome.log] } : logged;
   await t.query(
     `insert into plugin_runs (event_id, project, item_uid, repo, plugin, instance, event, result, applied, dry_run)
      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10)`,
@@ -311,7 +358,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     secrets: { repo: await repoSecrets(d, row.project, row.repo), host: hostSecrets(connections) },
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
-    allowRepoCommands: false,
+    allowRepoCommands: false, dryRunConnections: jiraReadOnly() ? ["jira"] : undefined,
   }, hostDeps(deps, row.repo), {
     before: async (plugin, instance) => {
       if (done.has(instanceKey(plugin, instance))) return false;
@@ -329,15 +376,18 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
           const [fresh] = await d.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
           if (fresh) applied = await applyRun(d, row.project, fresh, run, grants[run.plugin] ?? []);
         }
+        const givingUp = !!run.result.transient && row.attempts >= MAX_ATTEMPTS;
+        if (givingUp) applied = { applied: applied?.applied ?? [], edges: applied?.edges ?? false,
+                                  log: [...(applied?.log ?? []), ...(await gaveUp(d, row, run, merged.resolved))] };
         await recordRun(d, row, run, applied);
-        if (!run.result.transient) {
+        if (!run.result.transient || givingUp) {
           await holds("update plugin_events set finished = array_append(finished, $3) where id = $1 and lease = $2 returning id",
             [row.id, row.lease, key]);
         }
         return applied;
       });
       edges ||= !!outcome?.edges;
-      retry ||= !!run.result.transient;
+      retry ||= !!run.result.transient && row.attempts < MAX_ATTEMPTS;
     },
   });
   if (edges) void scheduleRecompute(d, row.project, f, row.repo);

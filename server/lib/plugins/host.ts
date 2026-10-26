@@ -3,14 +3,15 @@
 import { Calls, type ConnectionOptions } from "./connections";
 import { hostCodeSlots, REPO_CODE_DEADLINE_MS, runCode, type CodeSlots, type Isolation } from "./code-runner";
 import { test } from "./expr";
-import { Attached, finish } from "./limits";
-import { parsePlugins, pluginErrors } from "./load";
+import { addLog, Attached, finish } from "./limits";
+import { parsePlugins, pluginErrors, settingRef } from "./load";
+import { fetchDocs } from "./docs";
 import { ALWAYS_ON, SHIPPED } from "./shipped";
 import { pickInstances } from "./triggers";
 import { fillJson } from "./template";
 import { runYaml } from "./yaml-runner";
 import {
-  DEFAULT_DEADLINE_MS, POST_REQUEST, type ConnectionDef, type ConnectionOrigin, type InstanceDef, type Limits, type PluginDef, type PluginEvent,
+  DEFAULT_DEADLINE_MS, POST_REQUEST, SHIPPED_KINDS, type ConnectionDef, type ConnectionOrigin, type InstanceDef, type Limits, type PluginDef, type PluginEvent,
   type PluginItem, type PluginsFile, type ResolvedConnection, type RunInput, type RunResult,
 } from "./types";
 
@@ -41,33 +42,50 @@ export function resolveSettings(plugin: PluginDef, instance: InstanceDef, scope:
     settings[k] = v;
   }
   for (const [k, v] of Object.entries(given)) if (!(k in settings)) settings[k] = v;
-  return { settings: fillJson(settings, scope) as Record<string, unknown>, missing };
+  const templates = Object.entries(plugin.settings ?? {}).filter(([, d]) => d.template).map(([k]) => k);
+  const filled = fillJson(Object.fromEntries(Object.entries(settings).filter(([k]) => !templates.includes(k))), scope) as Record<string, unknown>;
+  for (const k of templates) filled[k] = settings[k];
+  return { settings: filled, missing };
+}
+
+/** The plugin with each {{settings.<key>}} in its connections replaced by the instance's value, which must be a plain name. */
+export function bindConnections(plugin: PluginDef, instance: InstanceDef): { plugin: PluginDef; problem?: string } {
+  if (!plugin.connections?.some((c) => settingRef(c))) return { plugin };
+  const names: string[] = [];
+  for (const c of plugin.connections) {
+    const key = settingRef(c);
+    if (!key) {
+      names.push(c);
+      continue;
+    }
+    const v = instance.settings?.[key] ?? plugin.settings?.[key]?.default;
+    if (v === undefined || v === null || v === "") return { plugin, problem: `setting ${key} is not set` };
+    if (typeof v !== "string" || v.includes("{{")) return { plugin, problem: `setting ${key} must name a connection, not a template` };
+    names.push(v);
+  }
+  return { plugin: { ...plugin, connections: names } };
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The connections a run gets: a host connection's secret goes only to plugins shipped with todo. */
-function connectionsOf(input: RunInput): Record<string, ResolvedConnection> {
-  if (input.shipped) return input.connections ?? {};
-  const out: Record<string, ResolvedConnection> = {};
-  for (const [name, c] of Object.entries(input.connections ?? {})) {
-    if (c.origin !== "host" || c.secret === undefined) out[name] = c;
-    else {
-      const { secret: _withheld, ...rest } = c;
-      out[name] = rest as ResolvedConnection;
-    }
-  }
-  return out;
+/** Whether a run may use the host's own connections: only a shipped plugin's instance that the repo's file doesn't declare. */
+const hostTrusted = (input: Pick<RunInput, "shipped" | "repoInstance">) => !!input.shipped && !input.repoInstance;
+
+/** The connections a run gets: the host's own only when it may use them. */
+function connectionsOf(input: Pick<RunInput, "connections" | "shipped" | "repoInstance">): Record<string, ResolvedConnection> {
+  if (hostTrusted(input)) return input.connections ?? {};
+  return Object.fromEntries(Object.entries(input.connections ?? {}).filter(([, c]) => c.origin !== "host"));
 }
 
-const hostOnly = (name: string) =>
-  `\`${name}\` is this host's connection, whose credentials only plugins shipped with todo get; declare a repo connection named ${name} and store a repo credential for it`;
+const hostOnly = (name: string, shipped: boolean) => shipped
+  ? `\`${name}\` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection`
+  : `\`${name}\` is this host's connection, which only plugins shipped with todo use; declare a repo connection named ${name}`;
 
 /** Why this host won't run the plugin, if it won't: a connection it lacks, can't authorize, or mustn't start. */
-function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
+function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shipped" | "allowRepoCommands" | "repoInstance">): string | undefined {
   for (const name of input.plugin.connections ?? []) {
     const c = input.connections?.[name];
-    if (c?.kind === "http" && c.auth && !input.shipped && c.origin === "host") return hostOnly(name);
+    if (c?.origin === "host" && !hostTrusted(input)) return hostOnly(name, !!input.shipped);
     if (!c || (c.kind === "http" && c.auth && !c.secret)) return `\`${name}\` not authorized here`;
     if (c.kind === "mcp" && c.command && (c.origin ?? "repo") === "repo" && !input.allowRepoCommands) {
       return `\`${name}\` runs a command, which this host doesn't allow for repo connections`;
@@ -77,8 +95,10 @@ function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shi
 }
 
 /** Why this host would skip an instance whatever the item: a connection it can't use, or a required setting with no value. */
-export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
-  const problem = connectionProblem(input);
+export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands" | "repoInstance">): string | undefined {
+  const bound = bindConnections(input.plugin, input.instance);
+  if (bound.problem) return bound.problem;
+  const problem = connectionProblem({ ...input, plugin: bound.plugin });
   if (problem) return problem;
   const { missing } = resolveSettings(input.plugin, input.instance, { item: {}, event: {} });
   return missing ? `setting ${missing} is not set` : undefined;
@@ -94,15 +114,25 @@ function secretsOf(input: RunInput): string[] {
   return out.filter(Boolean);
 }
 
+/** What set a run off, in the words the dev log uses: `review → in-qa`, `manual`, `push feat/x`. */
+export function triggerLabel(event: PluginEvent): string {
+  if (event.type === "status") return `${event.from} → ${event.to}`;
+  if (event.type === "push" || event.type === "pr" || event.type === "deployment") return `${event.type} ${event.branch}`;
+  return event.type;
+}
+
 export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise<RunResult> {
   const result: RunResult = { attached: [], wouldSend: [], log: [] };
-  const { plugin, instance, item, event } = input;
+  const { instance, item, event } = input;
   const name = input.name ?? "(unnamed)";
   const skip = (why: string) => finish({ ...result, skipped: input.name ? `${input.name}: ${why}` : why }, secretsOf(input));
-  if (plugin.use !== undefined) return { ...result, error: `plugin ${name}: use: ${plugin.use} must be resolved before it runs` };
-  const errors = pluginErrors(name, plugin, { shipped: input.shipped === true });
+  if (input.plugin.use !== undefined) return { ...result, error: `plugin ${name}: use: ${input.plugin.use} must be resolved before it runs` };
+  const errors = pluginErrors(name, input.plugin, { shipped: input.shipped === true });
   if (errors.length) return { ...result, error: errors.join("; ") };
-  const problem = connectionProblem(input);
+  const bound = bindConnections(input.plugin, instance);
+  if (bound.problem) return skip(bound.problem);
+  const plugin = bound.plugin;
+  const problem = connectionProblem({ ...input, plugin });
   if (problem) return skip(problem);
   const { settings, missing } = resolveSettings(plugin, instance, { item, event });
   if (missing) return skip(`setting ${missing} is not set`);
@@ -110,21 +140,33 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
 
   const repoCode = !!plugin.code && !input.shipped;
   const deadline = Date.now() + (input.limits?.deadlineMs ?? (repoCode ? REPO_CODE_DEADLINE_MS : DEFAULT_DEADLINE_MS));
-  const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun: input.dryRun || !!instance.dry_run, deadline });
+  const readOnly = (plugin.connections ?? []).find((n) => input.dryRunConnections?.includes(n) && connectionsOf(input)[n]?.origin === "host");
+  const dryRun = input.dryRun || !!instance.dry_run || !!readOnly;
+  if (readOnly && !input.dryRun && !instance.dry_run) {
+    result.dryRun = true;
+    addLog(result, `${readOnly} is read-only on this host, so every write is held back`);
+  }
+  const calls = new Calls(connectionsOf(input), result, { ...deps, dryRun, deadline });
   const attached = new Attached();
   const mayRequest = !!plugin.capabilities?.includes(POST_REQUEST) && !!input.grants?.includes(POST_REQUEST);
   try {
     if (plugin.code) {
       if (plugin.when !== undefined && !test(plugin.when, { item, event, settings })) return skip(`when is false: ${plugin.when}`);
-      await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline,
+      await runCode({ name, plugin, code: input.code!, item, event, settings, calls, result, attached, mayRequest, deadline, dryRun,
+                      instance: { id: instance.id, name: instance.name }, trigger: triggerLabel(event),
                       memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl,
                       slots: deps.codeSlots ?? hostCodeSlots(), repoKey: input.repoKey ?? "" });
-      result.attached = attached.list;
     } else {
-      const { skipped } = await runYaml({ name, plugin, item, event, settings, calls, result, attached, mayRequest });
-      result.attached = attached.list;
+      const self = { instance: { id: instance.id, name: instance.name }, trigger: triggerLabel(event), run: { at: new Date().toISOString() } };
+      const { skipped } = await runYaml({ name, plugin, item, event, settings, track: input.track ?? [], self, calls, result, attached, mayRequest });
       if (skipped) return skip(skipped);
     }
+    if (!input.shipped) {
+      for (const a of attached.list.filter((x) => SHIPPED_KINDS.includes(x.kind))) addLog(result, `dropped a ${a.kind}: only plugins shipped with todo attach one`);
+      attached.list.splice(0, attached.list.length, ...attached.list.filter((x) => !SHIPPED_KINDS.includes(x.kind)));
+    }
+    await fetchDocs(plugin, `${name}/${instance.id}`, item, connectionsOf(input), calls, attached, result);
+    result.attached = attached.list;
   } catch (e) {
     result.attached = [];
     result.error = message(e);
@@ -153,6 +195,8 @@ export interface EventInput {
   dryRun?: boolean;
   allowRepoCommands?: boolean;
   limits?: Limits;
+  /** Host connections this host never writes through, e.g. jira under JIRA_READ_ONLY. */
+  dryRunConnections?: string[];
 }
 
 export interface EventRun { plugin: string; instance: InstanceDef; result: RunResult }
@@ -247,13 +291,14 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: Ev
   const connections = connectionsFor(input, file);
   const results: EventRun[] = [];
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
+    const declared = (file.instances?.[name] ?? []).map((i) => i.id);
     const instances = instancesFor(def, file.instances?.[name] ?? [], input.storedInstances?.[name] ?? [], dropped.includes(name));
     for (const instance of pickInstances(def, instances, input.event)) {
       if (hooks.before && !(await hooks.before(name, instance))) continue;
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
-        repoKey: input.repoKey,
+        repoKey: input.repoKey, track: file.track ?? [], repoInstance: declared.includes(instance.id), dryRunConnections: input.dryRunConnections,
       }, deps);
       results.push({ plugin: name, instance, result });
       await hooks.after?.(results[results.length - 1]);

@@ -1,0 +1,21 @@
+# Links each of the item's branches to its newest ready Vercel preview.
+connections: [vercel]
+on: [push, deployment]
+every: 1h
+per: branch
+settings:
+  project: {label: Vercel project id, type: text}
+  team:    {label: Vercel team id, type: text}
+steps:
+  - name: listed
+    http:
+      method: GET
+      path: /v7/deployments
+      query: {projectId: "{{settings.project}}", teamId: "{{settings.team}}", target: preview, branch: "{{branch}}", state: READY, limit: 20}
+  # The branch filter again, in case the API ignores it; newest first, as the API lists them.
+  - name: ready
+    value: "listed.deployments[?meta.githubCommitRef == {{branch}} && (readyState == 'READY' || state == 'READY')] | [0]"
+attach:
+  - when: ready
+    key: "preview:{{branch}}"
+    link: {type: preview, url: "https://{{ready.url}}", label: "preview · {{branch}}"}

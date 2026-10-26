@@ -1,0 +1,7 @@
+about: vercel-preview needs its project and team
+plugin: vercel-preview
+instance: {id: default, name: (default), settings: {project: prj_1}}
+event: {type: push, branch: feat/login}
+connections:
+  vercel: {kind: http, auth: bearer, secret: vtok}
+expect: {attached: [], wouldSend: [], log: [], skipped: "vercel-preview: setting team is not set"}

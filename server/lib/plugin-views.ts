@@ -7,7 +7,7 @@ import { hostConnections, loadDefs, merge, projectRepos, repoPlugins, type RepoD
 import { finished } from "./plugins/queue";
 import { SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
-import { attachedSummary } from "./plugin-form";
+import { attachedSummary, connectionKeysOf } from "./plugin-form";
 import type { Attachment, Call, ConnectionDef, InstanceDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
 
 /** Runs the log shows per instance. */
@@ -70,6 +70,8 @@ export interface DashRepo {
   refusal: string | null;
   plugins: DashPlugin[];
   connections: DashConnection[];
+  /** Connection names an instance may pick: the repo's own, and this server's, which only instances stored here get. */
+  available: { repo: string[]; host: string[] };
   errors: string[];
 }
 
@@ -119,7 +121,8 @@ function connectionOf(name: string, repoDefs: Record<string, ConnectionDef>, hos
 }
 
 /** One allowed repo as the settings page shows it. */
-export async function dashRepo(d: Pick<Db, "query">, project: string, repo: string): Promise<Pick<DashRepo, "plugins" | "connections" | "errors">> {
+export async function dashRepo(d: Pick<Db, "query">, project: string, repo: string):
+    Promise<Pick<DashRepo, "plugins" | "connections" | "available" | "errors">> {
   const view = await repoPlugins(d, project, repo);
   let defs: RepoDefs = { files: {}, sha: null, defaultBranch: null };
   try {
@@ -141,11 +144,18 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
     };
   });
   const used = new Map<string, string[]>();
-  for (const p of plugins) for (const c of p.connections) used.set(c, [...(used.get(c) ?? []), p.name]);
+  const use = (c: string, plugin: string) => { if (!used.get(c)?.includes(plugin)) used.set(c, [...(used.get(c) ?? []), plugin]); };
+  for (const p of plugins) {
+    const keys = connectionKeysOf(p.connections);
+    for (const c of p.connections) if (!c.includes("{{")) use(c, p.name);
+    // A connection an instance names is used by that plugin.
+    for (const i of p.instances) for (const k of keys) if (typeof i.settings?.[k] === "string" && i.settings[k]) use(i.settings[k] as string, p.name);
+  }
   const repoDefs = bare.file.connections ?? {};
   const hostDefs = hostConnections();
   const names = [...new Set([...used.keys(), ...Object.keys(repoDefs)])].sort();
-  return { plugins, connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])), errors: view.errors };
+  return { plugins, connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
+           available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() }, errors: view.errors };
 }
 
 /** Every repo the project lists or a member has a checkout of, each with its plugins when the project may use it. */
@@ -157,7 +167,7 @@ export async function pluginsPage(d: Pick<Db, "query">, project: string): Promis
     const listed = repos.find((r) => r.repo === repo);
     const refusal = await repoRefusal(d, project, repo);
     const base = { repo, listed: listed ? { by: listed.added_by, at: listed.added_at } : null, checkout: checkouts.includes(repo), refusal };
-    if (refusal) out.push({ ...base, plugins: [], connections: [], errors: [] });
+    if (refusal) out.push({ ...base, plugins: [], connections: [], available: { repo: [], host: [] }, errors: [] });
     else out.push({ ...base, ...(await dashRepo(d, project, repo)) });
   }
   return { ownersSet: pluginOwners().length > 0, repos: out };
