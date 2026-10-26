@@ -281,7 +281,8 @@ function override(full: InstanceDef, base: InstanceDef): InstanceDef | null {
   if (!same(full.button, base.button)) { out.button = full.button ?? ""; differs = true; }
   if (!!full.dry_run !== !!base.dry_run) { out.dry_run = !!full.dry_run; differs = true; }
   const settings: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(full.settings ?? {})) if (!same(v, base.settings?.[k])) settings[k] = v;
+  // null always goes through: it clears a stored secret the repo file knows nothing of.
+  for (const [k, v] of Object.entries(full.settings ?? {})) if (v === null || !same(v, base.settings?.[k])) settings[k] = v;
   for (const k of Object.keys(base.settings ?? {})) if (!(k in (full.settings ?? {}))) settings[k] = null;
   if (Object.keys(settings).length) { out.settings = settings; differs = true; }
   return differs ? out : null;

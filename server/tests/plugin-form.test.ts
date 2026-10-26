@@ -210,6 +210,15 @@ describe("instances the repo file declares", () => {
     expect(savedInstances(shape, d).instances[0]).toEqual({ id: "web", name: "Web", dry_run: true, settings: { team: "t" } });
   });
 
+  it("keep, then clear, a secret stored for one", () => {
+    const secretShape: PluginShape = { settings: { token: { label: "Token", type: "secret", optional: true } } };
+    const repo = { id: "web", name: "Web" };
+    let d = draftPlugin(secretShape, [{ ...repo, settings: { token: { set: true } } }], { web: repo });
+    expect(savedInstances(secretShape, d).instances).toEqual([{ id: "web", name: "Web", settings: { token: { set: true } } }]);
+    d = editInstance(d, d.instances[0].key, { settings: { token: { state: "cleared" } } });
+    expect(savedInstances(secretShape, d).instances).toEqual([{ id: "web", name: "Web", settings: { token: null } }]);
+  });
+
   it("switch one off instead of removing it, and keep the repo file's order", () => {
     let d = draftPlugin(shape, [base, { id: "extra", name: "Extra" }], { web: base });
     d = removeInstance(d, d.instances[0].key);
