@@ -227,6 +227,30 @@ describe("running plugins", () => {
     }
   });
 
+  it("runs the shipped jira-issue through a host Jira connection, adding the issue's block to the current request", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    const issue = { key: "SR-1", self: "https://acme.atlassian.net/rest/api/3/issue/1", fields: { summary: "Export", status: { name: "QA" },
+      description: "Totals as CSV", comment: { total: 1, comments: [{ id: "7", author: { displayName: "Pat" }, body: "Looks good" }] } } };
+    const gh = fakeGitHub({ file: "plugins:\n  jira-issue: {use: shipped}\n",
+      other: (url) => (url.startsWith("https://acme.atlassian.net/rest/api/3/issue/SR-1?") ? Response.json(issue) : undefined) });
+    await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
+    await w.one("alice", child("note", "R1", "I1", { kind: "ticket-request", text: "Build it" }));
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "jira-issue", grants: ["post-request"] }), params("p"));
+    await w.d.query("delete from plugin_events");
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
+    await run(gh.impl);
+    expect((await runs()).find((r) => r.plugin === "jira-issue")!.result.error).toBeUndefined();
+    expect((await linkNotes()).map((n) => [n.text, n.meta.url])).toEqual([["SR-1 · QA", "https://acme.atlassian.net/browse/SR-1"]]);
+    expect((await w.d.query("select text from logs where item_uid = 'I1'")).map((l) => l.text)).toEqual(["Jira comment by Pat on SR-1:\n\nLooks good"]);
+    const requests = await w.d.query("select text from notes where item_uid = 'I1' and kind = 'ticket-request' order by n");
+    expect(requests.map((r) => r.text)).toEqual(["Build it",
+      "Build it\n\n---\n\n## [SR-1](https://acme.atlassian.net/browse/SR-1) · Export\n\nTotals as CSV\n\n---"]);
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
+    await run(gh.impl);
+    expect(await w.d.query("select 1 from notes where item_uid = 'I1' and kind = 'ticket-request'")).toHaveLength(2);
+  });
+
   it("posts a request only once the plugin is granted post-request", async () => {
     SHIPPED["test-request"] = { def: { connections: [], on: ["push"], capabilities: ["post-request"],
       steps: [{ name: "v", value: "`1`" }], attach: [{ request: "From Jira: {{event.branch}}" }] } };

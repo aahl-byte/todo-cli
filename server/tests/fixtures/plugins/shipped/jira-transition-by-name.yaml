@@ -1,0 +1,24 @@
+about: with no transition to the status, one named for it is taken; with neither, the dev log says so
+plugin: jira-transition
+instance: {id: done, name: Done, settings: {to: Ready to Deploy}}
+event: {type: status, from: qa-approved, to: ready-to-deploy}
+connections:
+  jira: {kind: http}
+responses:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=status, body: {fields: {status: {name: QA}}}}
+    - {method: GET, path: /rest/api/3/issue/SR-101/transitions, body: {transitions: [{id: "41", name: Ready to Deploy, to: {name: Staged}}]}}
+    - {method: POST, path: /rest/api/3/issue/SR-101/transitions, status: 204}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=status, body: {fields: {status: {name: Open}}}}
+    - {method: GET, path: /rest/api/3/issue/SR-102/transitions, body: {transitions: [{id: "11", name: Start, to: {name: In Development}}]}}
+expect:
+  attached:
+    - {kind: log, key: "log:Jira transition for SR-102: no transition from Open to Ready to Deploy", text: "Jira transition for SR-102: no transition from Open to Ready to Deploy"}
+  wouldSend: []
+received:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=status}
+    - {method: GET, path: /rest/api/3/issue/SR-101/transitions}
+    - {method: POST, path: /rest/api/3/issue/SR-101/transitions, body: {transition: {id: "41"}}}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=status}
+    - {method: GET, path: /rest/api/3/issue/SR-102/transitions}

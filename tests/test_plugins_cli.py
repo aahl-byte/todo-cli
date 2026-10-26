@@ -1264,3 +1264,11 @@ def test_a_uid_written_for_a_run_is_the_one_sync_would_give(fx, synced, host):
     yamlio.save(y, item_file, meta)
     store.ensure_uid(fx.root, a, "p")
     assert store.resolve_item(fx.root, a)["uid"] == hash_uid("p", a, meta["created"])
+
+
+def test_a_plugin_sees_every_request_version_newest_first(fx):
+    it = {"id": "a", "uid": "U", "title": "A", "status": "todo", "branches": [], "notes": [
+        {"id": "n1", "kind": "ticket-request", "text": "first", "meta": {"version": 1}},
+        {"id": "n3", "kind": "comment", "text": "hi", "meta": {}},
+        {"id": "n2", "kind": "ticket-request", "text": "second", "meta": {"version": 2}}]}
+    assert plugins.item_json(it, "o/r", None)["requests"] == ["second", "first"]

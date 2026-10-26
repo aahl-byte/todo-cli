@@ -1,0 +1,21 @@
+about: jira-transition moves each linked issue through the transition to the instance's status, skipping one already there
+plugin: jira-transition
+instance: {id: to-qa, name: QA, on: [{status: {from: review, to: in-qa}}], settings: {to: QA, never: [Done]}}
+event: {type: status, from: review, to: in-qa}
+connections:
+  jira: {kind: http, auth: basic, secret: "me@acme.test:tok"}
+responses:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=status, body: {fields: {status: {name: In Development}}}}
+    - method: GET
+      path: /rest/api/3/issue/SR-101/transitions
+      body: {transitions: [{id: "21", name: Start, to: {name: In Development}}, {id: "161", name: Send to QA, to: {name: QA}}]}
+    - {method: POST, path: /rest/api/3/issue/SR-101/transitions, status: 204}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=status, body: {fields: {status: {name: QA}}}}
+expect: {attached: [], wouldSend: [], log: []}
+received:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=status, authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
+    - {method: GET, path: /rest/api/3/issue/SR-101/transitions}
+    - {method: POST, path: /rest/api/3/issue/SR-101/transitions, body: {transition: {id: "161"}}}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=status}

@@ -1,0 +1,11 @@
+about: a status on the plugin's never list moves nothing
+plugin: jira-transition
+instance: {id: done, name: Done, settings: {to: Done, never: [Done, UAT]}}
+event: {type: status, from: ready-to-deploy, to: deployed}
+connections:
+  jira: {kind: http}
+responses:
+  jira: []
+expect: {attached: [], wouldSend: [], log: [], skipped: "jira-transition: when is false: !contains(settings.never, settings.to)"}
+received:
+  jira: []
