@@ -2,7 +2,7 @@ import Link from "next/link";
 
 const TABS = [
   { key: "general", label: "General", path: "" },
-  { key: "plugins", label: "Plugins", path: "/plugins" },
+  { key: "automation", label: "Automation", path: "/automation" },
 ] as const;
 
 /** The project settings' pages. */

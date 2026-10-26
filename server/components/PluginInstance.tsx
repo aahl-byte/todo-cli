@@ -1,6 +1,6 @@
 "use client";
-// One plugin instance in the Plugins settings: its switch, name, triggers,
-// button, dry-run and settings form; and an instance's run log.
+// One plugin instance in the Automation settings: its switch, name, triggers,
+// button, test mode and settings form; and an instance's run log.
 import { withBase } from "@/lib/base";
 import {
   ANY, TRIGGER_KINDS, canMove, connectionChoices, connectionKeysOf, describeTrigger, duplicateInstance, editInstance, fieldsOf, moveInstance,
@@ -47,8 +47,8 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
           <input aria-label="id" value={x.id} disabled={x.declared} onChange={(e) => edit({ id: e.target.value })} />
         </label>
         <label className="check">
-          <input type="checkbox" aria-label={`${x.id} dry run`} checked={x.dryRun} onChange={(e) => edit({ dryRun: e.target.checked })} />
-          dry run
+          <input type="checkbox" aria-label={`${x.id} test mode`} checked={x.dryRun} onChange={(e) => edit({ dryRun: e.target.checked })} />
+          Test mode: show what it would do without doing it
         </label>
         <span className="grow" />
         {x.declared && <span className="tag" data-tip="the repo file declares it: it keeps the file's order, and removing it switches it off">repo file</span>}
@@ -238,7 +238,7 @@ export function RunLog({ name, rows, projectKey }: { name: string; rows: RunRow[
       <div className="label sub">{name}</div>
       {!rows.length && <p className="empty">No runs yet.</p>}
       {rows.map((r) => {
-        const state = r.error ? "error" : r.skipped ? "skipped" : r.dryRun ? "dry run" : "ran";
+        const state = r.error ? "error" : r.skipped ? "skipped" : r.dryRun ? "test mode" : "ran";
         return (
           <details key={r.id} className="run-row">
             <summary className="rrow">

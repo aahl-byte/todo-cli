@@ -143,7 +143,7 @@ function doneElsewhere(plugin: string, ctx: RowContext): Duplicate | null {
   if (plugin === "jira-issue" && jira.polled) {
     const n = plural(jira.linked, "linked ticket");
     return {
-      text: `The Jira bridge does this today, for ${n}.`,
+      text: jira.linked ? `The Jira bridge does this today, for ${n}.` : "The Jira bridge does this today, once an item links a ticket.",
       also: `The Jira bridge also mirrors ${n}, so comments would come in twice.`,
       link: { label: "General → Jira", href: settingsHref(ctx.project, "jira") },
     };
@@ -171,7 +171,7 @@ function readableStep(repo: DashRepo): Step[] {
 }
 
 function turnOnStep(repo: DashRepo, name: string, done: boolean): Step {
-  if (done) return { who: "repo", text: "Turned on in the repo.", done: true };
+  if (done) return { who: "repo", text: "Turned on.", done: true };
   const line = enableLine(name);
   const under = repo.source?.exists && repo.source.pluginsKey;
   return {
@@ -223,7 +223,7 @@ function instanceSteps(p: DashPlugin, copy: Copy | undefined): Step[] {
   if (!enabled.length) return [{ who: "here", text: "Switch it on: it's switched off here.", done: false, setup: true }];
   if (!required.length) return [];
   const ready = enabled.find((i) => !missingSettings(p, i).length);
-  if (ready) return [{ who: "here", text: `${sentence(here)}: done.`, done: true }];
+  if (ready) return [{ who: "here", text: `${sentence(here)}.`, done: true }];
   const missing = missingSettings(p, enabled[0]);
   const text = copy?.here ? `${sentence(copy.here)}: ${listed(missing)} ${verb(missing.length, "is", "are")} empty.` : `Fill in ${listed(missing)}.`;
   return [{ who: "here", text, done: false, setup: true }];
@@ -262,11 +262,9 @@ export function lastRun(p: DashPlugin): LastRun | null {
 function trackRow(repo: DashRepo): AutomationRow {
   const base = { key: "track", plugins: ["deploy branches"], plugin: null };
   if (repo.track.length) {
-    const at = repo.source?.commit ? ` at ${repo.source.commit.slice(0, 7)}` : "";
     return {
       ...base, title: `Show where work has landed (${repo.track.join(", ")})`, state: "on", steps: [],
-      notes: [{ text: `Items show which of these deploy branches hold their work, and dependencies are checked against them. `
-                + `Read from ${PLUGINS_FILE} on ${branchOf(repo)}${at}.` }],
+      notes: [{ text: "Items show which of these deploy branches hold their work, and dependencies are checked against them." }],
     };
   }
   return {
@@ -305,6 +303,7 @@ function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRo
     steps.push(...connectionSteps(c.name, c, p.shipped, ctx.host, true));
   }
   const notes: Note[] = [];
+  if (!p.shipped && !p.description) notes.push({ text: "This repo's own plugin; its plugins file gives no description." });
   const elsewhere = p.shipped ? doneElsewhere(p.name, ctx) : null;
   if (elsewhere) notes.push({ text: elsewhere.also, link: elsewhere.link });
   const base = { key: p.name, title, plugins: [p.name], notes, plugin: p };

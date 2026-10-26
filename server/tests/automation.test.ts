@@ -124,7 +124,7 @@ describe("a repo with a plugins file", () => {
   it("shows deploy branches on, with the branches and where they were read", () => {
     const rows = automationRows(repo({ source, track: ["staging", "main"] }), ctx());
     expect(row(rows, "track")).toMatchObject({ state: "on", title: "Show where work has landed (staging, main)", steps: [] });
-    expect(row(rows, "track").notes[0].text).toContain("Read from .todo-plugins/plugins.yaml on main at abc1234.");
+    expect(row(rows, "track").notes).toEqual([{ text: "Items show which of these deploy branches hold their work, and dependencies are checked against them." }]);
     expect(rows[0].key).toBe("track");
   });
 
@@ -173,7 +173,7 @@ describe("a plugin that's on", () => {
     const r = row(automationRows(repo({ plugins: [prLink, p] }), ctx()), "watchtower-session");
     expect(r.state).toBe("on");
     expect(r.notes[0].text).toBe("In test mode: it shows what it would do without doing it.");
-    expect(r.steps).toEqual([{ who: "repo", text: "Turned on in the repo.", done: true }]);
+    expect(r.steps).toEqual([{ who: "repo", text: "Turned on.", done: true }]);
   });
 });
 
@@ -185,7 +185,7 @@ describe("a plugin turned on in the repo that needs setup", () => {
       ctx({ host: [{ name: "vercel", auth: true, held: false }] })), "vercel-preview");
     expect(r.state).toBe("setup");
     expect(r.steps).toEqual([
-      { who: "repo", text: "Turned on in the repo.", done: true },
+      { who: "repo", text: "Turned on.", done: true },
       { who: "here", text: "Enter the Vercel project and team.", done: false, setup: true },
       { who: "admin", text: "Give the server a Vercel token.", code: "TODO_PLUGIN_SECRET_VERCEL", done: false },
     ]);
@@ -203,6 +203,7 @@ describe("a plugin turned on in the repo that needs setup", () => {
     const p = plugin("ping", { shipped: false, connections: ["hooks"], instances: [inst({ server_runs: false, server_runs_reason: "`hooks` not authorized here" })] });
     const missing = row(automationRows(repo({ plugins: [prLink, p], connections: [conn("hooks", { usedBy: ["ping"] })] }), ctx()), "ping");
     expect(missing).toMatchObject({ state: "setup", title: "ping", steps: [{ who: "here", text: "Enter the hooks credential.", done: false, setup: true }] });
+    expect(missing.notes).toEqual([{ text: "This repo's own plugin; its plugins file gives no description." }]);
     const held = row(automationRows(repo({ plugins: [prLink, plugin("ping", { shipped: false, connections: ["hooks"] })],
       connections: [conn("hooks", { usedBy: ["ping"], held: true })] }), ctx()), "ping");
     expect(held).toMatchObject({ state: "on", steps: [{ who: "here", text: "hooks credential stored.", done: true }] });
@@ -219,6 +220,7 @@ describe("a plugin turned on in the repo that needs setup", () => {
     const r = row(automationRows(repo({ plugins: [p] }), ctx()), "ping");
     expect(r.state).toBe("setup");
     expect(r.notes[0]).toEqual({ text: "The server can't run it yet: connection `hooks` is refused by the private-address rule.", warn: true });
+    expect(r.notes).toHaveLength(2);
   });
 
   it("is off, with a step to switch it on, when every instance is switched off here", () => {
@@ -251,6 +253,8 @@ describe("work the Jira bridge or Actions do today", () => {
     const quiet = automationRows(repo({ offered }), ctx({ bridge: bridge({ jira: { triggers: 1, writes: false } }) }));
     expect(row(quiet, "jira-transition").notes[0].text).toBe("1 trigger in the Jira bridge moves tickets today; sending is off there, so it records the moves it would make.");
     expect(row(quiet, "jira-issue").state).toBe("off");
+    const polled = automationRows(repo({ offered }), ctx({ bridge: bridge({ jira: { polled: "2026-10-26T09:00:00.000Z" } }) }));
+    expect(row(polled, "jira-issue").notes[0].text).toBe("The Jira bridge does this today, once an item links a ticket.");
   });
 
   it("keeps a plugin that's on as on, adding that the bridge would send too", () => {
