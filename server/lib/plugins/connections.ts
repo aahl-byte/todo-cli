@@ -257,14 +257,17 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
       const { res, what } = await request({ connection: name, method: "GET", path }, "*/*");
       const chunks: Uint8Array[] = [];
       let size = 0;
+      const reader = res.body?.getReader();
       try {
-        for await (const chunk of (res.body ?? []) as AsyncIterable<Uint8Array>) {
-          size += chunk.byteLength;
+        for (;;) {
+          const { done, value } = reader ? await reader.read() : { done: true, value: undefined };
+          if (done) break;
+          size += value.byteLength;
           if (size > max) {
-            await res.body?.cancel().catch(() => {});
+            await reader!.cancel().catch(() => {});
             return null;
           }
-          chunks.push(chunk);
+          chunks.push(value);
         }
       } catch (e) {
         throw new CallError(`${what} failed: ${(e as Error).message}`, undefined, true);
