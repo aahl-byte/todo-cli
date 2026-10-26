@@ -1,6 +1,6 @@
 """End to end: the built Next.js server runs a repo's plugins. GitHub and
 Watchtower are one local fake. Creating an item on a branch links its PR through
-the shipped pr-link plugin; moving it to review runs the repo's watchtower-session
+the shipped pr-link plugin; moving it to review runs the repo's own Watchtower
 code plugin in the host's worker. Both attachments reach /changes.
 
 Needs `cd server && npm install && npm run build`; skipped otherwise."""
@@ -37,7 +37,9 @@ def _port() -> int:
 
 def _fake(port: int) -> dict:
     """GitHub's answers for acme/web and Watchtower's for one new session, under /wt."""
-    plugins = (FIXTURES / "watchtower.yaml").read_text().replace("http://leaf-rain:10011", f"http://127.0.0.1:{port}/wt")
+    # Named apart from the shipped watchtower-session, which a repo can only enable.
+    plugins = (FIXTURES / "watchtower.yaml").read_text().replace("http://leaf-rain:10011", f"http://127.0.0.1:{port}/wt") \
+        .replace("watchtower-session:", "wt-agent:")
     content = lambda text: {"content": base64.b64encode(text.encode()).decode()}  # noqa: E731
     return {
         ("GET", "/repos/acme/web"): {"default_branch": "main"},
