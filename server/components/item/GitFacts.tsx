@@ -3,6 +3,7 @@
 // overlap hints. Derived from git; nothing here edits.
 import type { BranchFact, Edge, GitFacts as Facts, Hint, Share } from "@/lib/gitfacts";
 import { withBase } from "@/lib/base";
+import { PluginBy } from "./PluginBy";
 
 const STATE_TAG: Record<string, string> = { waiting: "hot", stale: "rej", unknown: "rej", landed: "" };
 const MARK = (ok: boolean | null | undefined) => (ok === true ? "✓" : ok === false ? "✗" : "?");
@@ -26,7 +27,7 @@ function BranchRow({ b }: { b: BranchFact }) {
   );
 }
 
-function EdgeRow({ e, base }: { e: Edge; base: string }) {
+function EdgeRow({ e, base, by }: { e: Edge; base: string; by?: string }) {
   return (
     <div className="rrow git-edge">
       <span className={`tag ${STATE_TAG[e.state] ?? ""}`} data-tip={e.reason}>{e.state}</span>
@@ -37,6 +38,7 @@ function EdgeRow({ e, base }: { e: Edge; base: string }) {
         {e.reason && <span className="faint"> ({e.reason})</span>}
         {e.cycle && <span className="faint"> — {e.cycle}</span>}
       </span>
+      <PluginBy by={by} />
     </div>
   );
 }
@@ -59,7 +61,11 @@ function ShareRow({ s, base }: { s: Share; base: string }) {
   );
 }
 
-export function GitFacts({ facts, base }: { facts?: Facts & { hints?: { conflict: string; shares: string }; blocked?: string }; base: string }) {
+export function GitFacts({ facts, base, pluginEdges = {} }: {
+  facts?: Facts & { hints?: { conflict: string; shares: string }; blocked?: string }; base: string;
+  /** The plugin instance behind each plugin-written dependency note. */
+  pluginEdges?: Record<string, string>;
+}) {
   if (!facts) return null;
   if (facts.blocked) {
     return (
@@ -78,7 +84,7 @@ export function GitFacts({ facts, base }: { facts?: Facts & { hints?: { conflict
       <div className="label">Git</div>
       {branches.map((b) => <BranchRow key={b.name} b={b} />)}
       {needs.length > 0 && <div className="label sub">needs</div>}
-      {needs.map((e, i) => <EdgeRow key={`n${i}`} e={e} base={base} />)}
+      {needs.map((e, i) => <EdgeRow key={`n${i}`} e={e} base={base} by={e.note ? pluginEdges[e.note] : undefined} />)}
       {neededBy.length > 0 && <div className="label sub">needed by</div>}
       {neededBy.map((e, i) => <EdgeRow key={`b${i}`} e={e} base={base} />)}
       {shares.length > 0 && <div className="label sub">shares unlanded commits with</div>}

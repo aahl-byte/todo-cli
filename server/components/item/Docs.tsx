@@ -9,6 +9,7 @@ import { docPath, humanSize } from "@/lib/doc-view";
 import { useReadOnly } from "../ReadOnly";
 import { notify } from "../Toaster";
 import { Ago } from "../ui";
+import { PluginBy } from "./PluginBy";
 import { Remove, report, type Ctx } from "./ItemView";
 
 type Row = Record<string, any>;
@@ -63,7 +64,8 @@ export function Docs({ rows, ctx, itemId }: { rows: Row[]; ctx: Ctx; itemId: str
             {readOnly
               ? <span className="grow">{d.name}</span>
               : <a className="grow" href={withBase(docPath(ctx.project, itemId, d.name))}>{d.name}</a>}
-            <span className="faint">{humanSize(Number(d.size))}{d.by ? ` · ${d.by}` : ""}</span>
+            <PluginBy by={d.plugin} />
+            <span className="faint">{humanSize(Number(d.size))}{d.by && !d.plugin ? ` · ${d.by}` : ""}</span>
             <Ago ts={d.at} />
             {writable && <Replace row={d} disabled={!!busy} onPick={(files) => void upload(files, d)} />}
             {writable && <Remove onConfirm={() => act.deleteDoc({ project: ctx.project, uid: d.uid, name: d.name, base: d.sha256 })} />}

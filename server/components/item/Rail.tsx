@@ -11,8 +11,11 @@ import { Ago, Led, Menu, Popup, richTip } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { useReadOnly } from "../ReadOnly";
+import { notify } from "../Toaster";
 import { Glance } from "./Glance";
 import { GitFacts } from "./GitFacts";
+import { PluginBy } from "./PluginBy";
+import { pluginRun, runPlugin } from "@/app/plugin-actions";
 import { AppFields } from "../AppFields";
 import { CopyButton } from "../Copy";
 import { withBase } from "@/lib/base";
@@ -88,10 +91,13 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
       </section>
       <Related rows={data.related} ctx={ctx} />
       <Links rows={data.links} prs={data.prs ?? {}} ctx={ctx} />
-      <GitFacts facts={data.git} base={ctx.readOnly?.base ?? `/p/${ctx.project}`} />
+      <GitFacts facts={data.git} base={ctx.readOnly?.base ?? `/p/${ctx.project}`} pluginEdges={data.pluginEdges} />
       {data.files?.length > 0 && <Files rows={data.files} jiraBase={ctx.jiraBase} />}
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
       {ctx.actions.length > 0 && <Actions ctx={ctx} itemId={it.id} />}
+      {!ctx.readOnly && ((ctx.plugins?.length ?? 0) > 0 || (data.pluginNotices?.length ?? 0) > 0) && (
+        <Plugins ctx={ctx} itemId={it.id} notices={data.pluginNotices ?? []} />
+      )}
       <History rows={data.history} current={it.status} created={it.created} />
     </>
   );
@@ -166,6 +172,43 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
           );
         })}
       </div>
+    </section>
+  );
+}
+
+/** A button for each manual plugin instance, and a quiet line for each plugin whose last run here was skipped or failed. */
+function Plugins({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: string[] }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  // Spins until the run is done; its outcome shows as a toast.
+  const run = async (plugin: string, instance: string, label: string) => {
+    setBusy(`${plugin}/${instance}`);
+    let r = await runPlugin({ project: ctx.project, itemUid: ctx.itemUid, plugin, instance });
+    while (r.ok && !r.done && r.event) {
+      await new Promise((ok) => setTimeout(ok, RUN_POLL_MS));
+      r = await pluginRun({ project: ctx.project, event: r.event, label });
+    }
+    setBusy(null);
+    if (r.ok) notify(r.message ?? `${label}: done`);
+    else report(r);
+  };
+  return (
+    <section className="plugins-rail">
+      <div className="label">Plugins</div>
+      <div className="action-buttons">
+        {(ctx.plugins ?? []).map((b) => {
+          const id = `${b.plugin}/${b.instance}`;
+          return (
+            <div key={id} className="action-row" data-plugin-button={id}>
+              {b.server
+                ? <button type="button" className="btn" disabled={busy !== null} data-tip={`runs ${id} on the server`}
+                          onClick={() => void run(b.plugin, b.instance, b.label)}>{busy === id && <span className="spin" aria-label="running" />}{b.label}</button>
+                : <CopyButton className="btn" text={`todo plugin run ${itemId} ${id}`}
+                              tip={`runs in a developer's CLI (${b.reason}): todo plugin run ${itemId} ${id} (click to copy)`}>{b.label} ⧉</CopyButton>}
+            </div>
+          );
+        })}
+      </div>
+      {notices.map((n) => <div key={n} className="plugin-notice">{n}</div>)}
     </section>
   );
 }
@@ -347,6 +390,7 @@ function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>;
             {url ? <a className="grow" href={url} target="_blank" rel="noreferrer" data-tip={url}>{l.meta?.label || l.text}</a>
                  : <span className="grow">{l.meta?.label || l.text}</span>}
             {pr?.checks && <span className={`checks ck-${pr.checks}`} data-tip={`checks ${CHECKS_TIP[pr.checks]}`}><span className="led" /></span>}
+            <PluginBy by={l.meta?.plugin} />
             <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: "note", uid: l.uid, versions: l.versions })} />
           </div>
         );

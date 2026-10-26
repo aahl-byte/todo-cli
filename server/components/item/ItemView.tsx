@@ -8,6 +8,7 @@ import type { ActionState } from "@/lib/action-helpers";
 import { docPath } from "@/lib/doc-view";
 import { COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
+import type { PluginButton } from "@/lib/plugin-views";
 import { Markdown } from "../Markdown";
 import { ReadOnly, useReadOnly, type ReadOnlyView } from "../ReadOnly";
 import { Composer } from "../Composer";
@@ -29,6 +30,8 @@ export interface Ctx {
   itemUid: string;
   pinned: boolean;
   actions: { id: string; name: string; runner: string }[];
+  /** The item repo's manual plugin instances; none on a wall display. */
+  plugins?: PluginButton[];
   /** Set on a wall display: everything shows, nothing writes. */
   readOnly?: ReadOnlyView | null;
   /** The viewer's last visit, given up front by a page that doesn't record one. */
