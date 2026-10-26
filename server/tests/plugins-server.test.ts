@@ -305,6 +305,17 @@ describe("running plugins", () => {
     expect(gh.sent.filter((s) => s.url.startsWith("https://acme.atlassian.net") && s.method !== "GET")).toEqual([]);
   });
 
+  it("queues no status event for a bridge's move, except its bounce back to requested", async () => {
+    await onBranch("I1", ["feat/x"]);
+    await w.one("alice", child("note", "R1", "I1", { kind: "ticket-request", text: "v1" }));
+    await w.d.query("delete from plugin_events");
+    const bridge = { handle: "jira-bridge", bridge: true, unconditional: true };
+    await w.one(bridge, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { status: "review" } });
+    expect(await events()).toEqual([]);
+    await w.one(bridge, child("note", "R2", "I1", { kind: "ticket-request", text: "v2" }));
+    expect((await events()).map((e) => e.event)).toEqual([{ type: "status", from: "review", to: "requested" }]);
+  });
+
   it("posts a request only once the plugin is granted post-request", async () => {
     SHIPPED["test-request"] = { def: { connections: [], on: ["push"], capabilities: ["post-request"],
       steps: [{ name: "v", value: "`1`" }], attach: [{ request: "From Jira: {{event.branch}}" }] } };

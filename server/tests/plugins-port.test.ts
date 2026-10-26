@@ -28,6 +28,7 @@ const OUTBOUND = {
   triggers: [
     { from: "review", to: "in-qa", jira: "QA" },
     { from: "in-qa", to: "qa-rejected", jira: "In Development" },
+    { from: "in-qa", to: "requested", jira: "In Development" },
     { from: "ready-to-deploy", to: "deployed", jira: "Done" },
   ],
 };
@@ -91,6 +92,7 @@ describe("plugins-port", () => {
     expect(plan.instances["jira-transition"].map((i) => [i.id, i.on, i.settings])).toEqual([
       ["jira-review-in-qa", [{ status: { from: "review", to: "in-qa" } }], { to: "QA", never: ["Done", "UAT"] }],
       ["jira-in-qa-qa-rejected", [{ status: { from: "in-qa", to: "qa-rejected" } }], { to: "In Development", never: ["Done", "UAT"] }],
+      ["jira-in-qa-requested", [{ status: { from: "in-qa", to: "requested" } }], { to: "In Development", never: ["Done", "UAT"] }],
       ["jira-ready-to-deploy-deployed", [{ status: { from: "ready-to-deploy", to: "deployed" } }], { to: "Done", never: ["Done", "UAT"] }],
     ]);
     expect(plan.instances["jira-issue"]).toEqual([{ id: "default", name: "Jira issues", dry_run: true }]);
@@ -135,7 +137,8 @@ describe("plugins-port", () => {
     expect(await writePlan(w.d, plan, "alice", gh.impl)).toEqual([]);
     const stored = await storedInstances(w.d, "p", "acme/web");
     expect(stored.rest.map((i) => i.id)).toEqual(["mine", "action-notify", "action-ping"]);
-    expect(stored["jira-transition"].map((i) => i.id)).toEqual(["jira-review-in-qa", "jira-in-qa-qa-rejected", "jira-ready-to-deploy-deployed"]);
+    expect(stored["jira-transition"].map((i) => i.id)).toEqual(["jira-review-in-qa", "jira-in-qa-qa-rejected", "jira-in-qa-requested",
+                                                               "jira-ready-to-deploy-deployed"]);
     expect(await storedGrants(w.d, "p", "acme/web")).toEqual({ "jira-issue": ["post-request"] });
   });
 });
@@ -172,11 +175,16 @@ describe("plugins-parity", () => {
     expect(net.seen.every((s) => s.startsWith("GET "))).toBe(true);
   });
 
-  it("shows each difference: a move a bridge made, which the old Jira code ignored", async () => {
+  it("follows apply.ts for a bridge: its own move runs no plugin, its bounce back to requested does; Actions still fire on its move", async () => {
     await move("I1", "in-qa", "jira-bridge");
+    await w.one("alice", { op: "create", entity: "note", uid: "R1", item_uid: "I2", data: { kind: "ticket-request", text: "v1" } });
+    await w.one({ handle: "jira-bridge", bridge: true, unconditional: true },
+                { op: "create", entity: "note", uid: "R2", item_uid: "I2", data: { kind: "ticket-request", text: "v2" } });
     const result = await parity(w.d, "p", { since: new Date(Date.now() - 3_600_000), fetch: services().f, lookup: publicDns });
+    const [bridged, bounced] = result.cases;
+    expect(bridged).toMatchObject({ item: "i1", same: false, plugins: [], old: [expect.stringMatching(/^action notify: POST/)] });
+    expect(bounced).toMatchObject({ item: "i2", trigger: "in-qa → requested by jira-bridge", same: true,
+                                    old: ["jira SR-2 → In Development", "jira SR-3 → In Development"] });
     expect(result.diffs).toBe(1);
-    expect(result.cases[0]).toMatchObject({ same: false, old: [expect.stringMatching(/^action notify: POST/)] });
-    expect(result.cases[0].plugins).toContain("jira SR-1 → QA");
   });
 });

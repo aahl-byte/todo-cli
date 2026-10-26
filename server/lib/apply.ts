@@ -417,7 +417,10 @@ async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op:
   await statusChanged(ctx, { ...op, override: false, reason: `request v${version}` }, item, "requested");
   for (const who of [item.developer, item.qa_assignee, item.creator]) await ctx.notify(who, "request-changed", itemUid, noteUid);
   // Jira hears of the move back even when Jira's own edit caused it.
-  if (ctx.actor.bridge) await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { project: ctx.project, itemUid, from: item.status, status: "requested" });
+  if (ctx.actor.bridge) {
+    await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { project: ctx.project, itemUid, from: item.status, status: "requested" });
+    await queuePluginEvent(ctx.t, ctx.project, itemUid, item.extra?.repo, { type: "status", from: item.status, to: "requested" }, ctx.actor.handle);
+  }
 }
 
 async function currentRequest(ctx: Ctx, itemUid: string): Promise<Row | null> {
@@ -649,7 +652,10 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
   await queueJira(ctx.t, ctx.actor, { project: ctx.project, itemUid: item.uid, from: item.status, status: to });
   await queueAutoActions(ctx.t, ctx.project, item.uid, item.status, to, ctx.actor.handle);
-  await queuePluginEvent(ctx.t, ctx.project, item.uid, item.extra?.repo, { type: "status", from: item.status, to }, ctx.actor.handle);
+  // A bridge's own moves run no plugins, as they reach no Jira trigger; its bounce back to requested does, below.
+  if (!ctx.actor.bridge) {
+    await queuePluginEvent(ctx.t, ctx.project, item.uid, item.extra?.repo, { type: "status", from: item.status, to }, ctx.actor.handle);
+  }
 }
 
 /** A plugin's own attachment: written by the server's plugin runner, or a note a CLI's runner marked with its instance. */

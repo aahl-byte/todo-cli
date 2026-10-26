@@ -20,8 +20,10 @@ import { pickInstances } from "./triggers";
 import { jiraKeys } from "./yaml-runner";
 import type { Call, ConnectionDef, PluginEvent, ResolvedConnection } from "./types";
 
-/** Handles whose moves the old Jira code never echoed back. */
+/** Handles whose moves the old Jira code never echoed back, and which run no plugins, as apply.ts has it. */
 const BRIDGES = ["jira-bridge", "plugin"];
+/** A bridge's new request version sends an item back to requested; that move reaches Jira and plugins all the same. */
+const isBounce = (m: Row) => m.to_status === "requested" && /^request v\d+$/.test(String(m.note ?? ""));
 
 export interface ParityCase { at: string; item: string; trigger: string; old: string[]; plugins: string[]; same: boolean }
 export interface ParityResult { cases: ParityCase[]; diffs: number; plan: PortPlan }
@@ -142,11 +144,12 @@ export async function parity(d: Db, project: string, opts: ParityOptions): Promi
   const since = opts.since.toISOString();
   const cases: ParityCase[] = [];
 
-  const replay = async (it: Row, at: string, trigger: string, by: string, event: PluginEvent, old: string[]) => {
+  const replay = async (it: Row, at: string, trigger: string, by: string, event: PluginEvent, old: string[], runsPlugins = true) => {
     const key = String(it.extra?.repo ?? "");
     const repo = plan.repos.find((r) => r === key.toLowerCase().replace(/\.git$/, "").split(/[/:]/).slice(-2).join("/"));
     let plugins: string[];
-    if (!repo) plugins = old.length ? [`no plugin runs: the item's repo ${key || "(none)"} isn't one the project runs plugins for`] : [];
+    if (!runsPlugins) plugins = [];
+    else if (!repo) plugins = old.length ? [`no plugin runs: the item's repo ${key || "(none)"} isn't one the project runs plugins for`] : [];
     else plugins = await pluginSends(plan, await pluginItem(d, project, it, by), event, connections, net, reads, guardFor(repo, opts.lookup));
     const same = canonical([...old].sort()) === canonical([...plugins].sort());
     cases.push({ at, item: it.id, trigger, old, plugins, same });
@@ -164,7 +167,8 @@ export async function parity(d: Db, project: string, opts: ParityOptions): Promi
     const [it] = await d.query("select * from items where project = $1 and uid = $2", [project, m.item_uid]);
     if (!it) continue;
     const old: string[] = [];
-    const target = rules && !BRIDGES.includes(m.by) ? outboundTarget(rules, m.from_status, m.to_status) : null;
+    const fires = !BRIDGES.includes(m.by) || isBounce(m);
+    const target = rules && fires ? outboundTarget(rules, m.from_status, m.to_status) : null;
     if (target) {
       const keys = await d.query("select jira_key from jira_links where project = $1 and item_uid = $2 and source = 'field' order by jira_key",
                                  [project, it.uid]);
@@ -174,7 +178,7 @@ export async function parity(d: Db, project: string, opts: ParityOptions): Promi
       const req = render(a, itemVars(project, it as ItemLike, m.from_status, m.by, process.env.PUBLIC_URL ?? "", await places(it, m.by)));
       old.push(...(await oldAction(req, a.id, net, reads)));
     }
-    await replay(it, m.ts, `${m.from_status} → ${m.to_status} by ${m.by}`, m.by, { type: "status", from: m.from_status, to: m.to_status }, old);
+    await replay(it, m.ts, `${m.from_status} → ${m.to_status} by ${m.by}`, m.by, { type: "status", from: m.from_status, to: m.to_status }, old, fires);
   }
 
   const manual = await d.query("select * from action_runs where project = $1 and trigger = 'manual' and created >= $2 order by id", [project, since]);
