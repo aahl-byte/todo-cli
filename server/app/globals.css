@@ -727,6 +727,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .plugin-card .switch input, .plugin-card .check input { accent-color: var(--cyan); margin: 0; }
 .plugin-card .grant { flex-wrap: wrap; }
 .plugin-shared { display: grid; gap: 6px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.plugin-edit { display: grid; gap: 8px; border: 0; margin: 0; padding: 0; min-width: 0; }
 .instances { display: grid; gap: 8px; }
 .instance-card { display: grid; gap: 6px; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .instance-card.off { opacity: .65; }

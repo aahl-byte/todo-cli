@@ -4,7 +4,7 @@
 // the connections they need with this server's credentials, grants, and each
 // instance's run log. Instances, grants and credentials save through the
 // /plugins API routes; the repo list through server actions.
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addPluginRepo, removePluginRepo } from "@/app/plugin-actions";
 import { withBase } from "@/lib/base";
@@ -158,12 +158,22 @@ function ConnectionRow({ projectKey, repo, c }: { projectKey: string; repo: stri
   );
 }
 
+/** Cards saved since the page last loaded, so the card the refreshed data remounts still says so. */
+const justSaved = new Set<string>();
+
 function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string; repo: string; plugin: DashPlugin; statuses: readonly string[] }) {
   const router = useRouter();
+  const id = `${repo}/${plugin.name}`;
   const [draft, setDraft] = useState<PluginDraft>(() => draftPlugin(plugin, plugin.instances, plugin.declared));
   const [dirty, setDirty] = useState(false);
-  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null);
+  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(() => (justSaved.delete(id) ? { ok: true, message: "Saved." } : null));
   const [pending, start] = useTransition();
+  // Between a save and the refreshed data the card is locked, since the new data replaces the drafts.
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    setRefreshing(false);
+    justSaved.delete(id);
+  }, [plugin, id]);
   const out = savedInstances(plugin, draft);
   const shared = fieldsOf(plugin.settings).filter((f) => f.scope === "plugin");
   const change = (next: PluginDraft) => { setDraft(next); setDirty(true); setSaved(null); };
@@ -172,6 +182,8 @@ function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string
     setSaved(err ? { ok: false, message: err } : { ok: true, message: "Saved." });
     if (!err) {
       setDirty(false);
+      setRefreshing(true);
+      justSaved.add(id);
       router.refresh();
     }
   });
@@ -191,6 +203,7 @@ function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string
       {plugin.capabilities.includes("post-request") && (
         <Grant projectKey={projectKey} repo={repo} plugin={plugin} />
       )}
+      <fieldset className="plugin-edit" disabled={pending || refreshing}>
       {shared.length > 0 && (
         <div className="plugin-shared">
           <div className="label sub">Shared by every instance</div>
@@ -220,6 +233,7 @@ function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string
           {out.warnings.map((e) => <li key={e} className="warning">{e}</li>)}
         </ul>
       )}
+      </fieldset>
       <details className="run-logs">
         <summary><span className="chev">›</span> Run log</summary>
         {plugin.instances.map((i) => <RunLog key={i.id} name={i.name || i.id} rows={plugin.runs[i.id] ?? []} projectKey={projectKey} />)}
