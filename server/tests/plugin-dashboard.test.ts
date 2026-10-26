@@ -62,6 +62,35 @@ describe("the plugins settings page", () => {
       ["github", "host", true, true, ["pr-link"]], ["hooks", "repo", true, false, ["ping"]]]);
   });
 
+  it("names the plugins file it read from the default branch, the repo's deploy branches and what the file's plugins do", async () => {
+    vi.stubGlobal("fetch", fakeGitHub({ file: `track: [staging, main]\n${FILE.replace("  note:\n", "  note:\n    description: Says hi.\n")}` }).impl);
+    const [repo] = (await pluginsPage(w.d, "p")).repos;
+    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: true, commit: "s1" });
+    expect(repo.track).toEqual(["staging", "main"]);
+    expect(repo.plugins.map((p) => [p.name, p.description])).toEqual([
+      ["pr-link", "Links each of the item's branches to its pull requests on GitHub."], ["note", "Says hi."], ["ping", null]]);
+    expect(repo.offered.map((o) => o.name)).toEqual(["db-request", "jira-issue", "jira-transition", "rest", "vercel-preview", "watchtower-session"]);
+    expect(repo.offered.find((o) => o.name === "vercel-preview")).toEqual({
+      name: "vercel-preview", description: "Links each of the item's branches to its newest ready Vercel preview.", connections: ["vercel"] });
+  });
+
+  it("says a repo has no plugins file, so no deploy branches, and offers every shipped plugin it doesn't run", async () => {
+    vi.stubGlobal("fetch", fakeGitHub({}).impl);
+    const [repo] = (await pluginsPage(w.d, "p")).repos;
+    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: false, commit: "s1" });
+    expect(repo.track).toEqual([]);
+    expect(repo.plugins.map((p) => p.name)).toEqual(["pr-link"]);
+    expect(repo.offered.map((o) => o.name)).toContain("rest");
+    expect(repo.errors).toEqual([]);
+  });
+
+  it("says when GitHub doesn't show the repo at all", async () => {
+    vi.stubGlobal("fetch", fakeGitHub({}).impl);
+    await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/gone', 'alice')");
+    const gone = (await pluginsPage(w.d, "p")).repos.find((r) => r.repo === "acme/gone")!;
+    expect(gone.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: null, exists: false, commit: null });
+  });
+
   it("says why a repo gets no plugins", async () => {
     vi.stubEnv("TODO_PLUGIN_OWNERS", "");
     const page = await pluginsPage(w.d, "p");
@@ -127,12 +156,28 @@ describe("the repo allowlist", () => {
     expect((await pluginsPage(w.d, "p")).repos.map((r) => r.repo)).toEqual(["acme/api", "acme/web"]);
     expect(await act.addPluginRepo("p", "not a repo")).toMatchObject({ ok: false, message: "not a GitHub owner/name: not a repo" });
     expect((await act.removePluginRepo("p", "acme/web")).ok).toBe(true);
-    expect((await pluginsPage(w.d, "p")).repos.map((r) => r.repo)).toEqual(["acme/api"]);
+    // An item still names acme/web, so it stays on the page, now one the project can't use.
+    expect((await pluginsPage(w.d, "p")).repos.map((r) => [r.repo, !!r.listed, !!r.refusal])).toEqual([["acme/api", true, false], ["acme/web", false, true]]);
   });
 
   it("keeps a repo a member's checkout reported, as a checkout", async () => {
     await w.d.query("insert into checkouts (project, handle, repo, dir) values ('p', 'bob', 'acme/cli', '/src/cli')");
-    expect((await pluginsPage(w.d, "p")).repos.map((r) => [r.repo, !!r.listed, r.checkout])).toEqual([["acme/cli", false, true], ["acme/web", true, false]]);
+    expect((await pluginsPage(w.d, "p")).repos.map((r) => [r.repo, !!r.listed, r.checkout])).toEqual([["acme/web", true, false], ["acme/cli", false, true]]);
+  });
+
+  it("puts the repos items name and the listed ones first, folds checkout-only ones away, and offers to add an item's repo it can't use", async () => {
+    await w.d.query("insert into checkouts (project, handle, repo, dir) values ('p', 'bob', 'acme/cli', '/src/cli'), ('p', 'bob', 'acme/api', '/src/api')");
+    await w.one("alice", item("I2", { extra: { repo: "git@github.com:Acme/API.git" } }));
+    await w.one("alice", item("I3", { extra: { repo: "acme/docs" } }));
+    await w.one("alice", item("I4", { extra: { repo: "other/thing" } }));
+    const rows = (await pluginsPage(w.d, "p")).repos.map((r) => [r.repo, r.items, r.folded, r.addable, !!r.refusal]);
+    expect(rows).toEqual([
+      ["acme/api", 1, false, false, false],
+      ["acme/docs", 1, false, true, true],
+      ["acme/web", 1, false, false, false],
+      ["other/thing", 1, false, false, true],
+      ["acme/cli", 0, true, false, false],
+    ]);
   });
 });
 

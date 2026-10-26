@@ -2,12 +2,13 @@
 // plugins, instances, connections, grants and run log for the Plugins settings
 // page, and an item's manual buttons, skip notices and manual-run outcomes.
 import type { Db, Row } from "./db";
-import { pluginOwners, repoKey, repoRefusal } from "./checkouts";
+import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { hostConnections, loadDefs, merge, projectRepos, repoPlugins, type RepoDefs, type RepoPlugins } from "./plugins/store";
 import { finished } from "./plugins/queue";
 import { SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
 import { attachedSummary, connectionKeysOf } from "./plugin-form";
+import { PLUGINS_FILE } from "./plugin-summary";
 import type { Attachment, Call, ConnectionDef, InstanceDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
 
 /** Runs the log shows per instance. */
@@ -45,6 +46,7 @@ export type DashInstance = RepoPlugins["plugins"][number]["instances"][number];
 
 export interface DashPlugin {
   name: string;
+  description: string | null;
   shipped: boolean;
   connections: string[];
   on: PluginDef["on"];
@@ -62,13 +64,35 @@ export interface DashPlugin {
   runs: Record<string, RunRow[]>;
 }
 
+/** Where the repo's plugins come from: the plugins file on its default branch, as the server last read it. */
+export interface DashSource {
+  path: string;
+  /** null when GitHub doesn't show the repo to this server. */
+  branch: string | null;
+  exists: boolean;
+  commit: string | null;
+}
+
+/** A shipped plugin the repo's file doesn't turn on. */
+export interface DashOffer { name: string; description: string | null; connections: string[] }
+
 export interface DashRepo {
   repo: string;
   listed: { by: string; at: string } | null;
   checkout: boolean;
+  /** How many of the project's items name it. */
+  items: number;
+  /** Only a member's checkout brings it in: no item names it and it isn't listed. */
+  folded: boolean;
   /** Why the server doesn't read this repo, or null when the project may use it. */
   refusal: string | null;
+  /** Listing it would let the project use it. */
+  addable: boolean;
+  source: DashSource | null;
+  /** The deploy branches its file tracks. */
+  track: string[];
   plugins: DashPlugin[];
+  offered: DashOffer[];
   connections: DashConnection[];
   /** Connection names an instance may pick: the repo's own, and this server's, which only instances stored here get. */
   available: { repo: string[]; host: string[] };
@@ -122,7 +146,7 @@ function connectionOf(name: string, repoDefs: Record<string, ConnectionDef>, hos
 
 /** One allowed repo as the settings page shows it. */
 export async function dashRepo(d: Pick<Db, "query">, project: string, repo: string):
-    Promise<Pick<DashRepo, "plugins" | "connections" | "available" | "errors">> {
+    Promise<Pick<DashRepo, "source" | "track" | "plugins" | "offered" | "connections" | "available" | "errors">> {
   const view = await repoPlugins(d, project, repo);
   let defs: RepoDefs = { files: {}, sha: null, defaultBranch: null };
   try {
@@ -137,7 +161,7 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
     const def = bare.resolved.find((r) => r.name === p.name)?.def ?? SHIPPED[p.name]?.def ?? {};
     const declared = Object.fromEntries((bare.file.instances?.[p.name] ?? []).map((i) => [i.id, i]));
     return {
-      name: p.name, shipped: p.shipped, connections: p.connections, on: p.on, every: p.every, exclusive: !!def.exclusive,
+      name: p.name, description: def.description ?? null, shipped: p.shipped, connections: p.connections, on: p.on, every: p.every, exclusive: !!def.exclusive,
       per: def.per ?? null, code: !!def.code, settings: p.settings, instances: p.instances, declared,
       capabilities: p.shipped ? def.capabilities ?? [] : [], grant: grants[p.name] ?? null,
       runs: Object.fromEntries(p.instances.map((i) => [i.id, runs[`${p.name}/${i.id}`] ?? []])),
@@ -154,23 +178,47 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
   const repoDefs = bare.file.connections ?? {};
   const hostDefs = hostConnections();
   const names = [...new Set([...used.keys(), ...Object.keys(repoDefs)])].sort();
-  return { plugins, connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
-           available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() }, errors: view.errors };
+  const offered = Object.entries(SHIPPED).filter(([name]) => !plugins.some((p) => p.name === name)).sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, { def }]) => ({ name, description: def.description ?? null, connections: def.connections ?? [] }));
+  return {
+    source: { path: PLUGINS_FILE, branch: defs.defaultBranch, exists: defs.text !== undefined, commit: defs.sha },
+    track: bare.file.track ?? [], plugins, offered, connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
+    available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() }, errors: view.errors,
+  };
 }
 
-/** Every repo the project lists or a member has a checkout of, each with its plugins when the project may use it. */
+/** How many of the project's items name each repo, by repoKey. */
+async function itemRepos(d: Pick<Db, "query">, project: string): Promise<Map<string, number>> {
+  const rows = await d.query("select extra->>'repo' as repo, count(*)::int as n from items where project = $1 and coalesce(extra->>'repo', '') <> '' group by 1",
+                             [project]);
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    const key = repoKey(r.repo);
+    if (key) out.set(key, (out.get(key) ?? 0) + Number(r.n));
+  }
+  return out;
+}
+
+/** Every repo the project's items name, lists, or a member has a checkout of, each with its plugins when the project may
+ * use it; the ones only a checkout brings in come last, folded. */
 export async function pluginsPage(d: Pick<Db, "query">, project: string): Promise<PluginsPage> {
   const { repos, checkouts } = await projectRepos(d, project);
-  const names = [...new Set([...repos.map((r) => r.repo), ...checkouts.map((c) => repoKey(c)).filter(Boolean)])].sort();
+  const used = await itemRepos(d, project);
+  const names = [...new Set([...repos.map((r) => r.repo), ...checkouts.map((c) => repoKey(c)).filter(Boolean), ...used.keys()])].sort();
   const out: DashRepo[] = [];
   for (const repo of names) {
     const listed = repos.find((r) => r.repo === repo);
     const refusal = await repoRefusal(d, project, repo);
-    const base = { repo, listed: listed ? { by: listed.added_by, at: listed.added_at } : null, checkout: checkouts.includes(repo), refusal };
-    if (refusal) out.push({ ...base, plugins: [], connections: [], available: { repo: [], host: [] }, errors: [] });
+    const owners = pluginOwners();
+    const base = {
+      repo, listed: listed ? { by: listed.added_by, at: listed.added_at } : null, checkout: checkouts.includes(repo), items: used.get(repo) ?? 0,
+      folded: !listed && !used.has(repo), refusal,
+      addable: !!refusal && !listed && owners.includes(repo.split("/")[0]) && !(await repoAllowed(d, project, repo)),
+    };
+    if (refusal) out.push({ ...base, source: null, track: [], plugins: [], offered: [], connections: [], available: { repo: [], host: [] }, errors: [] });
     else out.push({ ...base, ...(await dashRepo(d, project, repo)) });
   }
-  return { ownersSet: pluginOwners().length > 0, repos: out };
+  return { ownersSet: pluginOwners().length > 0, repos: [...out.filter((r) => !r.folded), ...out.filter((r) => r.folded)] };
 }
 
 // ── the item page ─────────────────────────────────────────────────────────────
