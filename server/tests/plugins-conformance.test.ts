@@ -75,7 +75,7 @@ async function connectionsFor(name: string, c: Case) {
     if (def.kind === "mcp") {
       const tools = path.join(scratch, `${name}-${conn}.json`);
       writeFileSync(tools, JSON.stringify(c.tools?.[conn] ?? []));
-      connections[conn] = { ...def, kind: "mcp", command: process.execPath, args: [FAKE_MCP, tools], origin: "host" };
+      connections[conn] = { ...def, kind: "mcp", command: process.execPath, args: [FAKE_MCP, tools], origin: "repo" };
     } else {
       fakes[conn] = await fakeServer(c.responses?.[conn] ?? []);
       servers.push(fakes[conn]);
@@ -91,7 +91,7 @@ describe.each(HOSTS)("plugin conformance (%s)", (_, host) => {
     const { connections, fakes } = await connectionsFor(name, c);
     const result = await host({
       plugin, name: c.plugin, code: plugin.code ? readFileSync(path.join(DIR, plugin.code), "utf8") : undefined,
-      instance: c.instance, item: { ...ITEM, ...c.item }, event: c.event, connections, dryRun: !!c.dry_run,
+      instance: c.instance, item: { ...ITEM, ...c.item }, event: c.event, connections, dryRun: !!c.dry_run, allowRepoCommands: true,
     });
     const { log, ...rest } = c.expect;
     expect({ ...result, log: undefined }, c.about).toEqual({ ...rest, log: undefined });

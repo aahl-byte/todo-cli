@@ -576,10 +576,15 @@ describe("server_runs", () => {
     expect((await shownRuns()).ping).toEqual([false]);
   });
 
-  it("is true for a host connection that runs a command, which the server does run", async () => {
+  it("is true for a host connection that runs a command, which the server runs for a shipped plugin", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ local: { mcp: { command: "/bin/true" } } }));
-    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
-    expect((await shownRuns()).loc).toEqual([true]);
+    SHIPPED["test-loc"] = { def: { connections: ["local"], on: ["push"], steps: [{ tool: "t" }], attach: [] } };
+    try {
+      vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  test-loc: {use: shipped}\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
+      expect(await shownRuns()).toMatchObject({ "test-loc": [true], loc: [false] });
+    } finally {
+      delete SHIPPED["test-loc"];
+    }
   });
 });
 
@@ -605,6 +610,21 @@ describe("server_runs_reason", () => {
     });
     vi.stubEnv("GITHUB_TOKEN", "");
     expect((await reasons())["pr-link"]).toBe("GITHUB_TOKEN isn't set on the server");
+  });
+});
+
+describe("instances the repo's file declares", () => {
+  it("show they get no host connection, and why", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://93.184.216.34" } } }));
+    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\ninstances:\n  rest: [{id: x, name: X, settings: {connection: jira, path: /a}}]\n" }).impl);
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice,
+      { repo: "acme/web", plugin: "rest", instances: [{ id: "s", name: "S", settings: { connection: "jira", path: "/b" } }] }), params("p"));
+    const listed = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
+    const rest = listed.plugins.find((p: { name: string }) => p.name === "rest");
+    expect(rest.instances.map((i: Record<string, unknown>) => [i.id, i.from_repo, i.server_runs, i.server_runs_reason])).toEqual([
+      ["x", true, false, "`jira` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection"],
+      ["s", false, true, null],
+    ]);
   });
 });
 

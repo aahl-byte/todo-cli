@@ -113,8 +113,8 @@ describe("docs fetched through a connection", () => {
     const server = await serve([{ method: "GET", path: "/a", text: "hi" }]);
     const result = await runInstance({
       plugin: loadPlugins(yaml).plugins!.p, name: "p", instance: { id: "i1", name: "d" }, item: ITEM,
-      event: { type: "manual", instance: "i1" }, dryRun: false, connections: { api: { kind: "http", url: server.url, origin: "host" } },
-    }, { guard: { allow: [] } });
+      event: { type: "manual", instance: "i1" }, dryRun: false, connections: { api: { kind: "http", url: server.url, origin: "repo" } },
+    }, { guard: { allow: ["127.0.0.1"], repoAllow: [] } });
     expect(result.error).toMatch(/isn't an address this host connects to/);
     expect(server.received).toEqual([]);
   });

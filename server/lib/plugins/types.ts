@@ -182,6 +182,8 @@ export interface RunInput {
   repoKey?: string;
   /** The branches the repo's plugins file tracks, as {{track}}. */
   track?: string[];
+  /** The repo's plugins file declares this instance, alone or under a stored override, so it gets none of the host's connections. */
+  repoInstance?: boolean;
 }
 
 export const POST_REQUEST = "post-request";

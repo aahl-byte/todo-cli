@@ -68,28 +68,24 @@ export function bindConnections(plugin: PluginDef, instance: InstanceDef): { plu
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The connections a run gets: a host connection's secret goes only to plugins shipped with todo. */
-function connectionsOf(input: RunInput): Record<string, ResolvedConnection> {
-  if (input.shipped) return input.connections ?? {};
-  const out: Record<string, ResolvedConnection> = {};
-  for (const [name, c] of Object.entries(input.connections ?? {})) {
-    if (c.origin !== "host" || c.secret === undefined) out[name] = c;
-    else {
-      const { secret: _withheld, ...rest } = c;
-      out[name] = rest as ResolvedConnection;
-    }
-  }
-  return out;
+/** Whether a run may use the host's own connections: only a shipped plugin's instance that the repo's file doesn't declare. */
+const hostTrusted = (input: Pick<RunInput, "shipped" | "repoInstance">) => !!input.shipped && !input.repoInstance;
+
+/** The connections a run gets: the host's own only when it may use them. */
+function connectionsOf(input: Pick<RunInput, "connections" | "shipped" | "repoInstance">): Record<string, ResolvedConnection> {
+  if (hostTrusted(input)) return input.connections ?? {};
+  return Object.fromEntries(Object.entries(input.connections ?? {}).filter(([, c]) => c.origin !== "host"));
 }
 
-const hostOnly = (name: string) =>
-  `\`${name}\` is this host's connection, whose credentials only plugins shipped with todo get; declare a repo connection named ${name} and store a repo credential for it`;
+const hostOnly = (name: string, shipped: boolean) => shipped
+  ? `\`${name}\` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection`
+  : `\`${name}\` is this host's connection, which only plugins shipped with todo use; declare a repo connection named ${name}`;
 
 /** Why this host won't run the plugin, if it won't: a connection it lacks, can't authorize, or mustn't start. */
-function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
+function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shipped" | "allowRepoCommands" | "repoInstance">): string | undefined {
   for (const name of input.plugin.connections ?? []) {
     const c = input.connections?.[name];
-    if (c?.kind === "http" && c.auth && !input.shipped && c.origin === "host") return hostOnly(name);
+    if (c?.origin === "host" && !hostTrusted(input)) return hostOnly(name, !!input.shipped);
     if (!c || (c.kind === "http" && c.auth && !c.secret)) return `\`${name}\` not authorized here`;
     if (c.kind === "mcp" && c.command && (c.origin ?? "repo") === "repo" && !input.allowRepoCommands) {
       return `\`${name}\` runs a command, which this host doesn't allow for repo connections`;
@@ -99,7 +95,7 @@ function connectionProblem(input: Pick<RunInput, "plugin" | "connections" | "shi
 }
 
 /** Why this host would skip an instance whatever the item: a connection it can't use, or a required setting with no value. */
-export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands">): string | undefined {
+export function wouldSkip(input: Pick<RunInput, "plugin" | "instance" | "connections" | "shipped" | "allowRepoCommands" | "repoInstance">): string | undefined {
   const bound = bindConnections(input.plugin, input.instance);
   if (bound.problem) return bound.problem;
   const problem = connectionProblem({ ...input, plugin: bound.plugin });
@@ -275,13 +271,14 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: Ev
   const connections = connectionsFor(input, file);
   const results: EventRun[] = [];
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
+    const declared = (file.instances?.[name] ?? []).map((i) => i.id);
     const instances = instancesFor(def, file.instances?.[name] ?? [], input.storedInstances?.[name] ?? [], dropped.includes(name));
     for (const instance of pickInstances(def, instances, input.event)) {
       if (hooks.before && !(await hooks.before(name, instance))) continue;
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
-        repoKey: input.repoKey, track: file.track ?? [],
+        repoKey: input.repoKey, track: file.track ?? [], repoInstance: declared.includes(instance.id),
       }, deps);
       results.push({ plugin: name, instance, result });
       await hooks.after?.(results[results.length - 1]);

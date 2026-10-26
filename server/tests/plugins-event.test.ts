@@ -118,6 +118,10 @@ instances:
     expect(gh.received).toEqual([]);
   });
 
+  /** A repo-declared instance of a shipped plugin gets none of the host's connections. */
+  const REPO_DECLARED = "pr-link: `github` is this host's connection, which an instance declared in the repo's plugins file doesn't get; "
+    + "store the instance on the server instead, or name a repo connection";
+
   it("drops only the broken parts of a plugins file", async () => {
     const { gh, ...conns } = await github();
     const out = await run({ ...conns, repo: { files: {}, text: `
@@ -141,7 +145,7 @@ instances:
       "instances.bad: dropped with its plugin",
     ]);
     expect(out.track).toEqual(["staging"]);
-    expect(summary(out)).toEqual([["pr-link", "mine", [PR.html_url]], ["good", "h", ["good ran"]]]);
+    expect(summary(out)).toEqual([["pr-link", "mine", REPO_DECLARED], ["good", "h", ["good ran"]]]);
     const notYaml = await run({ ...conns, repo: { files: {}, text: "plugins: [unclosed" } });
     expect(notYaml.errors[0]).toMatch(/^plugins.yaml isn't YAML: /);
     expect(summary(notYaml)).toEqual([["pr-link", "default", [PR.html_url]]]);
@@ -158,7 +162,7 @@ instances:
   pr-link: [{id: mine, name: Mine}]
 ` } });
     expect(out.errors).toEqual(["plugin nope: no plugin named nope ships with todo", "plugin coded: coded.js isn't in .todo-plugins/"]);
-    expect(summary(out)).toEqual([["pr-link", "mine", [PR.html_url]]]);
+    expect(summary(out)).toEqual([["pr-link", "mine", REPO_DECLARED]]);
     const shadow = await run({ ...conns, repo: { files: {}, text: "plugins: {pr-link: {on: [push], attach: [{log: mine}]}}" } });
     expect(shadow.errors).toEqual(["plugin pr-link: ships with todo, so the repo can only enable it with use: shipped"]);
     expect(summary(shadow)).toEqual([["pr-link", "default", [PR.html_url]]]);

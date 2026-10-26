@@ -309,10 +309,11 @@ describe("the plugins API", () => {
     expect(body.host_secrets).toEqual(["github"]);
     expect(body.plugins).toEqual([
       { name: "pr-link", connections: ["github"], on: ["push", "pr"], every: null, settings: {},
-        instances: [{ id: "default", name: "default", server_runs: true, server_runs_reason: null }], shipped: true },
+        instances: [{ id: "default", name: "default", server_runs: true, server_runs_reason: null, from_repo: false }], shipped: true },
       { name: "ping", connections: ["hooks"], on: ["push"], every: "1h", settings: { path: { label: "Path", type: "text" } },
-        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false, server_runs_reason: "`hooks` not authorized here" },
-                    { id: "b", name: "B", enabled: false, server_runs: false, server_runs_reason: "`hooks` not authorized here" }],
+        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false, server_runs_reason: "`hooks` not authorized here",
+                      from_repo: true },
+                    { id: "b", name: "B", enabled: false, server_runs: false, server_runs_reason: "`hooks` not authorized here", from_repo: false }],
         shipped: false },
     ]);
     expect(body.runs["pr-link/default"]).toMatchObject({ item: "I1" });

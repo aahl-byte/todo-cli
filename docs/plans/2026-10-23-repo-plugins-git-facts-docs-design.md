@@ -212,10 +212,16 @@ connections:
 
 ### Who may use what
 
-- **Host secrets go to shipped plugins only.** A repo plugin that names a
-  host-wide connection, such as `github` with the server's token, runs without
-  its secret and is skipped as not authorized. Repo plugins bring their own
-  connection and a repo credential.
+- **Host connections go to shipped plugins only**, with or without a secret.
+  A repo plugin uses only the connections its repo declares, with a repo
+  credential; one that names a host-wide connection, such as `github` or
+  `watchtower`, is skipped and says so.
+- **Only instances the host keeps get host connections.** A shipped plugin's
+  default instance, and instances stored on the server (or in the CLI's synced
+  cache or local `.TODO/.plugins.yaml`), may use them. An instance the repo's
+  `plugins.yaml` declares, alone or under a stored override, gets the repo's
+  connections only, so a repo file can't point a shipped plugin at the host's
+  Jira or GitHub token. The dashboard shows such an instance's reason.
 - **A project runs plugins only for its repos.** The server's operator lists
   the GitHub owners it serves (`TODO_PLUGIN_OWNERS`). A repo of a listed owner
   is allowed for a project once a member's CLI has reported a checkout of it,
@@ -225,8 +231,9 @@ connections:
   the team's repos.
 - **No private addresses from the server.** A server connection refuses
   loopback, private and link-local addresses unless
-  `TODO_PLUGIN_ALLOW_HOSTS` lists the host: bare entries for host-wide
-  connections, `owner/name=host` entries for one repo's own connections. The check uses the resolved
+  `TODO_PLUGIN_ALLOW_HOSTS` lists the host: a bare entry opens it to host-wide
+  connections, which only shipped plugins use; a repo's own connections need an
+  `owner/name=host` entry. The check uses the resolved
   address it connects to. The CLI has no such limit, since a dev machine's own
   network is its user's.
 

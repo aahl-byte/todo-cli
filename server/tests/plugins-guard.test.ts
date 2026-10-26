@@ -31,7 +31,7 @@ describe("host secrets", () => {
       hostConnections: { github: { http: { url: "https://api.github.com", auth: "bearer" } } }, secrets: { host: { github: "ghp_host" } },
     }, { fetch });
     const mine = out.results.find((r) => r.plugin === "mine")!;
-    expect(mine.result.skipped).toMatch(/`github` is this host's connection.*declare a repo connection.*store a repo credential/);
+    expect(mine.result.skipped).toMatch(/`github` is this host.s connection, which only plugins shipped with todo use; declare a repo connection named github/);
     expect(sent.map((s) => [s.url, s.auth])).toEqual([
       ["https://api.github.com/repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all", "Bearer ghp_host"]]);
   });
