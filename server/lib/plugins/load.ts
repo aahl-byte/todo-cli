@@ -14,11 +14,11 @@ export class PluginsFileError extends Error {
 }
 
 const FILE_KEYS = ["track", "connections", "plugins", "instances"];
-const PLUGIN_KEYS = ["connections", "on", "every", "exclusive", "capabilities", "settings", "per", "when", "steps", "attach", "code", "use"];
+const PLUGIN_KEYS = ["connections", "on", "every", "exclusive", "capabilities", "settings", "per", "when", "steps", "attach", "code", "use", "gave_up"];
 const YAML_BODY = ["per", "steps", "attach"];
-const STEP_KEYS = ["name", "when", "connection", "tool", "input", "http", "value"];
-const STEP_ACTIONS = ["tool", "http", "value"] as const;
-const HTTP_KEYS = ["method", "path", "query", "body", "headers", "text"];
+const STEP_KEYS = ["name", "when", "connection", "tool", "input", "http", "value", "fail"];
+const STEP_ACTIONS = ["tool", "http", "value", "fail"] as const;
+const HTTP_KEYS = ["method", "path", "query", "body", "headers", "text", "full"];
 export const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 const ATTACH_KEYS = ["each", "when", "key"];
 const SETTING_KEYS = ["label", "type", "default", "optional", "options", "options_from", "scope", "template"];
@@ -27,7 +27,7 @@ const INSTANCE_KEYS = ["id", "name", "enabled", "on", "button", "dry_run", "sett
 const CAPABILITIES = [POST_REQUEST];
 const TRIGGERS = ["push", "pr", "deployment", "manual"];
 /** Names a step can't take, because the scope already has them or they'd reach an object's prototype. */
-const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "track", "__proto__", "constructor", "prototype"];
+const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "track", "instance", "trigger", "run", "__proto__", "constructor", "prototype"];
 /** Names a connection can't take, because a code plugin's run() argument already has them. */
 const RESERVED_CONNECTIONS = ["item", "event", "settings", "attach", "wait", "dryRun"];
 const STEP_NAME = /^[A-Za-z_]\w*$/;
@@ -79,10 +79,16 @@ function stepErrors(step: unknown, connections: string[]): string[] {
   if (!isMap(step)) return ["a step must be a map"];
   const errors = unknownKeys(step, STEP_KEYS);
   const actions = STEP_ACTIONS.filter((a) => a in step);
-  if (actions.length !== 1) return [...errors, "a step is exactly one of tool, http or value"];
+  if (actions.length !== 1) return [...errors, "a step is exactly one of tool, http, value or fail"];
   if ("name" in step && (typeof step.name !== "string" || !STEP_NAME.test(step.name))) errors.push(`step name ${JSON.stringify(step.name)} must be a plain identifier`);
   else if (RESERVED.includes(step.name as string)) errors.push(`step name "${step.name}" is taken by the scope`);
   if ("when" in step) errors.push(...exprProblems(step.when, "when"));
+  if (actions[0] === "fail") {
+    if (typeof step.fail !== "string") errors.push("fail is the message to stop with");
+    else errors.push(...templateErrors(step.fail));
+    if ("connection" in step || "input" in step || "name" in step) errors.push("a fail step calls nothing and names nothing");
+    return errors;
+  }
   if (actions[0] === "value") {
     errors.push(...exprProblems(step.value, "value"));
     if ("connection" in step || "input" in step) errors.push("a value step calls nothing, so it takes no connection or input");
@@ -113,6 +119,7 @@ function stepErrors(step: unknown, connections: string[]): string[] {
   }
   if ("text" in http && typeof http.text !== "string") errors.push("http text must be a string");
   if ("text" in http && "body" in http) errors.push("an http step sends a body or a text, not both");
+  if ("full" in http && typeof http.full !== "boolean") errors.push("http full is true or false");
   errors.push(...templateErrors(http.path), ...templateErrors(http.query), ...templateErrors(http.body), ...templateErrors(http.headers),
               ...templateErrors(http.text));
   return errors;
@@ -191,6 +198,7 @@ export function pluginErrors(name: string, def: unknown, opts: LoadOptions = {})
     else errors.push(...Object.entries(def.settings).flatMap(([k, s]) => settingErrors(k, s)));
   }
   if ("when" in def) errors.push(...exprProblems(def.when, "when"));
+  if ("gave_up" in def) errors.push(...(typeof def.gave_up === "string" ? templateErrors(def.gave_up) : ["gave_up is a template string"]));
   if ("code" in def) {
     if (typeof def.code !== "string" || !CODE_FILE.test(def.code)) errors.push("code names a .js file in .todo-plugins/");
     if (YAML_BODY.some((k) => k in def)) errors.push("a code plugin has no per, steps or attach");

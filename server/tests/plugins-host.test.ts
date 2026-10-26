@@ -271,7 +271,7 @@ plugins:
       - {link: {type: pr}}
 `)).toEqual([
       'plugin bad: unknown key "until"',
-      "plugin bad: steps[0]: a step is exactly one of tool, http or value",
+      "plugin bad: steps[0]: a step is exactly one of tool, http, value or fail",
       "plugin bad: steps[1]: {{item.id | upper}} is not a path",
       "plugin bad: attach[0]: link needs url",
     ]);

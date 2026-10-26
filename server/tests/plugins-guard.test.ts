@@ -144,14 +144,17 @@ describe("retrying", () => {
   });
   const answering = (status: number) => (async () => new Response("", { status })) as typeof globalThis.fetch;
 
-  it("marks a run transient only when the failure was a network error, 5xx or 429 and every call only read", async () => {
+  it("marks a run transient only when the failure was a network error, 5xx or 429 and no write went through", async () => {
     const get = [{ http: { method: "GET", path: "/a" } }];
     const post = [{ http: { method: "POST", path: "/a" } }];
     expect((await runInstance(plugin(get), { fetch: answering(503) })).transient).toBe(true);
     expect((await runInstance(plugin(get), { fetch: answering(429) })).transient).toBe(true);
     expect((await runInstance(plugin(get), { fetch: (async () => { throw new Error("ECONNRESET"); }) as typeof globalThis.fetch })).transient).toBe(true);
     expect((await runInstance(plugin(get), { fetch: answering(404) })).transient).toBeUndefined();
-    expect((await runInstance(plugin(post), { fetch: answering(503) })).transient).toBeUndefined();
+    expect((await runInstance(plugin(post), { fetch: answering(503) })).transient).toBe(true);
+    let n = 0;
+    const secondFails = (async () => new Response("", { status: n++ ? 503 : 200 })) as typeof globalThis.fetch;
+    expect((await runInstance(plugin([...post, { http: { method: "POST", path: "/b" } }]), { fetch: secondFails })).transient).toBeUndefined();
   });
 });
 

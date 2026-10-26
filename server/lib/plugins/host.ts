@@ -114,6 +114,13 @@ function secretsOf(input: RunInput): string[] {
   return out.filter(Boolean);
 }
 
+/** What set a run off, in the words the dev log uses: `review → in-qa`, `manual`, `push feat/x`. */
+export function triggerLabel(event: PluginEvent): string {
+  if (event.type === "status") return `${event.from} → ${event.to}`;
+  if (event.type === "push" || event.type === "pr" || event.type === "deployment") return `${event.type} ${event.branch}`;
+  return event.type;
+}
+
 export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise<RunResult> {
   const result: RunResult = { attached: [], wouldSend: [], log: [] };
   const { instance, item, event } = input;
@@ -149,7 +156,8 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
                       memoryBytes: input.limits?.memoryBytes, sleep: deps.sleep, isolation: deps.isolation, workerUrl: deps.workerUrl,
                       slots: deps.codeSlots ?? hostCodeSlots(), repoKey: input.repoKey ?? "" });
     } else {
-      const { skipped } = await runYaml({ name, plugin, item, event, settings, track: input.track ?? [], calls, result, attached, mayRequest });
+      const self = { instance: { id: instance.id, name: instance.name }, trigger: triggerLabel(event), run: { at: new Date().toISOString() } };
+      const { skipped } = await runYaml({ name, plugin, item, event, settings, track: input.track ?? [], self, calls, result, attached, mayRequest });
       if (skipped) return skip(skipped);
     }
     await fetchDocs(plugin, `${name}/${instance.id}`, item, connectionsOf(input), calls, attached, result);

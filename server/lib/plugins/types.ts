@@ -24,6 +24,8 @@ export interface Call {
   headers?: Record<string, string>;
   /** A body sent as text rather than as JSON. */
   text?: string;
+  /** Answer {status, body, method, url} rather than the body alone. */
+  full?: boolean;
 }
 
 export interface RunResult {
@@ -34,6 +36,8 @@ export interface RunResult {
   error?: string;
   /** The host held back every write, though the run wasn't asked to be a dry run. */
   dryRun?: boolean;
+  /** For a run that failed in one of its passes: the error without the pass's label, and the pass ({issue} or {branch}). */
+  failure?: { message: string; pass: Record<string, string> };
   /** The error was a network failure, a 5xx or a 429, and every call the run made only read, so running it again is safe. */
   transient?: boolean;
 }
@@ -77,6 +81,8 @@ export interface HttpStep {
   headers?: Record<string, string> | string;
   /** A body sent as text, in place of a JSON body. */
   text?: string;
+  /** The step's result is {status, body, method, url}, not the body alone. */
+  full?: boolean;
 }
 
 export interface StepDef {
@@ -87,6 +93,8 @@ export interface StepDef {
   input?: unknown;
   http?: HttpStep;
   value?: string;
+  /** Stop the run with this message, which a host may retry like a failed send. */
+  fail?: string;
 }
 
 export type AttachDef = {
@@ -109,6 +117,8 @@ export interface PluginDef {
   code?: string;
   /** Where to get the plugin instead of a body here, e.g. shipped; resolved before a run. */
   use?: string;
+  /** The dev-log line a host writes when it stops retrying a run: a template over instance, trigger, attempts, error and the pass. */
+  gave_up?: string;
 }
 
 export interface InstanceDef {

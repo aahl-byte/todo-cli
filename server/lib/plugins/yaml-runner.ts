@@ -1,7 +1,7 @@
 // The YAML interpreter: per fans the run out, when gates, steps call or compute
 // in order, and attach turns the results into attachments.
 import { AttachError, makeAttachment } from "./attachments";
-import { withQuery, type Calls } from "./connections";
+import { PluginFailure, withQuery, type Calls } from "./connections";
 import { search, test } from "./expr";
 import { addLog, type Attached } from "./limits";
 import { METHODS, settingRef } from "./load";
@@ -16,6 +16,8 @@ export interface YamlRun {
   settings: Record<string, unknown>;
   /** The branches the repo's plugins file tracks. */
   track: string[];
+  /** The run's own facts: its instance, what set it off, and when. */
+  self: Scope;
   calls: Calls;
   result: RunResult;
   attached: Attached;
@@ -85,7 +87,7 @@ function callFor(step: StepDef, plugin: PluginDef, scope: Scope): Call {
   if (!path.startsWith("/")) throw new TemplateError(`setting ${settingRef(http.path)} must start with /`);
   const rawQuery = splice(http.query, plugin, scope);
   const query = rawQuery ? (fillJson(rawQuery, scope) as Record<string, unknown>) : undefined;
-  const call: Call = { connection, method, path: withQuery(fillUrl(path, scope), query) };
+  const call: Call = { connection, method, path: withQuery(fillUrl(path, scope), query), ...(http.full ? { full: true } : {}) };
   const headers = headersOf(splice(http.headers, plugin, scope), scope);
   if (headers && Object.keys(headers).length) call.headers = headers;
   const text = splice(http.text, plugin, scope);
@@ -145,7 +147,7 @@ export async function runYaml(run: YamlRun): Promise<{ skipped?: string }> {
   if (!all.length) return { skipped: plugin.per === "branch" ? "the item has no branches" : "the item has no Jira issues" };
   let gated = 0;
   for (const { label, extra } of all) {
-    const scope: Scope = { item, event: run.event, settings: run.settings, track: run.track, ...extra };
+    const scope: Scope = { item, event: run.event, settings: run.settings, track: run.track, ...run.self, ...extra };
     try {
       if (plugin.when !== undefined && !test(plugin.when, scope)) {
         gated++;
@@ -157,6 +159,7 @@ export async function runYaml(run: YamlRun): Promise<{ skipped?: string }> {
           if (step.name) scope[step.name] = null;
           continue;
         }
+        if (step.fail !== undefined) throw new PluginFailure(fillString(step.fail, scope));
         const value = step.value !== undefined ? search(step.value, scope) : await run.calls.send(callFor(step, plugin, scope));
         if (step.name) scope[step.name] = value ?? null;
       }
@@ -164,6 +167,7 @@ export async function runYaml(run: YamlRun): Promise<{ skipped?: string }> {
       attachAll(run, scope, label, attached);
       for (const a of attached) run.attached.add(a, run.result);
     } catch (e) {
+      if (label) run.result.failure = { message: e instanceof Error ? e.message : String(e), pass: extra as Record<string, string> };
       throw withLabel(label, e);
     }
   }

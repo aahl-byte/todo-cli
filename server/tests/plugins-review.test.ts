@@ -310,13 +310,19 @@ describe("delivery", () => {
     expect((await w.d.query("select text from logs order by n")).map((r) => r.text)).toEqual(["steady ran", "flaky ran"]);
   });
 
-  it("doesn't retry a run that wrote before failing", async () => {
+  it("retries a run whose first write failed for now, and never one whose write went through", async () => {
     const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}", "plugins:",
-      "  poster:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: POST, path: /}}]", "    attach: []"].join("\n");
-    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("https://hooks.example") ? new Response("", { status: 503 }) : undefined) });
+      "  poster:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: POST, path: /one}}, {http: {method: POST, path: /two}}]",
+      "    attach: []"].join("\n");
+    let first = 503;
+    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("https://hooks.example")
+      ? new Response("", { status: url.endsWith("/one") ? first : 503 }) : undefined) });
     await onBranch([]);
     await w.d.query("delete from plugin_events");
     await push("main");
+    expect(await run(gh.impl)).toEqual({ ran: 0, failed: 1 });
+    first = 200;
+    await w.d.query("update plugin_events set next_attempt_at = now()");
     expect(await run(gh.impl)).toEqual({ ran: 1, failed: 0 });
   });
 

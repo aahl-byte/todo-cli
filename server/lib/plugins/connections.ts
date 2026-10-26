@@ -246,12 +246,15 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
       if (call.tool) throw new CallError(`${name}: an http connection takes method calls, not the tool ${call.tool}`);
       const { res } = await request(call, "application/json");
       const text = await res.text().catch(() => "");
-      if (!text) return null;
-      try {
-        return JSON.parse(text);
-      } catch {
-        return text;
+      let body: unknown = null;
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
       }
+      return call.full ? { status: res.status, body } : body;
     },
     async fetchBytes(path, max) {
       const { res, what } = await request({ connection: name, method: "GET", path }, "*/*");
@@ -359,6 +362,9 @@ export function describeCall(call: Call): string {
   return call.tool ? `${call.connection} ${call.tool}` : `${call.connection} ${call.method} ${call.path}`;
 }
 
+/** A YAML plugin's fail step: it ran again, as a failed send did, until a write goes through. */
+export class PluginFailure extends Error {}
+
 export class DeadlineError extends Error {
   constructor(message = "the run passed its deadline") {
     super(message);
@@ -405,8 +411,8 @@ export class Calls {
     }
   }
 
-  /** A call went out that may have changed something. */
-  wrote = false;
+  /** A write went through, so running the run again could repeat it. */
+  wroteOk = false;
   /** The last call that failed. */
   failure?: CallError;
 
@@ -420,9 +426,15 @@ export class Calls {
       addLog(this.result, `would send ${describeCall(call)}`);
       return null;
     }
-    if (!readOnly) this.wrote = true;
     try {
-      return await this.withinDeadline(c.send(call), call);
+      const answer = await this.withinDeadline(c.send(call), call);
+      if (!readOnly) this.wroteOk = true;
+      if (call.full && answer && typeof answer === "object") {
+        const def = this.defs[call.connection];
+        const base = def && "url" in def && def.url ? def.url.replace(/\/+$/, "") : "";
+        return { ...(answer as object), method: call.method, url: base + (call.path ?? "") };
+      }
+      return answer;
     } catch (e) {
       if (e instanceof CallError) this.failure = e;
       throw e;
@@ -443,10 +455,12 @@ export class Calls {
     }
   }
 
-  /** Whether the run's failure can be retried: the last failed call was transient and nothing was written. */
+  /** Whether the run's failure can be retried: no write went through, and the failure was transient or the plugin's own. */
   retryable(e: unknown): boolean {
+    if (this.wroteOk) return false;
+    if (e instanceof PluginFailure) return true;
     const failure = e instanceof CallError ? e : this.failure;
-    return !!failure?.transient && !this.wrote;
+    return !!failure?.transient;
   }
 
   async close(): Promise<void> {
