@@ -149,7 +149,7 @@ export interface InstanceDraft {
   declared: boolean;
   /** The repo file's version of a declared instance, which a save overrides only where the draft differs. */
   base?: InstanceDef;
-  /** The id it was stored under, whose secrets the server keeps; null for a new or duplicated instance. */
+  /** The id the server lists it under, which keeps its secrets; null for a new or duplicated instance. */
   storedAs: string | null;
   /** Its settings as they were loaded, secrets masked. */
   loaded: Record<string, unknown>;
@@ -166,7 +166,7 @@ export interface PluginDraft {
 let counter = 0;
 const nextKey = () => `d${++counter}`;
 
-export function draftInstance(plugin: PluginShape, inst: InstanceDef, opts: { declared: boolean; base?: InstanceDef; stored: boolean }): InstanceDraft {
+export function draftInstance(plugin: PluginShape, inst: InstanceDef, opts: { declared: boolean; base?: InstanceDef; loaded: boolean }): InstanceDraft {
   const settings: Record<string, Value> = {};
   for (const [k, def] of Object.entries(plugin.settings ?? {})) {
     if (def.scope !== "plugin") settings[k] = draftValue(def, inst.settings?.[k]);
@@ -174,12 +174,12 @@ export function draftInstance(plugin: PluginShape, inst: InstanceDef, opts: { de
   return {
     key: nextKey(), id: inst.id, name: inst.name ?? inst.id, enabled: inst.enabled !== false, dryRun: !!inst.dry_run, button: inst.button ?? "",
     inherit: inst.on === undefined, triggers: (inst.on ?? plugin.on ?? []).map(draftTrigger), settings,
-    declared: opts.declared, base: opts.base, storedAs: opts.stored || opts.declared ? inst.id : null, loaded: { ...(inst.settings ?? {}) },
+    declared: opts.declared, base: opts.base, storedAs: opts.loaded ? inst.id : null, loaded: { ...(inst.settings ?? {}) },
   };
 }
 
-/** Drafts for a plugin's instances. `declared` maps each id the repo file declares (or the automatic default) to its definition there. */
-export function draftPlugin(plugin: PluginShape, instances: InstanceDef[], declared: Record<string, InstanceDef>, storedIds: string[]): PluginDraft {
+/** Drafts for a plugin's instances as the server lists them. `declared` maps each id the repo file declares to its definition there. */
+export function draftPlugin(plugin: PluginShape, instances: InstanceDef[], declared: Record<string, InstanceDef>): PluginDraft {
   const shared: Record<string, Value> = {};
   for (const [k, def] of Object.entries(plugin.settings ?? {})) {
     if (def.scope !== "plugin") continue;
@@ -187,7 +187,7 @@ export function draftPlugin(plugin: PluginShape, instances: InstanceDef[], decla
     shared[k] = draftValue(def, withValue?.settings?.[k]);
   }
   return {
-    instances: instances.map((i) => draftInstance(plugin, i, { declared: i.id in declared, base: declared[i.id], stored: storedIds.includes(i.id) })),
+    instances: instances.map((i) => draftInstance(plugin, i, { declared: i.id in declared, base: declared[i.id], loaded: true })),
     shared,
   };
 }
@@ -200,7 +200,7 @@ function uniqueId(base: string, taken: string[]): string {
 
 export function addInstance(plugin: PluginShape, draft: PluginDraft): PluginDraft {
   const id = uniqueId("instance", draft.instances.map((i) => i.id));
-  const inst = draftInstance(plugin, { id, name: id }, { declared: false, stored: false });
+  const inst = draftInstance(plugin, { id, name: id }, { declared: false, loaded: false });
   return { ...draft, instances: [...draft.instances, inst] };
 }
 

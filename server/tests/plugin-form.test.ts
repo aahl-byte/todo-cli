@@ -123,7 +123,7 @@ const WATCH: PluginShape = {
 describe("instances", () => {
   const start = { id: "start", name: "Start agent", on: ["manual" as const], settings: { prompt: "/todo {{item.id}}", token: { set: true }, never: ["Done"] } };
   const review = { id: "review", name: "Review agent", on: [{ status: { to: "review" } }], settings: { never: ["Done"] } };
-  const draft = () => draftPlugin(WATCH, [start, review], {}, ["start", "review"]);
+  const draft = () => draftPlugin(WATCH, [start, review], {});
 
   it("draft each instance with its triggers and settings, and plugin-scope settings once", () => {
     const d = draft();
@@ -182,7 +182,7 @@ describe("instances", () => {
 
   it("refuse bad or repeated ids and bad values, and warn about empty required settings", () => {
     const shape: PluginShape = { settings: { project: { label: "Project", type: "text" }, n: { label: "N", type: "number", optional: true } } };
-    let d = draftPlugin(shape, [{ id: "a", name: "a" }, { id: "b", name: "b" }], {}, []);
+    let d = draftPlugin(shape, [{ id: "a", name: "a" }, { id: "b", name: "b" }], {});
     d = editInstance(d, d.instances[1].key, { id: "a" });
     d = editInstance(d, d.instances[0].key, { settings: { project: "", n: "x" } });
     const out = savedInstances(shape, d);
@@ -204,14 +204,14 @@ describe("instances the repo file declares", () => {
   const base = { id: "web", name: "Web", settings: { project: "p1" } };
 
   it("save nothing for an untouched one and only the difference for a changed one", () => {
-    let d = draftPlugin(shape, [base, { id: "extra", name: "Extra", settings: { project: "p2" } }], { web: base }, ["extra"]);
+    let d = draftPlugin(shape, [base, { id: "extra", name: "Extra", settings: { project: "p2" } }], { web: base });
     expect(savedInstances(shape, d).instances).toEqual([{ id: "extra", name: "Extra", settings: { project: "p2" } }]);
     d = editInstance(d, d.instances[0].key, { settings: { project: "p1", team: "t" }, dryRun: true });
     expect(savedInstances(shape, d).instances[0]).toEqual({ id: "web", name: "Web", dry_run: true, settings: { team: "t" } });
   });
 
   it("switch one off instead of removing it, and keep the repo file's order", () => {
-    let d = draftPlugin(shape, [base, { id: "extra", name: "Extra" }], { web: base }, ["extra"]);
+    let d = draftPlugin(shape, [base, { id: "extra", name: "Extra" }], { web: base });
     d = removeInstance(d, d.instances[0].key);
     expect(d.instances[0]).toMatchObject({ id: "web", enabled: false });
     expect(savedInstances(shape, d).instances[0]).toEqual({ id: "web", name: "Web", enabled: false });

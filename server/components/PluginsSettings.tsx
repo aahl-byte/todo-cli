@@ -160,7 +160,7 @@ function ConnectionRow({ projectKey, repo, c }: { projectKey: string; repo: stri
 
 function PluginCard({ projectKey, repo, plugin, statuses }: { projectKey: string; repo: string; plugin: DashPlugin; statuses: readonly string[] }) {
   const router = useRouter();
-  const [draft, setDraft] = useState<PluginDraft>(() => draftPlugin(plugin, plugin.instances, plugin.declared, plugin.stored));
+  const [draft, setDraft] = useState<PluginDraft>(() => draftPlugin(plugin, plugin.instances, plugin.declared));
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null);
   const [pending, start] = useTransition();

@@ -56,8 +56,6 @@ export interface DashPlugin {
   instances: DashInstance[];
   /** Instances the repo file declares, as it declares them. */
   declared: Record<string, InstanceDef>;
-  /** Ids with a stored row. */
-  stored: string[];
   /** Capabilities a shipped plugin declares, and what's granted. */
   capabilities: string[];
   grant: { capabilities: string[]; by: string; at: string } | null;
@@ -138,7 +136,6 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
     return {
       name: p.name, shipped: p.shipped, connections: p.connections, on: p.on, every: p.every, exclusive: !!def.exclusive,
       per: def.per ?? null, code: !!def.code, settings: p.settings, instances: p.instances, declared,
-      stored: (view.instances[p.name] ?? []).map((i) => i.id),
       capabilities: p.shipped ? def.capabilities ?? [] : [], grant: grants[p.name] ?? null,
       runs: Object.fromEntries(p.instances.map((i) => [i.id, runs[`${p.name}/${i.id}`] ?? []])),
     };

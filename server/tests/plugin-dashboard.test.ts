@@ -55,7 +55,7 @@ describe("the plugins settings page", () => {
     const [repo] = page.repos;
     expect(repo.plugins.map((p) => [p.name, p.shipped])).toEqual([["pr-link", true], ["note", false], ["ping", false]]);
     const note = repo.plugins.find((p) => p.name === "note")!;
-    expect(note).toMatchObject({ on: ["manual"], declared: { go: { id: "go", name: "Go", button: "Say hi" } }, stored: [], exclusive: false });
+    expect(note).toMatchObject({ on: ["manual"], declared: { go: { id: "go", name: "Go", button: "Say hi" } }, exclusive: false });
     expect(note.instances[0]).toMatchObject({ id: "go", server_runs: true });
     expect(repo.errors.join("\n")).toContain("plugin broken");
     expect(repo.connections.map((c) => [c.name, c.origin, c.needsSecret, c.held, c.usedBy])).toEqual([
@@ -83,7 +83,7 @@ describe("the plugins settings page", () => {
     const load = async () => (await pluginsPage(w.d, "p")).repos[0].plugins.find((p) => p.name === "note")!;
     const note = await load();
     expect(note.instances.map((i) => [i.id, i.settings ?? {}])).toEqual([["go", { key: { set: true } }], ["two", {}]]);
-    let draft = draftPlugin(note, note.instances, note.declared, note.stored);
+    let draft = draftPlugin(note, note.instances, note.declared);
     draft = editInstance(draft, draft.instances[1].key, { settings: { greeting: "hello", key: { state: "unset" } }, dryRun: true });
     const saved = savedInstances(note, draft);
     expect(saved.errors).toEqual([]);
