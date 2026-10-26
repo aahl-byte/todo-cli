@@ -259,12 +259,12 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
       let size = 0;
       const reader = res.body?.getReader();
       try {
-        for (;;) {
-          const { done, value } = reader ? await reader.read() : { done: true, value: undefined };
+        while (reader) {
+          const { done, value } = await reader.read();
           if (done) break;
           size += value.byteLength;
           if (size > max) {
-            await reader!.cancel().catch(() => {});
+            await reader.cancel().catch(() => {});
             return null;
           }
           chunks.push(value);
