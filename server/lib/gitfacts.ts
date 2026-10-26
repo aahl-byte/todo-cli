@@ -21,6 +21,8 @@ export interface BranchFact {
   landed?: string; in?: Record<string, boolean | null>; unknown?: string;
   /** The chain ended at a branch no open item owns. */
   orphan?: string;
+  /** Blocks nothing: the PR's base is a branch nothing tracks, in a repo with no `track:` list. */
+  hint?: string;
   /** Deleted, and its last merged PR carried this head: it has landed. */
   merged_gone?: boolean;
 }
@@ -247,9 +249,14 @@ async function branchFacts(c: Ctx, it: ItemRow, old: GitFacts): Promise<BranchFa
   return out;
 }
 
-/** T(B): follow an open PR's base through branches open items own; a tracked or default branch ends the chain as T(B),
- * any other ends it as an orphan. With no open PR, the first tracked branch, else the default. */
-function targets(c: Ctx, facts: Map<string, Facts>, owners: Map<string, string>): void {
+export const untrackedHint = (branch: string, base: string) =>
+  `${branch}'s PR is based on ${base}; if ${base} is long-lived, add it under track: in ${PLUGINS_FILE}`;
+
+/** T(B): follow an open PR's base through branches open items own, to the first branch none owns. That branch is T(B)
+ * when it's tracked, the default, or any other branch on the remote; an untracked one is an orphan beside a `track:` list
+ * and a hint without one. A base a cancelled or archived item lists, or one gone from the remote, ends the chain as an
+ * orphan. With no open PR, the first tracked branch, else the default. */
+function targets(c: Ctx, facts: Map<string, Facts>, owners: Map<string, string>, others: Map<string, ItemRow>): void {
   const byName = new Map<string, BranchFact>();
   for (const [uid, fx] of facts) for (const b of fx.branches) if (owners.get(b.name) === uid) byName.set(b.name, b);
   const fallback = c.track.find((t) => c.tips[t]) ?? c.def;
@@ -261,7 +268,13 @@ function targets(c: Ctx, facts: Map<string, Facts>, owners: Map<string, string>)
         const base = cur.pr && OPEN_PR.includes(cur.pr.state) ? cur.pr.base : null;
         if (!base || seen.has(base)) break;
         if (c.fixed.has(base)) { target = base; break; }
-        if (!owners.has(base)) { b.orphan = base; break; }
+        if (!owners.has(base)) {
+          const untracked = !!c.tips[base] && !others.has(base);
+          if (untracked) target = base;
+          if (untracked && !c.track.length) b.hint = untrackedHint(b.name, base);
+          else b.orphan = base;
+          break;
+        }
         chain.push(base);
         seen.add(base);
         cur = byName.get(base)!;
@@ -583,7 +596,7 @@ async function computeRepo(c: Ctx, items: ItemRow[], all: ItemRow[], stored: Map
     facts.set(it.uid, { repo: c.gh.key, branches: await branchFacts(c, it, stored.get(it.uid) ?? {}),
                         needs: [], needed_by: [], shares: [], overlaps: [] });
   }
-  targets(c, facts, owners);
+  targets(c, facts, owners, others);
   const files = await relations(c, items, facts, stored, others);
   for (const it of items) {
     if (it.status === "cancelled") continue;

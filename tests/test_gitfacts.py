@@ -97,10 +97,8 @@ class Fixture:
         return gitfacts.load(self.root, store.resolve_item(self.root, item_id))
 
 
-@pytest.fixture
-def fx(tmp_path, monkeypatch):
-    f = Fixture(tmp_path)
-
+def fake_github(f, monkeypatch):
+    """PR lists answered from `f.prs`; anything else unanswered."""
     def fake_get(path):
         if "/pulls?state=closed&base=" in path:
             base = path.split("base=")[1].split("&")[0].replace("%2F", "/")
@@ -113,6 +111,11 @@ def fx(tmp_path, monkeypatch):
 
     monkeypatch.setattr(gitfacts, "gh_get", fake_get)
     return f
+
+
+@pytest.fixture
+def fx(tmp_path, monkeypatch):
+    return fake_github(Fixture(tmp_path), monkeypatch)
 
 
 def edge_view(edges):
@@ -900,7 +903,7 @@ def test_a_pr_based_on_a_branch_no_item_tracks_is_unknown_and_blocks(fx, capsys)
     fx.refresh()
     [e] = fx.facts(b)["needs"]
     assert e["state"] == "unknown" and e["reason"] == "PR based on feat/a, which no item tracks"
-    assert "retarget the PR" in e["evidence"] and fx.facts(b)["branches"][0]["target"] == "staging"
+    assert "retarget the PR" in e["evidence"] and fx.facts(b)["branches"][0]["target"] == "feat/a"
     assert "which no item tracks" in refused(fx, b, capsys)
 
 
@@ -1199,3 +1202,63 @@ def test_the_rewritten_hint_clears_after_a_squash_landing_too(fx):
     fx.merge("staging", "feat/b")
     gitfacts.refresh(fx.root, [store.resolve_item(fx.root, b)])
     assert fx.facts(b)["shares"] == [] and fx.facts(b)["needs"] == []
+
+
+# ── a PR based on a branch nothing tracks ────────────────────────────────────
+def staging_ahead_of_main(tmp_path, monkeypatch, track):
+    """Alpha's work merged into staging, which main lacks; Beta cut from staging
+    after that, with a PR based on staging."""
+    fx = fake_github(Fixture(tmp_path, track=track), monkeypatch)
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.merge("feat/a", "staging")
+    fx.commit("staging", "s.txt", "s\n")
+    fx.branch("feat/b")
+    fx.commit("feat/b", "b.txt", "b\n")
+    a, b = fx.item("Alpha", ["feat/a"]), fx.item("Beta", ["feat/b"])
+    fx.pr("feat/b", 8)
+    fx.refresh()
+    return fx, a, b
+
+
+def test_without_track_a_pr_based_on_staging_targets_staging_with_a_hint(tmp_path, monkeypatch):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track=None)
+    f = fx.facts(b)
+    assert f["needs"] == [] and f["shares"] == [] and f["waits_on"] == []
+    assert fx.facts(a)["needed_by"] == []
+    br = f["branches"][0]
+    assert br["target"] == "staging" and "orphan" not in br
+    assert "based on staging" in br["hint"] and "track:" in br["hint"] and ".todo-plugins/plugins.yaml" in br["hint"]
+    approve(fx, b)
+    run_cli(fx.root, ["stage", b])
+    it = store.get_item(fx.root, b)
+    assert it["status"] == "ready-to-deploy" and it["history"][-1]["forced"] is False
+
+
+def test_the_untracked_base_hint_shows_in_get_and_deps_but_not_list(tmp_path, monkeypatch, capsys):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track=None)
+    capsys.readouterr()
+    run_cli(fx.root, ["get", b])
+    assert "hint: feat/b's PR is based on staging" in capsys.readouterr().out
+    run_cli(fx.root, ["deps"])
+    out = capsys.readouterr().out
+    assert b in out and "if staging is long-lived" in out and "rebase" not in out
+    run_cli(fx.root, ["list"])
+    assert "waits on" not in capsys.readouterr().out
+
+
+def test_with_staging_tracked_a_pr_based_on_it_has_no_hint_and_no_edge(tmp_path, monkeypatch):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track="[staging, main]")
+    f = fx.facts(b)
+    assert f["needs"] == [] and f["waits_on"] == [] and fx.facts(a)["needed_by"] == []
+    assert f["branches"][0]["target"] == "staging" and "hint" not in f["branches"][0]
+
+
+def test_with_a_track_list_a_pr_based_on_an_untracked_branch_still_blocks(tmp_path, monkeypatch, capsys):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track="[main]")
+    f = fx.facts(b)
+    [e] = f["needs"]
+    assert (e["needs"], e["state"], e["reason"]) == ("branch:staging", "unknown", "PR based on staging, which no item tracks")
+    assert f["branches"][0]["target"] == "staging" and "hint" not in f["branches"][0]
+    assert f["waits_on"] == ["branch:staging"]
+    assert "which no item tracks" in refused(fx, b, capsys)

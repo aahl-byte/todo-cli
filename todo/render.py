@@ -150,7 +150,7 @@ def git_lines(facts: dict) -> list:
 
 
 def dep_lines(facts: dict) -> list:
-    """Needs, needed by, conflicts and overlaps, indented under a heading each."""
+    """Needs, needed by, conflicts and overlaps, indented under a heading each, then branch hints."""
     out = []
     for label, key in (("needs", "needs"), ("needed by", "needed_by")):
         if facts.get(key):
@@ -167,6 +167,7 @@ def dep_lines(facts: dict) -> list:
             out += [f'    {r["id"]} ({r["branch"]}) with {r["via"]}: {", ".join(r["files"])}' for r in facts[key]]
     if facts.get("conflicts") or facts.get("overlaps"):
         out.append(f"  hint: {HINT}")
+    out += [f'  hint: {b["hint"]}' for b in facts.get("branches") or [] if b.get("hint")]
     if facts.get("notice"):
         out.append(f'  note: {facts["notice"]}')
     return out
