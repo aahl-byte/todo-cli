@@ -274,7 +274,7 @@ function Steps({ steps, lead, onSetup }: { steps: Step[]; lead: string; onSetup:
                   <CopyButton text={s.code} tip="copy the YAML" className="btn">Copy</CopyButton>
                 </div>
               )}
-              {s.code && s.who !== "repo" && <> {s.code.split("\n").map((v) => <code key={v} className="env">{v}</code>)}</>}
+              {s.code && s.who !== "repo" && <div className="step-env">{s.code.split("\n").map((v) => <code key={v} className="env">{v}</code>)}</div>}
             </div>
           </li>
         ))}

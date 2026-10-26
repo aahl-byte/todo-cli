@@ -176,7 +176,8 @@ function turnOnStep(repo: DashRepo, name: string, done: boolean): Step {
   const under = repo.source?.exists && repo.source.pluginsKey;
   return {
     who: "repo",
-    text: `A developer commits this to ${PLUGINS_FILE} on ${branchOf(repo)}${under ? ", under plugins:" : ""}.`,
+    text: under ? `A developer adds this line under plugins: in ${PLUGINS_FILE} on ${branchOf(repo)} and commits it.`
+      : `A developer commits this to ${PLUGINS_FILE} on ${branchOf(repo)}.`,
     code: under ? `  ${line}` : `plugins:\n  ${line}`,
     done: false,
   };
@@ -294,7 +295,7 @@ function offeredRow(repo: DashRepo, name: string, description: string | null, co
 
 function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRow {
   const copy = p.shipped ? SHIPPED_COPY[p.name] : undefined;
-  const title = copy?.title ?? p.description ?? p.name;
+  const title = copy?.title ?? p.description?.replace(/\.$/, "") ?? p.name;
   const enabled = p.instances.filter((i) => i.enabled !== false);
   const steps: Step[] = [];
   if (p.shipped && !p.always) steps.push(turnOnStep(repo, p.name, true));

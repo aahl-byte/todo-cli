@@ -756,6 +756,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .auto-steps li.done .step-mark { color: var(--cyan); }
 .auto-steps .who { font: 600 9px var(--disp); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
 .auto-steps li.done .who { color: var(--faint); }
+.step-env { margin-top: 3px; }
 .auto-steps code.env { display: inline-block; margin-right: 4px; overflow-wrap: anywhere; }
 .step-code { display: flex; gap: 8px; align-items: flex-start; margin-top: 5px; min-width: 0; }
 .step-code pre { margin: 0; padding: 6px 10px; min-width: 0; overflow-x: auto; background: var(--ink); border: 1px solid var(--line); border-radius: 5px;

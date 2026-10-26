@@ -131,7 +131,7 @@ describe("a repo with a plugins file", () => {
   it("adds a plugin's line under the file's plugins: map", () => {
     const rows = automationRows(repo({ source, offered: [offer("db-request", ["db-request"])] }), ctx());
     expect(row(rows, "db-request").steps[0]).toMatchObject({
-      text: "A developer commits this to .todo-plugins/plugins.yaml on main, under plugins:.", code: "  db-request: {use: shipped}" });
+      text: "A developer adds this line under plugins: in .todo-plugins/plugins.yaml on main and commits it.", code: "  db-request: {use: shipped}" });
   });
 });
 
@@ -195,7 +195,7 @@ describe("a plugin turned on in the repo that needs setup", () => {
     const p = plugin("notes", { shipped: false, description: "Links the item to its notes page.",
       settings: { url: { label: "Notes URL", type: "text" }, title: { label: "Title", type: "text", default: "Notes" } } });
     const r = row(automationRows(repo({ plugins: [prLink, p] }), ctx()), "notes");
-    expect(r).toMatchObject({ state: "setup", title: "Links the item to its notes page.", plugins: ["notes"] });
+    expect(r).toMatchObject({ state: "setup", title: "Links the item to its notes page", plugins: ["notes"] });
     expect(r.steps).toEqual([{ who: "here", text: "Fill in Notes URL.", done: false, setup: true }]);
   });
 
