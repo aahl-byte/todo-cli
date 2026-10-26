@@ -59,7 +59,7 @@ function narrowed(stored: Record<string, InstanceDef[]>, plugins: PluginInfo[], 
 }
 
 // ── the item a plugin sees ────────────────────────────────────────────────────
-async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: string): Promise<PluginItem> {
+export async function pluginItem(d: Pick<Db, "query">, project: string, it: Row, by: string): Promise<PluginItem> {
   const x = it.extra ?? {};
   const repo = repoKey(x.repo);
   const [owner, name] = repo ? repo.split("/") : [null, null];
