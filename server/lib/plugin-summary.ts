@@ -37,7 +37,8 @@ export function stateLine(p: Shape): { text: string; hot: boolean } {
   return { text: `on · ${on.length} instances: ${parts.join(", ")}${offText}`, hot: false };
 }
 
-const secretVar = (name: string) => (name === "github" ? "GITHUB_TOKEN" : `TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`);
+/** The environment variable that holds the secret for one of this server's connections. */
+export const secretVar = (name: string) => (name === "github" ? "GITHUB_TOKEN" : `TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`);
 
 /** What a person can do about a connection a plugin uses, or null when it needs nothing. `form`: a credential is set here. */
 export function connectionNotice(shipped: boolean, c: DashConnection): { text: string; hot: boolean; form: boolean } | null {
