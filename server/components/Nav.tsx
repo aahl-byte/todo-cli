@@ -16,7 +16,7 @@ export function Nav({ projectKey, deployStep }: { projectKey: string; deployStep
     { href: base, label: "Board", on: path === base || path.startsWith(`${base}/i/`) },
     { href: `${base}/qa`, label: "QA", on: path === `${base}/qa` },
     ...(deployStep ? [{ href: `${base}/deploy`, label: "Deploy", on: path === `${base}/deploy` }] : []),
-    { href: `${base}/settings`, label: "Settings", on: path === `${base}/settings`, wideOnly: true },
+    { href: `${base}/settings`, label: "Settings", on: path === `${base}/settings` || path.startsWith(`${base}/settings/`), wideOnly: true },
   ];
   return (
     <nav>

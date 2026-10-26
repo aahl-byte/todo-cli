@@ -48,7 +48,7 @@ export async function repoRefusal(d: Pick<Db, "query">, project: string, raw: un
   }
   if (await repoAllowed(d, project, repo)) return null;
   return `${repo} isn't one of this project's repos, so todo doesn't read it from GitHub or run its plugins. `
-    + "It becomes one when a teammate's CLI reports a checkout of it, or when it's added under Settings → Plugin repos.";
+    + "It becomes one when a teammate's CLI reports a checkout of it, or when it's added under Settings → Plugins.";
 }
 
 export async function recordCheckout(d: Db, handle: string, project: string, dir: string, repo: string): Promise<void> {
