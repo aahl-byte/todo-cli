@@ -22,6 +22,7 @@ import contextlib
 import copy
 import getpass
 import io
+import json
 import re
 import socket
 import subprocess
@@ -665,12 +666,20 @@ def cmd_deps(root: Path, args) -> None:
     _require_root(root)
     if args.from_checks:
         rows = gitfacts.from_checks(root)
+        if args.json:
+            print(json.dumps([{"item": item_id, "check": c["id"], "title": c["title"], "payload": c["payload"]}
+                              for item_id, c in rows], indent=2))
+            return
         for item_id, c in rows:
             print(f'{item_id}  [{c["id"]}]  {c["title"]}  {c["payload"] or "—"}')
         if not rows:
             print("(no prereq-branch checks)")
         return
     items = [store.resolve_item(root, args.query)] if args.query else store.list_todos(root, [store.OPEN])
+    if args.json:
+        rows = [_deps_row(it, gitfacts.view(root, store.get_item(root, it["id"]))) for it in items]
+        print(json.dumps(rows[0] if args.query else rows, indent=2))
+        return
     shown = 0
     for it in items:
         lines = render.dep_lines(gitfacts.view(root, store.get_item(root, it["id"])))
@@ -681,6 +690,18 @@ def cmd_deps(root: Path, args) -> None:
             shown += 1
     if not shown:
         print("(no dependencies, conflicts or overlaps)")
+
+
+DEPS_KEYS = ("needs", "needed_by", "shares", "conflicts", "overlaps")
+
+
+def _deps_row(it, facts: dict) -> dict:
+    """One item's git facts for `todo deps --json`: every edge list present, even when empty."""
+    return {"id": it["id"], "uid": it.get("uid"), "status": it["status"], "waits_on": facts.get("waits_on") or [],
+            **{k: facts.get(k) or [] for k in DEPS_KEYS},
+            "branches": facts.get("branches") or [],
+            "hints": [b["hint"] for b in facts.get("branches") or [] if b.get("hint")],
+            "notice": facts.get("notice")}
 
 
 _NEEDS_USAGE = ("usage: todo needs <query> [<PR URL> | branch:<name> | <item>] [--in <branch>] [--because <text>]"
@@ -1857,6 +1878,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", nargs="?", help="id or part of a title (default: every open item with any)")
     p.add_argument("--from-checks", action="store_true",
                    help="list every prereq-branch check, to drop or confirm")
+    p.add_argument("--json", action="store_true",
+                   help="print JSON: one item's facts, or a list of every open item's")
     p.set_defaults(func=cmd_deps)
 
     p = sub.add_parser("needs", parents=[common], usage=_NEEDS_USAGE[len("usage: "):],

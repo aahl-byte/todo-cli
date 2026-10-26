@@ -170,7 +170,7 @@ todo branch [add|rm] <query> [<name>]     # an item's branches: show, add or dro
 todo doc add <query> <file> [--name N]    # copy a file into the item's docs (replaces a same-named one)
 todo doc rm|path <query> <name>           # delete a doc, or print its path to edit in place
 todo docs <query>                         # list an item's docs
-todo deps [<query>] [--from-checks]       # what an item needs and what needs it, from git
+todo deps [<query>] [--from-checks] [--json]   # what an item needs and what needs it, from git (--json for scripts)
 todo needs <query> [<ref>] [--in B] [--because T]   # list, or record a dependency git can't see
 todo needs rm <query> <id>                # remove a dependency you recorded
 todo refresh [<query>]                    # recompute git facts and run plugins now
