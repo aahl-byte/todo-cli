@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.15.1
+version: 0.15.2
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -314,7 +314,7 @@ todo check rm <query> <id>
 todo checks <query>
 todo deploy-plan                 # every check the next deploy needs
 todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (--force: see Team projects)
-todo deps [<query>] [--from-checks]   # what an item needs and what needs it, from git
+todo deps [<query>] [--from-checks] [--json]   # what an item needs and what needs it, from git
 todo needs <query> [<PR URL>|branch:<name>|<item>] [--in B] [--because T]   # list, or record a dependency git can't see
 todo needs rm <query> <id>       # remove a dependency you recorded (a plugin's: change its settings)
 todo refresh [<query>]           # recompute git facts and run plugins now

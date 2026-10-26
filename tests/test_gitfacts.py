@@ -405,6 +405,46 @@ def test_deps_from_checks_lists_prereq_branch_checks(fx, capsys):
     assert out == [f"{b}  [1]  merge auth first  feat/auth"]
 
 
+def test_deps_json_gives_an_items_rows_with_state_and_evidence(fx, capsys):
+    a, b = stacked(fx)
+    fx.refresh()
+    capsys.readouterr()
+    run_cli(fx.root, ["deps", b, "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["id"] == b and out["waits_on"] == [a]
+    assert [(e["id"], e["state"]) for e in out["needs"]] == [(a, "waiting")]
+    assert all(e.get("evidence") for e in out["needs"])
+    assert set(out) >= {"needs", "needed_by", "shares", "conflicts", "overlaps", "hints", "branches"}
+
+
+def test_deps_json_without_a_query_lists_every_open_item(fx, capsys):
+    a, b = stacked(fx)
+    c = fx.item("Gamma", [])
+    fx.refresh()
+    capsys.readouterr()
+    run_cli(fx.root, ["deps", "--json"])
+    rows = {r["id"]: r for r in json.loads(capsys.readouterr().out)}
+    assert set(rows) >= {a, b, c}
+    assert [e["id"] for e in rows[a]["needed_by"]] == [b] and rows[c]["needs"] == []
+
+
+def test_deps_json_from_checks(fx, capsys):
+    b = fx.item("Beta", [])
+    run_cli(fx.root, ["check", "add", b, "prereq-branch", "merge", "auth", "first", "--payload", "feat/auth"])
+    capsys.readouterr()
+    run_cli(fx.root, ["deps", "--from-checks", "--json"])
+    assert json.loads(capsys.readouterr().out) == [
+        {"item": b, "check": 1, "title": "merge auth first", "payload": "feat/auth"}]
+
+
+def test_deps_json_lists_the_untracked_base_hint(tmp_path, monkeypatch, capsys):
+    fx, a, b = staging_ahead_of_main(tmp_path, monkeypatch, track=None)
+    capsys.readouterr()
+    run_cli(fx.root, ["deps", b, "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["waits_on"] == [] and any("if staging is long-lived" in h for h in out["hints"])
+
+
 def test_refresh_command_recomputes(fx, capsys):
     a, b = stacked(fx)
     run_cli(fx.root, ["refresh"])
