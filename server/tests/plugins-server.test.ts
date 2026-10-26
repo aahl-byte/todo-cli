@@ -227,6 +227,40 @@ describe("running plugins", () => {
     }
   });
 
+  it("keeps a fetched doc's version, fetches it again only when the version moves, keeps it when a fetch fails, and records no content", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ files: { http: { url: "https://files.example" } } }));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+    let status = 200;
+    SHIPPED["test-fetch"] = { def: { connections: ["files"], on: ["push"], steps: [{ name: "v", value: "`1`" }],
+      attach: [{ doc: { name: "shot.png", url: "/a/1", version: "{{event.branch}}" } }] } };
+    try {
+      const gh = fakeGitHub({ file: "plugins:\n  test-fetch: {use: shipped}\n",
+        other: (url) => (url === "https://files.example/a/1" ? new Response(status === 200 ? png : "gone", { status }) : undefined) });
+      const fetches = () => gh.sent.filter((s) => s.url.startsWith("https://files.example")).length;
+      await onBranch("I1", ["feat/x"]);
+      await w.d.query("delete from plugin_events");
+      const push = async (branch: string) => {
+        await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch }, "alice");
+        await run(gh.impl);
+      };
+      await push("v1");
+      expect(fetches()).toBe(1);
+      const last = async () => (await runs()).filter((r) => r.plugin === "test-fetch").at(-1)!;
+      expect((await last()).result.attached).toEqual([{ kind: "doc", key: "doc:shot.png", name: "shot.png", url: "/a/1", version: "v1",
+        encoding: "base64", size: png.length, sha256: crypto.createHash("sha256").update(png).digest("hex") }]);
+      await push("v1");
+      expect(fetches()).toBe(1);
+      status = 404;
+      await push("v2");
+      expect(fetches()).toBe(2);
+      expect((await last()).result.log).toEqual(["kept doc shot.png as it was: files: GET /a/1 answered 404: gone"]);
+      const [doc] = await listDocs(w.d, "p", "I1");
+      expect(Buffer.from((await readLocal(doc.file_key))!).equals(png)).toBe(true);
+    } finally {
+      delete SHIPPED["test-fetch"];
+    }
+  });
+
   it("runs the shipped jira-issue through a host Jira connection, adding the issue's block to the current request", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
     vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");

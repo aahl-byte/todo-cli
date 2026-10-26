@@ -1282,3 +1282,21 @@ def test_jira_read_only_holds_back_the_host_jira_connection(fx, host, monkeypatc
     monkeypatch.delenv("JIRA_READ_ONLY")
     refresh(fx.root, a)
     assert host.calls()[-1].get("dryRunConnections") is None
+
+
+def test_a_fetched_doc_keeps_its_version_and_an_unchanged_one_stays(fx, host):
+    import base64
+    from todo import docs
+    a = item_with_branch(fx)
+    item_dir = fx.root / store.OPEN / a
+    png = bytes([0x89, 0x50, 0x00, 0xFF])
+    fetched = {**doc("shot.png", base64.b64encode(png).decode()), "encoding": "base64", "url": "/a/1", "version": "9"}
+    host.results({"refresh": [ran("p", [fetched])]})
+    refresh(fx.root, a)
+    assert docs.read_meta(item_dir)["shot.png"]["plugin_version"] == "9"
+    it = store.resolve_item(fx.root, a)
+    assert plugins.item_json(it, "o/r", None, item_dir)["docs"] == [{"name": "shot.png", "plugin": "p/default", "version": "9"}]
+    kept = {"kind": "doc", "key": "doc:shot.png", "name": "shot.png", "url": "/a/1", "version": "9", "unchanged": True}
+    host.results({"refresh": [ran("p", [kept])]})
+    refresh(fx.root, a)
+    assert (item_dir / "docs" / "shot.png").read_bytes() == png

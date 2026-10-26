@@ -69,6 +69,9 @@ export async function pluginItem(d: Pick<Db, "query">, project: string, it: Row,
   const requests = await d.query(
     `select text from notes where project = $1 and item_uid = $2 and kind = 'ticket-request'
       order by coalesce((meta->>'version')::int, 1) desc, n desc`, [project, it.uid]);
+  const docs = await d.query(
+    "select name, plugin, plugin_version from docs where project = $1 and item_uid = $2 and plugin is not null and sha256 = plugin_sha256",
+    [project, it.uid]);
   const dir = repo ? (await checkoutDir(d as Db, project, repo, by)).dir : "";
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
@@ -77,6 +80,7 @@ export async function pluginItem(d: Pick<Db, "query">, project: string, it: Row,
     app: str(x.app), section: str(x.section), developer: it.developer ?? null, qa_assignee: it.qa_assignee ?? null, dir: dir || null,
     links: notes.map((n) => ({ type: String(n.meta?.type ?? "link"), url: String(n.meta?.url ?? n.text) })),
     requests: requests.map((r) => String(r.text ?? "")),
+    docs: docs.map((r) => ({ name: r.name, plugin: r.plugin, version: r.plugin_version ?? null })),
   };
 }
 
@@ -187,6 +191,12 @@ async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun,
   const before = ((prev?.applied ?? []) as string[]).filter((a) => a.startsWith("doc:")).map((a) => a.slice(4));
   try {
     for (const a of docs) {
+      if (a.unchanged) {
+        const held = await docByName(t, project, itemUid, a.name);
+        if (ownDoc(held, instance)) applied.push(`doc:${a.name}`);
+        else log.push(`doc ${a.name} was written or edited by someone else, so the plugin leaves it alone`);
+        continue;
+      }
       if (a.content === undefined) {
         log.push(`doc ${a.name}: the host returned no content for it`);
         continue;
@@ -199,11 +209,16 @@ async function applyDocs(t: Db, project: string, itemUid: string, run: EventRun,
         continue;
       }
       applied.push(`doc:${a.name}`);
-      if (existing?.sha256 === sha256) continue;
+      if (existing?.sha256 === sha256) {
+        if ((existing.plugin_version ?? null) !== (a.version ?? null)) {
+          await t.query("update docs set plugin_version = $3 where project = $1 and uid = $2", [project, existing.uid, a.version ?? null]);
+        }
+        continue;
+      }
       const key = await issueUpload(t, project, itemUid, a.name, bytes.length);
       await putObject(key, bytes, docType(a.name));
       const r = await recordDoc(t, project, PLUGIN_HANDLE, { item_uid: itemUid, name: a.name, file_key: key, base: existing?.sha256 ?? null,
-                                                           sha256, plugin: instance });
+                                                           sha256, plugin: instance, plugin_version: a.version ?? null });
       if (r.status === "conflict") log.push(`doc ${a.name} changed while it was written; kept the newer one`);
     }
     const now = new Set(applied.map((a) => a.slice(4)));
@@ -264,8 +279,17 @@ class LeaseLost extends Error {}
 const STILL_OPEN = `i.uid is not null and i.status not in ('done', 'deployed', 'cancelled')
   and coalesce(i.extra->'archived', 'null'::jsonb) in ('null'::jsonb, 'false'::jsonb)`;
 
+/** A doc's content as its size and hash, for the run log. */
+function withoutContent(a: Attachment): Record<string, unknown> {
+  if (a.kind !== "doc" || a.content === undefined) return a;
+  const { content, ...rest } = a;
+  const bytes = Buffer.from(content, a.encoding === "base64" ? "base64" : "utf8");
+  return { ...rest, size: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+}
+
 async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome: Applied | null): Promise<void> {
-  const result = outcome?.log.length ? { ...run.result, log: [...run.result.log, ...outcome.log] } : run.result;
+  const logged = { ...run.result, attached: run.result.attached.map(withoutContent) };
+  const result = outcome?.log.length ? { ...logged, log: [...run.result.log, ...outcome.log] } : logged;
   await t.query(
     `insert into plugin_runs (event_id, project, item_uid, repo, plugin, instance, event, result, applied, dry_run)
      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10)`,

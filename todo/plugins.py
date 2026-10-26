@@ -545,7 +545,7 @@ def plugin_view(ctx: Context, key: str) -> list:
 
 
 # ── the item a plugin sees ────────────────────────────────────────────────────
-def item_json(it: dict, key: str, d: Path | None) -> dict:
+def item_json(it: dict, key: str, d: Path | None, item_dir: Path | None = None) -> dict:
     owner, _, name = key.partition("/")
     links = [{"type": to_str((n.get("meta") or {}).get("type")) or "link", "url": to_str((n.get("meta") or {}).get("url"))}
              for n in it.get("notes") or [] if n.get("kind") == "link" and (n.get("meta") or {}).get("url")]
@@ -554,7 +554,16 @@ def item_json(it: dict, key: str, d: Path | None) -> dict:
             "repo_owner": owner or None, "repo_name": name or None, "branches": list(it.get("branches") or []),
             "jira": list(it.get("jira") or []), "app": it.get("app"), "section": it.get("section"),
             "developer": it.get("developer"), "qa_assignee": it.get("qa_assignee"),
-            "dir": str(d) if d else None, "links": links, "requests": _requests(it)}
+            "dir": str(d) if d else None, "links": links, "requests": _requests(it),
+            "docs": _plugin_docs(item_dir) if item_dir else []}
+
+
+def _plugin_docs(item_dir: Path) -> list:
+    """Docs a plugin instance wrote that no one has edited since, with the version it gave each."""
+    present = docs.files(item_dir)
+    return [{"name": name, "plugin": e["plugin"], "version": e.get("plugin_version")}
+            for name, e in sorted(docs.read_meta(item_dir).items())
+            if e.get("plugin") and name in present and docs.sha256_file(present[name]) == e.get("sha256")]
 
 
 def _requests(it: dict) -> list:
@@ -608,7 +617,7 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
                 rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
     payload = {"hostConnections": connections.host_connections(), "secrets": connections.secrets_for(key),
                "storedInstances": stored, "grants": ctx.stored(key)["grants"],
-               "item": item_json(it, key, repo["dir"]), "event": job.event, "repoKey": key,
+               "item": item_json(it, key, repo["dir"], root / it["folder"] / it["id"]), "event": job.event, "repoKey": key,
                "dryRun": dry_run, "allowRepoCommands": True}
     if os.environ.get(JIRA_READ_ONLY_ENV) == "1":
         payload["dryRunConnections"] = ["jira"]
@@ -924,6 +933,12 @@ def _doc_bytes(a: dict) -> bytes | None:
 def _put_doc(it: dict, iid: str, item_dir: Path, a: dict, log: list, changes: dict) -> str | None:
     name = to_str(a.get("name"))
     why = docs.name_error(name)
+    if not why and a.get("unchanged"):
+        found, ours, unchanged = _doc_state(item_dir, iid, name)
+        if found is not None and ours and unchanged:
+            return found
+        log.append(f"skipped doc {name}: " + ("edited since the plugin wrote it" if ours else "a doc by that name isn't this plugin's"))
+        return found if ours else None
     if why or a.get("content") is None:
         log.append(f"skipped doc {name}: " + (why or "the host returned no content for it"))
         return None
@@ -938,9 +953,11 @@ def _put_doc(it: dict, iid: str, item_dir: Path, a: dict, log: list, changes: di
     if found is not None and not unchanged:
         log.append(f"skipped doc {name}: edited since the plugin wrote it")
         return found
+    version = to_str(a.get("version")) or None
     if found is not None and docs.sha256_file(item_dir / docs.DOCS_DIR / found) == docs.sha256_bytes(data):
+        docs.set_plugin_version(item_dir, found, version)
         return found
-    written = docs.add(item_dir, it["uid"], name, data, now(), plugin=iid)
+    written = docs.add(item_dir, it["uid"], name, data, now(), plugin=iid, plugin_version=version)
     changes["updated" if found else "added"] += 1
     return written
 

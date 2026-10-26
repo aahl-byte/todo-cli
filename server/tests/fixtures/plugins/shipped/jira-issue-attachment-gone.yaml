@@ -1,0 +1,26 @@
+about: an image Jira won't hand over is skipped with a log line, and the issue's status and comments still attach
+plugin: jira-issue
+instance: {id: default, name: (default)}
+event: {type: refresh}
+item: {jira: [SR-1]}
+connections:
+  jira: {kind: http}
+responses:
+  jira:
+    - method: GET
+      path: /rest/api/3/issue/SR-1?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      body:
+        key: SR-1
+        self: https://acme.atlassian.net/rest/api/3/issue/1
+        fields:
+          summary: S
+          status: {name: Open}
+          comment: {total: 1, comments: [{id: c1, author: {displayName: A}, body: hello}]}
+          attachment: [{id: "9", filename: a.png, mimeType: image/png, size: 10}]
+    - {method: GET, path: "/rest/api/3/attachment/content/9?redirect=false", status: 404, text: gone}
+expect:
+  attached:
+    - {kind: link, key: "status:SR-1", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-1", label: SR-1 · Open}
+    - {kind: log, key: "comment:SR-1:c1", text: "Jira comment by A on SR-1:\n\nhello"}
+  wouldSend: []
+  log: ["dropped a request: jira-issue hasn't been granted post-request", "skipped doc SR-1-9-a.png: jira: GET /rest/api/3/attachment/content/9?redirect=false answered 404: gone"]

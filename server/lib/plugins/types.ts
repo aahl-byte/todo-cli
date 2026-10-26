@@ -4,7 +4,9 @@
 export type Attachment =
   | { kind: "link"; key: string; type: string; url: string; label?: string }
   | { kind: "edge"; key: string; needs: string; in?: string; because: string }
-  | { kind: "doc"; key: string; name: string; content?: string; url?: string; connection?: string; encoding?: "base64" }
+  | { kind: "doc"; key: string; name: string; content?: string; url?: string; connection?: string; version?: string; encoding?: "base64";
+      /** The item holds this doc from the instance already, at this version or because a fetch failed: keep it as it is. */
+      unchanged?: boolean }
   | { kind: "log"; key: string; text: string }
   | { kind: "request"; key: string; text: string };
 
@@ -146,6 +148,8 @@ export interface PluginItem {
   links: { type: string; url: string }[];
   /** The item's request, every version's text, newest first. */
   requests?: string[];
+  /** Docs plugin instances wrote and no one has edited since: name, <plugin>/<instance>, and the version it gave. */
+  docs?: { name: string; plugin: string; version?: string | null }[];
 }
 
 export type PluginEvent =

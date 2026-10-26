@@ -93,7 +93,8 @@ describe("docs fetched through a connection", () => {
   it("refuses a redirect, and skips a doc past the size cap", async () => {
     const yaml = `plugins:\n  p:\n    connections: [api]\n    on: [manual]\n    attach:\n      - doc: {name: a.png, url: /a}\n`;
     const redirected = await run(yaml, [{ method: "GET", path: "/a", status: 303, text: "" }]);
-    expect(redirected.result.error).toMatch(/answered 303, a redirect, which isn't followed/);
+    expect(redirected.result.error).toBeUndefined();
+    expect(redirected.result.log).toEqual(["skipped doc a.png: api: GET /a answered 303, a redirect, which isn't followed"]);
     const big = await run(yaml, [{ method: "GET", path: "/a", text: "x".repeat(1024 * 1024 + 1) }]);
     expect(big.result.error).toBeUndefined();
     expect(big.result.attached).toEqual([]);
@@ -115,8 +116,53 @@ describe("docs fetched through a connection", () => {
       plugin: loadPlugins(yaml).plugins!.p, name: "p", instance: { id: "i1", name: "d" }, item: ITEM,
       event: { type: "manual", instance: "i1" }, dryRun: false, connections: { api: { kind: "http", url: server.url, origin: "repo" } },
     }, { guard: { allow: ["127.0.0.1"], repoAllow: [] } });
-    expect(result.error).toMatch(/isn't an address this host connects to/);
+    expect(result.log).toEqual([expect.stringMatching(/^skipped doc a.md: api: 127.0.0.1 isn't an address this host connects to$/)]);
     expect(server.received).toEqual([]);
+  });
+});
+
+describe("docs a fetch can't get, or needn't", () => {
+  const TWO = `plugins:\n  p:\n    connections: [api]\n    on: [manual]\n    attach:\n      - log: kept\n      - doc: {name: a.png, url: /a, version: "9"}\n      - doc: {name: b.md, url: /b}\n`;
+
+  it("skips a doc whose fetch fails with a log line, keeps one the item holds, and keeps the rest of the run", async () => {
+    for (const status of [404, 403, 429, 500]) {
+      const { result } = await run(TWO, [{ method: "GET", path: "/a", status, text: "nope" }, { method: "GET", path: "/b", status, text: "nope" }],
+        { item: { ...ITEM, docs: [{ name: "a.png", plugin: "p/i1", version: "8" }] } });
+      expect(result.error).toBeUndefined();
+      expect(result.attached).toEqual([
+        { kind: "log", key: "log:kept", text: "kept" },
+        { kind: "doc", key: "doc:a.png", name: "a.png", url: "/a", version: "9", unchanged: true },
+      ]);
+      expect(result.log).toEqual([`kept doc a.png as it was: p: GET /a answered ${status}: nope`, `skipped doc b.md: p: GET /b answered ${status}: nope`]
+        .map((l) => l.replace("p: GET", "api: GET")));
+    }
+  });
+
+  it("doesn't fetch a doc the item holds from this instance at that version", async () => {
+    const holds = { ...ITEM, docs: [{ name: "a.png", plugin: "p/i1", version: "9" }, { name: "b.md", plugin: "other/x", version: "9" }] };
+    const { result, server } = await run(TWO, [{ method: "GET", path: "/b", text: "b" }], { item: holds });
+    expect(result.attached.slice(1)).toEqual([
+      { kind: "doc", key: "doc:a.png", name: "a.png", url: "/a", version: "9", unchanged: true },
+      { kind: "doc", key: "doc:b.md", name: "b.md", url: "/b", content: "b" },
+    ]);
+    expect(server.received.map((r) => r.path)).toEqual(["/b"]);
+  });
+
+  it("keeps a byte order mark as it came", async () => {
+    const yaml = `plugins:\n  p:\n    connections: [api]\n    on: [manual]\n    attach:\n      - doc: {name: a.md, url: /a}\n`;
+    const server = await serveBytes(Buffer.from([0xef, 0xbb, 0xbf, 0x68, 0x69]));
+    const { result } = await run(yaml, [], { connections: { api: { kind: "http", url: server } } });
+    expect((result.attached[0] as { content: string }).content).toBe("\ufeffhi");
+  });
+
+  it("counts a doc's encoded size toward the run's cap", async () => {
+    const yaml = `plugins:\n  p:\n    connections: [api]\n    on: [manual]\n    attach:\n${[1, 2, 3, 4, 5].map((n) => `      - doc: {name: d${n}.png, url: /d}\n`).join("")}`;
+    const server = await serveBytes(Buffer.alloc(900 * 1024, 0xff));
+    const { result } = await run(yaml, [], { connections: { api: { kind: "http", url: server } } });
+    // 900 KB is 1.2 MB as base64, so three fit under 4 MB, where five would raw.
+    expect(result.attached.map((a) => (a as { name: string }).name)).toEqual(["d1.png", "d2.png", "d3.png"]);
+    expect(result.log).toEqual(["skipped doc d4.png: the run's attachments would pass their size cap",
+                                "skipped doc d5.png: the run's attachments would pass their size cap"]);
   });
 });
 

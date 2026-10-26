@@ -152,7 +152,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
       const { skipped } = await runYaml({ name, plugin, item, event, settings, track: input.track ?? [], calls, result, attached, mayRequest });
       if (skipped) return skip(skipped);
     }
-    await fetchDocs(plugin, connectionsOf(input), calls, attached, result);
+    await fetchDocs(plugin, `${name}/${instance.id}`, item, connectionsOf(input), calls, attached, result);
     result.attached = attached.list;
   } catch (e) {
     result.attached = [];
