@@ -94,7 +94,7 @@ await child(tz, "dev", "check", { kind: "db-script", title: "convert timestamps"
 await child(tz, "dev", "check", { kind: "env-var", title: "set TZ", payload: "TZ=UTC" });
 await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check reports", timing: "post-deploy" });
 
-// A repo with a plugins file, as if read from its default branch, and an item in it: Settings → Plugins and the
+// A repo with a plugins file, as if read from its default branch, and an item in it: Settings → Automation and the
 // item's plugin button work without GitHub once the server runs with TODO_PLUGIN_OWNERS=acme.
 const PLUGINS_YAML = `track: [staging, main]
 connections:
@@ -123,6 +123,7 @@ plugins:
     attach: []
   rest: {use: shipped}
   jira-transition: {use: shipped}
+  vercel-preview: {use: shipped}
 instances:
   notes-link: [{id: go, name: Go, button: Link notes}]
   rest: [{id: hook, name: Hook, settings: {connection: hooks, path: "/notify/{{item.id}}"}}]
@@ -155,6 +156,25 @@ await d.query("insert into git_facts (project, item_uid, data, computed_by) valu
   needs: [{ id: dep.id, item: apiTokens.uid, branch: "feat/api-tokens", via: "feat/signed-hooks", target: "staging", state: "waiting", source: "git",
             chain: true, evidence: "feat/signed-hooks's PR is based on feat/api-tokens" }],
   waits_on: [dep.id] })]);
+// Settings → Automation in every state: pr-link on with a run, plugins that need setup in acme/web, jobs the Jira bridge
+// and Actions do today, and repos items name that the project can't read yet: acme/docs it can add, legacy/billing it
+// can't, since the demo server reads only acme's repos.
+await d.query(
+  `insert into plugin_runs (project, item_uid, repo, plugin, instance, event, result, at)
+   values ('web', $1, 'acme/web', 'pr-link', 'default', $2::jsonb, $3::jsonb, now() - interval '6 minutes')`,
+  [apiTokens.uid, JSON.stringify({ type: "push", branch: "feat/api-tokens" }), JSON.stringify({ attached: [{
+    kind: "link", key: "pr:41", type: "pr", url: "https://github.com/acme/web/pull/41", label: "#41 · Per-project API tokens" }], wouldSend: [], log: [] })]);
+const docs = await item("web", "Document the webhook retry policy", { ...W, priority: "low", extra: { repo: "acme/docs" } }, "Say how often and how long a failed webhook retries.");
+await status(docs, "dev", "in-triage");
+await item("web", "Move invoices off the legacy billing service", { ...W, priority: "medium", extra: { repo: "legacy/billing" } }, "Invoices still come from the old service.");
+await item("web", "Refund emails show the wrong total", { ...W, type: "bug", priority: "high", extra: { jira: ["WEB-212"] } }, "The refund email adds tax twice.");
+await d.query("update projects set actions = $1::jsonb where key = 'web'", [JSON.stringify([
+  { id: "start-agent", name: "Start agent", kind: "watchtower", runner: "server", auto: [], base: "http://watchtower.example:10011", dir: "/src/web",
+    prompt: "/todo {{item.id}}" },
+  { id: "notify-deploy", name: "Notify deploy", kind: "rest", runner: "server", auto: [], method: "POST", url: "https://hooks.example.com/deploys",
+    body: "{\"item\": \"{{item.id}}\"}" },
+])]);
+
 // A wall display of web, signed in at /display/web/enroll?key=wall-test.
 await addDisplay(d, "web", "wall", "dev", "wall-test");
 
@@ -401,6 +421,14 @@ for (const [i, it] of items.entries()) {
   }
   await d.query("update items set completed = (select max(ts) from status_history h where h.project = $1 and h.item_uid = $2) where project = $1 and uid = $2 and completed is not null", [it.project, it.uid]);
 }
+
+// The Jira bridge moves linked tickets on these todo moves, recording them while writes are off, and has polled the
+// tickets items link. Set last, so the seeded moves send nothing.
+await d.query("update projects set jira_outbound = $1::jsonb, jira_synced_at = now() - interval '3 minutes' where key = 'web'", [JSON.stringify({
+  writes: false, never: [], triggers: [
+    { from: "review", to: "ready-for-qa", jira: "In QA" }, { from: "qa-approved", to: "ready-to-deploy", jira: "Ready to deploy" },
+    { from: "ready-to-deploy", to: "deployed", jira: "Done" }],
+})]);
 
 // Notices arrive when the note or move behind them did.
 await d.query(`update notifications n set created = nt.ts::timestamptz from notes nt where nt.uid = n.note_uid and nt.project = n.project`);
