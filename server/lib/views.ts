@@ -4,7 +4,8 @@ import type { Db, Row } from "./db";
 import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches } from "./model";
 import { listDocs } from "./docs";
 import { matchEntries, matches, type Entry } from "./filters";
-import type { GitFacts } from "./gitfacts";
+import { unresolvedEdges, type GitFacts } from "./gitfacts";
+import { waitLines, type WaitLine } from "./waits";
 import type { PrStatus } from "./github";
 
 export interface Project {
@@ -268,7 +269,9 @@ export async function choices(d: Db, key: string) {
 }
 
 /** The page adds live PR statuses, keyed by link uid. */
-export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts; pluginNotices?: string[] };
+export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts; pluginNotices?: string[];
+  /** What a stage or deploy would wait on. */
+  waits?: WaitLine[] };
 
 const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
 
@@ -349,4 +352,9 @@ export async function deployPlan(d: Db, key: string, me = "", f: BoardFilters = 
   const prepByTicket = prepping.map(ticketOf);
   const counts = tabCounts([...allReady, ...allPrepping, ...stillToDo], f, me);
   return { ready, afterDeploy: after, byTicket, prepByTicket, afterByTicket, counts };
+}
+
+/** What a stage or deploy of the item would wait on now, one line per unresolved edge. */
+export async function itemWaits(d: Pick<Db, "query">, project: string, itemUid: string): Promise<WaitLine[]> {
+  return waitLines(await unresolvedEdges(d, project, itemUid));
 }

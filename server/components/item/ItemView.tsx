@@ -9,6 +9,7 @@ import { docPath } from "@/lib/doc-view";
 import { COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { PluginButton } from "@/lib/plugin-views";
+import { forceLabel, GUARDED_MOVES, type WaitLine } from "@/lib/waits";
 import { Markdown } from "../Markdown";
 import { ReadOnly, useReadOnly, type ReadOnlyView } from "../ReadOnly";
 import { Composer } from "../Composer";
@@ -18,6 +19,7 @@ import { Docs } from "./Docs";
 import { Tasks } from "./Tasks";
 import { Rail } from "./Rail";
 import { RequestView } from "./RequestView";
+import { forceTitle, WaitList } from "../Waits";
 
 type Row = Record<string, any>;
 export interface Ctx {
@@ -159,7 +161,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
     <Fresh.Provider value={isNew}>
     <div className="item" data-uid={it.uid}>
       <div className="item-main">
-        <Header it={it} ctx={ctx} pendingPre={it.pending_pre} />
+        <Header it={it} ctx={ctx} pendingPre={it.pending_pre} waits={data.waits ?? []} />
         <RequestView data={data} ctx={ctx} focus={focus === "request"} />
         <Docs rows={data.docs} ctx={ctx} itemId={it.id} />
         <MobileSummary data={data} ctx={ctx} />
@@ -188,22 +190,28 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
 }
 
 // ── header ────────────────────────────────────────────────────────────────────
-function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number }) {
+function Header({ it, ctx, pendingPre, waits }: { it: Row; ctx: Ctx; pendingPre: number; waits: WaitLine[] }) {
   const pinned = useRef(it.versions);
   const latest = useRef(it.versions);
   latest.current = it.versions;
-  const [popup, setPopup] = useState<{ move: Move; versions: Row } | null>(null);
+  const [popup, setPopup] = useState<{ move: Move; versions: Row; waits: WaitLine[] } | null>(null);
   const [override, setOverride] = useState<{ versions: Row } | null>(null);
   const options = useMemo(() => moves(it.status, { deployStep: ctx.deployStep, hasQa: !!it.qa_assignee, previous: it.blocked_from }), [it, ctx.deployStep]);
 
   const pick = (to: string) => {
     if (to === OTHER) { setOverride({ versions: pinned.current }); return; }
     const move = options.find((m) => m.status === to)!;
-    if (move.comment || (to === "deployed" && pendingPre > 0)) {
-      setPopup({ move, versions: pinned.current });
+    const versions = pinned.current;
+    const blocked = GUARDED_MOVES.includes(to) ? waits : [];
+    if (move.comment || (to === "deployed" && pendingPre > 0) || blocked.length) {
+      setPopup({ move, versions, waits: blocked });
       return;
     }
-    void act.moveItem({ project: ctx.project, uid: it.uid, versions: pinned.current, to }).then(report);
+    // Facts can change after the page loaded: a refused stage opens the dialog with what the server saw.
+    void act.moveItem({ project: ctx.project, uid: it.uid, versions, to }).then((r) => {
+      if (r.waits?.length) setPopup({ move, versions, waits: r.waits });
+      else report(r);
+    });
   };
 
   return (
@@ -240,10 +248,12 @@ function Header({ it, ctx, pendingPre }: { it: Row; ctx: Ctx; pendingPre: number
                        }} />
       )}
       {popup && (
-        <MovePopup move={popup.move} from={it.status} pendingPre={pendingPre} onClose={() => setPopup(null)}
+        <MovePopup move={popup.move} from={it.status} pendingPre={pendingPre} waits={popup.waits} project={ctx.project} itemId={it.id}
+                   onClose={() => setPopup(null)}
                    onSubmit={async (comment, force) => {
                      const r = await act.moveItem({ project: ctx.project, uid: it.uid, versions: popup.versions, to: popup.move.status, comment, force });
-                     if (report(r)) setPopup(null);
+                     if (r.waits?.length) setPopup({ ...popup, waits: r.waits });
+                     else if (report(r)) setPopup(null);
                    }} />
       )}
     </div>
@@ -276,16 +286,18 @@ function OverridePopup({ from, offered, onClose, onSubmit }: {
   );
 }
 
-function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
-  move: Move; from: string; pendingPre: number; onClose: () => void; onSubmit: (comment: string, force: boolean) => Promise<void>;
+export function MovePopup({ move, from, pendingPre, waits, project, itemId, onClose, onSubmit }: {
+  move: Move; from: string; pendingPre: number; waits: WaitLine[]; project: string; itemId: string;
+  onClose: () => void; onSubmit: (comment: string, force: boolean) => Promise<void>;
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const forcing = move.status === "deployed" && pendingPre > 0;
+  const checks = move.status === "deployed" ? pendingPre : 0;
+  const forcing = checks > 0 || waits.length > 0;
   const title = move.rejection ? "Send back from QA"
     : move.status === "blocked" ? "Block"
     : move.status === "cancelled" ? "Cancel"
-    : forcing ? `Deploy with ${pendingPre} pre-deploy check${pendingPre > 1 ? "s" : ""} pending?`
+    : forcing ? forceTitle(move.status, waits.length, checks)
     : `${from} → ${move.status}`;
   const placeholder = move.rejection ? "What failed?" : move.status === "blocked" ? "Blocked on…"
     : move.status === "cancelled" ? "Why it won't be done" : "Why?";
@@ -293,6 +305,13 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
   const submit = async () => { if (!ok) return; setBusy(true); await onSubmit(text, forcing); setBusy(false); };
   return (
     <Popup title={title} onClose={onClose}>
+      {waits.length > 0 && (
+        <div className="move-waits">
+          <p className="hint">{itemId} waits on:</p>
+          <WaitList waits={waits} project={project} />
+          <p className="hint">Land each one in its target first, or {move.status === "deployed" ? "deploy" : "stage"} anyway: history records the move as forced.</p>
+        </div>
+      )}
       {move.comment && (
         <textarea rows={3} value={text} aria-label={placeholder} placeholder={move.comment === "optional" ? `${placeholder} (optional)` : placeholder}
                   onChange={(e) => setText(e.target.value)}
@@ -301,7 +320,7 @@ function MovePopup({ move, from, pendingPre, onClose, onSubmit }: {
       <div className="actions">
         <button type="button" className="btn" onClick={onClose}>Cancel</button>
         <button type="button" className={`btn ${forcing || move.rejection ? "danger" : "primary"}`} disabled={!ok} onClick={() => void submit()}>
-          {forcing ? "Deploy anyway" : move.rejection ? "Send back" : move.status === "blocked" ? "Block" : move.status === "cancelled" ? "Cancel it" : "Move"}
+          {forcing ? forceLabel(move.status) : move.rejection ? "Send back" : move.status === "blocked" ? "Block" : move.status === "cancelled" ? "Cancel it" : "Move"}
         </button>
       </div>
     </Popup>
