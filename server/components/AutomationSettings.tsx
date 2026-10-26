@@ -384,8 +384,10 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet }: {
   );
 }
 
-/** Settings saved since the page last loaded, so the form the refreshed data remounts still says so. */
-const justSaved = new Set<string>();
+/** When each plugin's settings were last saved, so the form the refreshed data remounts still says so, even after a
+ * refresh that started before the save lands first. */
+const justSaved = new Map<string, number>();
+const SAVED_SHOWN_MS = 15_000;
 
 function Configure({ projectKey, repo, plugin, statuses }: { projectKey: string; repo: DashRepo; plugin: DashPlugin; statuses: readonly string[] }) {
   const router = useRouter();
@@ -396,25 +398,23 @@ function Configure({ projectKey, repo, plugin, statuses }: { projectKey: string;
     return d.instances.length ? d : addInstanceTo(plugin, d);
   });
   const [dirty, setDirty] = useState(() => !plugin.instances.length);
-  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(() => (justSaved.delete(id) ? { ok: true, message: "Saved." } : null));
+  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(
+    () => (Date.now() - (justSaved.get(id) ?? 0) < SAVED_SHOWN_MS ? { ok: true, message: "Saved." } : null));
   const [pending, start] = useTransition();
   // Between a save and the refreshed data the form is locked, since the new data replaces the drafts.
   const [refreshing, setRefreshing] = useState(false);
-  useEffect(() => {
-    setRefreshing(false);
-    justSaved.delete(id);
-  }, [plugin, id]);
+  useEffect(() => setRefreshing(false), [plugin]);
   const out = savedInstances(plugin, draft);
   const shared = fieldsOf(plugin.settings).filter((f) => f.scope === "plugin");
   const ordered = plugin.exclusive && draft.instances.length > 1;
-  const change = (next: PluginDraft) => { setDraft(next); setDirty(true); setSaved(null); };
+  const change = (next: PluginDraft) => { setDraft(next); setDirty(true); setSaved(null); justSaved.delete(id); };
   const save = () => start(async () => {
     const err = await send(projectKey, "", "PUT", { repo: repo.repo, plugin: plugin.name, instances: out.instances });
     setSaved(err ? { ok: false, message: err } : { ok: true, message: "Saved." });
     if (!err) {
       setDirty(false);
       setRefreshing(true);
-      justSaved.add(id);
+      justSaved.set(id, Date.now());
       router.refresh();
     }
   });
