@@ -4,6 +4,8 @@ import {
   type Attachment, type Call, type RunResult,
 } from "./types";
 
+const MASK = "***";
+
 /** Going over a limit on attachments: it fails the run, unlike a malformed attachment. */
 export class LimitError extends Error {}
 
@@ -11,6 +13,13 @@ export const bytes = (s: string) => Buffer.byteLength(s, "utf8");
 
 function clip(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+/** Header names that carry credentials, whose values never leave the host as they are. */
+export const CREDENTIAL_HEADER = /^(proxy-)?authorization$|^(set-)?cookie$|token|secret|passw|api-?key|auth/i;
+
+export function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, CREDENTIAL_HEADER.test(k) ? MASK : v]));
 }
 
 export function addLog(result: RunResult, line: string): void {
@@ -29,6 +38,7 @@ export function recordWouldSend(result: RunResult, call: Call): void {
     if (text.length > MAX_WOULD_SEND_INPUT) kept.input = clip(text, MAX_WOULD_SEND_INPUT);
   }
   if (call.text !== undefined) kept.text = clip(call.text, MAX_WOULD_SEND_INPUT);
+  if (call.headers) kept.headers = redactHeaders(call.headers);
   const size = (recorded.get(result) ?? 2) + JSON.stringify(kept).length + 1;
   if (size > MAX_WOULD_SEND_BYTES) return;
   recorded.set(result, size);
@@ -66,7 +76,6 @@ export class Attached {
   }
 }
 
-const MASK = "***";
 
 /** Every way a secret can show up in text we produced: as is, and URL-encoded. */
 function forms(secrets: string[]): string[] {

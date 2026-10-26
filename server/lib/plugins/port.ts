@@ -13,7 +13,8 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import net from "node:net";
 import { blockedAddress, type AddressGuard } from "./connections";
 import { hostConnections, hostSecrets, putGrants, putInstances, storedInstances } from "./store";
-import { POST_REQUEST, type ConnectionDef, type InstanceDef, type Trigger } from "./types";
+import { CREDENTIAL_HEADER } from "./limits";
+import { POST_REQUEST, type ConnectionDef, type HttpAuth, type InstanceDef, type Trigger } from "./types";
 
 /** An Action template name and the plugin scope path it becomes. */
 const SAME = ["item.id", "item.title", "item.status", "item.type", "item.priority", "item.app", "item.section", "item.repo",
@@ -105,13 +106,32 @@ function statusTriggers(a: ActionDef): Trigger[] {
   return a.auto.map((r) => ({ status: { from: r.from, to: r.to } }));
 }
 
+/** The credential an Action's headers carry, as a connection's auth and the secret for it; the first one only. */
+function credentialOf(a: ActionDef): { header: string; auth: HttpAuth; what: string } | null {
+  for (const [name, value] of Object.entries(a.headers ?? {})) {
+    if (!CREDENTIAL_HEADER.test(name) || value.includes("{{")) continue;
+    if (/^authorization$/i.test(name)) {
+      if (/^bearer\s/i.test(value)) return { header: name, auth: "bearer", what: `the bearer token in the Authorization header of action ${a.id}` };
+      if (/^basic\s/i.test(value)) return { header: name, auth: "basic", what: `the user:password the Basic Authorization header of action ${a.id} encodes` };
+    }
+    return { header: name, auth: `header:${name}`, what: `the ${name} header of action ${a.id}` };
+  }
+  return null;
+}
+
 function restInstance(a: ActionDef, places: Places, plan: PortPlan): InstanceDef {
   const [, origin = "", rest = ""] = (a.url ?? "").match(/^(https?:\/\/[^/?#]+)(.*)$/i) ?? [];
   if (origin.includes("{{")) plan.notes.push(`action ${a.id}: its host is a template, which a connection can't be; it's kept as text`);
-  const connection = `rest-${slug(origin.replace(/^https?:\/\//i, ""))}`;
-  const have = plan.connections[connection] as { http?: { url: string } } | undefined;
-  if (have && have.http?.url !== origin) plan.notes.push(`action ${a.id}: connection ${connection} already names ${have.http?.url}`);
-  plan.connections[connection] ??= { http: { url: origin } };
+  const credential = credentialOf(a);
+  const def: ConnectionDef = { http: { url: origin, ...(credential ? { auth: credential.auth } : {}) } };
+  const base = `rest-${slug(origin.replace(/^https?:\/\//i, ""))}`;
+  let connection = base;
+  for (let n = 2; plan.connections[connection] && JSON.stringify(plan.connections[connection]) !== JSON.stringify(def); n++) connection = `${base}-${n}`;
+  if (plan.connections[connection] && credential && plan.secrets[connection] !== credential.what) {
+    plan.notes.push(`action ${a.id}: shares ${connection} with an Action whose ${credential.header} may differ; give it its own connection if so`);
+  }
+  plan.connections[connection] ??= def;
+  if (credential) plan.secrets[connection] ??= credential.what;
   const where = `action ${a.id}`;
   const path = translate(rest.startsWith("/") ? rest : `/${rest}`, `${where} url`, places, plan.notes, (p, f, name) => {
     if (f === "json") plan.notes.push(`${where} url: {{${name}|json}} fills URL-encoded, without JSON quotes`);
@@ -120,7 +140,10 @@ function restInstance(a: ActionDef, places: Places, plan: PortPlan): InstanceDef
   if (/\{\{[^}]*\}\}/.test(a.url ?? "") && !/\|\s*url/.test(a.url ?? "")) {
     plan.notes.push(`${where} url: every value is URL-encoded now; the Action put unfiltered values in as they were`);
   }
-  const headers = Object.entries(a.headers ?? {}).map(([k, v]) => `${k}: ${translate(v, `${where} header ${k}`, places, plan.notes, (p) => p)}`);
+  const headers = Object.entries(a.headers ?? {}).filter(([k]) => k !== credential?.header).map(([k, v]) => {
+    if (CREDENTIAL_HEADER.test(k)) plan.notes.push(`${where} header ${k}: a second credential stays in the instance's settings, readable as in the Action`);
+    return `${k}: ${translate(v, `${where} header ${k}`, places, plan.notes, (p) => p)}`;
+  });
   const settings: Record<string, unknown> = { connection, method: a.method ?? "POST", path, ...restBody(a, places, plan.notes) };
   if (headers.length) settings.headers = headers.join("\n");
   return { id: actionInstanceId(a), name: a.name, on: ["manual", ...statusTriggers(a)], settings };
@@ -227,24 +250,37 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
       delete plan.connections[name];
     }
     const http = "http" in def ? def.http : undefined;
-    if (http?.auth && !secrets[name]) plan.secrets[name] = name === "jira" ? "JIRA_EMAIL:JIRA_API_TOKEN" : `the ${name} credential`;
+    if (!http?.auth || secrets[name]) delete plan.secrets[name];
+    else plan.secrets[name] ??= name === "jira" ? "JIRA_EMAIL:JIRA_API_TOKEN" : `the ${name} credential`;
     const entry = http?.url && !http.url.includes("<") ? await refused(http.url, opts.lookup, plan.notes) : null;
     if (entry) plan.allowHosts.push(entry);
   }
   return plan;
 }
 
+/** An instance as it prints: each credential header's value masked. */
+function shown(i: InstanceDef): InstanceDef {
+  const h = i.settings?.headers;
+  if (typeof h !== "string") return i;
+  const lines = h.split("\n").map((l) => {
+    const at = l.indexOf(":");
+    return at > 0 && CREDENTIAL_HEADER.test(l.slice(0, at).trim()) ? `${l.slice(0, at)}: ***` : l;
+  });
+  return { ...i, settings: { ...i.settings, headers: lines.join("\n") } };
+}
+
 export function describePlan(plan: PortPlan): string {
   const lines = [`project ${plan.project}: instances for ${plan.repos.join(", ") || "(no repo)"}`];
   for (const [plugin, list] of Object.entries(plan.instances)) {
     lines.push(`  ${plugin}:`);
-    for (const i of list) lines.push(`    ${JSON.stringify(i)}`);
+    for (const i of list) lines.push(`    ${JSON.stringify(shown(i))}`);
   }
   for (const [plugin, caps] of Object.entries(plan.grants)) lines.push(`  grant ${plugin}: ${caps.join(", ")}`);
   lines.push("each repo's .todo-plugins/plugins.yaml, on its default branch, enables them:", "  plugins:");
   for (const plugin of Object.keys(plan.instances)) lines.push(`    ${plugin}: {use: shipped}`);
   if (Object.keys(plan.connections).length) lines.push(`TODO_PLUGIN_CONNECTIONS needs ${JSON.stringify(plan.connections)}`);
   for (const [name, what] of Object.entries(plan.secrets)) lines.push(`TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}=<${what}>`);
+  if (Object.keys(plan.secrets).length) lines.push("(the port never prints a secret: copy each from the Action it names)");
   if (plan.allowHosts.length) lines.push(`TODO_PLUGIN_ALLOW_HOSTS needs ${plan.allowHosts.join(",")}`);
   for (const n of [...new Set(plan.notes)]) lines.push(`note: ${n}`);
   lines.push("every instance is stored in dry-run, since the Actions and Jira bridge it replaces still run. The cutover: turn those off,",

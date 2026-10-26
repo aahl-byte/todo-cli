@@ -18,6 +18,8 @@ const ACTIONS = [
   { id: "notify", name: "Notify QA", kind: "rest", runner: "server", auto: [{ from: "review", to: "in-qa" }], method: "POST",
     url: "https://hooks.example/notify/{{item.id|url}}?from={{item.from|url}}", headers: { "X-Token": "abc", "Content-Type": "application/json" },
     body: '{"text": {{item.title|json}}, "status": "{{item.status}}", "dev": {{item.developer|json}}}' },
+  { id: "ping", name: "Ping", kind: "rest", runner: "server", auto: [], method: "GET", url: "https://api.example/ping",
+    headers: { Authorization: "Bearer s3cr3t-bearer" }, body: "" },
   { id: "send-to-watchtower", name: "ROSM", kind: "watchtower", runner: "server", auto: [], base: WT, dir: "{{project.dir}}",
     prompt: LONG_PROMPT, model: "opus", resume: true, resumePrompt: "/todo {{item.id}}" },
 ];
@@ -74,13 +76,13 @@ describe("plugins-port", () => {
   it("turns each Action and Jira trigger into an instance, in trigger order, and says what the server still needs", async () => {
     const plan = await planPort(w.d, "p", { lookup: publicDns });
     expect(plan.repos).toEqual(["acme/web"]);
-    expect(plan.instances.rest).toEqual([{
+    expect(plan.instances.rest[0]).toEqual({
       id: "action-notify", name: "Notify QA", on: ["manual", { status: { from: "review", to: "in-qa" } }],
       settings: { connection: "rest-hooks-example", method: "POST", path: "/notify/{{item.id}}?from={{event.from}}",
-                  headers: "X-Token: abc\nContent-Type: application/json",
+                  headers: "Content-Type: application/json",
                   body: { text: "{{item.title}}", status: "{{item.status}}", dev: "{{item.developer}}" } },
       dry_run: true,
-    }]);
+    });
     expect(plan.instances["watchtower-session"]).toEqual([{
       id: "action-send-to-watchtower", name: "ROSM", on: ["manual"],
       settings: { dir: "/work/web", prompt: LONG_PROMPT, link: WT, model: "opus", resumePrompt: "/todo {{item.id}}" },
@@ -94,12 +96,16 @@ describe("plugins-port", () => {
     expect(plan.instances["jira-issue"]).toEqual([{ id: "default", name: "Jira issues", dry_run: true }]);
     expect(plan.grants).toEqual({ "jira-issue": ["post-request"] });
     expect(Object.values(plan.instances).flat().every((i) => i.dry_run === true)).toBe(true);
+    expect(plan.instances.rest[1].settings).toEqual({ connection: "rest-api-example", method: "GET", path: "/ping" });
     expect(plan.connections).toEqual({
-      "rest-hooks-example": { http: { url: "https://hooks.example" } },
+      "rest-hooks-example": { http: { url: "https://hooks.example", auth: "header:X-Token" } },
+      "rest-api-example": { http: { url: "https://api.example", auth: "bearer" } },
       watchtower: { http: { url: WT_API } },
       jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } },
     });
-    expect(plan.secrets).toEqual({ jira: "JIRA_EMAIL:JIRA_API_TOKEN" });
+    expect(plan.secrets).toEqual({ "rest-hooks-example": "the X-Token header of action notify",
+                                   "rest-api-example": "the bearer token in the Authorization header of action ping",
+                                   jira: "JIRA_EMAIL:JIRA_API_TOKEN" });
     expect(plan.allowHosts).toEqual(["127.0.0.1:10010"]);
     expect(plan.notes).toContain("1 item(s) name no GitHub repo, so no plugin runs for them");
     expect(plan.notes).toContain('action send-to-watchtower dir: {{project.dir}} is fixed as "/work/web", its value now; it no longer follows the CLI\'s reports');
@@ -108,6 +114,8 @@ describe("plugins-port", () => {
     expect(text).toContain("TODO_PLUGIN_SECRET_JIRA=<JIRA_EMAIL:JIRA_API_TOKEN>");
     expect(text).toContain("TODO_PLUGIN_ALLOW_HOSTS needs 127.0.0.1:10010");
     expect(text).toContain("every instance is stored in dry-run");
+    expect(text).toContain("TODO_PLUGIN_SECRET_REST_HOOKS_EXAMPLE=<the X-Token header of action notify>");
+    expect(text).not.toMatch(/abc|s3cr3t/);
   });
 
   it("writes only with --write, beside instances already stored, and refuses a plugin the repo doesn't enable", async () => {
@@ -126,7 +134,7 @@ describe("plugins-port", () => {
                      values ('p', 'acme/web', 'rest', 'mine', '{"id": "mine", "name": "Mine", "settings": {"connection": "x", "path": "/"}}', 0, 'bob', '{}')`);
     expect(await writePlan(w.d, plan, "alice", gh.impl)).toEqual([]);
     const stored = await storedInstances(w.d, "p", "acme/web");
-    expect(stored.rest.map((i) => i.id)).toEqual(["mine", "action-notify"]);
+    expect(stored.rest.map((i) => i.id)).toEqual(["mine", "action-notify", "action-ping"]);
     expect(stored["jira-transition"].map((i) => i.id)).toEqual(["jira-review-in-qa", "jira-in-qa-qa-rejected", "jira-ready-to-deploy-deployed"]);
     expect(await storedGrants(w.d, "p", "acme/web")).toEqual({ "jira-issue": ["post-request"] });
   });
@@ -134,6 +142,7 @@ describe("plugins-port", () => {
 
 describe("plugins-parity", () => {
   beforeEach(() => {
+    vi.stubEnv("TODO_PLUGIN_SECRET_REST_HOOKS_EXAMPLE", "abc");
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "127.0.0.1:10010");
     vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
   });
@@ -155,7 +164,7 @@ describe("plugins-parity", () => {
     ]);
     const [first, , , manual] = result.cases;
     expect(first.old.sort()).toEqual([
-      'action notify: POST https://hooks.example/notify/i1?from=review headers {"content-type":"application/json","x-token":"abc"} {"dev":"alice","status":"in-qa","text":"Item I1"}',
+      'action notify: POST https://hooks.example/notify/i1?from=review headers {"content-type":"application/json","x-token":"***"} {"dev":"alice","status":"in-qa","text":"Item I1"}',
       "jira SR-1 → QA",
     ]);
     expect(manual.plugins).toEqual([`action send-to-watchtower: POST ${WT_API}/api/sessions/s7/resume`]);

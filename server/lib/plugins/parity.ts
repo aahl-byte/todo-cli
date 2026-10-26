@@ -13,6 +13,7 @@ import { connectionsFor, runInstance } from "./host";
 import { actionInstanceId, planPort, type PortPlan } from "./port";
 import { pluginItem } from "./server";
 import { SHIPPED } from "./shipped";
+import { redactHeaders } from "./limits";
 import { guardFor, hostConnections, hostSecrets } from "./store";
 import { settingRef } from "./load";
 import { pickInstances } from "./triggers";
@@ -52,8 +53,9 @@ function bodyText(body: unknown): string {
 const lower = (h: Record<string, string> | undefined) =>
   Object.fromEntries(Object.entries(h ?? {}).map(([k, v]) => [k.toLowerCase(), v]).sort(([a], [b]) => a.localeCompare(b)));
 
+/** A send in words, each credential header's value masked. */
 function sendLine(id: string, method: string, url: string, body: unknown, headers?: Record<string, string>): string {
-  const h = headers && Object.keys(headers).length ? ` headers ${canonical(lower(headers))}` : "";
+  const h = headers && Object.keys(headers).length ? ` headers ${canonical(redactHeaders(lower(headers)))}` : "";
   return `action ${id}: ${method} ${url}${h}${bodyText(body)}`;
 }
 
@@ -107,11 +109,14 @@ async function pluginSends(plan: PortPlan, item: Awaited<ReturnType<typeof plugi
       const base = conn && "url" in conn ? String(conn.url).replace(/\/+$/, "") : "";
       const sent: Call | undefined = result.wouldSend[0];
       const rest = plugin === "rest";
-      if (sent) out.push(sendLine(id, sent.method ?? "", base + sent.path, sent.text ?? sent.input, rest ? sent.headers ?? {} : undefined));
+      // The connection's own credential goes out as a header too.
+      const auth = conn?.kind === "http" && conn.auth ? (conn.auth.startsWith("header:") ? conn.auth.slice(7) : "authorization").toLowerCase() : null;
+      const withAuth = (h: Record<string, string>) => (auth ? { ...h, [auth]: "***" } : h);
+      if (sent) out.push(sendLine(id, sent.method ?? "", base + sent.path, sent.text ?? sent.input, rest ? withAuth(sent.headers ?? {}) : undefined));
       else if (held) {
         // A rest GET reads, so dry-run sends it; the parity check holds it back like a write.
         const { accept: _a, "user-agent": _u, ...headers } = lower(held.headers);
-        out.push(sendLine(id, held.method, held.url, held.body, rest ? headers : undefined));
+        out.push(sendLine(id, held.method, held.url, held.body, rest ? withAuth(headers) : undefined));
       }
       else out.push(`action ${id}: sends nothing`);
     }

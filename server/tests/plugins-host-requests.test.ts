@@ -222,13 +222,15 @@ describe("request templates held in settings", () => {
 
   it("sends a text body as it is, and records headers and text in dry-run", async () => {
     const server = await serve([{ method: "PUT", path: "/t", body: {} }]);
-    const instance = inst({ method: "PUT", path: "/t", headers: { "Content-Type": "text/csv" }, text: "{{item.id}},{{item.status}}" });
+    const instance = inst({ method: "PUT", path: "/t", headers: { "Content-Type": "text/csv", Authorization: "Bearer t0k", "X-Api-Key": "k" },
+                            text: "{{item.id}},{{item.status}}" });
     const live = await run(REST, [], { connections: { hooks: { kind: "http", url: server.url } }, instance });
     expect(live.result.error).toBeUndefined();
     expect(server.received.map((r) => [r.body, r.headers["content-type"]])).toEqual([["fix-login,in-progress", "text/csv"]]);
     const dry = await run(REST, [], { connections: { hooks: { kind: "http", url: server.url } }, instance, dryRun: true });
     expect(dry.result.wouldSend).toEqual([
-      { connection: "hooks", method: "PUT", path: "/t", headers: { "content-type": "text/csv" }, text: "fix-login,in-progress" }]);
+      { connection: "hooks", method: "PUT", path: "/t", headers: { "content-type": "text/csv", authorization: "***", "x-api-key": "***" },
+        text: "fix-login,in-progress" }]);
   });
 
   it("fails a path that doesn't start with /, a method that isn't one, and a header that breaks its line", async () => {
