@@ -732,6 +732,7 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .instance-card { display: grid; gap: 6px; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .instance-card.off { opacity: .65; }
 .instance-card .rule-row .grow { flex: 1; }
+.plugins .rule-row input[type=checkbox] { min-width: 0; }
 .instance-card .order { display: inline-flex; gap: 2px; align-items: center; }
 .instance-card .order .x { opacity: 1; }
 .instance-card .order .x:disabled { opacity: .25; }
