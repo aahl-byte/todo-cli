@@ -29,7 +29,7 @@ async function setRepos(key: string, change: (repos: string[]) => string[]): Pro
     if (e instanceof PluginInputError) return fail(e.message);
     throw e;
   }
-  revalidatePath(`/p/${key}/settings/plugins`);
+  revalidatePath(`/p/${key}/settings/automation`);
   return { ok: true, at: Date.now() };
 }
 

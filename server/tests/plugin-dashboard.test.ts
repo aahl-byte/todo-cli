@@ -9,7 +9,7 @@ vi.mock("next/cache", () => ({ revalidatePath: () => undefined }));
 
 const act = await import("@/app/plugin-actions");
 const { GET: pluginsGET, PUT: pluginsPUT } = await import("@/app/api/projects/[key]/plugins/route");
-const { itemButtons, itemNotices, pluginsPage } = await import("@/lib/plugin-views");
+const { automationPage, itemButtons, itemNotices, pluginsPage } = await import("@/lib/plugin-views");
 const { draftPlugin, editInstance, savedInstances } = await import("@/lib/plugin-form");
 const { putGrants } = await import("@/lib/plugins/store");
 
@@ -65,7 +65,7 @@ describe("the plugins settings page", () => {
   it("names the plugins file it read from the default branch, the repo's deploy branches and what the file's plugins do", async () => {
     vi.stubGlobal("fetch", fakeGitHub({ file: `track: [staging, main]\n${FILE.replace("  note:\n", "  note:\n    description: Says hi.\n")}` }).impl);
     const [repo] = (await pluginsPage(w.d, "p")).repos;
-    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: true, commit: "s1" });
+    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: true, pluginsKey: true, commit: "s1" });
     expect(repo.track).toEqual(["staging", "main"]);
     expect(repo.plugins.map((p) => [p.name, p.description])).toEqual([
       ["pr-link", "Links each of the item's branches to its pull requests on GitHub."], ["note", "Says hi."], ["ping", null]]);
@@ -77,7 +77,7 @@ describe("the plugins settings page", () => {
   it("says a repo has no plugins file, so no deploy branches, and offers every shipped plugin it doesn't run", async () => {
     vi.stubGlobal("fetch", fakeGitHub({}).impl);
     const [repo] = (await pluginsPage(w.d, "p")).repos;
-    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: false, commit: "s1" });
+    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: false, pluginsKey: false, commit: "s1" });
     expect(repo.track).toEqual([]);
     expect(repo.plugins.map((p) => p.name)).toEqual(["pr-link"]);
     expect(repo.offered.map((o) => o.name)).toContain("rest");
@@ -88,7 +88,7 @@ describe("the plugins settings page", () => {
     vi.stubGlobal("fetch", fakeGitHub({}).impl);
     await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/gone', 'alice')");
     const gone = (await pluginsPage(w.d, "p")).repos.find((r) => r.repo === "acme/gone")!;
-    expect(gone.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: null, exists: false, commit: null });
+    expect(gone.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: null, exists: false, pluginsKey: false, commit: null });
   });
 
   it("says why a repo gets no plugins", async () => {
@@ -150,6 +150,33 @@ describe("connections an instance names", () => {
   });
 });
 
+describe("the Automation page", () => {
+  it("reads only the repo asked for, defaulting to the one most items name, with what the server connects", async () => {
+    await w.d.query("insert into checkouts (project, handle, repo, dir) values ('p', 'bob', 'acme/cli', '/src/cli')");
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ vercel: { http: { url: "https://api.vercel.com", auth: "bearer" } } }));
+    const page = await automationPage(w.d, "p", null);
+    expect(page.repos.map((r) => r.repo)).toEqual(["acme/web", "acme/cli"]);
+    expect(page.selected?.repo).toBe("acme/web");
+    expect(page.selected?.plugins.map((p) => p.name)).toContain("note");
+    expect(page.pluginsOn).toBe(true);
+    expect(page.host).toEqual([{ name: "github", auth: true, held: true }, { name: "vercel", auth: true, held: false }]);
+    expect((await automationPage(w.d, "p", "acme/cli")).selected?.repo).toBe("acme/cli");
+  });
+
+  it("counts the Jira bridge's triggers and linked issues, and the project's Actions", async () => {
+    let facts = (await automationPage(w.d, "p", null)).bridge;
+    expect(facts).toEqual({ jira: { triggers: 0, writes: false, readOnly: false, polled: null, linked: 0 }, actions: [] });
+    await w.d.query(`update projects set jira_synced_at = now(), jira_outbound = $1::jsonb, actions = $2::jsonb where key = 'p'`, [
+      JSON.stringify({ writes: true, never: [], triggers: [{ from: "review", to: "ready-for-qa", jira: "QA" }] }),
+      JSON.stringify([{ id: "go", name: "Start agent", kind: "watchtower", runner: "server", auto: [], base: "http://wt", dir: "/src" }])]);
+    await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'I1', 'ABC-1', 'field')");
+    facts = (await automationPage(w.d, "p", null)).bridge;
+    expect(facts.jira).toMatchObject({ triggers: 1, writes: true, linked: 1 });
+    expect(facts.jira.polled).toEqual(expect.any(String));
+    expect(facts.actions).toEqual([{ name: "Start agent", kind: "watchtower" }]);
+  });
+});
+
 describe("the repo allowlist", () => {
   it("adds and removes a repo, refusing a name that isn't owner/name", async () => {
     expect((await act.addPluginRepo("p", "Acme/API")).ok).toBe(true);
@@ -203,7 +230,7 @@ describe("the item page", () => {
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "note",
       instances: [{ id: "go", name: "Go", dry_run: true }, { id: "need", name: "Need", on: ["manual"], settings: { greeting: "" } }] }), params("p"));
     const r = await act.runPlugin({ project: "p", itemUid: "I1", plugin: "note", instance: "go" });
-    expect(r).toMatchObject({ ok: true, done: true, message: "Say hi: dry run: would send 0 calls, attached nothing" });
+    expect(r).toMatchObject({ ok: true, done: true, message: "Say hi: test mode: would send 0 calls, attached nothing" });
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "");
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "ping",
       instances: [{ id: "p1", name: "P1", on: ["manual"] }] }), params("p"));

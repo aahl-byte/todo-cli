@@ -1,8 +1,7 @@
-// What the Plugins settings page says in words: each plugin's state in one
-// line, which plugins get a Configure form, which connections need a person,
-// and the lines a person adds to a repo's plugins file. Pure, so the page and
-// the tests share it.
-import type { DashConnection, DashInstance, DashPlugin } from "./plugin-views";
+// What the Automation settings page says about plugins in words: which plugins
+// get a settings form, which connections need a person, and the lines a person
+// adds to a repo's plugins file. Pure, so the page and the tests share it.
+import type { DashConnection, DashPlugin } from "./plugin-views";
 
 export const PLUGINS_FILE = ".todo-plugins/plugins.yaml";
 export const TRACK_EXAMPLE = "track: [staging, main]";
@@ -22,33 +21,23 @@ export function configurable(p: Shape): boolean {
   return i.id !== DEFAULT_ID || i.enabled === false || !!i.dry_run || i.on !== undefined || !!i.button || i.from_repo;
 }
 
-const where = (i: DashInstance) => (i.server_runs ? "runs on the server" : `runs in a developer's CLI: ${i.server_runs_reason}`);
-
-/** "on · runs on the server", or what keeps it from running. */
-export function stateLine(p: Shape): { text: string; hot: boolean } {
-  if (!p.instances.length) return { text: "on, with no instance yet: configure one to run it", hot: true };
-  const on = p.instances.filter((i) => i.enabled !== false);
-  if (!on.length) return { text: "every instance is switched off", hot: false };
-  const off = p.instances.length - on.length;
-  const offText = off ? ` · ${off} switched off` : "";
-  if (on.length === 1) return { text: `on · ${where(on[0])}${on[0].dry_run ? ", in dry run" : ""}${offText}`, hot: false };
-  const server = on.filter((i) => i.server_runs).length;
-  const parts = [server && `${server} on the server`, on.length - server && `${on.length - server} in a developer's CLI`].filter(Boolean);
-  return { text: `on · ${on.length} instances: ${parts.join(", ")}${offText}`, hot: false };
-}
-
-const secretVar = (name: string) => (name === "github" ? "GITHUB_TOKEN" : `TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`);
+/** The environment variable that holds the secret for one of this server's connections. */
+export const secretVar = (name: string) => (name === "github" ? "GITHUB_TOKEN" : `TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`);
 
 /** What a person can do about a connection a plugin uses, or null when it needs nothing. `form`: a credential is set here. */
 export function connectionNotice(shipped: boolean, c: DashConnection): { text: string; hot: boolean; form: boolean } | null {
   if (c.origin === "missing") {
-    return { text: `declared nowhere: add it under connections: in the plugins file${shipped ? ", or the server's operator adds it to TODO_PLUGIN_CONNECTIONS" : ""}`,
-             hot: true, form: false };
+    const admin = shipped ? ", or the server's admin adds it to TODO_PLUGIN_CONNECTIONS" : "";
+    return { text: `Declared nowhere. A developer adds it under connections: in the plugins file${admin}.`, hot: true, form: false };
   }
   if (c.origin === "host") {
-    if (!shipped) return { text: "this server's own, which only plugins shipped with todo get: declare it under connections: in the plugins file", hot: true, form: false };
-    return c.needsSecret && !c.held ? { text: `this server has no secret for it: its operator sets ${secretVar(c.name)}`, hot: true, form: false } : null;
+    if (!shipped) {
+      return { text: "Only plugins that ship with todo get this server's connections. A developer declares it under connections: in the plugins file.",
+               hot: true, form: false };
+    }
+    return c.needsSecret && !c.held ? { text: `The server has no secret for it. Its admin sets ${secretVar(c.name)}.`, hot: true, form: false } : null;
   }
   if (c.command || !c.needsSecret) return null;
-  return c.held ? { text: "credential stored", hot: false, form: true } : { text: "no credential on this server", hot: true, form: true };
+  return c.held ? { text: "Credential stored.", hot: false, form: true }
+    : { text: "No credential on this server. Set one so the server can call it.", hot: true, form: true };
 }

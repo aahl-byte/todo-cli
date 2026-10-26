@@ -284,7 +284,7 @@ export function describePlan(plan: PortPlan): string {
   if (plan.allowHosts.length) lines.push(`TODO_PLUGIN_ALLOW_HOSTS needs ${plan.allowHosts.join(",")}`);
   for (const n of [...new Set(plan.notes)]) lines.push(`note: ${n}`);
   lines.push("every instance is stored in dry-run, since the Actions and Jira bridge it replaces still run. The cutover: turn those off,",
-             "then clear dry_run on each instance (Settings → Plugins), which makes it send.");
+             "then clear dry_run on each instance (Test mode, under Settings → Automation), which makes it send.");
   return lines.join("\n");
 }
 

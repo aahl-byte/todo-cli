@@ -1,14 +1,19 @@
 // What the dashboard shows of plugins: each of a project's repos with its
-// plugins, instances, connections, grants and run log for the Plugins settings
-// page, and an item's manual buttons, skip notices and manual-run outcomes.
+// plugins, instances, connections, grants and run log for the Automation
+// settings page, what the Jira bridge and Actions do beside them, and an item's
+// manual buttons, skip notices and manual-run outcomes.
 import type { Db, Row } from "./db";
 import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
-import { hostConnections, loadDefs, merge, projectRepos, repoPlugins, type RepoDefs, type RepoPlugins } from "./plugins/store";
-import { finished } from "./plugins/queue";
+import { storedActions } from "./actions/model";
+import { outboundRules } from "./jira/rules";
+import { jiraReadOnly } from "./jira/config";
+import { hostConnections, hostSecrets, loadDefs, merge, projectRepos, repoPlugins, type RepoDefs, type RepoPlugins } from "./plugins/store";
+import { finished, pluginsEnabled } from "./plugins/queue";
 import { ALWAYS_ON, SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
 import { attachedSummary, connectionKeysOf } from "./plugin-form";
 import { PLUGINS_FILE } from "./plugin-summary";
+import { pickRepo } from "./automation";
 import type { Attachment, Call, ConnectionDef, InstanceDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
 
 /** Runs the log shows per instance. */
@@ -72,13 +77,16 @@ export interface DashSource {
   /** null when GitHub doesn't show the repo to this server. */
   branch: string | null;
   exists: boolean;
+  /** The file has a `plugins:` map, so a new plugin's line goes under it. */
+  pluginsKey: boolean;
   commit: string | null;
 }
 
 /** A shipped plugin the repo's file doesn't turn on. */
 export interface DashOffer { name: string; description: string | null; connections: string[] }
 
-export interface DashRepo {
+/** What the repo picker knows of a repo before its plugins are read. */
+export interface RepoEntry {
   repo: string;
   listed: { by: string; at: string } | null;
   checkout: boolean;
@@ -90,6 +98,9 @@ export interface DashRepo {
   refusal: string | null;
   /** Listing it would let the project use it. */
   addable: boolean;
+}
+
+export interface DashRepo extends RepoEntry {
   source: DashSource | null;
   /** The deploy branches its file tracks. */
   track: string[];
@@ -102,6 +113,34 @@ export interface DashRepo {
 }
 
 export interface PluginsPage { ownersSet: boolean; repos: DashRepo[] }
+
+/** What still runs outside plugins in a project: the Jira bridge and Actions. */
+export interface BridgeFacts {
+  jira: {
+    /** todo → Jira triggers on the General tab. */
+    triggers: number;
+    writes: boolean;
+    readOnly: boolean;
+    /** When the bridge last mirrored the project's linked issues, or null when it never has. */
+    polled: string | null;
+    /** Jira issues the project's items link. */
+    linked: number;
+  };
+  actions: { name: string; kind: "rest" | "watchtower" }[];
+}
+
+/** A connection this server offers every repo. */
+export interface HostConnection { name: string; auth: boolean; held: boolean }
+
+export interface AutomationPage {
+  ownersSet: boolean;
+  /** GITHUB_TOKEN is set, without which no plugin runs. */
+  pluginsOn: boolean;
+  repos: RepoEntry[];
+  selected: DashRepo | null;
+  bridge: BridgeFacts;
+  host: HostConnection[];
+}
 
 const iso = (v: unknown) => new Date(v as string).toISOString();
 
@@ -183,7 +222,7 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
   const offered = Object.entries(SHIPPED).filter(([name]) => !plugins.some((p) => p.name === name)).sort(([a], [b]) => a.localeCompare(b))
     .map(([name, { def }]) => ({ name, description: def.description ?? null, connections: def.connections ?? [] }));
   return {
-    source: { path: PLUGINS_FILE, branch: defs.defaultBranch, exists: defs.text !== undefined, commit: defs.sha },
+    source: { path: PLUGINS_FILE, branch: defs.defaultBranch, exists: defs.text !== undefined, pluginsKey: !!bare.file.plugins, commit: defs.sha },
     track: bare.file.track ?? [], plugins, offered, connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
     available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() }, errors: view.errors,
   };
@@ -201,26 +240,60 @@ async function itemRepos(d: Pick<Db, "query">, project: string): Promise<Map<str
   return out;
 }
 
-/** Every repo the project's items name, lists, or a member has a checkout of, each with its plugins when the project may
- * use it; the ones only a checkout brings in come last, folded. */
-export async function pluginsPage(d: Pick<Db, "query">, project: string): Promise<PluginsPage> {
+/** Every repo the project's items name, lists, or a member has a checkout of; the ones only a checkout brings in come last. */
+async function repoEntries(d: Pick<Db, "query">, project: string): Promise<RepoEntry[]> {
   const { repos, checkouts } = await projectRepos(d, project);
   const used = await itemRepos(d, project);
   const names = [...new Set([...repos.map((r) => r.repo), ...checkouts.map((c) => repoKey(c)).filter(Boolean), ...used.keys()])].sort();
-  const out: DashRepo[] = [];
+  const owners = pluginOwners();
+  const out: RepoEntry[] = [];
   for (const repo of names) {
     const listed = repos.find((r) => r.repo === repo);
     const refusal = await repoRefusal(d, project, repo);
-    const owners = pluginOwners();
-    const base = {
+    out.push({
       repo, listed: listed ? { by: listed.added_by, at: listed.added_at } : null, checkout: checkouts.includes(repo), items: used.get(repo) ?? 0,
       folded: !listed && !used.has(repo), refusal,
       addable: !!refusal && !listed && owners.includes(repo.split("/")[0]) && !(await repoAllowed(d, project, repo)),
-    };
-    if (refusal) out.push({ ...base, source: null, track: [], plugins: [], offered: [], connections: [], available: { repo: [], host: [] }, errors: [] });
-    else out.push({ ...base, ...(await dashRepo(d, project, repo)) });
+    });
   }
-  return { ownersSet: pluginOwners().length > 0, repos: [...out.filter((r) => !r.folded), ...out.filter((r) => r.folded)] };
+  return [...out.filter((r) => !r.folded), ...out.filter((r) => r.folded)];
+}
+
+const UNREAD: Omit<DashRepo, keyof RepoEntry> = { source: null, track: [], plugins: [], offered: [], connections: [], available: { repo: [], host: [] }, errors: [] };
+
+/** Every repo the project uses, each with its plugins when the project may use it. */
+export async function pluginsPage(d: Pick<Db, "query">, project: string): Promise<PluginsPage> {
+  const out: DashRepo[] = [];
+  for (const e of await repoEntries(d, project)) out.push(e.refusal ? { ...e, ...UNREAD } : { ...e, ...(await dashRepo(d, project, e.repo)) });
+  return { ownersSet: pluginOwners().length > 0, repos: out };
+}
+
+/** The Jira bridge's triggers and polling, and the project's Actions. */
+export async function bridgeFacts(d: Pick<Db, "query">, project: string): Promise<BridgeFacts> {
+  const [p] = await d.query("select jira_outbound, jira_synced_at, actions from projects where key = $1", [project]);
+  const [linked] = await d.query("select count(distinct jira_key)::int as n from jira_links where project = $1 and source = 'field'", [project]);
+  const rules = outboundRules(p?.jira_outbound);
+  const actions = storedActions(p?.actions);
+  return {
+    jira: { triggers: rules?.triggers.length ?? 0, writes: !!rules?.writes, readOnly: jiraReadOnly(),
+            polled: p?.jira_synced_at ? iso(p.jira_synced_at) : null, linked: Number(linked?.n ?? 0) },
+    actions: actions.map((a) => ({ name: a.name || a.id, kind: a.kind })),
+  };
+}
+
+/** The Automation page: the repo picker's repos, the one asked for (or the one most items name) with its plugins, and
+ * what the server and the General tab bring to every repo. */
+export async function automationPage(d: Pick<Db, "query">, project: string, wanted: string | null): Promise<AutomationPage> {
+  const repos = await repoEntries(d, project);
+  const choice = pickRepo(repos, wanted);
+  const entry = repos.find((r) => r.repo === choice);
+  const secrets = hostSecrets();
+  const host = Object.entries(hostConnections()).map(([name, def]) => ({ name, auth: "http" in def && !!def.http.auth, held: name in secrets }));
+  return {
+    ownersSet: pluginOwners().length > 0, pluginsOn: pluginsEnabled(), repos,
+    selected: entry ? { ...entry, ...(await dashRepo(d, project, entry.repo)) } : null,
+    bridge: await bridgeFacts(d, project), host,
+  };
 }
 
 // ── the item page ─────────────────────────────────────────────────────────────
@@ -274,7 +347,7 @@ export async function manualRunState(d: Pick<Db, "query">, project: string, even
     if (res.error && res.transient && !e.done_at) return { done: false, ok: true, message: `retrying: ${res.error}` };
     if (res.error) return { done: true, ok: false, message: `failed: ${res.error}` };
     if (res.skipped) return { done: true, ok: false, message: `skipped: ${res.skipped}` };
-    if (run.dry_run) return { done: true, ok: true, message: `dry run: would send ${count(res.wouldSend?.length ?? 0, "call")}, attached nothing` };
+    if (run.dry_run) return { done: true, ok: true, message: `test mode: would send ${count(res.wouldSend?.length ?? 0, "call")}, attached nothing` };
     const what = res.attached?.length ? `attached ${attachedSummary(res.attached)}` : "ran, attaching nothing";
     return { done: true, ok: true, message: res.log?.length ? `${what} · ${res.log[res.log.length - 1]}` : what };
   }

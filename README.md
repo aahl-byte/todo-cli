@@ -373,7 +373,7 @@ item's fields or status. The same plugin runs in the CLI and on the server.
   reads the working tree.
 - **Instances:** each configured use of a plugin is an instance, with its own
   triggers (status moves, push, pr, deployment, manual), settings and dry-run
-  switch. Edit them under the server's Settings → Plugins, or with
+  switch. Edit them under the server's Settings → Automation, or with
   `todo plugin add|set|rm`.
 - **Connections** are the endpoints plugins call. A repo declares its own; the
   host declares host-wide ones (`todo connection add`, or the server's

@@ -508,84 +508,131 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator(".template-ref dt", { hasText: "{{item.repo_name}}" }).waitFor();
   });
 
-  const card = (plugin) => page.locator(`.plugin-repo[data-repo="acme/web"] .plugin-card[data-plugin="${plugin}"]`);
+  const autoRow = (key, repo = "acme/web") => page.locator(`.auto-rows[data-repo="${repo}"] .auto-row[data-row="${key}"]`);
+  const card = (plugin) => autoRow(plugin).locator(".auto-panel.plugin-card");
   const inst = (id) => card("notes-link").locator(`.instance-card[data-instance="${id}"]`);
   const setting = (id, key) => inst(id).locator(`.setting[data-setting="${key}"]`);
   const configure = async (plugin) => {
-    const d = card(plugin).locator("details.configure");
-    if (!(await d.evaluate((e) => e.open))) await d.locator("> summary").click();
+    if (await card(plugin).count()) return;
+    await autoRow(plugin).locator("button.link-btn", { hasText: /^(Set up|Settings) ›$/ }).first().click();
+    await card(plugin).waitFor();
   };
   const savePlugin = async (plugin) => {
-    await card(plugin).locator("button:has-text('save instances')").click();
+    await card(plugin).locator(".save-row button.primary", { hasText: "Save" }).click();
     await card(plugin).locator("fieldset.plugin-edit:not([disabled]) .save-row .hint", { hasText: "Saved." }).waitFor();
   };
+  const rowState = (key, repo) => autoRow(key, repo).getAttribute("data-state");
+  const automation = (repo) => base + "/p/web/settings/automation" + (repo ? "?repo=" + encodeURIComponent(repo) : "");
 
-  await step("plugins: a settings tab with the repo allowlist", async () => {
+  await step("automation: a settings tab, and the old Plugins address leads to it", async () => {
     await login("pat", "/p/web/settings");
-    await page.locator(".settings-tabs").getByRole("link", { name: "Plugins" }).click();
-    await page.waitForURL(/\/p\/web\/settings\/plugins$/);
-    await page.locator(".repo-row[data-repo='acme/web'] .tag", { hasText: "listed" }).waitFor();
+    await page.locator(".settings-tabs").getByRole("link", { name: "Automation" }).click();
+    await page.waitForURL(/\/p\/web\/settings\/automation$/);
+    await page.locator(".automation-intro", { hasText: "Pick a repo to see what it does" }).waitFor();
+    await page.goto(base + "/p/web/settings/plugins?repo=acme/api");
+    await page.waitForURL(/\/settings\/automation\?repo=acme%2Fapi$/);
+  });
+
+  await step("automation: the picker opens on the repo most items name, keeps the choice in the URL, and adds and removes a repo", async () => {
+    await page.goto(automation());
+    const picker = page.locator("select[aria-label=repo]");
+    if (await picker.inputValue() !== "acme/web") throw new Error("opened on " + await picker.inputValue());
+    const options = await picker.locator("option").allTextContents();
+    if (options[0] !== "acme/web · 3 items" || !options.includes("acme/api · 1 item")) throw new Error("options " + JSON.stringify(options));
+    const checkoutOnly = await picker.locator("optgroup option").allTextContents();
+    if (JSON.stringify(checkoutOnly) !== '["acme/infra","acme/tools"]') throw new Error("checkout-only " + JSON.stringify(checkoutOnly));
+    await picker.selectOption("acme/api");
+    await page.waitForURL(/\?repo=acme%2Fapi$/);
+    await page.locator(".auto-rows[data-repo='acme/api']").waitFor();
+    await page.click("button.add:has-text('Add a repo')");
     await page.fill("input[aria-label='add a repo']", "acme/extra");
-    await page.click("button:has-text('add repo')");
-    const added = page.locator(".repo-row[data-repo='acme/extra']");
-    await added.waitFor();
-    await added.hover();
-    await added.locator("button[aria-label='remove acme/extra']").click();
-    await added.waitFor({ state: "detached" });
+    await page.click("button.primary:has-text('Add repo')");
+    await page.waitForURL(/\?repo=acme%2Fextra$/);
+    await page.locator(".auto-rows[data-repo='acme/extra']").waitFor();
+    await page.click(".repo-pick button:has-text('Remove from project')");
+    await page.locator(".auto-rows[data-repo='acme/web']").waitFor();
+    if ((await picker.locator("option").allTextContents()).some((o) => o.startsWith("acme/extra"))) throw new Error("acme/extra still listed");
   });
 
-  await step("plugins: the page says what it's for, and folds away repos only a checkout brings in", async () => {
-    await page.locator(".plugins-intro", { hasText: "decides which plugins it can run" }).waitFor();
-    await page.locator(".repo-row[data-repo='acme/api']", { hasText: "1 item" }).waitFor();
-    const folded = page.locator("details.folded-repos");
-    if (await folded.evaluate((e) => e.open)) throw new Error("the checkout-only repos start open");
-    const summary = await folded.locator("> summary").textContent();
-    if (!summary.includes("2 other repos with a reported checkout")) throw new Error("folded summary: " + summary);
-    if (await page.locator(".plugin-repo[data-repo='acme/infra']").isVisible()) throw new Error("a folded repo's setup shows");
-    await folded.locator("> summary").click();
-    await folded.locator(".repo-row[data-repo='acme/infra']").waitFor();
-    await folded.locator(".plugin-repo[data-repo='acme/tools']").waitFor();
-    await folded.locator("> summary").click();
+  await step("automation: repos items name that the project can't read fold into one line, and Connect adds one", async () => {
+    const line = page.locator(".unconnected");
+    await line.locator(".hint", { hasText: "2 repos your items name aren't connected yet: acme/docs, legacy/billing" }).waitFor();
+    await line.locator("button", { hasText: "Connect ›" }).click();
+    await line.locator(".rrow[data-repo='legacy/billing'] .hint", { hasText: "TODO_PLUGIN_OWNERS" }).waitFor();
+    if (await line.locator(".rrow[data-repo='legacy/billing'] button:has-text('Connect')").count()) throw new Error("offers to connect a repo the server won't read");
+    await line.locator(".rrow[data-repo='acme/docs'] button", { hasText: "Connect" }).click();
+    await line.locator(".hint", { hasText: "1 repo your items name isn't connected yet: legacy/billing" }).waitFor();
+    await page.locator("select[aria-label=repo] option", { hasText: "acme/docs · 1 item" }).waitFor({ state: "attached" });
   });
 
-  await step("plugins: a repo without a plugins file says how to name deploy branches and turn each shipped plugin on", async () => {
-    const api = page.locator(".plugin-repo[data-repo='acme/api']");
-    await api.locator(".repo-source", { hasText: ".todo-plugins/plugins.yaml isn't on main, so only pr-link runs." }).waitFor();
-    await api.locator(".repo-track", { hasText: "measured against its PR's base branch" }).waitFor();
-    await api.locator(".repo-track code", { hasText: "track: [staging, main]" }).waitFor();
-    await api.locator(".plugin-offer[data-offer='vercel-preview'] code", { hasText: "vercel-preview: {use: shipped}" }).waitFor();
-    const desc = await api.locator(".plugin-offer[data-offer='vercel-preview'] .offer-desc").textContent();
-    if (!desc.includes("Vercel preview")) throw new Error("no description: " + desc);
-    if (await api.locator(".plugin-card[data-plugin='pr-link'] details.configure").count()) throw new Error("pr-link offers a form");
-    await api.locator(".plugin-card[data-plugin='pr-link'] .plugin-state", { hasText: "on · runs on the server" }).waitFor();
+  await step("automation: a repo with no plugins file has pr-link on, deploy branches first among what's off, and the YAML that turns each on", async () => {
+    await page.goto(automation("acme/api"));
+    const order = await page.locator(".auto-rows[data-repo='acme/api'] .auto-row").evaluateAll((els) => els.map((e) => `${e.dataset.row}:${e.dataset.state}`));
+    if (order[0] !== "pr-link:on") throw new Error("first row " + order[0]);
+    const firstOff = order.find((r) => r.endsWith(":off"));
+    if (firstOff !== "track:off") throw new Error("first off row " + firstOff + " in " + order.join(", "));
+    await autoRow("pr-link", "acme/api").locator(".auto-line", { hasText: "Hasn't run yet." }).waitFor();
+    const track = autoRow("track", "acme/api");
+    await track.locator(".auto-title", { hasText: "Show where work has landed" }).waitFor();
+    await track.locator(".auto-line", { hasText: "in staging ✓ · in main ✗" }).waitFor();
+    await track.locator("li[data-who=repo] pre", { hasText: "track: [staging, main]" }).waitFor();
+    await track.locator("li[data-who=repo] .copy", { hasText: "Copy" }).waitFor();
+    const vercel = autoRow("vercel-preview", "acme/api");
+    const yaml = await vercel.locator("li[data-who=repo] pre").textContent();
+    if (yaml !== "plugins:\n  vercel-preview: {use: shipped}") throw new Error("yaml " + JSON.stringify(yaml));
+    await vercel.locator("li[data-who=admin] code", { hasText: "TODO_PLUGIN_SECRET_VERCEL" }).waitFor();
+    await vercel.locator("li[data-who=here]", { hasText: "once it's turned on in the repo" }).waitFor();
+    if (await vercel.locator("button:has-text('Set up')").count()) throw new Error("offers settings for a plugin the repo hasn't turned on");
+    await page.screenshot({ path: out + "/automation-no-file.png", fullPage: true });
   });
 
-  await step("plugins: a repo with deploy branches lists them, and a plugin with settings opens behind Configure", async () => {
-    const web = page.locator(".plugin-repo[data-repo='acme/web']");
-    await web.locator(".repo-track", { hasText: "staging, main" }).waitFor();
-    await web.locator(".repo-source", { hasText: "on main" }).waitFor();
-    if (await web.locator(".plugin-offer[data-offer='rest']").count()) throw new Error("rest is on, yet offered");
-    if (await inst("go").isVisible()) throw new Error("instances show before Configure");
+  await step("automation: what the Jira bridge and Actions do today shows as elsewhere, linking to the General tab", async () => {
+    for (const key of ["jira-transition", "jira-issue", "rest", "watchtower-session"]) {
+      if (await rowState(key, "acme/api") !== "elsewhere") throw new Error(`${key} is ${await rowState(key, "acme/api")}`);
+    }
+    await autoRow("jira-transition", "acme/api").locator(".auto-line", { hasText: "3 triggers in the Jira bridge move tickets today" }).waitFor();
+    await autoRow("watchtower-session", "acme/api").locator(".auto-line", { hasText: '"Start agent"' }).waitFor();
+    await autoRow("jira-transition", "acme/api").getByRole("link", { name: "General → Jira ›" }).click();
+    await page.waitForURL(/\/p\/web\/settings#jira$/);
+    await page.locator("#jira").waitFor();
+  });
+
+  await step("automation: a repo with deploy branches shows them on, a plugin's last run, the steps left, and work both a plugin and the bridge would do", async () => {
+    await page.goto(automation("acme/web"));
+    await autoRow("track").locator(".auto-title", { hasText: "Show where work has landed (staging, main)" }).waitFor();
+    if (await rowState("track") !== "on") throw new Error("deploy branches aren't on");
+    await autoRow("pr-link").locator(".last", { hasText: "linked PR #41 · Per-project API tokens on per-project-api-tokens" }).waitFor();
+    const jt = autoRow("jira-transition");
+    if (await rowState("jira-transition") !== "setup") throw new Error("jira-transition is " + await rowState("jira-transition"));
+    await jt.locator(".auto-line", { hasText: "The Jira bridge also moves tickets with 3 triggers, so both would send." }).waitFor();
+    await jt.locator("li.done[data-who=repo]", { hasText: "Turned on." }).waitFor();
+    await jt.locator("li[data-who=admin]", { hasText: "Connect the server to Jira" }).waitFor();
+    await autoRow("rest").locator(".auto-line", { hasText: "items would get both buttons" }).waitFor();
+    await autoRow("ping").locator(".auto-line", { hasText: "This repo's own plugin" }).waitFor();
+    await page.screenshot({ path: out + "/automation-page.png", fullPage: true });
+    await autoRow("vercel-preview").locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    await card("vercel-preview").locator(".setting[data-setting=project] input").waitFor();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: out + "/automation-setup.png", fullPage: true });
+  });
+
+  await step("automation: settings open in place, with labelled instance fields, where each runs, and the credential a plugin needs", async () => {
+    if (await inst("go").isVisible()) throw new Error("instances show before Settings");
     await configure("notes-link");
     await inst("go").locator(".field", { hasText: "Name" }).locator("input").waitFor();
     await inst("go").locator(".field", { hasText: "Id" }).locator("input").waitFor();
+    await inst("go").locator(".check", { hasText: "Test mode: show what it would do without doing it" }).waitFor();
     if (await inst("go").locator(".order").count()) throw new Error("order arrows on a plugin where order changes nothing");
-    await page.screenshot({ path: out + "/plugins-page.png", fullPage: true });
-  });
-
-  await step("plugins: each plugin with its triggers, shipped ones marked, connections and where each instance runs", async () => {
-    await card("pr-link").locator(".tag", { hasText: "shipped" }).waitFor();
-    await card("notes-link").locator(".plugin-meta", { hasText: "runs on manual" }).waitFor();
-    await card("ping").locator(".conn-row[data-connection=hooks]", { hasText: "no credential on this server" }).waitFor();
-    await configure("notes-link");
+    await card("notes-link").locator(".plugin-meta", { hasText: "Runs when someone presses its button" }).waitFor();
     await inst("go").locator(".runs-where", { hasText: "Runs on the server." }).waitFor();
-    await card("ping").locator(".plugin-state", { hasText: "runs in a developer's CLI: `hooks` not authorized here" }).waitFor();
+    if (await rowState("ping") !== "setup") throw new Error("ping is " + await rowState("ping"));
+    await autoRow("ping").locator("li[data-who=here]", { hasText: "Enter the hooks credential." }).waitFor();
     const note = await setting("go", "jira").locator(".hint").textContent();
     if (!note.includes("list_statuses")) throw new Error("no options_from note: " + note);
     if (await setting("go", "jira").locator("select").count()) throw new Error("an options_from choice rendered as a select");
   });
 
-  await step("plugins: every setting type saves, and triggers, button and plugin-wide settings with it", async () => {
+  await step("automation: every setting type saves, and triggers, button and plugin-wide settings with it", async () => {
     await setting("go", "title").locator("input").fill("Smoke notes");
     await setting("go", "body").locator("textarea").fill("line one\nline two");
     await setting("go", "model").locator("select").selectOption("sonnet");
@@ -599,7 +646,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await inst("go").locator(".triggers button.add").click();
     await inst("go").locator(".triggers .rule-row[data-trigger=status] select[aria-label='to status']").selectOption("review");
     await inst("go").locator("input[aria-label='button label']").fill("Link smoke notes");
-    await page.screenshot({ path: out + "/plugins-settings.png", fullPage: true });
+    await page.screenshot({ path: out + "/automation-settings.png", fullPage: true });
     await savePlugin("notes-link");
     await setting("go", "token").locator(".tag", { hasText: "set" }).waitFor();
     const values = {
@@ -621,11 +668,11 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if ((await page.content()).includes("s3cret")) throw new Error("the secret came back to the page");
   });
 
-  await step("plugins: rest offers the connections an instance may use, says its settings are templates, and why a repo-declared one gets no server connection", async () => {
-    await page.goto(base + "/p/web/settings/plugins");
+  await step("automation: rest offers the connections an instance may use, says its settings are templates, and why a repo-declared one gets no server connection", async () => {
+    await page.goto(automation("acme/web"));
+    await configure("rest");
     const rest = card("rest");
     await rest.locator(".plugin-meta", { hasText: "calls the connection each instance names" }).waitFor();
-    await configure("rest");
     const hook = rest.locator('.instance-card[data-instance="hook"]');
     await hook.locator(".repo-declared", { hasText: "only the repo's own connections" }).waitFor();
     const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
@@ -638,11 +685,11 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const stored = await offered(added);
     if (!stored.includes("github") || !stored.includes("hooks")) throw new Error("a stored instance offered " + stored.join(", "));
     if (await added.locator(".repo-declared").count()) throw new Error("a stored instance says it's repo-declared");
-    await page.screenshot({ path: out + "/plugins-rest.png", fullPage: true });
+    await page.screenshot({ path: out + "/automation-rest.png", fullPage: true });
     await page.reload();
   });
 
-  await step("plugins: a stored secret is kept when untouched, and cleared on request", async () => {
+  await step("automation: a stored secret is kept when untouched, and cleared on request", async () => {
     await configure("notes-link");
     await setting("go", "title").locator("input").fill("Smoke notes 2");
     await savePlugin("notes-link");
@@ -655,7 +702,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await setting("go", "token").locator(".tag", { hasText: "set" }).count()) throw new Error("the secret is still set");
   });
 
-  await step("plugins: add, duplicate and remove instances; a repo file's instance only switches off", async () => {
+  await step("automation: add, duplicate and remove instances; a repo file's instance only switches off", async () => {
     await card("notes-link").locator("button.add:has-text('instance')").click();
     await inst("instance").waitFor();
     await inst("go").locator("button[aria-label='duplicate go']").click();
@@ -672,31 +719,33 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await inst("go-copy").count()) throw new Error("go-copy wasn't removed");
   });
 
-  await step("plugins: a first-match plugin orders its instances, and names the connection it lacks", async () => {
-    const jt = card("jira-transition");
-    await jt.locator(".plugin-state.hot", { hasText: "no instance yet" }).waitFor();
-    await jt.locator(".conn-row[data-connection=jira]", { hasText: "declared nowhere" }).waitFor();
-    await configure("jira-transition");
-    await jt.locator("button.add:has-text('instance')").click();
-    if (await jt.locator(".order").count()) throw new Error("order arrows with one instance");
-    await jt.locator("button.add:has-text('instance')").click();
-    const order = () => jt.locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
+  await step("automation: setting up a first-match plugin starts with an instance to fill in, and orders several", async () => {
+    const jt = autoRow("jira-transition");
+    await jt.locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    const order = () => card("jira-transition").locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
+    await card("jira-transition").locator(".instance-card").first().waitFor();
+    if (JSON.stringify(await order()) !== '["instance"]') throw new Error("starts with " + JSON.stringify(await order()));
+    if (await card("jira-transition").locator(".order").count()) throw new Error("order arrows with one instance");
+    if (await card("jira-transition").locator(".save-row button.primary").isDisabled()) throw new Error("the new instance can't be saved");
+    await card("jira-transition").locator("button.add:has-text('instance')").click();
     if (JSON.stringify(await order()) !== '["instance","instance-2"]') throw new Error("order " + JSON.stringify(await order()));
-    await jt.locator("button[aria-label='move instance-2 up']").click();
+    await card("jira-transition").locator("button[aria-label='move instance-2 up']").click();
     if (JSON.stringify(await order()) !== '["instance-2","instance"]') throw new Error("order after move " + JSON.stringify(await order()));
     await page.reload();
   });
 
-  await step("plugins: a connection's credential is set and cleared, never shown", async () => {
+  await step("automation: a connection's credential is set and cleared, never shown, and turns the row on", async () => {
+    await autoRow("ping").locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
     const row = card("ping").locator(".conn-row[data-connection=hooks]");
-    await row.locator("button:has-text('set credential')").click();
+    await row.locator("button:has-text('Set credential')").click();
     await row.locator("input[type=password]").fill("hook-secret");
-    await row.locator("button.primary:has-text('save')").click();
-    await row.locator(".grow", { hasText: "credential stored" }).waitFor();
+    await row.locator("button.primary:has-text('Save')").click();
+    await row.locator(".grow", { hasText: "Credential stored." }).waitFor();
     if ((await page.content()).includes("hook-secret")) throw new Error("the credential came back to the page");
-    await card("ping").locator(".plugin-state", { hasText: "on · runs on the server" }).waitFor();
-    await row.locator("button:has-text('clear')").click();
-    await row.locator(".grow", { hasText: "no credential on this server" }).waitFor();
+    await autoRow("ping").locator(".auto-line", { hasText: "Hasn't run yet." }).waitFor();
+    if (await rowState("ping") !== "on") throw new Error("ping is " + await rowState("ping"));
+    await row.locator("button:has-text('Clear')").click();
+    await row.locator(".grow", { hasText: "No credential on this server" }).waitFor();
   });
 
   await step("item: a plugin's manual button runs it, and what it attached is labelled with the plugin", async () => {
@@ -711,10 +760,11 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.screenshot({ path: out + "/item-plugins.png", fullPage: true });
   });
 
-  await step("plugins: the run log lists the run with its item and what it attached", async () => {
-    await page.goto(base + "/p/web/settings/plugins");
-    await card("notes-link").locator(".run-logs > summary").click();
-    const run = card("notes-link").locator(".run-row", { hasText: "plugin-playground" }).first();
+  await step("automation: the row names its last run, and History lists it with its item and what it attached", async () => {
+    await page.goto(automation("acme/web"));
+    await autoRow("notes-link").locator(".last", { hasText: "linked Smoke notes 2 on plugin-playground" }).waitFor();
+    await autoRow("notes-link").locator("button", { hasText: "History ›" }).click();
+    const run = autoRow("notes-link").locator(".run-row", { hasText: "plugin-playground" }).first();
     await run.locator(".tag", { hasText: "ran" }).waitFor();
     await run.locator("summary").click();
     await run.locator(".run-detail li", { hasText: "Smoke notes 2" }).waitFor();
@@ -757,7 +807,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const mobile = await browser.newContext({ viewport: { width: 400, height: 860 } });
     await mobile.addCookies(await ctx.cookies());
     const mp = await mobile.newPage();
-    for (const path of ["/p/web", "/p/web/i/export-invoices-as-csv", "/p/web/i/safari-login-fails-after-password-reset", "/p/web/qa", "/p/web/deploy", "/inbox"]) {
+    for (const path of ["/p/web", "/p/web/i/export-invoices-as-csv", "/p/web/i/safari-login-fails-after-password-reset", "/p/web/qa", "/p/web/deploy", "/inbox",
+                        "/p/web/settings/automation?repo=acme%2Fapi"]) {
       await mp.goto(base + path);
       await mp.waitForTimeout(400);
       const wide = await mp.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1

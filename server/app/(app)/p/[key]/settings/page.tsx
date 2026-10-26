@@ -19,7 +19,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
   if (!s) notFound();
   const actions = (
     <>
-      <div className="label section">Actions</div>
+      <div className="label section" id="actions">Actions</div>
       <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} />
       <div className="label section">Recent runs</div>
       <RecentRuns runs={await recentRuns(d, key)} projectKey={key} />
@@ -32,7 +32,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
     <div className="settings">
       <SettingsTabs projectKey={key} current="general" />
       {actions}
-      <div className="label section">Jira</div>
+      <div className="label section" id="jira">Jira</div>
       <p className="settings-head">
         <span>Linked issues{s.jiraProjects.length ? ` in ${s.jiraProjects.join(", ")}` : ""}</span>
         <span className={s.serverReadOnly || !s.outbound.writes ? "tag" : "tag hot"}>{state}</span>
