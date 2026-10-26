@@ -272,6 +272,10 @@ def branch_prs(repo_key: str, branch: str):
     return current, [p for p in prs if p["state"] == "merged" or p["state"] in OPEN_PR]
 
 
+def is_pr_url(url: str) -> bool:
+    return bool(_PR_URL.match(url or ""))
+
+
 def url_pr(url: str):
     m = _PR_URL.match(url or "")
     if not m:
@@ -836,7 +840,9 @@ def _pr_edge(repo: Repo, url: str, target: str, meta: dict) -> dict:
         return {"state": "landed", "pr": pr}
     landed = repo.is_ancestor(sha, repo.tips[target]) if key == repo.key and target in repo.tips \
         else _gh_in(key, sha, target)
-    return {"state": "landed" if landed else "unknown" if landed is None else "waiting", "pr": pr}
+    if landed is None:
+        return {"state": "unknown", "reason": f'couldn\'t check PR #{pr["number"]} against {target}', "pr": pr}
+    return {"state": "landed" if landed else "waiting", "pr": pr}
 
 
 def _hints(repo: Repo, items: list, facts: dict, notice: list) -> None:

@@ -38,7 +38,7 @@ from . import checkout, docs, filecache, gitfacts, migrate, remote, render, stor
 from . import connections as connections_mod
 from . import plugins as plugins_mod
 from .status import ACTIVE, COMPLETE, REASONED, SHORTCUT_HELP, SHORTCUTS, STATUSES, TERMINAL
-from .util import die, now
+from .util import die, now, to_str
 
 # Shortcuts that make no sense for a child task: `deploy` is gated by the item's
 # checks.
@@ -681,6 +681,102 @@ def cmd_deps(root: Path, args) -> None:
             shown += 1
     if not shown:
         print("(no dependencies, conflicts or overlaps)")
+
+
+_NEEDS_USAGE = ("usage: todo needs <query> [<PR URL> | branch:<name> | <item>] [--in <branch>] [--because <text>]"
+                " | todo needs rm <query> <id>")
+
+
+def cmd_needs(root: Path, args) -> None:
+    words = args.words
+    if words[0] == "rm":
+        if len(words) != 3 or not words[2].isdigit():
+            die(_NEEDS_USAGE, 2)
+        _needs_rm(root, store.resolve_item(root, words[1]), int(words[2]))
+    elif len(words) == 1:
+        _needs_list(root, store.resolve_item(root, words[0]))
+    elif len(words) == 2:
+        _needs_add(root, store.resolve_item(root, words[0]), words[1].strip(), args)
+    else:
+        die(_NEEDS_USAGE, 2)
+
+
+def _needs_ref(root: Path, it, ref: str) -> str:
+    """A dependency note's `needs`: the PR URL, `branch:<name>`, or `item:<id>` of the item `ref` names."""
+    if ref.startswith("branch:"):
+        if not ref[len("branch:"):].strip():
+            die(_EMPTY_BRANCH, 2)
+        return "branch:" + ref[len("branch:"):].strip()
+    if re.match(r"^https?://", ref):
+        if not gitfacts.is_pr_url(ref):
+            die(f"Not a GitHub PR URL: {ref} (expected https://github.com/<owner>/<repo>/pull/<number>)", 2)
+        return ref
+    dep = store.resolve_item(root, ref[len("item:"):] if ref.startswith("item:") else ref)
+    if dep["id"] == it["id"]:
+        die("An item can't depend on itself.", 2)
+    return f'item:{dep["id"]}'
+
+
+def _needs_label(m: dict) -> str:
+    needs = to_str(m.get("needs"))
+    return (needs[len("item:"):] if needs.startswith("item:") else needs) + (f' in {m["in"]}' if m.get("in") else "")
+
+
+def _edge_state(root: Path, it, note_uid) -> str:
+    e = next((e for e in gitfacts.view(root, it).get("needs") or [] if e.get("note") == note_uid), None)
+    if e is None:
+        return "unknown (not checked yet)"
+    return e["state"] + (f' ({e.get("reason")})' if e["state"] == "unknown" and e.get("reason") else "")
+
+
+def _recheck(root: Path, it) -> None:
+    """Recompute the item's facts so its edges show their current state; a failure leaves them unchecked."""
+    try:
+        gitfacts.refresh(root, [it])
+        gitfacts.post_pending(root)
+    except Exception as e:  # noqa: BLE001 — the note is written either way
+        print(f"git facts: not rechecked ({type(e).__name__}: {e})", file=sys.stderr)
+
+
+def _needs_add(root: Path, it, ref: str, args) -> None:
+    into, because = (args.into or "").strip(), (args.because or "").strip()
+    meta = {"needs": _needs_ref(root, it, ref), **({"in": into} if into else {}), **({"because": because} if because else {})}
+    label = _needs_label(meta)
+    same = next((n for n in it["notes"] if n["kind"] == "dependency" and not (n.get("meta") or {}).get("plugin")
+                 and to_str(n["meta"].get("needs")) == meta["needs"] and to_str(n["meta"].get("in")) == into), None)
+    if same:
+        print(f'{it["id"]}: already needs {label} [{same["id"]}]')
+        return
+    new_id = store.add_note(root, it["id"], because or f"needs {label}", now(), kind="dependency", extra=meta)
+    _recheck(root, it)
+    it = store.get_item(root, it["id"])
+    uid = next(n["uid"] for n in it["notes"] if n["id"] == new_id)
+    print(f'{it["id"]}: added dependency [{new_id}]: needs {label} — {_edge_state(root, it, uid)}')
+
+
+def _needs_list(root: Path, it) -> None:
+    notes = [n for n in it["notes"] if n["kind"] == "dependency"]
+    print(f'{it["id"]}:' if notes else f'{it["id"]}: no dependencies recorded (git finds the rest: todo deps {it["id"]})')
+    for n in notes:
+        m = n.get("meta") or {}
+        why = to_str(m.get("because")).strip() or n["text"].strip()
+        print(f'  [{n["id"]}] needs {_needs_label(m)} — {_edge_state(root, it, n.get("uid"))}'
+              + (f" — {why}" if why and why != f"needs {_needs_label(m)}" else "")
+              + (f'  (plugin {m["plugin"]})' if m.get("plugin") else ""))
+
+
+def _needs_rm(root: Path, it, note_id: int) -> None:
+    _note_id(it, note_id)
+    n = next(n for n in it["notes"] if n["id"] == note_id)
+    if n["kind"] != "dependency":
+        die(f"Note [{note_id}] isn't a dependency; it's a {n['kind']} note.", 2)
+    plugin = (n.get("meta") or {}).get("plugin")
+    if plugin:
+        die(f"[{note_id}] came from the {plugin} plugin, which makes it again on its next run.\n"
+            f"Change that plugin's settings instead: todo plugin list, or Settings → Plugins on the server.", 2)
+    store.remove_note(root, it["id"], note_id)
+    _recheck(root, it)
+    print(f'{it["id"]}: removed dependency [{note_id}]: needs {_needs_label(n.get("meta") or {})}')
 
 
 def cmd_refresh(root: Path, args) -> None:
@@ -1672,7 +1768,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.add_argument("text", nargs="+", help="the note text")
     p.add_argument("--kind", choices=[k for k in store.NOTE_KINDS if k != "dependency"], default="context",
-                   help="note kind (default: context)")
+                   help="note kind (default: context); record a dependency with `todo needs`")
     p.set_defaults(func=cmd_note)
 
     p = sub.add_parser("comment", parents=[common], help="add a comment (@handle mentions)")
@@ -1762,6 +1858,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from-checks", action="store_true",
                    help="list every prereq-branch check, to drop or confirm")
     p.set_defaults(func=cmd_deps)
+
+    p = sub.add_parser("needs", parents=[common], usage=_NEEDS_USAGE[len("usage: "):],
+                       help="record a dependency git can't see, list an item's, or remove one")
+    p.add_argument("words", nargs="+", metavar="[rm] <query> [<ref> | <id>]",
+                   help="an item to list; the item and what it needs (a GitHub PR URL, branch:<name>, or an item); "
+                        "or rm, the item, and the dependency's note id")
+    p.add_argument("--in", dest="into", metavar="BRANCH",
+                   help="landed only once it's in this branch (a PR's merge commit, checked through GitHub)")
+    p.add_argument("--because", help="why it's needed, shown with the edge")
+    p.set_defaults(func=cmd_needs)
 
     p = sub.add_parser("refresh", parents=[common], help="recompute git facts and run refreshed plugins now")
     p.add_argument("query", nargs="?", help="id or part of a title (default: every open item)")
