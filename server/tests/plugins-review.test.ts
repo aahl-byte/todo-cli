@@ -608,6 +608,21 @@ describe("server_runs_reason", () => {
   });
 });
 
+describe("server_runs for an instance that names its connection", () => {
+  it("judges the connection the instance names: one the server has runs, a private one waits for an allow entry", async () => {
+    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\n" }).impl);
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://93.184.216.34" } }, lan: { http: { url: "http://192.168.1.4:9000" } } }));
+    for (const connection of ["hooks", "lan", "missing"]) {
+      await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice,
+        { repo: "acme/web", plugin: "rest", instances: [{ id: "r", name: "R", settings: { connection, path: "/x" } }] }), params("p"));
+      const listed = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
+      const rest = listed.plugins.find((p: { name: string }) => p.name === "rest");
+      expect(rest.instances[0].server_runs_reason).toBe({ hooks: null, lan: "connection `lan` is refused by the private-address rule",
+                                                         missing: "`missing` not authorized here" }[connection]);
+    }
+  });
+});
+
 describe("the changes feed", () => {
   it("says whether a deleted note was removed by a plugin run or by a person", async () => {
     await onBranch([]);

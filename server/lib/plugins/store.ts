@@ -7,7 +7,7 @@ import { repoKey } from "../checkouts";
 import { PLUGINS_DIR, githubGet, NotFound, repoFile, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { addressAllowed, type AddressGuard } from "./connections";
-import { allInstances, connectionsFor, pluginsFor, wouldSkip, type Resolved } from "./host";
+import { allInstances, bindConnections, connectionsFor, pluginsFor, wouldSkip, type Resolved } from "./host";
 import { pluginsEnabled } from "./queue";
 import { checkFile, parsePlugins } from "./load";
 import { decryptSecret, encryptSecret, NoSecretKey, secretKey } from "./secrets";
@@ -340,13 +340,13 @@ async function lastRuns(d: Pick<Db, "query">, project: string, repo: string): Pr
 async function serverRefusal(r: Resolved, instance: InstanceDef, connections: Record<string, ResolvedConnection>, guard: AddressGuard,
                              unreadable: string[]): Promise<string | null> {
   if (!pluginsEnabled()) return "GITHUB_TOKEN isn't set on the server";
-  for (const name of r.def.connections ?? []) {
+  for (const name of bindConnections(r.def, instance).plugin.connections ?? []) {
     const c = connections[name];
     if (c?.kind === "http" && c.auth && !c.secret && unreadable.includes(name)) return `credential for \`${name}\` doesn't decrypt`;
   }
   const skip = wouldSkip({ plugin: r.def, instance, connections, shipped: r.shipped, allowRepoCommands: false });
   if (skip) return skip;
-  for (const name of r.def.connections ?? []) {
+  for (const name of bindConnections(r.def, instance).plugin.connections ?? []) {
     const c = connections[name];
     if (c.url && !(await addressAllowed(c.url, guard, c.origin ?? "repo"))) return `connection \`${name}\` is refused by the private-address rule`;
   }
