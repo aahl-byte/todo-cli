@@ -5,7 +5,7 @@ import type { Db, Row } from "./db";
 import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { hostConnections, loadDefs, merge, projectRepos, repoPlugins, type RepoDefs, type RepoPlugins } from "./plugins/store";
 import { finished } from "./plugins/queue";
-import { SHIPPED } from "./plugins/shipped";
+import { ALWAYS_ON, SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
 import { attachedSummary, connectionKeysOf } from "./plugin-form";
 import { PLUGINS_FILE } from "./plugin-summary";
@@ -48,6 +48,8 @@ export interface DashPlugin {
   name: string;
   description: string | null;
   shipped: boolean;
+  /** Shipped and on in every repo, without the file asking. */
+  always: boolean;
   connections: string[];
   on: PluginDef["on"];
   every: string | null;
@@ -161,7 +163,7 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
     const def = bare.resolved.find((r) => r.name === p.name)?.def ?? SHIPPED[p.name]?.def ?? {};
     const declared = Object.fromEntries((bare.file.instances?.[p.name] ?? []).map((i) => [i.id, i]));
     return {
-      name: p.name, description: def.description ?? null, shipped: p.shipped, connections: p.connections, on: p.on, every: p.every, exclusive: !!def.exclusive,
+      name: p.name, description: def.description ?? null, shipped: p.shipped, always: ALWAYS_ON.includes(p.name), connections: p.connections, on: p.on, every: p.every, exclusive: !!def.exclusive,
       per: def.per ?? null, code: !!def.code, settings: p.settings, instances: p.instances, declared,
       capabilities: p.shipped ? def.capabilities ?? [] : [], grant: grants[p.name] ?? null,
       runs: Object.fromEntries(p.instances.map((i) => [i.id, runs[`${p.name}/${i.id}`] ?? []])),

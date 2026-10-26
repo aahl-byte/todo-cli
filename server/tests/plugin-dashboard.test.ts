@@ -53,7 +53,7 @@ describe("the plugins settings page", () => {
     expect(page.ownersSet).toBe(true);
     expect(page.repos.map((r) => [r.repo, r.listed?.by, r.checkout, r.refusal])).toEqual([["acme/web", "alice", false, null]]);
     const [repo] = page.repos;
-    expect(repo.plugins.map((p) => [p.name, p.shipped])).toEqual([["pr-link", true], ["note", false], ["ping", false]]);
+    expect(repo.plugins.map((p) => [p.name, p.shipped, p.always])).toEqual([["pr-link", true, true], ["note", false, false], ["ping", false, false]]);
     const note = repo.plugins.find((p) => p.name === "note")!;
     expect(note).toMatchObject({ on: ["manual"], declared: { go: { id: "go", name: "Go", button: "Say hi" } }, exclusive: false });
     expect(note.instances[0]).toMatchObject({ id: "go", server_runs: true });

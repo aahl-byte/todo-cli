@@ -15,8 +15,10 @@ const TRIGGER_LABEL: Record<TriggerDraft["kind"], string> = {
   status: "status move", push: "push", pr: "pull request", deployment: "deployment", manual: "manual button",
 };
 
-export function InstanceCard({ plugin, draft, x, index, statuses, onChange, serverRuns, available }: {
+export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onChange, serverRuns, available }: {
   plugin: DashPlugin; draft: PluginDraft; x: InstanceDraft; index: number; statuses: readonly string[];
+  /** Order decides which instance fires: the plugin is first-match and has several. */
+  ordered: boolean;
   onChange: (d: PluginDraft) => void;
   /** Connection names an instance may pick. */
   available: DashRepo["available"];
@@ -36,30 +38,37 @@ export function InstanceCard({ plugin, draft, x, index, statuses, onChange, serv
           <input type="checkbox" aria-label={`${x.id} on`} checked={x.enabled} onChange={(e) => edit({ enabled: e.target.checked })} />
           {x.enabled ? "on" : "off"}
         </label>
-        <input aria-label="name" placeholder="name" value={x.name} onChange={(e) => edit({ name: e.target.value })} />
-        <input aria-label="id" placeholder="id" value={x.id} disabled={x.declared} onChange={(e) => edit({ id: e.target.value })}
-               data-tip={x.declared ? "declared in the repo file" : "unique within the plugin; todo plugin run uses it"} />
+        <label className="field">
+          <span className="field-label">Name</span>
+          <input aria-label="name" value={x.name} onChange={(e) => edit({ name: e.target.value })} />
+        </label>
+        <label className="field" data-tip={x.declared ? "declared in the repo file" : "unique within the plugin; todo plugin run uses it"}>
+          <span className="field-label">Id</span>
+          <input aria-label="id" value={x.id} disabled={x.declared} onChange={(e) => edit({ id: e.target.value })} />
+        </label>
         <label className="check">
           <input type="checkbox" aria-label={`${x.id} dry run`} checked={x.dryRun} onChange={(e) => edit({ dryRun: e.target.checked })} />
           dry run
         </label>
         <span className="grow" />
         {x.declared && <span className="tag" data-tip="the repo file declares it: it keeps the file's order, and removing it switches it off">repo file</span>}
-        <span className="order">
-          <span className="faint">#{index + 1}</span>
-          <button type="button" className="x" aria-label={`move ${x.id} up`} disabled={!canMove(draft, x.key, -1)} onClick={() => onChange(moveInstance(draft, x.key, -1))}>▲</button>
-          <button type="button" className="x" aria-label={`move ${x.id} down`} disabled={!canMove(draft, x.key, 1)} onClick={() => onChange(moveInstance(draft, x.key, 1))}>▼</button>
-        </span>
+        {ordered && (
+          <span className="order">
+            <span className="faint">#{index + 1}</span>
+            <button type="button" className="x" aria-label={`move ${x.id} up`} disabled={!canMove(draft, x.key, -1)} onClick={() => onChange(moveInstance(draft, x.key, -1))}>▲</button>
+            <button type="button" className="x" aria-label={`move ${x.id} down`} disabled={!canMove(draft, x.key, 1)} onClick={() => onChange(moveInstance(draft, x.key, 1))}>▼</button>
+          </span>
+        )}
         <button type="button" className="btn" aria-label={`duplicate ${x.id}`} onClick={() => onChange(duplicateInstance(plugin, draft, x.key))}>duplicate</button>
         <button type="button" className="btn danger" aria-label={`remove ${x.id}`} onClick={() => onChange(removeInstance(draft, x.key))}
                 data-tip={x.declared ? "switches it off; the repo file declares it" : undefined}>remove</button>
       </div>
       <Triggers plugin={plugin} x={x} statuses={statuses} edit={edit} />
       {manual && (
-        <div className="rule-row">
-          <span className="hint">button</span>
+        <label className="field">
+          <span className="field-label">Button label</span>
           <input aria-label="button label" placeholder={x.name || x.id} value={x.button} onChange={(e) => edit({ button: e.target.value })} />
-        </div>
+        </label>
       )}
       {fields.length > 0 && (
         <div className="setting-fields">
@@ -97,19 +106,21 @@ function Triggers({ plugin, x, statuses, edit }: { plugin: DashPlugin; x: Instan
       <label className="check">
         <input type="checkbox" aria-label={`${x.id} uses the plugin's triggers`} checked={x.inherit}
                onChange={(e) => edit({ inherit: e.target.checked })} />
-        the plugin&apos;s triggers{own.length ? `: ${own.map(describeTrigger).join(", ")}` : ": none"}
+        runs on the plugin&apos;s own triggers{own.length ? `: ${own.map(describeTrigger).join(", ")}` : ": none"}
       </label>
       {!x.inherit && (
         <>
           {x.triggers.map((t, i) => (
             <div className="rule-row" key={i} data-trigger={t.kind}>
+              <span className="field-label">Runs on</span>
               <select aria-label="trigger" value={t.kind} onChange={(e) => set(i, { kind: e.target.value as TriggerDraft["kind"] })}>
                 {TRIGGER_KINDS.map((k) => <option key={k} value={k}>{TRIGGER_LABEL[k]}</option>)}
               </select>
               {t.kind === "status" && (
                 <>
+                  <span className="field-label">from</span>
                   {pick("from status", t.from, (v) => set(i, { from: v }))}
-                  <span className="arrow">→</span>
+                  <span className="field-label">to</span>
                   {pick("to status", t.to, (v) => set(i, { to: v }))}
                 </>
               )}
