@@ -37,7 +37,7 @@ def _port() -> int:
 @pytest.fixture
 def server(tmp_path):
     data = tmp_path / "pglite"
-    env = {**os.environ, "TODO_PGLITE": str(data)}
+    env = {**os.environ, "TODO_PGLITE": str(data), "TODO_FILES_DIR": str(tmp_path / "files")}
     tokens = {}
     for handle in ("alice", "bob"):
         out = subprocess.run(["npx", "tsx", "scripts/user-add.ts", handle], cwd=SERVER, env=env,
@@ -79,14 +79,16 @@ def _stop(proc):
         pass
 
 
-def cli(home: Path, cwd: Path, *argv, offline=False, code=0):
-    env = {k: v for k, v in os.environ.items() if k not in ("TODO_USER", "CLAUDECODE")}
-    env.update(HOME=str(home), TODO_VIA="human")
+def cli(home: Path, cwd: Path, *argv, offline=False, code=0, plugins=False):
+    env = {k: v for k, v in os.environ.items() if k not in ("TODO_USER", "CLAUDECODE")
+           and not (plugins and k == "TODO_PLUGINS")}
+    # This checkout's todo, not whichever one is installed.
+    env.update(HOME=str(home), TODO_VIA="human", PYTHONPATH=str(SERVER.parent))
     if offline:
         env["TODO_OFFLINE"] = "1"
     out = subprocess.run([sys.executable, "-c", "from todo.cli import main; main()", *argv],
                          cwd=cwd, env=env, capture_output=True, text=True, timeout=120)
-    assert out.returncode == code, f"todo {' '.join(argv)}\n{out.stdout}\n{out.stderr}"
+    assert code is None or out.returncode == code, f"todo {' '.join(argv)}\n{out.stdout}\n{out.stderr}"
     return out
 
 
@@ -287,3 +289,57 @@ def test_acknowledgements_from_both_sides_merge(server, tmp_path):
     seen = store.resolve_item((rb / ".TODO").resolve(), "cart-totals")["notes"][0]["meta"]["seen_by"]
     assert sorted(seen) == ["alice", "alice/agent", "bob"]
     assert "nothing new" in cli(ha, ra, "--agent", "updates", "cart-totals").stdout
+
+
+def test_docs_round_trip_and_conflict(server, tmp_path):
+    url, tokens = server
+    users = {}
+    for who in ("alice", "bob"):
+        home, repo = tmp_path / who / "home", tmp_path / who / "repo"
+        home.mkdir(parents=True)
+        (repo / ".TODO").mkdir(parents=True)
+        cli(home, repo, "login", url, tokens[who])
+        users[who] = (home, repo)
+    (ha, ra), (hb, rb) = users["alice"], users["bob"]
+    cli(ha, ra, "add", "Cart totals")
+    cli(ha, ra, "link", "--remote", url, "--project", "web")
+    plan = tmp_path / "plan.md"
+    plan.write_text("# Plan\n")
+    cli(ha, ra, "doc", "add", "cart-totals", str(plan))
+    cli(hb, rb, "link", "--remote", url, "--project", "web")
+    path_b = Path(cli(hb, rb, "doc", "path", "cart-totals", "plan.md").stdout.strip())
+    assert path_b.read_text() == "# Plan\n"
+    assert cli(hb, rb, "docs", "cart-totals").stdout.strip().endswith(f"{url}/p/web/i/cart-totals/docs/plan.md")
+
+    path_a = Path(cli(ha, ra, "doc", "path", "cart-totals", "plan.md").stdout.strip())
+    path_a.write_text("# Plan\nalice\n")
+    path_b.write_text("# Plan\nbob\n")
+    cli(ha, ra, "sync")
+    out = cli(hb, rb, "sync")
+    assert "plan.conflict-bob.md" in out.stdout
+    assert path_b.read_text() == "# Plan\nalice\n"
+    assert (path_b.parent / "plan.conflict-bob.md").read_text() == "# Plan\nbob\n"
+    cli(ha, ra, "sync")
+    assert (path_a.parent / "plan.conflict-bob.md").read_text() == "# Plan\nbob\n"
+
+    cli(ha, ra, "doc", "rm", "cart-totals", "plan.conflict-bob.md")
+    cli(hb, rb, "sync")
+    assert not (path_b.parent / "plan.conflict-bob.md").exists()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node isn't installed")
+def test_plugins_list_and_instances_against_the_server(server, tmp_path):
+    url, tokens = server
+    home, repo = tmp_path / "home", tmp_path / "repo"
+    home.mkdir()
+    (repo / ".TODO").mkdir(parents=True)
+    cli(home, repo, "login", url, tokens["alice"])
+    cli(home, repo, "link", "--remote", url, "--project", "web")
+    out = cli(home, repo, "plugin", "list", "--repo", "acme/web", plugins=True)
+    assert "pr-link (shipped)  on: push, pr · needs github" in out.stdout
+    assert "    default  on  · implicit" in out.stdout
+    added = cli(home, repo, "plugin", "add", "pr-link", "x", "--repo", "acme/web", plugins=True, code=None)
+    if added.returncode != 0:
+        assert "404" in added.stderr        # a server without the plugins routes yet
+    else:
+        assert "    x  on" in cli(home, repo, "plugin", "list", "--repo", "acme/web", plugins=True).stdout

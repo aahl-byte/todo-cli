@@ -1,0 +1,57 @@
+about: jira-issue mirrors a linked issue's status, comments and images, and with post-request adds its block to the request
+plugin: jira-issue
+instance: {id: default, name: (default)}
+event: {type: refresh}
+grants: [post-request]
+item: {requests: ["Build the export"]}
+connections:
+  jira: {kind: http, auth: basic, secret: "me@acme.test:tok"}
+responses:
+  jira:
+    - method: GET
+      path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      body:
+        key: SR-101
+        self: https://acme.atlassian.net/rest/api/3/issue/10101
+        fields:
+          summary: Export totals
+          status: {name: In Progress}
+          description:
+            type: doc
+            version: 1
+            content:
+              - {type: paragraph, content: [{type: text, text: Totals should export.}]}
+              - {type: mediaSingle, content: [{type: media, attrs: {id: m-1, type: file, alt: shot.png}}]}
+              - {type: paragraph, content: [{type: text, text: "Spec: "}, {type: mediaInline, attrs: {id: m-2, type: file, alt: spec.pdf}}]}
+          comment:
+            total: 2
+            comments:
+              - {id: "501", created: "2026-10-01T10:00:00.000+0000", author: {accountId: acc-pat, displayName: Pat PM}, body: {type: doc, version: 1, content: [{type: paragraph, content: [{type: text, text: Please hurry, marks: [{type: strong}]}]}]}}
+              - {id: "502", author: {displayName: Me}, body: {type: doc, version: 1, content: [{type: paragraph, content: [{type: text, text: "Moved to QA (via todo)"}]}]}}
+          attachment:
+            - {id: "10", filename: shot.png, mimeType: image/png, size: 10}
+            - {id: "11", filename: spec.pdf, mimeType: application/pdf, size: 100}
+            - {id: "12", filename: huge.png, mimeType: image/png, size: 5000000}
+    - {method: GET, path: /rest/api/3/attachment/content/10, status: 303, headers: {location: "https://media.example/file/00000000-0000-0000-0000-000000000010/binary?token=t"}}
+    - {method: GET, path: /rest/api/3/attachment/content/11, status: 404, text: gone}
+    - {method: GET, path: /rest/api/3/attachment/content/12, status: 303, headers: {location: "https://media.example/file/00000000-0000-0000-0000-000000000012/binary?token=t"}}
+    - {method: GET, path: "/rest/api/3/attachment/content/10?redirect=false", bytes: "iVBORw0KGgoA/w==", type: image/png}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment, status: 404, body: {errorMessages: [Issue does not exist]}}
+expect:
+  attached:
+    - {kind: link, key: "status:SR-101", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-101", label: SR-101 · In Progress}
+    - {kind: doc, key: "attachment:SR-101:10", name: SR-101-10-shot.png, url: "/rest/api/3/attachment/content/10?redirect=false", version: "10", content: "iVBORw0KGgoA/w==", encoding: base64}
+    - {kind: comment, key: "comment:SR-101:501", text: "**Please hurry**", at: "2026-10-01T10:00:00.000Z", author: acc-pat, author_name: Pat PM}
+    - kind: request
+      key: request:jira
+      text: "Build the export\n\n---\n\n## [SR-101](https://acme.atlassian.net/browse/SR-101) · Export totals\n\nTotals should export.\n\n📎 doc:SR-101-10-shot.png\n\nSpec: [📎 spec.pdf](https://acme.atlassian.net/secure/attachment/11/spec.pdf)\n\n---"
+  wouldSend: []
+  log: []
+received:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment, authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
+    - {method: GET, path: /rest/api/3/attachment/content/10}
+    - {method: GET, path: /rest/api/3/attachment/content/11}
+    - {method: GET, path: /rest/api/3/attachment/content/12}
+    - {method: GET, path: "/rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment"}
+    - {method: GET, path: "/rest/api/3/attachment/content/10?redirect=false", authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}

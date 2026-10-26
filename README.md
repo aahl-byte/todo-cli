@@ -166,13 +166,22 @@ todo answer <query> <id> <text...>        # answer a clarification
 todo updates <query> [--ack]              # notes, answers and log entries you haven't acknowledged
 todo ack <query> n<id>|l<id>...           # acknowledge notes and questions (n) or log entries (l)
 todo url    <query> <url> [--type T] [--label L]   # attach a PR/preview/QA-handoff link
+todo branch [add|rm] <query> [<name>]     # an item's branches: show, add or drop one
+todo doc add <query> <file> [--name N]    # copy a file into the item's docs (replaces a same-named one)
+todo doc rm|path <query> <name>           # delete a doc, or print its path to edit in place
+todo docs <query>                         # list an item's docs
+todo deps [<query>] [--from-checks]       # what an item needs and what needs it, from git
+todo refresh [<query>]                    # recompute git facts and run plugins now
+todo plugins <query>                      # what each plugin attached, skipped or failed on an item
+todo plugin list|add|set|rm|test|run ...  # a repo's plugins and their instances
+todo connection list|add|auth|test ...    # endpoints plugins call, and this host's secrets
 todo assign <query> [--dev H] [--qa H]    # people fields ("none" clears)
 todo history <query>                      # status transitions
 todo check add <query> <kind> "<title>" [--payload P] [--post]   # deployment check
 todo check done|reopen <query> <id> [D|S|P...]   # tick/untick per environment (all when none named)
 todo check rm <query> <id>                 # and `todo checks <query>` to list
 todo deploy-plan                          # every check the next deploy needs
-todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses
+todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (--force: see Team workflow)
 todo request <query> --text "<text>" [--url U]   # post a new request version
 todo set <query> priority low|medium|high|urgent|critical
 todo set <query> app|section <value|none>
@@ -230,8 +239,13 @@ checks. `todo stage` then marks it `ready-to-deploy`.
 QA sends work back with `todo reject <q> "<what failed>"`, which needs the
 comment and parks the item in `qa-rejected`. Its developer takes it back with
 `todo start`, or returns it to `in-triage` when the scope was wrong. An agent parks finished work in `review`; only a person moves it to
-`ready-for-qa`. `--agent`/`--human` override the detection (`$CLAUDECODE`,
-`$TODO_VIA`).
+`ready-for-qa`, unless they ask the agent to, which passes `--force` and is
+recorded as forced. `--agent`/`--human` override the detection
+(`$CLAUDECODE`, `$TODO_VIA`).
+
+`todo stage` and `todo deploy` also refuse while the item waits on an
+unresolved dependency (see [Git facts](#git-facts)); `--force` goes past it and
+history records it.
 
 ```bash
 todo add "Safari login fails" --request "PM's original description"   # → requested
@@ -295,6 +309,72 @@ the item's repo, which follows the folder when you rename it. A Watchtower Actio
 can also resume the item's last stopped session, with a separate prompt for a
 live or resumed session; the item page shows each session's state.
 
+## Branches, docs and git facts
+
+An item lists the branches its work lives on (`branches:` in `TODO.yaml`):
+`todo branch add <q> feat/x`, `todo branch rm`, or `todo set <q> branch` to
+replace the list.
+
+### Docs
+
+An item keeps its documents in `<item>/docs/`, with a `.meta.yaml` sidecar
+recording who added each one and when. They sync with the item, and the item
+page renders Markdown, HTML, JSON and code (YAML, CSS and the rest), with
+upload, replace and delete. `todo doc add` copies a file in, `todo doc path`
+prints where one lives for editing in place, and `todo docs` lists them.
+
+### Git facts
+
+From git alone, todo works out where each item branch landed, which open
+branches depend on others, and which conflict or overlap. `todo get` shows them
+as a `git:` block, `todo list` flags `waits on <id>`, and `todo deps <q>`
+prints them with their evidence.
+
+- **Landed in:** a repo lists its trackable branches in
+  `.todo-plugins/plugins.yaml` on its default branch, as `track: [staging, main]`.
+  A branch is in one once its PR's merge commit (or its last head, with no PR)
+  is an ancestor of that branch's tip, so the fact survives deleting the
+  branch.
+- **Depends on:** B depends on A when B carries commits of A that B's target
+  doesn't have yet, or when B's PR is based on A's branch. The edge resolves
+  once A lands in B's target. Whichever merges second merges the other in.
+- **Conflicts and overlaps** are hints and never block. Conflicts come from
+  `git merge-tree` (git 2.38+) in the CLI only.
+
+The CLI computes facts during each sync round for branches whose tips moved,
+and posts them to the server; the server computes its own through GitHub.
+
+## Plugins
+
+A plugin attaches things to items from outside todo: links, dependency edges,
+docs, dev-log lines, comments and request versions. It never changes an
+item's fields or status. The same plugin runs in the CLI and on the server.
+
+- **Shipped plugins:** `pr-link` (on for every repo: each item branch's PR),
+  `vercel-preview`, `db-request`, `rest`, `watchtower-session`,
+  `jira-transition` and `jira-issue`. A repo turns one on with
+  `<name>: {use: shipped}` under `plugins:` in its `.todo-plugins/plugins.yaml`.
+- **Repo plugins** live in the same file, as YAML steps or a JavaScript
+  `run()` in a sandbox, and are read from the repo's default branch only.
+  `todo plugin test <name> [--local] <q>` dry-runs one against an item; `--local`
+  reads the working tree.
+- **Instances:** each configured use of a plugin is an instance, with its own
+  triggers (status moves, push, pr, deployment, manual), settings and dry-run
+  switch. Edit them under the server's Settings → Plugins, or with
+  `todo plugin add|set|rm`.
+- **Connections** are the endpoints plugins call. A repo declares its own; the
+  host declares host-wide ones (`todo connection add`, or the server's
+  `TODO_PLUGIN_CONNECTIONS`). Host connections and their secrets go only to a
+  shipped plugin's default instance or to stored instances, never to a repo's
+  own plugin or an instance its plugins file declares.
+  `todo connection auth <name> [--repo owner/name] [--server]` stores a secret.
+- **Where it runs:** each instance runs on one host. The server runs whatever
+  it can reach and authorize; the rest run in the CLI of a developer with the
+  repo checked out, after the command prints.
+
+Without `node` on PATH the CLI skips plugins with one notice. Design:
+[docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md](docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md).
+
 ## Syncing with a team server
 
 The server in [`server/`](server/README.md) is the source of truth, and each
@@ -310,7 +390,8 @@ code matches, and approve: the CLI collects a token of its own, so nothing
 secret is typed or lands in shell history. `todo login <url> --token` asks for
 a token instead (hidden), for servers that predate this. Each login is its own
 token, listed under *command lines* in the dashboard menu, where it can be
-revoked.
+revoked. Running `todo login` again keeps the saved token while it still
+works; `--new` signs in afresh.
 
 After that, every command syncs before it runs and pushes after. A round
 compares the items a command touched with the last-synced snapshot, and every
@@ -354,6 +435,8 @@ todo done skill-todo                      # finished + verified
       devlogs/2026-06-23T18-05-40.902Z-1.md    # one dev-log entry per file
       history/2026-06-23T18-06-00.000Z-1.yaml  # one status transition per file
       checks/CHECKS.yaml                       # deployment checks
+      docs/                                    # the item's documents, plus a .meta.yaml sidecar
+      git.yaml                                 # git facts (derived; never synced as ops)
   .sync/                      # only in a synced store: config, snapshot, outbox
   DEFERRED/
   CANCELLED/

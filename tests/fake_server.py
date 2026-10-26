@@ -33,6 +33,20 @@ class FakeServer:
         self.offline = False
         self.pushes = []
         self.checkouts = []
+        self.blobs = {}          # file key → bytes
+        self.uploads = []        # file keys, in upload order
+        self.doc_lists = []      # (item, after) per doc list request
+        self.doc_tombs = {}      # deleted doc uid → its last sha256
+        self.git_facts = []
+        self.git_facts_offline = False
+        self.plugin_config = {}  # repo → {instances, grants}; None answers 404, like an older server
+        self.plugin_creds = []   # (repo, connection, secret) per credential posted
+        self.plugin_gets = 0
+        self.plugin_tombs = set()
+        self.host_secrets = []
+        self.feed_by_plugin = True   # False: an older server, whose feed doesn't say who removed a note
+        self.plugins_down = False
+        self.creds_unkeyed = False   # no TODO_SECRET_KEY: credentials answer 503
 
     # ── server side ──────────────────────────────────────────────────────────
     def _bump(self, entity, uid, item_uid, deleted=False, author=None):
@@ -98,9 +112,12 @@ class FakeServer:
     def _create(self, op, author):
         e, uid, data = op["entity"], op["uid"], dict(op.get("data") or {})
         res = {"op_id": op["op_id"], "status": "applied"}
-        if uid in self.tombs:
+        plugin_made = e in ("note", "log") and bool((data.get("meta") or {}).get("plugin"))
+        if uid in self.tombs and not (plugin_made and uid in self.plugin_tombs):
             seq, by = self.tombs[uid]
             return {"op_id": op["op_id"], "status": "rejected", "reason": "removed", "by": by}
+        self.tombs.pop(uid, None)
+        self.plugin_tombs.discard(uid)
         if uid in self.rows:
             existing = self.rows[uid]
             same = all(existing.get(k) == v for k, v in data.items()
@@ -176,6 +193,14 @@ class FakeServer:
             if f == "status" and row["_entity"] == "task" and v not in VALID_STATUSES:
                 rejected.append({"field": f, "reason": "invalid", "server_value": cur, "version": ver})
                 continue
+            if f == "status" and row["_entity"] == "item" and v in ("ready-to-deploy", "deployed") \
+                    and cur != v and not op.get("force") and self._waits(row["uid"]):
+                seen = self._waits(row["uid"])
+                rejected.append({"field": f, "reason": "waits-on", "server_value": cur, "version": ver,
+                                 "edges": [f'{e.get("id")} ({e.get("branch")}) {e["state"]}' for e in seen.get("needs") or []
+                                           if e["state"] in ("waiting", "stale", "unknown")],
+                                 "facts_at": seen.get("at")})
+                continue
             if cur == v:
                 out[f] = ver or 0
             elif f != "position" and ver is not None and (op.get("base") or {}).get(f) != ver:
@@ -201,6 +226,11 @@ class FakeServer:
             res["rejected"] = rejected
         return res
 
+    def _waits(self, item_uid):
+        """Like the server's guard: the item's latest posted git facts wait on something."""
+        posted = [f["data"] for f in self.git_facts if f["item_uid"] == item_uid]
+        return posted[-1] if posted and posted[-1].get("waits_on") else None
+
     def _history(self, item, frm, to, author, op):
         import uuid
         uid = "H" + uuid.uuid4().hex[:25].upper()
@@ -221,7 +251,83 @@ class FakeServer:
         seq = self._bump(row["_entity"], row["uid"], row["item_uid"], deleted=True, author=author)
         del self.rows[op["uid"]]
         self.tombs[op["uid"]] = (seq, author)
+        if op.get("plugin"):
+            self.plugin_tombs.add(op["uid"])         # the runner's removal: the plugin may make it again
         return {"op_id": op["op_id"], "status": "applied", "versions": {}}
+
+    # ── docs (server/lib/docs.ts) ────────────────────────────────────────────
+    def _doc(self, item_uid, name):
+        from todo import docs
+        return next((r for r in self.rows.values() if r["_entity"] == "doc" and r["item_uid"] == item_uid
+                     and docs.name_key(r["name"]) == docs.name_key(name)), None)
+
+    def list_docs(self, item=None, after=None, limit=2):
+        """A page of doc rows by uid; a small page, so tests page through."""
+        self.doc_lists.append((item, after))
+        rows = sorted((r for r in self.rows.values() if r["_entity"] == "doc"
+                       and (item is None or r["item_uid"] == item) and (after is None or r["uid"] > after)),
+                      key=lambda r: r["uid"])
+        page = rows[:limit]
+        return {"docs": [self._public(r) for r in page],
+                "next": page[-1]["uid"] if len(rows) > limit else None}
+
+    def _upload(self, data):
+        key = f"{self.project}/docs/{len(self.blobs) + 1:026d}.bin"
+        self.blobs[key] = data
+        self.uploads.append(key)
+        return key
+
+    def _public(self, row):
+        return None if row is None else {k: copy.deepcopy(v) for k, v in row.items() if k != "_entity"}
+
+    def record_doc(self, rec, author):
+        """A doc record: applied when `base` is the server's current sha256, else a conflict."""
+        import hashlib
+        from todo import docs
+        if rec["item_uid"] not in self.rows:
+            from todo.remote import RemoteError
+            raise RemoteError("no such item", 422)
+        data = self.blobs[rec["file_key"]]
+        sha = hashlib.sha256(data).hexdigest()
+        row = self._doc(rec["item_uid"], rec["name"])
+        if row and row["name"] != rec["name"]:
+            from todo.remote import RemoteError
+            raise RemoteError(f'409 a doc named {row["name"]} already exists', 409)
+        current = row["sha256"] if row else None
+        if sha == current:
+            return {"status": "applied", "doc": self._public(row)}
+        if rec.get("base") != current:
+            return {"status": "conflict", "doc": self._public(row)}
+        uid = docs.doc_uid(rec["item_uid"], rec["name"])
+        seq = self._bump("doc", uid, rec["item_uid"], author=author)
+        self.doc_tombs.pop(uid, None)
+        self.rows[uid] = {"_entity": "doc", "uid": uid, "item_uid": rec["item_uid"], "name": rec["name"],
+                          "size": len(data), "sha256": sha, "file_key": rec["file_key"],
+                          "content_type": "application/octet-stream", "by": author,
+                          "via": rec.get("via") or "human", "at": f"2026-10-02T12:{seq % 60:02d}:00.000Z",
+                          "plugin": rec.get("plugin"), "versions": {"sha256": seq}}
+        return {"status": "applied", "doc": self._public(self.rows[uid])}
+
+    def remove_doc(self, uid, base, author):
+        row = self.rows.get(uid)
+        if row is None or row["_entity"] != "doc":
+            return {"status": "applied", "doc": None}
+        if row["sha256"] != base:
+            return {"status": "conflict", "doc": self._public(row)}
+        self._bump("doc", uid, row["item_uid"], deleted=True, author=author)
+        del self.rows[uid]
+        self.doc_tombs[uid] = row["sha256"]
+        return {"status": "applied", "doc": None}
+
+    def dashboard_put(self, item_uid, name, data, author):
+        """An upload or replace from the dashboard, which always knows the current version."""
+        row = self._doc(item_uid, name)
+        return self.record_doc({"item_uid": item_uid, "name": name, "file_key": self._upload(data),
+                                "base": row["sha256"] if row else None}, author)
+
+    def dashboard_delete(self, item_uid, name):
+        row = self._doc(item_uid, name)
+        return self.remove_doc(row["uid"], row["sha256"], "carol")
 
     # ── the Remote interface ─────────────────────────────────────────────────
     def client(self, author):
@@ -235,8 +341,71 @@ class FakeServer:
                 server.pushes.append(copy.deepcopy(ops))
                 return server.apply(copy.deepcopy(ops), author)
 
+            def doc_upload(self, project, item_uid, name, data):
+                if server.offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                return server._upload(bytes(data))
+
+            def doc_record(self, project, rec):
+                return server.record_doc(copy.deepcopy(rec), author)
+
+            def doc_list(self, project, item=None, after=None):
+                if server.offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                return server.list_docs(item, after)
+
+            def doc_remove(self, project, uid, base):
+                return server.remove_doc(uid, base, author)
+
+            def doc_bytes(self, project, uid):
+                row = server.rows.get(uid)
+                if row is None:
+                    from todo.remote import RemoteError
+                    raise RemoteError("no such doc", 404)
+                return server.blobs[row["file_key"]]
+
             def checkout(self, project, dir_, repo):
                 server.checkouts.append((author, project, dir_, repo))
+                return {"ok": True}
+
+            def git_facts(self, project, facts):
+                if server.git_facts_offline:
+                    from todo.remote import RemoteError
+                    raise RemoteError("fake offline")
+                known = [f for f in facts if f["item_uid"] in server.rows]
+                server.git_facts.extend(copy.deepcopy(known))
+                return {"ok": True, "stored": len(known),
+                        "skipped": [f["item_uid"] for f in facts if f["item_uid"] not in server.rows]}
+
+            def plugins(self, project, repo):
+                from todo.remote import RemoteError
+                server.plugin_gets += 1
+                if server.offline or server.plugins_down:
+                    raise RemoteError("fake offline")
+                if server.plugin_config is None:
+                    raise RemoteError("no such route", 404)
+                got = server.plugin_config.get(repo) or {}
+                return {"instances": copy.deepcopy(got.get("instances") or {}),
+                        "grants": copy.deepcopy(got.get("grants") or {}),
+                        "plugins": copy.deepcopy(got.get("plugins") or []),
+                        "secrets": [c for r, c, _ in server.plugin_creds if r == repo],
+                        "host_secrets": list(server.host_secrets), "runs": {}}
+
+            def put_plugins(self, project, repo, plugin, instances=None, grants=None):
+                got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
+                if instances is not None:
+                    got["instances"][plugin] = copy.deepcopy(instances)
+                if grants is not None:
+                    got["grants"][plugin] = list(grants)
+                return {"ok": True}
+
+            def plugin_credential(self, project, repo, connection, secret):
+                if server.creds_unkeyed:
+                    from todo.remote import RemoteError
+                    raise RemoteError("no TODO_SECRET_KEY", 503)
+                server.plugin_creds.append((repo, connection, secret))
                 return {"ok": True}
 
             def changes(self, project, since, limit=500):
@@ -253,6 +422,10 @@ class FakeServer:
                     data = None if row is None else {k: copy.deepcopy(v) for k, v in row.items() if k != "_entity"}
                     out.append({"seq": seq, "entity": e, "uid": uid, "item_uid": item_uid,
                                 "deleted": row is None, "data": data})
+                    if e == "doc" and row is None and uid in server.doc_tombs:
+                        out[-1]["last_sha256"] = server.doc_tombs[uid]
+                    if e in ("note", "log") and row is None and server.feed_by_plugin:
+                        out[-1]["by_plugin"] = uid in server.plugin_tombs
                 return {"changes": out, "cursor": rows[-1][0] if rows else since,
                         "more": len(rows) == limit, "deploy_step": server.deploy_step,
                         "actions": server.actions}

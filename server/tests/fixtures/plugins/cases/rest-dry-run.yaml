@@ -1,0 +1,16 @@
+about: a POST in dry-run is recorded with its JSON body, typed values kept, and never sent
+plugin: rest
+instance: {id: notify, name: Notify, settings: {hook: "{{item.id}}"}}
+event: {type: manual, instance: notify}
+dry_run: true
+connections:
+  api: {kind: http, auth: "header:X-Api-Key", secret: k1}
+responses:
+  api: []
+expect:
+  attached:
+    - {kind: log, key: request-sent, text: "dry run: nothing posted for fix-login"}
+  wouldSend:
+    - {connection: api, method: POST, path: /hooks/fix-login, input: {id: fix-login, title: Fix login, branches: [feat/login, feat/login-api]}}
+received:
+  api: []

@@ -1,0 +1,17 @@
+about: use shipped resolves from the registry, unknown names and missing code are errors, repo code runs, repo commands are refused, and a repo-declared instance gets no host connection
+repo: shipped.yaml
+files: {coded.js: repo-coded.js}
+hostConnections:
+  github: {http: {url: "http://fake-github"}}
+event: {type: push, branch: feat/login}
+item: {branches: [feat/login]}
+responses:
+  github:
+    - {method: GET, path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all, body: []}
+expect:
+  errors: ["plugin nope: no plugin named nope ships with todo", "plugin missing: missing.js isn't in .todo-plugins/"]
+  track: []
+  results:
+    - {plugin: pr-link, instance: mine, result: {attached: [], wouldSend: [], log: [], skipped: "pr-link: `github` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection"}}
+    - {plugin: coded, instance: default, result: {attached: [{kind: log, key: "log:fix-login pushed to feat/login", text: fix-login pushed to feat/login}], wouldSend: [], log: []}}
+    - {plugin: local, instance: default, result: {attached: [], wouldSend: [], log: [], skipped: "local: `local` runs a command, which this host doesn't allow for repo connections"}}

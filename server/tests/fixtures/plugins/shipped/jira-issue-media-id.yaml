@@ -1,0 +1,43 @@
+about: jira-issue matches a description's media by the media id Jira redirects to, before the file name, as links mode does
+plugin: jira-issue
+instance: {id: default, name: (default)}
+event: {type: refresh}
+grants: [post-request]
+item: {jira: [SR-7], requests: []}
+connections:
+  jira: {kind: http}
+responses:
+  jira:
+    - method: GET
+      path: /rest/api/3/issue/SR-7?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      body:
+        key: SR-7
+        self: https://acme.atlassian.net/rest/api/3/issue/7
+        fields:
+          summary: Totals
+          status: {name: Open}
+          comment: {total: 0, comments: []}
+          description:
+            type: doc
+            content:
+              - {type: mediaSingle, content: [{type: media, attrs: {id: 11111111-2222-3333-4444-555555555555, type: file, alt: image.png}}]}
+              - {type: mediaSingle, content: [{type: media, attrs: {id: 66666666-7777-8888-9999-000000000000, type: file, alt: report.pdf}}]}
+          attachment:
+            - {id: "20", filename: image.png, mimeType: image/png, size: 4}
+            - {id: "21", filename: image.png, mimeType: image/png, size: 4}
+            - {id: "22", filename: report.pdf, mimeType: application/pdf, size: 9}
+    - {method: GET, path: /rest/api/3/attachment/content/20, status: 303, headers: {location: "https://media.example/file/99999999-2222-3333-4444-555555555555/binary?token=t"}}
+    - {method: GET, path: /rest/api/3/attachment/content/21, status: 303, headers: {location: "https://media.example/file/11111111-2222-3333-4444-555555555555/binary?token=t"}}
+    - {method: GET, path: /rest/api/3/attachment/content/22, status: 303, headers: {location: "https://media.example/file/66666666-7777-8888-9999-000000000000/binary?token=t"}}
+    - {method: GET, path: "/rest/api/3/attachment/content/20?redirect=false", bytes: "iVBO", type: image/png}
+    - {method: GET, path: "/rest/api/3/attachment/content/21?redirect=false", bytes: "iVBP", type: image/png}
+expect:
+  attached:
+    - {kind: link, key: "status:SR-7", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-7", label: SR-7 · Open}
+    - {kind: doc, key: "attachment:SR-7:20", name: SR-7-20-image.png, url: "/rest/api/3/attachment/content/20?redirect=false", version: "20", content: iVBO, encoding: base64}
+    - {kind: doc, key: "attachment:SR-7:21", name: SR-7-21-image.png, url: "/rest/api/3/attachment/content/21?redirect=false", version: "21", content: iVBP, encoding: base64}
+    - kind: request
+      key: request:jira
+      text: "---\n\n## [SR-7](https://acme.atlassian.net/browse/SR-7) · Totals\n\n📎 doc:SR-7-21-image.png\n\n[📎 report.pdf](https://acme.atlassian.net/secure/attachment/22/report.pdf)\n\n---"
+  wouldSend: []
+  log: []

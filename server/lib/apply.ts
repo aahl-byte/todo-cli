@@ -3,14 +3,15 @@
 import type { Db, Row } from "./db";
 import {
   CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE, TERMINAL,
-  SEEN, deriveCalcStatus, isSettable, mentions, nowIso, party, type Entity,
+  SEEN, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
+import { jiraHandle } from "./jira/people";
 import { queueAutoActions } from "./actions/runs";
-import { jiraReadOnly } from "./jira/config";
-import { inboundRules, jiraStatusFor } from "./jira/rules";
+import { PLUGIN_HANDLE, queuePluginEvent } from "./plugins/queue";
 import { syncFieldLinks, validJiraKeys } from "./jira/field";
+import { GUARDED, refusal, unresolvedEdges } from "./gitfacts";
 
 export interface Op {
   op_id: string;
@@ -26,6 +27,8 @@ export interface Op {
   /** A status move outside the dashboard's normal flow; `reason` is required. */
   override?: boolean;
   reason?: string;
+  /** On a remove: a plugin run made it, so a plugin may create the entity again. */
+  plugin?: boolean;
 }
 
 export interface Actor {
@@ -44,6 +47,9 @@ export interface Rejection {
   version?: number;
   by?: string | null;
   at?: string | null;
+  /** A `waits-on` refusal: the unresolved edges the server saw, and when its facts were computed. */
+  edges?: string[];
+  facts_at?: string | null;
 }
 
 export interface Result {
@@ -236,6 +242,10 @@ function invalid(entity: Entity, field: string, value: unknown): boolean {
   return false;
 }
 
+function legacyBranch(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function slug(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "item";
 }
@@ -258,15 +268,16 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       ? { op_id: op.op_id, status: "applied", versions: existing.versions }
       : reject(op, "uid-exists", { data: existing });
   }
-  const [tomb] = await ctx.t.query("select 1 from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
-  if (tomb) return removedReason(ctx, op);
+  const [tomb] = await ctx.t.query("select by_plugin from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
+  if (tomb && !(tomb.by_plugin && pluginCreate(ctx, op))) return removedReason(ctx, op);
+  if (tomb) await ctx.t.query("delete from tombstones where uid = $1 and project = $2", [op.uid, ctx.project]);
 
   const row: Record<string, any> = { ...DEFAULTS[entity] };
   for (const f of CREATE_FIELDS[entity]) if (f in data) row[f] = data[f];
   for (const f of Object.keys(row)) {
     if (row[f] !== undefined && row[f] !== null && invalid(entity, f, row[f])) return reject(op, `invalid-${f}`);
   }
-  if (entity === "item" && row.status === "ready-for-qa" && op.via === "agent") return reject(op, "agent-handoff");
+  if (entity === "item" && row.status === "ready-for-qa" && op.via === "agent" && !op.force) return reject(op, "agent-handoff");
   const result: Result = { op_id: op.op_id, status: "applied" };
 
   let itemUid = op.item_uid;
@@ -300,6 +311,11 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
       if (typeof row.text !== "string") return reject(op, "invalid-text");
       row.author = ctx.actor.handle;
       row.via = op.via ?? "human";
+      // A plugin's mirrored comment speaks as its Jira author, whichever runner wrote it.
+      const m = data.meta ?? {};
+      if (entity === "note" && data.kind === "comment" && typeof m.plugin === "string" && m.plugin && (m.jira_account || m.jira_name)) {
+        row.author = (await jiraHandle(ctx.t, { accountId: m.jira_account || undefined, displayName: m.jira_name || undefined })) ?? row.author;
+      }
     }
     if (entity === "note") row.source = data.source ?? null;
 
@@ -311,6 +327,7 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
     row.meta[SEEN] = [...new Set([...given, party(row.author, row.via)])];
   }
   if (entity === "item" && row.extra.jira != null && !validJiraKeys(row.extra.jira)) return reject(op, "invalid-jira");
+  if (entity === "item" && !("branches" in row.extra) && legacyBranch(row.extra.branch)) row.extra.branches = [legacyBranch(row.extra.branch)];
   if (entity === "note") {
     const bad = await badNoteMeta(ctx, itemUid, row.kind, row.meta);
     if (bad) return reject(op, bad);
@@ -336,10 +353,10 @@ async function create(ctx: Ctx, op: Op): Promise<Result> {
 
   if (entity === "item" && Array.isArray(data.history)) await importHistory(ctx, itemUid, data.history);
   if (entity === "item" && row.extra.jira) await syncFieldLinks(ctx.t, ctx.project, itemUid, row.extra.jira);
+  if (entity === "item") await queuePluginEvent(ctx.t, ctx.project, itemUid, row.extra.repo, { type: "refresh" }, ctx.actor.handle);
   if (entity === "task") await recalc(ctx, itemUid);
   if (entity === "note") await noteCreated(ctx, itemUid, row);
   if (request?.bounce) await bounceToRequested(ctx, itemUid, row.meta.version, op, op.uid);
-  if (entity === "note") await queueJira(ctx.t, ctx.actor, { kind: "note", project: ctx.project, itemUid, note: row });
   return result;
 }
 
@@ -383,13 +400,6 @@ async function newRequestVersion(ctx: Ctx, itemUid: string, row: Record<string, 
   row.meta.version = Number(m.n) === 0 ? 1 : Number(m.v) + 1;
   const [item] = await ctx.t.query("select status from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   if (!item || item.status === "requested") return { bounce: false };
-  // Mirroring a read-only Jira, the item stays where Jira has it, and Jira's
-  // workflow is the triage. Items that only link issues follow the usual rules.
-  if (ctx.actor.bridge && jiraReadOnly() && !await onlyLinksJira(ctx, itemUid)) {
-    Object.assign(row.meta, { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: "jira",
-                              triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle });
-    return { bounce: false };
-  }
   // An item's first request, arriving after work began, records what it was
   // built against: frozen at once and flagged untriaged.
   if (row.meta.version === 1) {
@@ -413,7 +423,10 @@ async function bounceToRequested(ctx: Ctx, itemUid: string, version: number, op:
   await statusChanged(ctx, { ...op, override: false, reason: `request v${version}` }, item, "requested");
   for (const who of [item.developer, item.qa_assignee, item.creator]) await ctx.notify(who, "request-changed", itemUid, noteUid);
   // Jira hears of the move back even when Jira's own edit caused it.
-  if (ctx.actor.bridge) await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { kind: "status", project: ctx.project, itemUid, from: item.status, status: "requested" });
+  if (ctx.actor.bridge) {
+    await queueJira(ctx.t, { ...ctx.actor, bridge: false }, { project: ctx.project, itemUid, from: item.status, status: "requested" });
+    await queuePluginEvent(ctx.t, ctx.project, itemUid, item.extra?.repo, { type: "status", from: item.status, to: "requested" }, ctx.actor.handle);
+  }
 }
 
 async function currentRequest(ctx: Ctx, itemUid: string): Promise<Row | null> {
@@ -442,10 +455,7 @@ async function requestLifecycle(ctx: Ctx, itemUid: string, from: string, to: str
     const open = await ctx.t.query(
       `select * from notes where project = $1 and item_uid = $2 and kind = 'ticket-request' and coalesce(meta->>'frozen', 'false') <> 'true'`,
       [ctx.project, itemUid]);
-    const viaJira = ctx.actor.bridge && jiraReadOnly() && to !== "in-triage";
-    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle,
-                    frozen_via: to === "in-triage" ? "triage" : viaJira ? "jira" : "skip",
-                    ...(viaJira ? { triaged: true, triaged_at: nowIso(), triaged_by: ctx.actor.handle } : {}) };
+    const stamp = { frozen: true, frozen_at: nowIso(), frozen_by: ctx.actor.handle, frozen_via: to === "in-triage" ? "triage" : "skip" };
     for (const n of open) await writeRequestMeta(ctx, n, { version: n.meta?.version ?? 1, ...stamp });
     return;
   }
@@ -480,25 +490,6 @@ export async function backfillRequestVersions(d: Db): Promise<number> {
     count++;
   }
   return count;
-}
-
-/** Whether the item links Jira issues by field without mirroring an imported one. */
-async function onlyLinksJira(ctx: Ctx, itemUid: string): Promise<boolean> {
-  const [r] = await ctx.t.query(
-    `select bool_or(source = 'field') and not bool_or(source = 'import') as only from jira_links where project = $1 and item_uid = $2`,
-    [ctx.project, itemUid]);
-  return !!r?.only;
-}
-
-/** Whether a move on a Jira-linked item would need a different Jira status. */
-async function changesJiraStatus(ctx: Ctx, itemUid: string, from: string, to: string): Promise<boolean> {
-  const [link] = await ctx.t.query(
-    `select p.jira_inbound from jira_links l join projects p on p.key = l.project
-      where l.project = $1 and l.item_uid = $2 and l.source = 'import'`,
-    [ctx.project, itemUid]);
-  if (!link) return false;
-  const rules = inboundRules(link.jira_inbound);
-  return !rules || jiraStatusFor(rules, from) !== jiraStatusFor(rules, to);
 }
 
 async function set(ctx: Ctx, op: Op): Promise<Result> {
@@ -550,15 +541,11 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       rejected.push({ field, reason: "stale", server_value: current, version, ...(await ctx.who(version)) });
       continue;
     }
-    if (entity === "item" && field === "status" && !ctx.actor.bridge && jiraReadOnly()
-        && await changesJiraStatus(ctx, row.uid, String(current), String(value))) {
-      rejected.push({ field, reason: "jira-read-only", server_value: current, version });
-      continue;
-    }
     if (entity === "item" && field === "status") {
       const why = await statusRule(ctx, op, row, String(value));
       if (why) {
-        rejected.push({ field, reason: why, server_value: current, version });
+        rejected.push({ field, reason: why, server_value: current, version,
+                        ...(why === "waits-on" ? await refusal(ctx.t, ctx.project, row.uid) : {}) });
         continue;
       }
     }
@@ -579,6 +566,12 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
   const reopened = accepted.find(([f, v]) => f === "status" && !TERMINAL.includes(String(v)));
   if (entity === "item" && reopened && row.extra?.archived && !accepted.some(([f]) => f === "extra.archived")) {
     accepted.push(["extra.archived", null]);
+  }
+
+  // An older CLI writes a single `extra.branch`; it replaces the list.
+  const branch = accepted.find(([f]) => f === "extra.branch");
+  if (entity === "item" && branch && !("extra.branches" in (op.data ?? {}))) {
+    accepted.push(["extra.branches", legacyBranch(branch[1]) ? [legacyBranch(branch[1])] : null]);
   }
 
   if (accepted.length) {
@@ -616,6 +609,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       await syncFieldLinks(ctx.t, ctx.project, itemUid, json?.jira ?? []);
     }
     if (statusChange) await statusChanged(ctx, op, row, statusChange);
+    if (entity === "item" && json && accepted.some(([f]) => f === "extra.branches")) {
+      await branchesAdded(ctx, itemUid, json.repo, itemBranches(row.extra), itemBranches(json));
+    }
     if (entity === "task") await recalc(ctx, itemUid);
     if (entity === "note" && json && json.state === "answered" && (row.meta ?? {}).state !== "answered") {
       await ctx.notify(row.author, "answer", itemUid, row.uid);
@@ -627,24 +623,26 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
 
 async function statusRule(ctx: Ctx, op: Op, item: Row, to: string): Promise<string | null> {
   if (op.override && !(op.reason ?? "").trim()) return "reason-required";
-  if (to === "ready-for-qa" && op.via === "agent") return "agent-handoff";
+  if (to === "ready-for-qa" && op.via === "agent" && !op.force) return "agent-handoff";
   if (to === "deployed" && !op.force) {
     const [c] = await ctx.t.query(
       "select count(*)::int as n from checks where project = $2 and item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
       [item.uid, ctx.project]);
     if (Number(c.n) > 0) return "checks-pending";
   }
+  if (GUARDED.includes(to) && !op.force && (await unresolvedEdges(ctx.t, ctx.project, item.uid)).length) return "waits-on";
   return null;
 }
 
 async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<void> {
-  let forced = false;
+  let forced = to === "ready-for-qa" && op.via === "agent" && !!op.force;
   if (to === "deployed" && op.force) {
     const [c] = await ctx.t.query(
       "select count(*)::int as n from checks where project = $2 and item_uid = $1 and timing = 'pre-deploy' and status <> 'done'",
       [item.uid, ctx.project]);
     forced = Number(c.n) > 0;
   }
+  if (GUARDED.includes(to) && op.force && !forced) forced = (await unresolvedEdges(ctx.t, ctx.project, item.uid)).length > 0;
   const [m] = await ctx.t.query(
     "select coalesce(max(n), 0) as n from status_history where project = $2 and item_uid = $1", [item.uid, ctx.project]);
   const uid = ulid();
@@ -658,8 +656,24 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   const [fresh] = await ctx.t.query("select developer, qa_assignee, creator from items where uid = $1 and project = $2", [item.uid, ctx.project]);
   if (to === "ready-for-qa") await ctx.notify(fresh.qa_assignee, "ready-for-qa", item.uid);
   if (to === "deployed") await ctx.notify(fresh.creator, "deployed", item.uid);
-  await queueJira(ctx.t, ctx.actor, { kind: "status", project: ctx.project, itemUid: item.uid, from: item.status, status: to });
+  await queueJira(ctx.t, ctx.actor, { project: ctx.project, itemUid: item.uid, from: item.status, status: to });
   await queueAutoActions(ctx.t, ctx.project, item.uid, item.status, to, ctx.actor.handle);
+  // A bridge's own moves run no plugins, as they reach no Jira trigger; its bounce back to requested does, below.
+  if (!ctx.actor.bridge) {
+    await queuePluginEvent(ctx.t, ctx.project, item.uid, item.extra?.repo, { type: "status", from: item.status, to }, ctx.actor.handle);
+  }
+}
+
+/** A plugin's own attachment: written by the server's plugin runner, or a note a CLI's runner marked with its instance. */
+function pluginCreate(ctx: Ctx, op: Op): boolean {
+  return ctx.actor.handle === PLUGIN_HANDLE || (op.entity === "note" && typeof op.data?.meta?.plugin === "string" && !!op.data.meta.plugin);
+}
+
+/** A branch an item gains runs its plugins as if the branch had been pushed. */
+async function branchesAdded(ctx: Ctx, itemUid: string, repo: unknown, before: string[], after: string[]): Promise<void> {
+  for (const branch of after.filter((b) => !before.includes(b))) {
+    await queuePluginEvent(ctx.t, ctx.project, itemUid, repo, { type: "push", branch }, ctx.actor.handle);
+  }
 }
 
 /** Status history an item gathered before it was ever synced. */
@@ -719,8 +733,8 @@ async function remove(ctx: Ctx, op: Op): Promise<Result> {
   }
   const seq = await ctx.bump(entity, op.uid, row.item_uid, true);
   await ctx.t.query(`delete from ${TABLE[entity]} where uid = $1 and project = $2`, [op.uid, ctx.project]);
-  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq, project) values ($1, $2, $3, $4, $5)",
-    [op.uid, entity, row.item_uid, seq, ctx.project]);
+  await ctx.t.query("insert into tombstones (uid, entity, item_uid, seq, project, by, by_plugin) values ($1, $2, $3, $4, $5, $6, $7)",
+    [op.uid, entity, row.item_uid, seq, ctx.project, ctx.actor.handle, ctx.actor.handle === PLUGIN_HANDLE || op.plugin === true]);
   if (entity === "task") await recalc(ctx, row.item_uid);
   return { op_id: op.op_id, status: "applied", versions: {} };
 }

@@ -2,9 +2,11 @@
 (purple `review`, red `blocked`, etc.) only when stdout is a real TTY, so piped
 or redirected output stays plain."""
 
+import json
 import re
 import sys
 
+from .gitfacts import HINT, SHARES_HINT, describe
 from .status import COMPLETE, PAST_TRIAGE, colorize
 
 
@@ -27,14 +29,15 @@ def _item_line(it, w, color, indent="") -> str:
     return f'{indent}{it["id"]:<{w}}  {cell} {(it["priority"] or "—"):<8} {it["title"]}{mark}'
 
 
-def print_list(items) -> None:
+def print_list(items, waits=None) -> None:
     if not items:
         print("(no items)")
         return
     color = _use_color()
     w = min(28, max(len(i["id"]) for i in items))
     for it in items:
-        print(_item_line(it, w, color))
+        on = (waits or {}).get(it["id"])
+        print(_item_line(it, w, color) + (f'  waits on {", ".join(on)}' if on else ""))
 
 
 def print_grouped(groups) -> None:
@@ -59,15 +62,64 @@ def print_grouped(groups) -> None:
 LOG_PREVIEW = 3   # entries `todo get` shows before eliding the rest
 
 
-def _stamp(ts: str) -> str:
+def stamp(ts: str) -> str:
     """`2026-08-14T15:02:11.483Z` → `2026-08-14 15:02`; anything else passes
     through as-is."""
     return ts[:16].replace("T", " ") if len(ts) >= 16 else ts
 
 
 def _log_lines(entries) -> list:
-    return [f'  [{e["id"]}] {_stamp(e["ts"])}  ' + str(e["text"]).replace("\n", "\n      ")
+    return [f'  [{e["id"]}] {stamp(e["ts"])}  ' + _plugin_tag(e) + str(e["text"]).replace("\n", "\n      ")
             for e in entries]
+
+
+def _plugin_tag(e) -> str:
+    plugin = (e.get("meta") or {}).get("plugin")
+    return f"(plugin {plugin}) " if plugin else ""
+
+
+def _attachment_text(a: dict) -> str:
+    kind = a.get("kind")
+    if kind == "link":
+        return f'link · {a.get("type")}  {a.get("url")}' + (f'  "{a["label"]}"' if a.get("label") else "")
+    if kind == "edge":
+        return f'edge · needs {a.get("needs")}' + (f' in {a["in"]}' if a.get("in") else "") + f' — {a.get("because")}'
+    if kind == "doc":
+        return f'doc · {a.get("name")}' + (f' from {a["url"]}' if a.get("url") else "")
+    return f'{kind} · {a.get("text")}'
+
+
+def plugin_run_lines(iid: str, result: dict) -> list:
+    """What one instance's run attached, would send and logged, as `todo plugin test` prints it."""
+    if result.get("error"):
+        head = [f"{iid}: error: {result['error']}"]
+    elif result.get("skipped"):
+        head = [f"{iid}: skipped: {result['skipped']}"]
+    else:
+        head = [f"{iid}: would attach " + (f"{len(result.get('attached') or [])}:" if result.get("attached") else "nothing")]
+    out = head + [f"  {_attachment_text(a)}" for a in result.get("attached") or []]
+    sends = result.get("wouldSend") or []
+    if sends:
+        out.append(f"  would send {len(sends)}:")
+        for c in sends:
+            what = c.get("tool") or f'{c.get("method", "")} {c.get("path", "")}'.strip()
+            body = f'  {json.dumps(c["input"], sort_keys=True)}' if c.get("input") is not None else ""
+            out.append(f'    {c.get("connection")}: {what}{body}')
+    out += [f"  log: {line}" for line in result.get("log") or []]
+    return out
+
+
+def plugin_record_lines(rec: dict) -> list:
+    """An instance's last run on an item, as `todo plugins` prints it."""
+    if rec.get("error"):
+        out = [f"error: {rec['error']}"]
+    elif rec.get("skipped"):
+        out = [f"skipped: {rec['skipped']}"]
+    else:
+        out = [f"attached {len(rec.get('attached') or [])}"] + [f"  {_attachment_text(a)}" for a in rec.get("attached") or []]
+    if rec.get("would_send"):
+        out.append(f"held back {rec['would_send']} call(s) in dry-run")
+    return out + [f"log: {line}" for line in rec.get("log") or []]
 
 
 FILES = re.compile(r"\]\((/api/files/[^)\s]+)\)")
@@ -78,7 +130,49 @@ def absolute_files(text: str, base: str | None) -> str:
     return FILES.sub(lambda m: f"]({base.rstrip('/')}{m.group(1)})", text) if base else text
 
 
-def print_item(it, full_log: bool = False, related=(), server: str | None = None) -> None:
+def git_lines(facts: dict) -> list:
+    """`todo get`'s git block: each branch with its PR and where it landed, then the edges and hints."""
+    if not facts:
+        return []
+    out = ["git:"]
+    for b in facts.get("branches") or []:
+        line = "  " + b["name"] + ("  (deleted)" if b.get("gone") else "")
+        mark = {True: "✓", False: "✗"}
+        pr = b.get("pr")
+        if pr:
+            line += f'  PR #{pr.get("number")} {pr.get("state")} → {pr.get("base") or b.get("target")}'
+        if b.get("in"):
+            line += " · " + " · ".join(f'in {t} {mark.get(ok, "?")}' for t, ok in b["in"].items())
+        if b.get("unknown"):
+            line += f'  (unknown: {b["unknown"]})'
+        out.append(line)
+    return out + dep_lines(facts)
+
+
+def dep_lines(facts: dict) -> list:
+    """Needs, needed by, conflicts and overlaps, indented under a heading each."""
+    out = []
+    for label, key in (("needs", "needs"), ("needed by", "needed_by")):
+        if facts.get(key):
+            out.append(f"  {label}:")
+            out += [f"    {describe(e)}" for e in facts[key]]
+    if facts.get("shares"):
+        out.append("  shares unlanded commits with:")
+        out += [f'    {s["id"]} ({s["branch"]}) via {s["via"]}: {s.get("shared", "?")} commit(s)'
+                + (f' (unknown: {s["reason"]})' if s.get("state") == "unknown" else "") for s in facts["shares"]]
+        out.append(f"  hint: {SHARES_HINT}")
+    for key in ("conflicts", "overlaps"):
+        if facts.get(key):
+            out.append(f"  {key}:")
+            out += [f'    {r["id"]} ({r["branch"]}) with {r["via"]}: {", ".join(r["files"])}' for r in facts[key]]
+    if facts.get("conflicts") or facts.get("overlaps"):
+        out.append(f"  hint: {HINT}")
+    if facts.get("notice"):
+        out.append(f'  note: {facts["notice"]}')
+    return out
+
+
+def print_item(it, full_log: bool = False, related=(), server: str | None = None, git=None, plugins=()) -> None:
     color = _use_color()
     print(f'id:        {it["id"]}')
     print(f'title:     {it["title"]}')
@@ -88,7 +182,9 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
     print(f'priority:  {it["priority"] or "—"}')
     print(f'app:       {it.get("app") or "—"} · {it.get("section") or "—"}')
-    print(f'branch:    {it.get("repo") or "—"} · {it.get("branch") or "—"}')
+    print(f'branches:  {it.get("repo") or "—"} · {", ".join(it.get("branches") or []) or "—"}')
+    for line in git_lines(git or {}):
+        print(line)
     if it.get("jira"):
         status = it.get("jira_status") or {}
         print("jira:      " + ", ".join(f"{k} ({status[k]})" if status.get(k) else k for k in it["jira"]))
@@ -141,6 +237,17 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
         print("checks:")
         for line in _check_lines(it["checks"]):
             print(line)
+    if it.get("docs"):
+        from .docs import human_size
+
+        print("docs:")
+        for d in it["docs"]:
+            who = f' · {d["by"]}' if d.get("by") else ""
+            print(f'  {d["name"]}  ({human_size(d["size"])}{who})')
+    if plugins:
+        print("plugins:")
+        for iid, kind, why in plugins:
+            print(f"  {iid}: {'skipped' if kind == 'skipped' else 'failed'} — {why}")
     if it.get("history"):
         print("history:")
         entries = it["history"][-LOG_PREVIEW:]
@@ -184,7 +291,9 @@ def _note_tag(n) -> str:
         parts[0] = f'link · {meta["type"]}'
     if kind == "clarification":
         parts.append(meta.get("state") or "open")
-    if n.get("author"):
+    if meta.get("plugin"):
+        parts.append(f'plugin {meta["plugin"]}')
+    elif n.get("author"):
         parts.append(n["author"])
     if n.get("via") == "agent":
         parts.append("AI")
@@ -222,7 +331,7 @@ def update_lines(rows, every=None) -> list:
             out += note_lines([e], prefix="n", every=every)
         else:
             who = f'({e["author"]}{" · AI" if e.get("via") == "agent" else ""}) ' if e.get("author") else ""
-            out.append(f'  [l{e["id"]}] log {_stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
+            out.append(f'  [l{e["id"]}] log {stamp(e["ts"])} {who}' + str(e["text"]).replace("\n", "\n      "))
     return out
 
 
@@ -248,7 +357,7 @@ def _history_lines(entries, color) -> list:
         forced = "  forced" if h.get("forced") else ""
         frm = colorize(h["from"] or "", h["from"] or "—", color)
         to = colorize(h["to"] or "", h["to"] or "—", color)
-        out.append(f'  [{h["id"]}] {_stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
+        out.append(f'  [{h["id"]}] {stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
     return out
 
 
@@ -356,7 +465,7 @@ def print_tasks(it) -> None:
 def print_inbox(rows) -> None:
     for r in rows:
         mark = " " if r.get("read_at") else "•"
-        when = _stamp(str(r.get("created") or ""))
+        when = stamp(str(r.get("created") or ""))
         what = {"mention": "mentioned you", "qa-rejection": "QA rejected",
                 "clarification": "asked a question", "answer": "answered your question",
                 "ready-for-qa": "ready for your QA", "deployed": "deployed"}.get(r["kind"], r["kind"])

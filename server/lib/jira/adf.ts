@@ -53,20 +53,8 @@ export function adfToText(doc: unknown): string {
   return out.join("").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export function textToAdf(text: string) {
-  const paragraphs = text.replace(/\s+$/, "").split(/\n{2,}/).map((p) => ({
-    type: "paragraph",
-    // Jira rejects empty text nodes, so blank lines become bare breaks.
-    content: p.split("\n").flatMap((line, i) => [
-      ...(i ? [{ type: "hardBreak" }] : []),
-      ...(line ? [{ type: "text", text: line }] : []),
-    ]),
-  }));
-  return { type: "doc", version: 1, content: paragraphs };
-}
-
-/** How a `media` node renders: an image URL, a link, or null for its name only. */
-export type MediaRef = (attrs: Record<string, any>) => { image?: string; link?: string } | null;
+/** How a `media` node renders: an image URL, a link, an item doc's name, or null for its name only. */
+export type MediaRef = (attrs: Record<string, any>) => { image?: string; link?: string; doc?: string } | null;
 
 type Mark = { type: string; attrs?: Record<string, any> };
 type MdNode = Node & { marks?: Mark[] };
@@ -124,6 +112,7 @@ export function adfToMarkdown(doc: unknown, media?: MediaRef): string {
     const ref = media?.(a);
     if (ref?.image) return `![${name}](${ref.image})`;
     if (ref?.link) return `[📎 ${name}](${encodeHref(ref.link)})`;
+    if (ref?.doc) return `📎 doc:${ref.doc}`;
     return `📎 ${name}`;
   };
 

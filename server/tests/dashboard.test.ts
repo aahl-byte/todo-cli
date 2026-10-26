@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as build from "@/lib/ops-builder";
-import { allowedMove, deriveCalcStatus, moves, NEXT_STATUSES, PAST_TRIAGE } from "@/lib/model";
+import { allowedMove, deriveCalcStatus, itemBranches, moves, NEXT_STATUSES, PAST_TRIAGE } from "@/lib/model";
 import { board, bounceCount, choices, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
 import { backfillRequestVersions, type Op } from "@/lib/apply";
 import { child, item, set, world, type World } from "./helpers";
@@ -517,12 +517,6 @@ describe("qa-rejected", () => {
       { me: "carol", override: true, comment: "bad" });
     expect(ops[1].data).toMatchObject({ kind: "qa-rejection", meta: { with_status: "qa-rejected" } });
   });
-
-  it("falls back to in-progress's Jira status", async () => {
-    const { jiraTarget } = await import("@/lib/jira/outbound");
-    expect(jiraTarget({ "in-progress": "In Progress" }, "qa-rejected")).toBe("In Progress");
-    expect(jiraTarget({ "in-progress": "In Progress", "qa-rejected": "Rejected" }, "qa-rejected")).toBe("Rejected");
-  });
 });
 
 describe("pins", () => {
@@ -642,13 +636,28 @@ describe("role filters", () => {
     await w.one("alice", item("S1", { status: "todo", title: "Fix the Login form" }));
     await w.one("alice", item("S2", { status: "todo", extra: { branch: "feat/login-sso" } }));
     await w.one("alice", item("S3", { status: "todo" }));
-    await w.d.query("insert into jira_links (project, item_uid, jira_key) values ('p', 'S3', 'OPS-412')");
+    await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'S3', 'OPS-412', 'field')");
     const p = (await project(w.d, "p"))!;
     const ids = async (search: string) => (await board(w.d, p, { search }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
     expect(await ids("login")).toEqual(["s1", "s2"]);
     expect(await ids("ops-41")).toEqual(["s3"]);
     expect(await ids("s2")).toEqual(["s2"]);
     expect(await ids("  ")).toEqual(["s1", "s2", "s3"]);
+  });
+  it("searches every branch, and a legacy single branch", async () => {
+    await w.one("alice", item("B1", { status: "todo", extra: { branches: ["feat/one", "feat/two-sso"] } }));
+    await w.one("alice", item("B2", { status: "todo", extra: { branch: "feat/legacy-sso" } }));
+    const p = (await project(w.d, "p"))!;
+    const ids = async (search: string) => (await board(w.d, p, { search }, "bob")).columns.flatMap((c) => c.items.map((i) => i.id));
+    expect(await ids("two-sso")).toEqual(["b1"]);
+    expect(await ids("sso")).toEqual(["b1", "b2"]);
+  });
+  it("reads branches tolerantly: a string is one branch, names are trimmed, blanks dropped", () => {
+    expect(itemBranches({ branches: " feat/x " })).toEqual(["feat/x"]);
+    expect(itemBranches({ branches: [" feat/x", "", "  ", "feat/x ", "feat/y"] })).toEqual(["feat/x", "feat/y"]);
+    expect(itemBranches({ branch: "  " })).toEqual([]);
+    expect(itemBranches({ branches: [], branch: "feat/old" })).toEqual([]);
+    expect(itemBranches(null)).toEqual([]);
   });
 });
 

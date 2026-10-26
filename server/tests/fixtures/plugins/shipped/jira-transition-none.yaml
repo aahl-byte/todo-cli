@@ -1,0 +1,18 @@
+about: a missing transition before any move fails the run so a host runs it again, naming the issue for the gave-up line
+plugin: jira-transition
+instance: {id: qa, name: QA, settings: {to: QA}}
+event: {type: status, from: review, to: in-qa}
+item: {jira: [SR-101]}
+connections:
+  jira: {kind: http}
+responses:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=status, body: {fields: {status: null}}}
+    - {method: GET, path: /rest/api/3/issue/SR-101/transitions, body: {transitions: []}}
+expect:
+  attached: []
+  wouldSend: []
+  log: []
+  error: "issue SR-101: no transition from ? to QA"
+  failure: {message: "no transition from ? to QA", pass: {issue: SR-101}}
+  transient: true

@@ -35,7 +35,7 @@ export function ticked(check: { envs?: unknown; status?: string }): string[] {
   return !envs.length && check.status === "done" ? Object.keys(ENVIRONMENTS) : envs;
 }
 
-export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation"];
+export const NOTE_KINDS = ["context", "ticket-request", "comment", "qa-rejection", "link", "clarification", "relation", "dependency"];
 export const CHECK_KINDS = ["prereq-branch", "db-script", "env-var", "feature-flag", "manual-step", "other"];
 export const ITEM_TYPES = ["feature", "bug", "refactor", "question", "debt", "idea", "suggestion", "performance", "decoration", "spin-off"];
 export const LINK_TYPES = ["pr", "preview", "qa-handoff", "external-ticket", "bug-ticket", "documentation", "design", "wt-file", "other"];
@@ -100,6 +100,13 @@ export function deriveCalcStatus(statuses: string[]): string | null {
   if (live.every((s) => COMPLETE.includes(s))) return "done";
   for (const s of CALC_PRECEDENCE) if (live.includes(s)) return s;
   return "todo";
+}
+
+/** An item's branches from its extra; a legacy single `branch` reads as a one-branch list. */
+export function itemBranches(extra: Record<string, any> | null | undefined): string[] {
+  const raw = extra?.branches ?? extra?.branch;
+  const names = (Array.isArray(raw) ? raw : [raw]).filter((b): b is string => typeof b === "string").map((b) => b.trim());
+  return [...new Set(names.filter(Boolean))];
 }
 
 export function nowIso(): string {

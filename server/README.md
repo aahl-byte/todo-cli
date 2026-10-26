@@ -16,11 +16,20 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    |---|---|
    | `DATABASE_URL` | everything (use the pooled URL on serverless hosts) |
    | `CRON_SECRET` | the Jira retry cron (`/api/jira/flush`) |
-   | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_WEBHOOK_SECRET` | the Jira bridge |
-   | `JIRA_ACCOUNT_ID` | optional; the integration's own account, else fetched from `/myself` |
+   | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | the Jira bridge |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
-   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses) |
+   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses). Also turns on git facts and repo plugins, which read each repo's `.todo-plugins/` through it; only plugins shipped with todo receive it |
+   | `GITHUB_WEBHOOK_SECRET` | optional; GitHub webhooks (`push`, `pull_request`, `deployment_status`) at `/api/github/webhook` |
+   | `GITHUB_API_URL` | optional; GitHub's REST base, for GitHub Enterprise |
+   | `TODO_SECRET_KEY` | optional; 32 bytes (`openssl rand -base64 32`) that encrypt plugin connection credentials and secret settings |
+   | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; host-wide plugin connections as a JSON map, and their secrets. Only shipped plugins use them, through their default instance or instances stored on the server, never an instance a repo's `plugins.yaml` declares |
+   | `TODO_PLUGIN_OWNERS` | comma-separated GitHub owners whose repos the server reads for git facts and plugins; unset, both are off. A project uses a repo of these owners once a member's CLI reports a checkout of it or it's listed under Settings → Plugins |
+   | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated hosts plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses. `host[:port]` opens one to the server's own connections, which shipped plugins use; `owner/name=host[:port]` opens it to that repo's connections only, e.g. `acme/web=leaf-rain:10011`. Shipped watchtower-session reaches Watchtower on the tailnet through a bare entry such as `127.0.0.1:10010` |
    | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
+
+   `GITHUB_TOKEN` is the real limit on what the server can read: give it a
+   fine-grained token, or a GitHub App installation, scoped to the team's repos
+   only, with read access to contents, pull requests and checks.
 
 4. **Create the schema, then users and projects**, from your machine with the
    same `DATABASE_URL`:
@@ -88,51 +97,64 @@ under its own path.
 
 ## Jira bridge
 
-A project mirrors Jira in one of two modes, `projects.jira_mode`:
+The bridge mirrors the Jira issues a project's items link with `todo jira link`,
+from any Jira project. It never imports issues as items.
 
-- **`import`** (the default) imports the active issues of the project's
-  `jira_project` as items and mirrors their status, fields, comments and
-  sub-tasks.
-- **`links`** imports nothing. It mirrors only the issues its items link with
-  `todo jira link`, from any Jira project, and needs no `jira_project`.
+- **Request:** each linked issue is appended once to its item's request as a
+  `## KEY · <summary>` block with the description and images. Appending follows
+  the request-version rules: a frozen request gets a new version, which returns
+  the item to `requested`.
+- **Comments** mirror onto every item linking the issue, edits included.
+- **Status:** a linked issue's status shows next to its key and never moves the
+  item.
+- **Triggers** on the settings page run the other way: a todo move transitions
+  every issue the item links. They reach Jira only once the project switches
+  writes on, on a server without `JIRA_READ_ONLY`; until then the page lists
+  what they would have sent. No comments go to Jira.
 
-In both modes, each issue an item links is appended once to that item's request
-as a `## KEY · <summary>` block with the description and images, and its
-comments mirror onto every item linking it. Appending follows the request-version
-rules: a frozen request gets a new version, which returns the item to
-`requested`. A linked issue's status is shown next to its key and never moves
-the item.
-
-Triggers on the settings page run the other way in both modes: a todo move
-transitions the imported issue, or in links mode every issue the item links.
-Links mode posts no comments to Jira.
-
-**Put a project in links mode** and poll it, read-only:
+**Poll Jira**, read-only, from a timer every few minutes:
 
 ```bash
-DATABASE_URL=... npm run project:add -- web "Web app"
-DATABASE_URL=... npm run jira:mode -- web links          # or: import
 DATABASE_URL=... JIRA_BASE_URL=... JIRA_EMAIL=... JIRA_API_TOKEN=... npm run jira:sync -- --all
 ```
 
-`jira:sync -- --all` runs one pass over every links-mode project and exits
-non-zero if any failed; run it from a timer every few minutes. `jira:sync --
-<project>` polls one project in either mode, and `--every SECONDS` keeps
-polling. Polling always runs with `JIRA_READ_ONLY=1`.
+`jira:sync -- --all` runs one pass over every project and exits non-zero if any
+failed. `jira:sync -- <project>` polls one project, `--every SECONDS` keeps
+polling, and `--create-users` makes a user for each Jira person it meets.
+Polling always runs with `JIRA_READ_ONLY=1`.
 
-For import mode:
-
-- **Map a project:** in SQL, set `projects.jira_project` to the Jira project key,
-  and `jira_status_map` to `{"<todo status>": "<Jira status name>", ...}`.
-- **Register a webhook** in Jira (System → Webhooks) for issue created, issue
-  updated and comment created, pointed at
-  `https://<host>/api/jira/webhook?secret=<JIRA_WEBHOOK_SECRET>`.
-- **Link people:** `npm run user:jira -- <handle> <accountId>` for an existing
-  user (their token is kept), or `user:add -- <handle> --jira <accountId>` when
-  creating one. Unmatched Jira users show up as `jira:<Display Name>`.
+**Link people:** `npm run user:jira -- <handle> <accountId>` for an existing user
+(their token is kept), or `user:add -- <handle> --jira <accountId>` when creating
+one. Unmatched Jira users show up as `jira:<Display Name>`.
 
 The outbox flushes after every request. The cron in `vercel.json` retries
 daily, which Hobby plans allow; on Pro, set it to `*/5 * * * *`.
+
+## Plugins and git facts
+
+Both need `GITHUB_TOKEN` and `TODO_PLUGIN_OWNERS` (see the table above).
+
+- **Hear GitHub:** add a webhook on each repo (or the organization) to
+  `<server>/api/github/webhook`, content type JSON, secret
+  `GITHUB_WEBHOOK_SECRET`, with the `push`, `pull_request` and
+  `deployment_status` events. Repos without one are polled.
+- **Run the tick** every 5 minutes: `/api/plugins/tick` delivers queued runs,
+  polls repos with no recent webhook and runs due `every:` plugins, and
+  `/api/git-facts/tick` recomputes facts. Both take
+  `Authorization: Bearer $CRON_SECRET`. The daily entries in `vercel.json` suit
+  Hobby; on Pro set them to `*/5 * * * *`. Off Vercel, a systemd timer can
+  `curl` both.
+- **Port Actions and Jira triggers** to plugin instances:
+  `npx tsx scripts/plugins-port.ts <project> [--repo owner/name]` prints the
+  instances, the connections and env entries they need, and the `use: shipped`
+  lines each repo's plugins file needs; `--write` stores them. Every ported
+  instance is stored in dry-run, so nothing sends twice while Actions and the
+  Jira bridge still run.
+- **Check parity before the cutover:**
+  `npx tsx scripts/plugins-parity.ts <project> [--since 7d]` replays recent
+  status moves through Actions, the Jira outbox and the ported instances, all
+  in dry-run, and prints every difference. The cutover is turning Actions and
+  Jira triggers off, then clearing each instance's dry-run switch.
 
 ## Local development
 
@@ -148,4 +170,6 @@ TEST_DATABASE_URL=postgres://... npm test             # also runs the real-Postg
 server. `scripts/smoke.cjs` drives the dashboard through its main flows with
 Playwright against a seeded server. Point `BASE_URL` at a real hostname rather
 than localhost: browsers treat localhost as secure, which hides cookie problems
-on plain-http hosts.
+on plain-http hosts. Its plugin steps need the demo repo `acme/web` allowed and
+a secret key, so start that server with
+`TODO_PLUGIN_OWNERS=acme GITHUB_TOKEN=demo TODO_SECRET_KEY=$(openssl rand -base64 32) TODO_PLUGIN_ALLOW_HOSTS=acme/web=hooks.example.com`.

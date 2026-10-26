@@ -1,0 +1,22 @@
+about: a failing call ends the run with its error and keeps nothing it gathered
+plugin: pr-link
+instance: {id: default, name: (default)}
+event: {type: refresh}
+connections:
+  github: {kind: http}
+responses:
+  github:
+    - method: GET
+      path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all
+      body: [{html_url: "https://github.com/acme/web/pull/7", number: 7, title: Fix login}]
+    - method: GET
+      path: /repos/acme/web/pulls?head=acme%3Afeat%2Flogin-api&state=all
+      status: 403
+      body: {message: API rate limit exceeded}
+expect:
+  attached: []
+  wouldSend: []
+  error: 'branch feat/login-api: github: GET /repos/acme/web/pulls?head=acme%3Afeat%2Flogin-api&state=all answered 403: {"message":"API rate limit exceeded"}'
+  failure:
+    message: 'github: GET /repos/acme/web/pulls?head=acme%3Afeat%2Flogin-api&state=all answered 403: {"message":"API rate limit exceeded"}'
+    pass: {branch: feat/login-api}

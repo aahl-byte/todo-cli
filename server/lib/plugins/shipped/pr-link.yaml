@@ -1,0 +1,14 @@
+# Links each of the item's branches to its pull requests on GitHub.
+connections: [github]
+on: [push, pr]
+per: branch
+when: "item.repo_owner && item.repo_name"
+steps:
+  - name: prs
+    http:
+      method: GET
+      path: "/repos/{{item.repo_owner}}/{{item.repo_name}}/pulls"
+      query: {head: "{{item.repo_owner}}:{{branch}}", state: all}
+attach:
+  - each: prs
+    link: {type: pr, url: "{{each.html_url}}", label: "#{{each.number}} · {{each.title}}"}

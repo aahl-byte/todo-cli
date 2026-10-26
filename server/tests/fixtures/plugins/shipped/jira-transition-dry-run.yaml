@@ -1,0 +1,18 @@
+about: in dry-run, jira-transition reads the issue and its transitions and records each move it would make
+plugin: jira-transition
+instance: {id: to-qa, name: QA, settings: {to: QA}}
+event: {type: status, from: review, to: in-qa}
+dry_run: true
+connections:
+  jira: {kind: http}
+responses:
+  jira:
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=status, body: {fields: {status: {name: Open}}}}
+    - {method: GET, path: /rest/api/3/issue/SR-101/transitions, body: {transitions: [{id: "161", to: {name: QA}}]}}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=status, body: {fields: {status: {name: Open}}}}
+    - {method: GET, path: /rest/api/3/issue/SR-102/transitions, body: {transitions: [{id: "162", to: {name: QA}}]}}
+expect:
+  attached: []
+  wouldSend:
+    - {connection: jira, method: POST, path: /rest/api/3/issue/SR-101/transitions, input: {transition: {id: "161"}}}
+    - {connection: jira, method: POST, path: /rest/api/3/issue/SR-102/transitions, input: {transition: {id: "162"}}}

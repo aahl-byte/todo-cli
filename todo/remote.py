@@ -7,6 +7,7 @@ url lives in ~/.todo/config.yaml under `tokens:`.
 from __future__ import annotations
 
 import json
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +18,7 @@ from . import identity
 SYNC_DIR = ".sync"
 CONFIG_FILE = "config.json"
 DEFAULT_TIMEOUT = 1.5
+TRANSFER_TIMEOUT = 30            # a doc's bytes, up and down
 
 
 class RemoteError(Exception):
@@ -81,14 +83,14 @@ class Remote:
         self.token = token
         self.timeout = timeout
 
-    def request(self, method: str, path: str, body=None) -> dict:
+    def request(self, method: str, path: str, body=None, timeout: float | None = None) -> dict:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.url + path, data=data, method=method)
         req.add_header("content-type", "application/json")
         if self.token:
             req.add_header("authorization", f"Bearer {self.token}")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:
@@ -99,6 +101,57 @@ class Remote:
         except (urllib.error.URLError, OSError, ValueError) as e:
             reason = getattr(e, "reason", e)
             raise RemoteError(f"{self.url} unreachable ({reason})") from None
+
+    def _send(self, req: urllib.request.Request, timeout: float) -> bytes:
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read() or b"{}").get("error") or e.reason
+            except ValueError:
+                detail = e.reason
+            raise RemoteError(f"{req.full_url.split('?')[0]}: {e.code} {_explain(e.code, detail)}", e.code) from None
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            raise RemoteError(f"{self.url} unreachable ({getattr(e, 'reason', e)})") from None
+
+    def _docs_path(self, project: str, rest: str = "") -> str:
+        return f"/api/projects/{urllib.parse.quote(project)}/docs{rest}"
+
+    def doc_upload(self, project: str, item_uid: str, name: str, data: bytes) -> str:
+        """Send a doc's bytes where the server says (its bucket, or itself), and
+        return the file key to record it under."""
+        t = self.request("POST", self._docs_path(project, "/upload"),
+                         {"item_uid": item_uid, "name": name, "size": len(data)})
+        url = urllib.parse.urljoin(self.url + "/", t["url"])
+        body, ctype = multipart(t.get("fields") or {}, name, data, t["content_type"])
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("content-type", ctype)
+        if self.token and _origin(url) == _origin(self.url):
+            req.add_unredirected_header("authorization", f"Bearer {self.token}")
+        self._send(req, max(self.timeout, TRANSFER_TIMEOUT))
+        return t["key"]
+
+    def doc_record(self, project: str, record: dict) -> dict:
+        """`{status: applied|conflict, doc}`: the doc as the server has it now.
+        The server hashes the stored bytes first, so this gets a transfer's time."""
+        return self.request("PUT", self._docs_path(project), record, max(self.timeout, TRANSFER_TIMEOUT))
+
+    def doc_list(self, project: str, item: str | None = None, after: str | None = None) -> dict:
+        """A page of the project's doc records (or one item's): `{docs, next}`."""
+        query = urllib.parse.urlencode({k: v for k, v in (("item", item), ("after", after)) if v})
+        return self.request("GET", self._docs_path(project, f"?{query}" if query else ""))
+
+    def doc_remove(self, project: str, uid: str, base: str) -> dict:
+        query = urllib.parse.urlencode({"base": base})
+        return self.request("DELETE", self._docs_path(project, f"/{urllib.parse.quote(uid)}?{query}"))
+
+    def doc_bytes(self, project: str, uid: str) -> bytes:
+        req = urllib.request.Request(self.url + self._docs_path(project, f"/{urllib.parse.quote(uid)}"))
+        if self.token:
+            # Not sent on to the bucket a read may redirect to.
+            req.add_unredirected_header("authorization", f"Bearer {self.token}")
+        return self._send(req, max(self.timeout, TRANSFER_TIMEOUT))
 
     def me(self) -> dict:
         return self.request("GET", "/api/me")
@@ -117,12 +170,36 @@ class Remote:
         return self.request("POST", path, {"ops": ops}).get("results") or []
 
     def changes(self, project: str, since: int, limit: int = 500) -> dict:
-        path = f"/api/projects/{urllib.parse.quote(project)}/changes?since={since}&limit={limit}"
+        path = f"/api/projects/{urllib.parse.quote(project)}/changes?since={since}&limit={limit}&docs=1"
         return self.request("GET", path)
 
     def checkout(self, project: str, dir_: str, repo: str) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/checkout"
         return self.request("POST", path, {"dir": dir_, "repo": repo})
+
+    def git_facts(self, project: str, facts: list) -> dict:
+        path = f"/api/projects/{urllib.parse.quote(project)}/git-facts"
+        return self.request("POST", path, {"facts": facts})
+
+    def _plugins_path(self, project: str, rest: str = "") -> str:
+        return f"/api/projects/{urllib.parse.quote(project)}/plugins{rest}"
+
+    def plugins(self, project: str, repo: str) -> dict:
+        """The repo's stored instances and grants, its plugins as the server reads them, the
+        connections the server holds a secret for, and each instance's last server run."""
+        return self.request("GET", self._plugins_path(project, "?" + urllib.parse.urlencode({"repo": repo})))
+
+    def put_plugins(self, project: str, repo: str, plugin: str, instances=None, grants=None) -> dict:
+        body = {"repo": repo, "plugin": plugin}
+        if instances is not None:
+            body["instances"] = instances
+        if grants is not None:
+            body["grants"] = grants
+        return self.request("PUT", self._plugins_path(project), body)
+
+    def plugin_credential(self, project: str, repo: str, connection: str, secret: str) -> dict:
+        return self.request("POST", self._plugins_path(project, "/credentials"),
+                            {"repo": repo, "connection": connection, "secret": secret})
 
     def run_action(self, project: str, item: str, action: str) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/actions/run"
@@ -133,6 +210,25 @@ class Remote:
 
     def mark_read(self, ids: list) -> dict:
         return self.request("POST", "/api/inbox/read", {"ids": ids})
+
+
+def _origin(url: str) -> tuple:
+    u = urllib.parse.urlsplit(url)
+    return (u.scheme, u.netloc)
+
+
+def multipart(fields: dict, filename: str, data: bytes, content_type: str) -> tuple:
+    """A multipart/form-data body: `fields`, then the file as `file`, last
+    (S3's presigned POST ignores anything after it)."""
+    boundary = "----todo" + secrets.token_hex(12)
+    out = bytearray()
+    for k, v in fields.items():
+        out += (f'--{boundary}\r\ncontent-disposition: form-data; name="{k}"\r\n\r\n{v}\r\n').encode()
+    safe = filename.encode("utf-8", "replace").decode().replace('"', "_").replace("\r", "_").replace("\n", "_")
+    out += (f'--{boundary}\r\ncontent-disposition: form-data; name="file"; filename="{safe}"\r\n'
+            f"content-type: {content_type}\r\n\r\n").encode()
+    out += data + f"\r\n--{boundary}--\r\n".encode()
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
 
 
 def remote_for(root: Path, timeout: float = DEFAULT_TIMEOUT) -> Remote | None:

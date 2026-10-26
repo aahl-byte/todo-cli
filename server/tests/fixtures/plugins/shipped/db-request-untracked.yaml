@@ -1,0 +1,20 @@
+about: with no tracked branch known, db-request's edge names no branch
+plugin: db-request
+instance: {id: default, name: (default)}
+event: {type: pr, branch: feat/login}
+item: {branches: [feat/login]}
+connections:
+  db-request: {kind: http, auth: bearer, secret: dtok}
+responses:
+  db-request:
+    - method: GET
+      path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin
+      body: [{submission_id: 7, name: x, status: merged, pr_url: "https://github.com/acme/moneyball/pull/9"}]
+expect:
+  attached:
+    - {kind: link, key: "link:https://github.com/acme/moneyball/pull/9", type: db-request, url: "https://github.com/acme/moneyball/pull/9", label: "db-request #7 · x (merged)"}
+    - {kind: edge, key: "edge:https://github.com/acme/moneyball/pull/9", needs: "https://github.com/acme/moneyball/pull/9", because: "db-request #7 x"}
+  wouldSend: []
+received:
+  db-request:
+    - {method: GET, path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin, authorization: Bearer dtok}

@@ -42,10 +42,11 @@ function fakeFetch(answer: (c: Call) => { status?: number; json?: unknown; text?
 }
 
 describe("templates", () => {
-  const vars = itemVars("p", { id: "safari", title: 'Say "hi"', status: "in-qa", extra: { repo: "acme/web", branch: "fix/x" } },
+  const vars = itemVars("p", { id: "safari", title: 'Say "hi"', status: "in-qa", extra: { repo: "acme/web", branches: ["fix/x", "fix/y"] } },
                         "review", "alice", "https://todo.test");
   it("fills names, with json and url filters", () => {
     expect(fill("{{item.repo_name}}@{{ item.branch }}", vars)).toBe("web@fix/x");
+    expect(itemVars("p", { id: "a", title: "A", status: "todo", extra: { branch: "fix/old" } }, "", "alice")["item.branch"]).toBe("fix/old");
     expect(fill("{{item.title | json}}", vars)).toBe('"Say \\"hi\\""');
     expect(fill("q={{item.title|url}}", vars)).toBe("q=Say%20%22hi%22");
     expect(vars["item.url"]).toBe("https://todo.test/p/p/i/safari");

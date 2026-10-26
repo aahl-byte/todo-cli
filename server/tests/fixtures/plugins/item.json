@@ -1,0 +1,4 @@
+{"id": "fix-login", "uid": "01JTODOITEM0000000000000001", "title": "Fix login", "type": "bug", "status": "in-progress",
+ "priority": "high", "repo": "acme/web", "repo_owner": "acme", "repo_name": "web", "branches": ["feat/login", "feat/login-api"],
+ "jira": ["SR-101", "SR-102"], "app": "web", "section": "auth", "developer": "alice", "qa_assignee": "bob", "dir": "/src/web",
+ "links": [{"type": "pr", "url": "https://github.com/acme/web/pull/7"}]}

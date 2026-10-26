@@ -1,0 +1,12 @@
+about: a resumed session waiting on a person fails the run, naming what it waits on
+plugin: watchtower-session
+instance: {id: send, name: Send, settings: {resumePrompt: go, link: "https://wt.example"}}
+event: {type: manual, instance: send}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - {method: GET, path: /api/roster, body: {sessions: [{id: s2, name: "todo: fix-login", state: stopped}]}}
+    - {method: POST, path: /api/sessions/s2/resume, body: {}}
+    - {method: GET, path: /api/sessions/s2, body: {state: active, status: waiting, waitingFor: a permission prompt}}
+expect: {attached: [], wouldSend: [], log: [], error: "session s2 is waiting on a permission prompt: https://wt.example/?session=s2"}

@@ -269,6 +269,14 @@ def test_forced_deploy_carries_force(pair, server):
     assert op["force"] is True
 
 
+def test_agent_forced_hand_off_carries_force(pair, server):
+    a, _ = pair
+    run_cli(a, ["--agent", "ready-qa", "login-bug", "--force"])
+    rnd(a, server, "alice")
+    op = next(op for op in server.pushes[-1] if op["op"] == "set")
+    assert (op["via"], op["force"]) == ("agent", True)
+
+
 def test_no_deploy_step_approves_to_done(pair, server):
     a, _ = pair
     server.deploy_step = False
@@ -520,6 +528,9 @@ class Flaky:
 
     def changes(self, project, since, limit=500):
         return self.inner.changes(project, since, limit)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
 
     def checkout(self, project, dir_, repo):
         return self.inner.checkout(project, dir_, repo)

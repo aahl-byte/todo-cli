@@ -3,7 +3,7 @@
 // values are click-to-pick; adds open a popup.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
-import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES } from "@/lib/model";
+import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES, itemBranches } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { ChecksState, PrStatus } from "@/lib/github";
 import { safeUrl } from "@/lib/url";
@@ -11,7 +11,11 @@ import { Ago, Led, Menu, Popup, richTip } from "../ui";
 import { report, Remove, type Ctx } from "./ItemView";
 import { CheckBox } from "../QueueActions";
 import { useReadOnly } from "../ReadOnly";
+import { notify } from "../Toaster";
 import { Glance } from "./Glance";
+import { GitFacts } from "./GitFacts";
+import { PluginBy } from "./PluginBy";
+import { pluginRun, runPlugin } from "@/app/plugin-actions";
 import { AppFields } from "../AppFields";
 import { CopyButton } from "../Copy";
 import { withBase } from "@/lib/base";
@@ -56,7 +60,7 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
         <div className="kv">
           <span className="k">app</span>
           <AppValue data={data} ctx={ctx} />
-          <span className="k">branch</span>
+          <span className="k">branches</span>
           <BranchValue data={data} ctx={ctx} />
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
@@ -87,9 +91,13 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
       </section>
       <Related rows={data.related} ctx={ctx} />
       <Links rows={data.links} prs={data.prs ?? {}} ctx={ctx} />
+      <GitFacts facts={data.git} base={ctx.readOnly?.base ?? `/p/${ctx.project}`} pluginEdges={data.pluginEdges} />
       {data.files?.length > 0 && <Files rows={data.files} jiraBase={ctx.jiraBase} />}
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
       {ctx.actions.length > 0 && <Actions ctx={ctx} itemId={it.id} />}
+      {!ctx.readOnly && ((ctx.plugins?.length ?? 0) > 0 || (data.pluginNotices?.length ?? 0) > 0) && (
+        <Plugins ctx={ctx} itemId={it.id} notices={data.pluginNotices ?? []} />
+      )}
       <History rows={data.history} current={it.status} created={it.created} />
     </>
   );
@@ -168,6 +176,43 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
   );
 }
 
+/** A button for each manual plugin instance, and a quiet line for each plugin whose last run here was skipped or failed. */
+function Plugins({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: string[] }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  // Spins until the run is done; its outcome shows as a toast.
+  const run = async (plugin: string, instance: string, label: string) => {
+    setBusy(`${plugin}/${instance}`);
+    let r = await runPlugin({ project: ctx.project, itemUid: ctx.itemUid, plugin, instance });
+    while (r.ok && !r.done && r.event) {
+      await new Promise((ok) => setTimeout(ok, RUN_POLL_MS));
+      r = await pluginRun({ project: ctx.project, event: r.event, label });
+    }
+    setBusy(null);
+    if (r.ok) notify(r.message ?? `${label}: done`);
+    else report(r);
+  };
+  return (
+    <section className="plugins-rail">
+      <div className="label">Plugins</div>
+      <div className="action-buttons">
+        {(ctx.plugins ?? []).map((b) => {
+          const id = `${b.plugin}/${b.instance}`;
+          return (
+            <div key={id} className="action-row" data-plugin-button={id}>
+              {b.server
+                ? <button type="button" className="btn" disabled={busy !== null} data-tip={`runs ${id} on the server`}
+                          onClick={() => void run(b.plugin, b.instance, b.label)}>{busy === id && <span className="spin" aria-label="running" />}{b.label}</button>
+                : <CopyButton className="btn" text={`todo plugin run ${itemId} ${id}`}
+                              tip={`runs in a developer's CLI (${b.reason}): todo plugin run ${itemId} ${id} (click to copy)`}>{b.label} ⧉</CopyButton>}
+            </div>
+          );
+        })}
+      </div>
+      {notices.map((n) => <div key={n} className="plugin-notice">{n}</div>)}
+    </section>
+  );
+}
+
 /** A value that opens its editor on click, or plain text where nothing can change. */
 function Editable({ readOnly, onOpen, children }: { readOnly: boolean; onOpen: () => void; children: ReactNode }) {
   return readOnly
@@ -210,23 +255,25 @@ function BranchValue({ data, ctx }: { data: Data; ctx: Ctx }) {
   const it = data.item;
   const [open, setOpen] = useState(false);
   const pinned = useRef(it.versions);
-  const repo = it.extra?.repo ?? "", branch = it.extra?.branch ?? "";
+  const repo = it.extra?.repo ?? "", branches = itemBranches(it.extra).join(", ");
   const save = async (fd: FormData) => {
     const v = (k: string) => String(fd.get(k) ?? "").trim() || null;
+    const list = itemBranches({ branches: String(fd.get("branches") ?? "").split(",").map((b) => b.trim()) });
     const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
-                                   data: { "extra.repo": v("repo"), "extra.branch": v("branch") } });
+                                   data: { "extra.repo": v("repo"), "extra.branches": list.length ? list : null,
+                                           ...(it.extra?.branch != null ? { "extra.branch": null } : {}) } });
     if (report(r)) setOpen(false);
   };
   return (
     <>
       <Editable readOnly={!!ctx.readOnly} onOpen={() => { pinned.current = it.versions; setOpen(true); }}>
-        {repo || branch ? <>{repo && <span className="faint">{repo} · </span>}{branch || "—"}</> : <span className="faint">—</span>}
+        {repo || branches ? <>{repo && <span className="faint">{repo} · </span>}{branches || "—"}</> : <span className="faint">—</span>}
       </Editable>
       {open && (
-        <Popup title="Repo and branch" onClose={() => setOpen(false)}>
+        <Popup title="Repo and branches" onClose={() => setOpen(false)}>
           <form className="row" action={(fd) => void save(fd)}>
             <input name="repo" defaultValue={repo} aria-label="repo" placeholder="repo" autoComplete="off" />
-            <input name="branch" defaultValue={branch} aria-label="branch" placeholder="branch" autoComplete="off" />
+            <input name="branches" defaultValue={branches} aria-label="branches" placeholder="branches, comma-separated" autoComplete="off" />
             <div className="actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
               <button className="btn primary">Save</button>
@@ -343,6 +390,7 @@ function Links({ rows, prs, ctx }: { rows: Row[]; prs: Record<string, PrStatus>;
             {url ? <a className="grow" href={url} target="_blank" rel="noreferrer" data-tip={url}>{l.meta?.label || l.text}</a>
                  : <span className="grow">{l.meta?.label || l.text}</span>}
             {pr?.checks && <span className={`checks ck-${pr.checks}`} data-tip={`checks ${CHECKS_TIP[pr.checks]}`}><span className="led" /></span>}
+            <PluginBy by={l.meta?.plugin} />
             <Remove onConfirm={() => act.removeEntry({ project: ctx.project, itemUid: ctx.itemUid, entity: "note", uid: l.uid, versions: l.versions })} />
           </div>
         );

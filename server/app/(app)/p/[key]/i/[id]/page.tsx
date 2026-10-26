@@ -3,8 +3,10 @@ import { ItemView } from "@/components/item/ItemView";
 import { projectActions } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { filesEnabled } from "@/lib/files";
+import { itemGitFacts } from "@/lib/gitfacts";
 import { linkPrStatuses } from "@/lib/github";
 import { isPinned } from "@/lib/pins";
+import { itemButtons, itemNotices } from "@/lib/plugin-views";
 import { requireUser } from "@/lib/session";
 import { item as loadItem, project, users } from "@/lib/views";
 
@@ -26,6 +28,9 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
     pinned: await isPinned(d, user.handle, key, data.item.uid),
     actions: (await projectActions(d, key)).map(({ id, name, runner }) => ({ id, name, runner })),
   };
-  const prs = await linkPrStatuses(data.links);
-  return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs }))} ctx={ctx} />;
+  const [prs, git, plugins, pluginNotices] = await Promise.all([
+    linkPrStatuses(data.links), itemGitFacts(d, key, data.item.uid).catch(() => ({})),
+    itemButtons(d, key, data.item).catch(() => []), itemNotices(d, key, data.item.uid),
+  ]);
+  return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs, git, pluginNotices }))} ctx={{ ...ctx, plugins }} />;
 }

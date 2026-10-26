@@ -1,0 +1,20 @@
+about: a live managed session gets the resume prompt, retried while its input isn't visible
+plugin: watchtower-session
+instance: {id: send, name: Send, settings: {resumePrompt: "/todo {{item.id}}"}}
+event: {type: manual, instance: send}
+connections:
+  watchtower: {kind: http}
+responses:
+  watchtower:
+    - {method: GET, path: /api/roster, body: {sessions: [{id: s1, name: "todo: fix-login", state: active, managed: true}]}}
+    - {method: POST, path: /api/sessions/s1/message, status: 409, body: {error: "input isn't visible yet"}}
+    - {method: POST, path: /api/sessions/s1/message, body: {delivered: inbox}}
+expect:
+  attached:
+    - {kind: log, key: "watchtower:<now>", text: "action Send (manual): sent to Watchtower session todo: fix-login (inbox): s1"}
+  wouldSend: []
+received:
+  watchtower:
+    - {method: GET, path: /api/roster}
+    - {method: POST, path: /api/sessions/s1/message, body: {text: /todo fix-login, from: todo}}
+    - {method: POST, path: /api/sessions/s1/message, body: {text: /todo fix-login, from: todo}}

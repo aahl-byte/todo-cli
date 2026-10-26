@@ -5,13 +5,16 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
 import type { ActionState } from "@/lib/action-helpers";
+import { docPath } from "@/lib/doc-view";
 import { COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
+import type { PluginButton } from "@/lib/plugin-views";
 import { Markdown } from "../Markdown";
 import { ReadOnly, useReadOnly, type ReadOnlyView } from "../ReadOnly";
 import { Composer } from "../Composer";
 import { notify } from "../Toaster";
 import { Ago, EditableText, Led, Menu, Popup, Stamp } from "../ui";
+import { Docs } from "./Docs";
 import { Tasks } from "./Tasks";
 import { Rail } from "./Rail";
 import { RequestView } from "./RequestView";
@@ -27,6 +30,8 @@ export interface Ctx {
   itemUid: string;
   pinned: boolean;
   actions: { id: string; name: string; runner: string }[];
+  /** The item repo's manual plugin instances; none on a wall display. */
+  plugins?: PluginButton[];
   /** Set on a wall display: everything shows, nothing writes. */
   readOnly?: ReadOnlyView | null;
   /** The viewer's last visit, given up front by a page that doesn't record one. */
@@ -62,10 +67,14 @@ const Fresh = createContext<IsNew>(() => false);
 export const useIsNew = () => useContext(Fresh);
 const NewTag = () => <span className="tag new">new</span>;
 
+/** Where `doc:` references in this item's text point; none on a read-only page. */
+const DocsBase = createContext<string | undefined>(undefined);
+
 /** Markdown whose stored images load through a read-only page's own path. */
 export function Md(props: { text: string; oneLine?: boolean }) {
   const readOnly = useReadOnly();
-  return <Markdown {...props} files={readOnly ? `${readOnly.base}/files` : undefined} />;
+  const docs = useContext(DocsBase);
+  return <Markdown {...props} files={readOnly ? `${readOnly.base}/files` : undefined} docs={readOnly ? undefined : docs} />;
 }
 
 /** Who hasn't acknowledged an entry's latest content: any agent, and you. */
@@ -146,11 +155,13 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
 
   return (
     <ReadOnly.Provider value={ctx.readOnly ?? null}>
+    <DocsBase.Provider value={docPath(ctx.project, it.id, "").replace(/\/$/, "")}>
     <Fresh.Provider value={isNew}>
     <div className="item" data-uid={it.uid}>
       <div className="item-main">
         <Header it={it} ctx={ctx} pendingPre={it.pending_pre} />
         <RequestView data={data} ctx={ctx} focus={focus === "request"} />
+        <Docs rows={data.docs} ctx={ctx} itemId={it.id} />
         <MobileSummary data={data} ctx={ctx} />
         <div className="tabs" role="tablist">
           {tabs.map((t) => (
@@ -171,6 +182,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
       <aside className="rail wide-only"><Rail data={data} ctx={ctx} onTasks={() => setTab("tasks")} /></aside>
     </div>
     </Fresh.Provider>
+    </DocsBase.Provider>
     </ReadOnly.Provider>
   );
 }

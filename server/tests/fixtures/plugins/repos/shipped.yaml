@@ -1,0 +1,10 @@
+connections:
+  local: {mcp: {command: node, args: [server.js]}}
+plugins:
+  pr-link: {use: shipped}
+  nope: {use: shipped}
+  coded: {on: [push], code: coded.js}
+  missing: {on: [push], code: missing.js}
+  local: {on: [push], connections: [local], steps: [{tool: t}]}
+instances:
+  pr-link: [{id: mine, name: Mine}]

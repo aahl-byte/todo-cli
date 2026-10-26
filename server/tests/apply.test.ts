@@ -186,6 +186,14 @@ describe("status rules", () => {
     expect(ok.rejected).toBeUndefined();
   });
 
+  it("lets an agent hand work to QA with force, and records the history row forced", async () => {
+    const v = (await w.one("alice", item("I1", { status: "review" }))).versions!;
+    const r = await w.one("alice", set("item", "I1", "I1", { status: "ready-for-qa" }, { status: v.status }, { via: "agent", force: true }));
+    expect(r.rejected).toBeUndefined();
+    const [h] = await w.d.query("select to_status, via, forced from status_history where item_uid = 'I1'");
+    expect(h).toEqual({ to_status: "ready-for-qa", via: "agent", forced: true });
+  });
+
   it("writes history only for applied status changes", async () => {
     const v = (await w.one("alice", item("I1", { status: "review" }))).versions!;
     await w.one("carol", set("item", "I1", "I1", { status: "in-qa" }, { status: v.status }));
@@ -382,6 +390,27 @@ describe("third pass", () => {
   it("refuses an agent creating an item straight into QA", async () => {
     const r = await w.one("alice", { ...item("I1", { status: "ready-for-qa" }), via: "agent" });
     expect(r).toMatchObject({ status: "rejected", reason: "agent-handoff" });
+  });
+
+  it("lets an agent create an item straight into QA with force, recording only the history it sends", async () => {
+    const r = await w.one("alice", { ...item("I1", { status: "ready-for-qa" }), via: "agent", force: true });
+    expect(r.status).toBe("applied");
+    expect(await w.d.query("select 1 from status_history where item_uid = 'I1'")).toEqual([]);
+    const history = [{ uid: "H2", from: "review", to: "ready-for-qa", by: "alice", via: "agent", forced: true, ts: "2026-10-02T11:00:00.000Z" }];
+    await w.one("alice", { ...item("I2", { status: "ready-for-qa", history }), via: "agent", force: true });
+    const [h] = await w.d.query("select to_status, via, forced from status_history where item_uid = 'I2'");
+    expect(h).toEqual({ to_status: "ready-for-qa", via: "agent", forced: true });
+  });
+
+  it("fills branches from a legacy branch an older CLI creates or sets", async () => {
+    await w.one("alice", item("I1", { extra: { branch: " feat/old " } }));
+    const extra = async () => (await w.d.query("select extra, versions from items where uid = 'I1'"))[0];
+    expect((await extra()).extra.branches).toEqual(["feat/old"]);
+    await w.one("alice", set("item", "I1", "I1", { "extra.branches": ["feat/a", "feat/b"] }, (await extra()).versions));
+    await w.one("alice", set("item", "I1", "I1", { "extra.branch": "feat/z" }, (await extra()).versions));
+    expect((await extra()).extra).toMatchObject({ branch: "feat/z", branches: ["feat/z"] });
+    await w.one("alice", set("item", "I1", "I1", { "extra.branch": "feat/q", "extra.branches": ["feat/r"] }, (await extra()).versions));
+    expect((await extra()).extra.branches).toEqual(["feat/r"]);
   });
 
   it("stores a non-database error as a rejection", async () => {

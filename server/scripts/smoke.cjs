@@ -1,8 +1,8 @@
 // UI smoke run against a seeded server:
 //   TOKENS=<file with {"pat","dev","qa"} tokens> BASE_URL=http://<host>:<port> SHOTS=<dir> node scripts/smoke.cjs
 // Seed with `TODO_PGLITE=<dir> npm run seed:demo`, then start the server on the
-// same dir. Point BASE_URL at a real hostname rather than localhost: browsers
-// treat localhost as secure, which hides cookie problems on plain-http hosts.
+// same dir, with the plugin env the README names. Point BASE_URL at a real hostname rather than localhost:
+// browsers treat localhost as secure, which hides cookie problems on plain-http hosts.
 const { chromium } = require("playwright");
 const fs = require("fs");
 const os = require("os");
@@ -458,11 +458,11 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.getByText("Created by the API").waitFor({ timeout: 10000 });
   });
 
-  await step("settings: linked from the nav; an unlinked project says so", async () => {
+  await step("settings: linked from the nav; shows the Jira triggers", async () => {
     await page.goto(base + "/p/web");
     await page.locator("nav").getByRole("link", { name: "Settings" }).click();
     await page.waitForURL(/\/p\/web\/settings$/);
-    await page.getByText("This project isn't linked to Jira.").waitFor({ timeout: 5000 });
+    await page.locator(".settings-head", { hasText: "Linked issues" }).waitFor({ timeout: 5000 });
   });
 
   await step("a question takes a follow-up reply in its thread", async () => {
@@ -506,6 +506,169 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.goto(base + "/p/web/settings");
     await page.click(".template-ref > summary");
     await page.locator(".template-ref dt", { hasText: "{{item.repo_name}}" }).waitFor();
+  });
+
+  const card = (plugin) => page.locator(`.plugin-card[data-plugin="${plugin}"]`);
+  const inst = (id) => card("notes-link").locator(`.instance-card[data-instance="${id}"]`);
+  const setting = (id, key) => inst(id).locator(`.setting[data-setting="${key}"]`);
+  const savePlugin = async (plugin) => {
+    await card(plugin).locator("button:has-text('save instances')").click();
+    await card(plugin).locator("fieldset.plugin-edit:not([disabled]) .save-row .hint", { hasText: "Saved." }).waitFor();
+  };
+
+  await step("plugins: a settings tab with the repo allowlist", async () => {
+    await login("pat", "/p/web/settings");
+    await page.locator(".settings-tabs").getByRole("link", { name: "Plugins" }).click();
+    await page.waitForURL(/\/p\/web\/settings\/plugins$/);
+    await page.locator(".repo-row[data-repo='acme/web'] .tag", { hasText: "listed" }).waitFor();
+    await page.fill("input[aria-label='add a repo']", "acme/api");
+    await page.click("button:has-text('add repo')");
+    const added = page.locator(".repo-row[data-repo='acme/api']");
+    await added.waitFor();
+    await added.hover();
+    await added.locator("button[aria-label='remove acme/api']").click();
+    await added.waitFor({ state: "detached" });
+  });
+
+  await step("plugins: each plugin with its triggers, shipped ones marked, connections and where each instance runs", async () => {
+    await card("pr-link").locator(".tag", { hasText: "shipped" }).waitFor();
+    await card("notes-link").locator(".plugin-head", { hasText: "on manual" }).waitFor();
+    await page.locator(".conn-row[data-connection=hooks]", { hasText: "no credential on this server" }).waitFor();
+    await inst("go").locator(".runs-where", { hasText: "Runs on the server." }).waitFor();
+    await card("ping").locator(".runs-where", { hasText: "Runs in a developer's CLI: `hooks` not authorized here" }).waitFor();
+    const note = await setting("go", "jira").locator(".hint").textContent();
+    if (!note.includes("list_statuses")) throw new Error("no options_from note: " + note);
+    if (await setting("go", "jira").locator("select").count()) throw new Error("an options_from choice rendered as a select");
+  });
+
+  await step("plugins: every setting type saves, and triggers, button and plugin-wide settings with it", async () => {
+    await setting("go", "title").locator("input").fill("Smoke notes");
+    await setting("go", "body").locator("textarea").fill("line one\nline two");
+    await setting("go", "model").locator("select").selectOption("sonnet");
+    await setting("go", "jira").locator("input").fill("In Review");
+    await setting("go", "loud").locator("input[type=checkbox]").check();
+    await setting("go", "retries").locator("input").fill("3");
+    await setting("go", "tags").locator("textarea").fill("a\nb");
+    await setting("go", "token").locator("input[type=password]").fill("s3cret");
+    await card("notes-link").locator(".plugin-shared .setting[data-setting=never] textarea").fill("Done");
+    await inst("go").locator("input[aria-label=\"go uses the plugin's triggers\"]").uncheck();
+    await inst("go").locator(".triggers button.add").click();
+    await inst("go").locator(".triggers .rule-row[data-trigger=status] select[aria-label='to status']").selectOption("review");
+    await inst("go").locator("input[aria-label='button label']").fill("Link smoke notes");
+    await page.screenshot({ path: out + "/plugins-settings.png", fullPage: true });
+    await savePlugin("notes-link");
+    await setting("go", "token").locator(".tag", { hasText: "set" }).waitFor();
+    const values = {
+      title: await setting("go", "title").locator("input").inputValue(),
+      body: await setting("go", "body").locator("textarea").inputValue(),
+      model: await setting("go", "model").locator("select").inputValue(),
+      jira: await setting("go", "jira").locator("input").inputValue(),
+      loud: await setting("go", "loud").locator("input").isChecked(),
+      retries: await setting("go", "retries").locator("input").inputValue(),
+      tags: await setting("go", "tags").locator("textarea").inputValue(),
+      token: await setting("go", "token").locator("input[type=password]").inputValue(),
+      never: await card("notes-link").locator(".plugin-shared .setting[data-setting=never] textarea").inputValue(),
+      triggers: await inst("go").locator(".triggers .rule-row").count(),
+      button: await inst("go").locator("input[aria-label='button label']").inputValue(),
+    };
+    const want = { title: "Smoke notes", body: "line one\nline two", model: "sonnet", jira: "In Review", loud: true, retries: "3", tags: "a\nb",
+                   token: "", never: "Done", triggers: 2, button: "Link smoke notes" };
+    if (JSON.stringify(values) !== JSON.stringify(want)) throw new Error("after save: " + JSON.stringify(values));
+    if ((await page.content()).includes("s3cret")) throw new Error("the secret came back to the page");
+  });
+
+  await step("plugins: rest offers the connections an instance may use, says its settings are templates, and why a repo-declared one gets no server connection", async () => {
+    await page.goto(base + "/p/web/settings/plugins");
+    const rest = card("rest");
+    await rest.locator(".plugin-head", { hasText: "via the connection each instance names" }).waitFor();
+    const hook = rest.locator('.instance-card[data-instance="hook"]');
+    await hook.locator(".repo-declared", { hasText: "only the repo's own connections" }).waitFor();
+    const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
+    const declared = await offered(hook);
+    if (JSON.stringify(declared) !== JSON.stringify(["hooks"])) throw new Error("a repo-declared instance offered " + declared.join(", "));
+    const note = await hook.locator(".setting[data-setting=path] .hint").textContent();
+    if (!note.startsWith("A template")) throw new Error("no template hint: " + note);
+    await rest.locator("button.add", { hasText: "instance" }).click();
+    const added = rest.locator(".instance-card").last();
+    const stored = await offered(added);
+    if (!stored.includes("github") || !stored.includes("hooks")) throw new Error("a stored instance offered " + stored.join(", "));
+    if (await added.locator(".repo-declared").count()) throw new Error("a stored instance says it's repo-declared");
+    await page.screenshot({ path: out + "/plugins-rest.png", fullPage: true });
+    await page.reload();
+  });
+
+  await step("plugins: a stored secret is kept when untouched, and cleared on request", async () => {
+    await setting("go", "title").locator("input").fill("Smoke notes 2");
+    await savePlugin("notes-link");
+    await setting("go", "title").locator("input[value='Smoke notes 2']").waitFor();
+    await setting("go", "token").locator(".tag", { hasText: "set" }).waitFor();
+    await setting("go", "token").locator("button[aria-label='clear Token']").click();
+    await setting("go", "token").locator(".tag", { hasText: "cleared on save" }).waitFor();
+    await savePlugin("notes-link");
+    await setting("go", "token").locator("input[placeholder='not set']").waitFor();
+    if (await setting("go", "token").locator(".tag", { hasText: "set" }).count()) throw new Error("the secret is still set");
+  });
+
+  await step("plugins: add, duplicate, reorder and remove instances; a repo file's instance only switches off", async () => {
+    await card("notes-link").locator("button.add:has-text('instance')").click();
+    await inst("instance").waitFor();
+    await inst("go").locator("button[aria-label='duplicate go']").click();
+    await inst("go-copy").waitFor();
+    const order = () => card("notes-link").locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
+    if (JSON.stringify(await order()) !== '["go","go-copy","instance"]') throw new Error("order " + JSON.stringify(await order()));
+    if (await inst("go-copy").locator("button[aria-label='move go-copy up']").isEnabled()) throw new Error("moved above a repo file's instance");
+    await inst("instance").locator("button[aria-label='move instance up']").click();
+    if (JSON.stringify(await order()) !== '["go","instance","go-copy"]') throw new Error("order after move " + JSON.stringify(await order()));
+    await inst("go").locator("button[aria-label='remove go']").click();
+    if (await inst("go").locator("input[aria-label='go on']").isChecked()) throw new Error("removing a repo file's instance didn't switch it off");
+    await inst("go").locator("input[aria-label='go on']").check();
+    await inst("instance").locator("button[aria-label='remove instance']").click();
+    await inst("go-copy").locator("button[aria-label='remove go-copy']").click();
+    await inst("instance").waitFor({ state: "detached" });
+    if (await inst("go-copy").count()) throw new Error("go-copy wasn't removed");
+  });
+
+  await step("plugins: a connection's credential is set and cleared, never shown", async () => {
+    const row = page.locator(".conn-row[data-connection=hooks]");
+    await row.locator("button:has-text('set credential')").click();
+    await row.locator("input[type=password]").fill("hook-secret");
+    await row.locator("button.primary:has-text('save')").click();
+    await row.locator(".grow", { hasText: "credential stored" }).waitFor();
+    if ((await page.content()).includes("hook-secret")) throw new Error("the credential came back to the page");
+    await card("ping").locator(".runs-where", { hasText: "Runs on the server." }).waitFor();
+    await row.locator("button:has-text('clear')").click();
+    await row.locator(".grow", { hasText: "no credential on this server" }).waitFor();
+  });
+
+  await step("item: a plugin's manual button runs it, and what it attached is labelled with the plugin", async () => {
+    await page.goto(item("plugin-playground"));
+    const button = page.locator(".wide-only [data-plugin-button='notes-link/go'] button", { hasText: "Link smoke notes" });
+    await button.click();
+    await page.locator(".toast", { hasText: "Link smoke notes: attached 1 link" }).waitFor({ timeout: 20000 });
+    const link = page.locator(".wide-only .rrow", { hasText: "Smoke notes 2" });
+    await link.waitFor({ timeout: 10000 });
+    const by = await link.locator(".plugin-by").textContent();
+    if (by !== "notes-link · go") throw new Error("label " + by);
+    await page.screenshot({ path: out + "/item-plugins.png", fullPage: true });
+  });
+
+  await step("plugins: the run log lists the run with its item and what it attached", async () => {
+    await page.goto(base + "/p/web/settings/plugins");
+    await card("notes-link").locator(".run-logs > summary").click();
+    const run = card("notes-link").locator(".run-row", { hasText: "plugin-playground" }).first();
+    await run.locator(".tag", { hasText: "ran" }).waitFor();
+    await run.locator("summary").click();
+    await run.locator(".run-detail li", { hasText: "Smoke notes 2" }).waitFor();
+  });
+
+  await step("display: a wall shows plugin labels and no plugin buttons", async () => {
+    const wall = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+    const wp = await wall.newPage();
+    await wp.goto(base + "/display/web/enroll?key=wall-test");
+    await wp.goto(base + "/display/web/i/plugin-playground");
+    await wp.locator(".plugin-by:visible", { hasText: "notes-link · go" }).first().waitFor();
+    if (await wp.locator("[data-plugin-button], .plugins-rail").count()) throw new Error("the wall shows plugin buttons");
+    await wall.close();
   });
 
   await step("the board uses a wide screen", async () => {

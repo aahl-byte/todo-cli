@@ -1,0 +1,22 @@
+track: [staging, main]
+connections:
+  api: {http: {url: "http://fake-api", auth: "header:X-Api-Key"}}
+plugins:
+  ping:
+    connections: [api]
+    on: [push]
+    settings: {tag: {label: Tag, type: text}, other: {label: Other, type: text, optional: true}}
+    steps: [{name: hello, http: {method: GET, path: /hello}}]
+    attach: [{log: "{{settings.tag}} {{settings.other}} from {{hello.from}}"}]
+  quiet:
+    on: [push]
+    settings: {note: {label: Note, type: text, default: "quiet ran on {{event.branch}}"}}
+    attach: [{log: "{{settings.note}}"}]
+  needs-setting:
+    on: [push]
+    settings: {project: {label: Project, type: text}}
+    attach: [{log: never}]
+instances:
+  ping:
+    - {id: one, name: One, settings: {tag: r1, other: keep}}
+    - {id: two, name: Two, settings: {tag: r2}}

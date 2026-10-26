@@ -9,7 +9,6 @@ hand sync too. See docs/plans/2026-10-02-team-store-implementation.md §2.5.
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import hashlib
 import json
@@ -20,7 +19,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import checkout, frontmatter, store, ulid, yamlio
+from . import checkout, docs, frontmatter, gitfacts, identity, store, ulid, yamlio
+from .uids import hash_uid as _hash_uid  # noqa: F401 — the name callers know
 from .remote import Remote, RemoteError, sync_config, sync_dir
 from .util import to_str
 
@@ -181,7 +181,7 @@ def _sum(a: Report | None, b: Report | None) -> Report | None:
     if a is None or b is None:
         return a or b
     return Report(a.pushed + b.pushed, a.rejected + b.rejected, a.pulled + b.pulled,
-                  a.messages + b.messages, b.error or a.error)
+                  a.messages + b.messages, b.error or a.error, a.doc_failures + b.doc_failures)
 
 
 # ── snapshot ──────────────────────────────────────────────────────────────────
@@ -195,10 +195,11 @@ def load_snapshot(root: Path) -> dict:
                 data.setdefault("entities", {})
                 data.setdefault("deferred", [])
                 data.setdefault("stuck", {})
+                data.setdefault("docs", {})
                 return data
         except ValueError:
             pass
-    return {"cursor": 0, "entities": {}, "deferred": [], "stuck": {}}
+    return {"cursor": 0, "entities": {}, "deferred": [], "stuck": {}, "docs": {}}
 
 
 def save_snapshot(root: Path, snap: dict) -> None:
@@ -233,13 +234,6 @@ def _fingerprint(data) -> str:
 
 
 # ── uids ──────────────────────────────────────────────────────────────────────
-def _hash_uid(*parts) -> str:
-    """A deterministic 26-char uid, so two clones of one committed store backfill
-    the same uid for the same entity."""
-    digest = hashlib.sha1("\x1f".join(str(p) for p in parts).encode()).digest()
-    return "Z" + base64.b32encode(digest).decode()[:25]
-
-
 def _plain(value):
     """A JSON-safe copy of a YAML value."""
     return json.loads(json.dumps(value, default=str))
@@ -285,7 +279,7 @@ def _backfill_children(d: Path, uid: str) -> None:
             fixed.append(t)
         store._write_tasks(d, tasks, fixed)
     for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
-        for e in store._read_entries(d / sub):
+        for e in store.read_entries(d / sub):
             if e["meta"].get("uid"):
                 continue
             meta2 = dict(e["meta"])
@@ -453,7 +447,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
                 local.entities[t["uid"]] = {"entity": "task", "item_uid": uid, "data": {
                     "n": t["id"], "title": t["title"], "status": t["status"],
                     "phase": t["phase"], "position": pos}}
-        for e in store._read_entries(d / store.NOTES_DIR):
+        for e in store.read_entries(d / store.NOTES_DIR):
             m = e["meta"]
             if not m.get("uid"):
                 continue
@@ -466,7 +460,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
             local.files[m["uid"]] = e["file"]
             if m.get("via"):
                 local.via[m["uid"]] = m["via"]
-        for e in store._read_entries(d / store.LOG_DIR):
+        for e in store.read_entries(d / store.LOG_DIR):
             if e["meta"].get("uid"):
                 flat = {"n": e["id"], "ts": e["ts"], "text": e["text"]}
                 for k, v in e["meta"].items():
@@ -482,7 +476,7 @@ def _scan_item(local: Local, d: Path, uid: str) -> None:
                     "n": c["id"], "kind": c["kind"], "title": c["title"],
                     "payload": c["payload"], "timing": c["timing"], "status": c["status"],
                     "envs": store.env_text(c["envs"])}}
-        for e in store._read_entries(d / store.HISTORY_DIR):
+        for e in store.read_entries(d / store.HISTORY_DIR):
             if e["meta"].get("uid"):
                 local.files[e["meta"]["uid"]] = e["file"]
             if not e["meta"].get("server"):
@@ -610,21 +604,24 @@ class Report:
     pulled: int = 0
     messages: list = field(default_factory=list)
     error: str | None = None
+    doc_failures: list = field(default_factory=list)    # docs not transferred this round, with why
 
 
 def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: bool = False,
-              sweep: bool = False) -> Report:
-    """One push + pull. The push diffs the items marked changed, or every item
-    when a sweep is asked for or due. Commands may run alongside: each item's
-    files are read and written under that item's lock. A network failure
-    stops the round where it is; nothing local is lost, the diff just runs
-    again."""
+              sweep: bool = False, doc_limit: int | None = None) -> Report:
+    """One push + pull, then the docs. The push diffs the items marked
+    changed, or every item when a sweep is asked for or due. Commands may run
+    alongside: each item's files are read and written under that item's lock.
+    A network failure stops the round where it is; nothing local is lost, the
+    diff just runs again. Docs larger than `doc_limit` wait for a round
+    without one; a doc failure is reported and never stops the round."""
     cfg = sync_config(root) or {}
     project = cfg.get("project")
     report = Report()
     full = sweep or adopt or _sweep_due(root)
     marks = _take_marks(root)
-    if push_only and not full and not marks and not load_outbox(root):
+    if push_only and not full and not marks and not load_outbox(root) \
+            and not (sync_dir(root) / LARGE_DOCS_FILE).exists():
         return report               # nothing to push
     snap = load_snapshot(root)
     full = full or not snap["entities"]
@@ -634,6 +631,7 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
     pushed_status: set = set()
     try:
         ensure_uids(root, project, ids)
+        _git_facts(root, remote, project)       # before the push: the server's guard reads them
         if adopt and not snap["entities"]:
             # First link: the server's state wins over the clone, and every
             # field it replaces is reported.
@@ -652,6 +650,8 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
         for uid in local.busy:
             mark_changed(root, local.item_dirs[uid].name)
         ops = diff(local, snap)
+        from . import plugins
+        plugins.mark_runner_removes(root, ops, set(snap["entities"]), set(local.entities))
         if ops:
             save_snapshot(root, snap)
         _push(root, remote, project, ops, local, snap, report, rejected_fields, pushed_status)
@@ -661,7 +661,9 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             _pull(root, remote, project, snap, report, local, rejected_fields)
         deferred = bool(snap.get("deferred"))
         _retry_deferred(root, snap, local, rejected_fields)
-        if ops or replay or deferred or full:
+        docs_before = _same_meta([snap.get("docs"), snap.get(DOCS_BACKFILLED)])
+        sync_docs(root, remote, project, local, snap, report, doc_limit)
+        if ops or replay or deferred or full or docs_before != _same_meta([snap.get("docs"), snap.get(DOCS_BACKFILLED)]):
             save_snapshot(root, snap)
         try:
             checkout.report(sync_dir(root), remote, project)
@@ -674,6 +676,14 @@ def run_round(root: Path, remote: Remote, *, push_only: bool = False, adopt: boo
             for item_id in marks:
                 mark_changed(root, item_id)
     return report
+
+
+def _git_facts(root: Path, remote: Remote, project: str) -> None:
+    """Recompute git facts for branches that moved, and post what changed."""
+    try:
+        gitfacts.on_round(root, remote, project)
+    except Exception as e:  # noqa: BLE001 — git facts must never break a round
+        print(f"git facts: skipped ({type(e).__name__}: {e})", file=sys.stderr)
 
 
 BATCH_BYTES = 1_000_000          # well under Vercel's 4.5 MB request limit
@@ -921,6 +931,10 @@ def _log_rejection(root, op, x, local, report) -> None:
         at = f' at {x["at"][:16].replace("T", " ")}' if x.get("at") else ""
         text = (f'offline {label}{x["field"]} → {value} not applied; '
                 f'{who} set {x.get("server_value")}{at}')
+    elif x.get("reason") == "waits-on" and x.get("edges"):
+        at = f' (facts from {x["facts_at"][:16].replace("T", " ")})' if x.get("facts_at") else ""
+        text = (f'{label}{x["field"]} → {value} not applied; the server still sees {", ".join(x["edges"])}{at}; '
+                "it's rechecking — retry in a minute, or use --force")
     else:
         text = f'{label}{x["field"]} → {value} not applied ({x.get("reason")})'
     report.messages.append(f"{item_id}: {text}")
@@ -930,7 +944,7 @@ def _log_rejection(root, op, x, local, report) -> None:
 
 # Refusals that will not change on a retry; the entity waits for a local edit.
 FINAL = {"error", "bad-entity", "bad-op", "not-removable", "unknown", "agent-handoff", "request-frozen",
-         "bad-relation", "already-related", "jira-read-only"}
+         "bad-relation", "already-related"}
 
 
 def _sync_log(root: Path, item_id: str, text: str) -> None:
@@ -962,7 +976,7 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
     for sub, entity in ((store.NOTES_DIR, "note"), (store.LOG_DIR, "log")):
         if entity not in entities:
             continue
-        for e in store._read_entries(d / sub):
+        for e in store.read_entries(d / sub):
             if e["meta"].get("uid") and new(e["meta"]["uid"]) != e["meta"]["uid"]:
                 meta = dict(e["meta"], uid=new(e["meta"]["uid"]))
                 yamlio.write_atomic(e["file"], frontmatter.join(meta, e["text"] + "\n"))
@@ -971,6 +985,14 @@ def _rewrite_uids(d: Path, mapping: dict, entities=("task", "note", "log", "chec
         changed = [dict(c, uid=new(c["uid"]) if c.get("uid") else c.get("uid")) for c in checks]
         if changed != checks:
             _write_checks(d, changed)
+
+
+def _plugin_owned(entity: str, data: dict) -> str | None:
+    """The plugin instance that made a note or log entry, from its create op."""
+    if entity not in ("note", "log"):
+        return None
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    return meta.get("plugin") or data.get("meta.plugin")
 
 
 def _whole_op_rejected(root, op, r, local, snap, report) -> None:
@@ -992,6 +1014,15 @@ def _whole_op_rejected(root, op, r, local, snap, report) -> None:
         return
     if reason == "removed" and op["op"] == "remove":
         snap["entities"].pop(uid, None)     # someone else removed it first: same outcome
+        return
+    if reason == "removed" and op["op"] == "create" and _plugin_owned(entity, data):
+        # A plugin entity someone removed stays removed: no new uid, no retry.
+        snap["entities"].pop(uid, None)
+        _delete_local(local, entity, uid, op["item_uid"])
+        from . import plugins
+        plugins.forget(root, op["item_uid"], uid)
+        report.messages.append(f"{item_id}: {what} from plugin {_plugin_owned(entity, data)} not applied; "
+                               f"{r.get('by') or 'someone'} removed it")
         return
     if reason == "removed" and op["op"] == "create" and uid in snap.get("removed", []):
         # This store already saw that uid removed (it pushed or pulled the
@@ -1163,7 +1194,11 @@ def _retry_deferred(root, snap: dict, local: Local, rejected_fields) -> None:
 
 def _apply_change(root, ch, snap, before: Local, now: Local, rejected_fields, adopt, messages=None) -> bool:
     """Write one pulled change locally, holding its item and starting from the
-    item as it is now. False when it can't be written yet."""
+    item as it is now. False when it can't be written yet. A doc change waits
+    in the snapshot for `_pull_docs`, which fetches its bytes."""
+    if ch["entity"] == "doc":
+        snap.setdefault("docs", {})[ch["uid"]] = ch
+        return True
     if ch["item_uid"] in before.busy:
         return False                # its local edits aren't diffed yet; the next round has both
     with _hold(root, ch["item_uid"], wait=False) as free:
@@ -1184,10 +1219,14 @@ def _write_change(root, ch, snap, before: Local, now: Local, rejected_fields, ad
         if entity != "item" and ((item_uid not in now.item_dirs and item_uid in ents)
                                   or item_uid in now.incomplete):
             return False            # its item is unreadable or only partly read: delete once it's fixed
+        owner = _plugin_owned(entity, (now.entities.get(uid) or ents.get(uid) or {}).get("data") or {})
         try:
             _delete_local(now, entity, uid, item_uid)
         except Exception:  # noqa: BLE001 — a malformed child file: delete once it's fixed
             return False
+        if owner and ch.get("by_plugin") is False:
+            from . import plugins
+            plugins.forget(root, item_uid, uid)         # a person removed it: the plugin never makes it again
         ents.pop(uid, None)
         _undefer(snap, uid)
         removed = snap.setdefault("removed", [])
@@ -1393,6 +1432,413 @@ def _delete_local(now: Local, entity, uid, item_uid) -> None:
     now.entities.pop(uid, None)
 
 
+# ── docs ──────────────────────────────────────────────────────────────────────
+# A doc syncs as its own record beside the ops, after the pull: the round
+# first writes the doc changes the feed brought (they wait in the snapshot's
+# `docs` until their bytes are fetched), then uploads each changed doc and
+# records it with `base`, the sha256 the server last confirmed; a base that
+# isn't the server's current sha256 is a conflict. A doc failure is reported
+# and never stops the round.
+NO_DOCS = {404, 405}               # a server or project without docs
+QUICK_DOC_BYTES = 256 * 1024       # the largest doc the round before a command moves
+DOC_WAIT_SECONDS = 24 * 3600      # how long a doc change waits for its item, or for a write that keeps failing
+LARGE_DOCS_FILE = "large-docs"     # present while docs over QUICK_DOC_BYTES wait for a round without a limit
+_clock = time.time
+DOCS_BACKFILLED = "docs_backfilled"
+
+
+class _NoDocs(Exception):
+    """The server has no docs: the round leaves them alone."""
+
+
+class _DocsDown(Exception):
+    """The server or the network failed a doc: no more doc transfers this round."""
+
+
+def doc_notice(report: Report) -> str:
+    return "sync: docs not synced — " + "; ".join(report.doc_failures)
+
+
+def _trouble(e: RemoteError, name: str, report: Report) -> None:
+    """Sort a doc's server error: none, a stop, or a failure of that doc alone."""
+    if e.status in NO_DOCS:
+        raise _NoDocs() from None
+    if e.status is None or e.status >= 500:
+        raise _DocsDown(f"{name} ({e})") from None
+    report.doc_failures.append(f"{name} ({e})")
+
+
+def _from_row(row: dict) -> dict:
+    return {"uid": row["uid"], "sha256": row["sha256"], "size": row["size"], "by": row.get("by"),
+            "via": row.get("via"), "at": row.get("at"), "base": row["sha256"], "plugin": row.get("plugin")}
+
+
+def _queue_doc(snap: dict, item_uid: str, row: dict, keep: bool = False) -> None:
+    waiting = snap.setdefault("docs", {})
+    if keep and row["uid"] in waiting:
+        return
+    waiting[row["uid"]] = {"entity": "doc", "uid": row["uid"], "item_uid": item_uid, "deleted": False, "data": row}
+
+
+def _doc_rows(remote, project, item: str | None = None):
+    after = None
+    while True:
+        page = remote.doc_list(project, item=item, after=after)
+        yield from page.get("docs") or []
+        after = page.get("next")
+        if not after:
+            return
+
+
+def sync_docs(root: Path, remote, project, local: Local, snap: dict, report: Report, limit: int | None) -> None:
+    """The round's doc transfers. Docs over `limit` bytes wait for a round without one."""
+    if limit is None:
+        (sync_dir(root) / LARGE_DOCS_FILE).unlink(missing_ok=True)
+    try:
+        try:
+            if not snap.get(DOCS_BACKFILLED):
+                # Doc changes a CLI passed before it asked for them never come again.
+                for row in _doc_rows(remote, project):
+                    _queue_doc(snap, row["item_uid"], row, keep=True)
+                snap[DOCS_BACKFILLED] = True
+            _rebuild_sidecars(root, remote, project, local, snap, report)
+        except RemoteError as e:
+            _trouble(e, "doc list", report)
+            return
+        _pull_docs(root, remote, project, snap, report, limit)
+        _push_docs(root, remote, project, local, snap, report, limit)
+        _pull_docs(root, remote, project, snap, report, limit)     # what push conflicts queued
+    except _NoDocs:
+        pass
+    except _DocsDown as e:
+        report.doc_failures.append(str(e))
+        if limit is None:
+            _large_waiting(root)
+
+
+def _large_waiting(root: Path) -> None:
+    """Have the next round without a size limit run, even if nothing was marked."""
+    sync_dir(root).mkdir(exist_ok=True)
+    (sync_dir(root) / LARGE_DOCS_FILE).touch()
+
+
+def _doc_items(root: Path, local: Local):
+    """(item uid, dir) for each item with a docs/ directory that no command holds."""
+    for item_uid in list(local.item_dirs):
+        if item_uid in local.busy or item_uid in local.incomplete:
+            continue
+        _follow(root, local, item_uid)
+        d = local.item_dirs.get(item_uid)
+        if d is not None and (d / docs.DOCS_DIR).is_dir():
+            yield item_uid, d
+
+
+def _rebuild_sidecars(root: Path, remote, project, local: Local, snap: dict, report: Report) -> None:
+    """Rebuild the bases of an item whose sidecar couldn't be read, from the
+    server's records: the same hash is unchanged, another hash an edit on top
+    of the server's version, a doc the server doesn't know a new one. A doc
+    the server deleted goes, unless it was edited here since: that edit is
+    kept as its conflict copy."""
+    for item_uid, d in _doc_items(root, local):
+        with _hold(root, item_uid, wait=False) as free:
+            if not free:
+                continue
+            meta = docs.read_meta(d)
+            if not docs.needs_rebuild(d):
+                continue
+            rows = {docs.name_key(r["name"]): r for r in _doc_rows(remote, project, item_uid)} \
+                if item_uid in snap["entities"] else {}
+            deleted = {ch["uid"]: ch.get("last_sha256") for ch in (snap.get("docs") or {}).values()
+                       if ch["item_uid"] == item_uid and (ch.get("deleted") or not ch.get("data"))}
+            for name, path in list(docs.files(d).items()):
+                sha, size = docs.sha256_file(path), path.stat().st_size
+                uid = docs.doc_uid(item_uid, name)
+                if uid in deleted and deleted[uid] != sha:
+                    # Deleted there, edited here: the edit stays, as a doc of its own.
+                    _keep_as_conflict(root, d, item_uid, name, meta, report)
+                    continue
+                e = meta.get(name) if (meta.get(name) or {}).get("sha256") == sha else None
+                e = e or docs.entry(item_uid, name, sha, size, _now())
+                row = rows.get(docs.name_key(name))
+                if row and row["sha256"] == sha:
+                    e = _from_row(row)
+                elif row:
+                    e["base"] = None            # never taken for an edit on theirs: both copies stay
+                elif uid in deleted:
+                    e["base"] = sha             # unchanged since: the server's delete applies
+                else:
+                    e["base"] = None
+                meta[name] = e
+            docs.write_meta(d, meta)
+            docs.rebuilt(d)
+
+
+def _keep_as_conflict(root: Path, d: Path, item_uid: str, name: str, meta: dict, report: Report,
+                      why: str = "changed on the server too") -> str:
+    """Move the local `name` aside as its conflict copy, a new doc of its own."""
+    path = d / docs.DOCS_DIR / name
+    copy = docs.conflict_name(d, name, identity.user())
+    sha, size = docs.sha256_file(path), path.stat().st_size
+    os.rename(path, d / docs.DOCS_DIR / copy)
+    e = meta.pop(name, None) or {}
+    mine = docs.entry(item_uid, copy, sha, size, _now())
+    if e.get("by") and e.get("sha256") == sha:
+        mine.update(by=e["by"], via=e.get("via"), at=e.get("at"))
+    meta[copy] = mine
+    text = f"doc {name} {why}; yours is kept as {copy}"
+    report.messages.append(f"{d.name}: {text}")
+    docs.write_meta(d, meta)
+    _sync_log(root, d.name, text)
+    return copy
+
+
+def _push_docs(root: Path, remote, project, local: Local, snap: dict, report: Report, limit) -> None:
+    """Upload and record every doc whose content isn't what the server last
+    confirmed, and remove the ones deleted here, for items the server has."""
+    for item_uid, d in _doc_items(root, local):
+        if item_uid not in snap["entities"]:
+            continue
+        with _hold(root, item_uid, wait=False) as free:
+            if free and (d / docs.DOCS_DIR).is_dir():
+                _push_item_docs(root, remote, project, d, item_uid, snap, report, limit)
+
+
+def _push_item_docs(root, remote, project, d: Path, item_uid: str, snap: dict, report: Report, limit) -> None:
+    meta = docs.read_meta(d)
+    read = _same_meta(meta)
+    present, odd = docs.scan(d)
+    for name, why in odd.items():
+        report.doc_failures.append(f"{d.name}/{name} skipped: {why}")
+    for name in [n for n in meta if n not in present and meta[n].get("base")]:
+        moved = docs.find(present, name)
+        if moved and moved not in meta:
+            # Renamed here to another spelling of the same doc: the recorded spelling stays.
+            os.rename(present.pop(moved), d / docs.DOCS_DIR / name)
+            present[name] = d / docs.DOCS_DIR / name
+    queue = sorted(set(meta) | set(present))
+    recreated = set()
+    try:
+        while queue:
+            name = queue.pop(0)
+            try:
+                again = _push_doc(root, remote, project, d, item_uid, name, meta, snap, report,
+                                  name in recreated, limit)
+            except RemoteError as e:
+                _trouble(e, name, report)
+                continue
+            except OSError as e:
+                report.doc_failures.append(f"{name} ({e.strerror or e})")
+                continue
+            if again:
+                recreated.add(again)
+                queue.insert(0, again)
+    finally:
+        if _same_meta(meta) != read:
+            docs.write_meta(d, meta)
+
+
+def _same_meta(meta) -> str:
+    return json.dumps(meta, sort_keys=True, default=str)
+
+
+def _push_doc(root, remote, project, d: Path, item_uid: str, name: str, meta: dict, snap: dict,
+              report: Report, recreating: bool, limit):
+    """Sync one doc; returns a name to push next (its conflict copy, or itself
+    once more as a new doc), or None."""
+    if docs.name_error(name):
+        return None
+    path = d / docs.DOCS_DIR / name
+    e = meta.get(name) or {}
+    uid = docs.doc_uid(item_uid, name)
+    if not path.is_file() or path.is_symlink():
+        if e.get("base"):
+            r = remote.doc_remove(project, uid, e["base"])
+            if r.get("status") == "conflict" and r.get("doc"):
+                _queue_doc(snap, item_uid, r["doc"])        # changed there since: theirs comes back
+        meta.pop(name, None)
+        return None
+    sha = docs.sha256_file(path)
+    if sha == e.get("base"):
+        return None
+    size = path.stat().st_size
+    if size > docs.MAX_BYTES:
+        report.doc_failures.append(f"{name} is over {docs.human_size(docs.MAX_BYTES)}")
+        return None
+    if limit is not None and size > limit:
+        _large_waiting(root)
+        return None
+    if e.get("sha256") != sha or not e.get("by"):
+        e = meta[name] = docs.entry(item_uid, name, sha, size, _now(), e.get("base"))
+    e["uid"] = uid
+    data = path.read_bytes()
+    if docs.sha256_bytes(data) != sha:
+        return None                 # still being written; the next round has it
+    try:
+        key = remote.doc_upload(project, item_uid, name, data)
+        record = {"item_uid": item_uid, "name": name, "sha256": sha, "size": size,
+                  "file_key": key, "base": e.get("base"), "via": e.get("via")}
+        if e.get("plugin"):
+            record["plugin"] = e["plugin"]
+        r = remote.doc_record(project, record)
+    except RemoteError as err:
+        if err.status != 409:
+            raise
+        # Another spelling of a doc the item has: this one syncs as its own copy.
+        return _keep_as_conflict(root, d, item_uid, name, meta, report, "is another spelling of a doc already there")
+    row = r.get("doc")
+    if r.get("status") == "applied" and row:
+        meta[name] = _from_row(row)
+        return None
+    if row is None:
+        # Deleted there while edited here: the edit wins, as a new doc.
+        e["base"] = None
+        return None if recreating else name
+    copy = _keep_as_conflict(root, d, item_uid, name, meta, report)
+    _queue_doc(snap, item_uid, row)
+    return copy
+
+
+def _pull_docs(root: Path, remote, project, snap: dict, report: Report, limit) -> None:
+    """Write the doc changes waiting in the snapshot, fetching their bytes. A
+    change that keeps waiting (its item isn't here, or writing it fails) is
+    dropped after DOC_WAIT_SECONDS, and the next round's backfill brings it back."""
+    waiting = snap.get("docs") or {}
+    if not waiting:
+        return
+    now = scan(root, ())
+    for uid, ch in list(waiting.items()):
+        row = None if ch.get("deleted") else ch.get("data")
+        name = (row or {}).get("name") or uid
+        if limit is not None and row and (row.get("size") or 0) > limit:
+            _large_waiting(root)
+            continue
+        try:
+            done = _apply_doc(root, remote, project, now, ch, report)
+        except RemoteError as e:
+            if e.status == 404:
+                done = True         # gone since; its removal is in the feed
+            else:
+                _trouble(e, name, report)
+                done = "failed"
+        except OSError as e:
+            report.doc_failures.append(f"{name} ({e.strerror or e})")
+            done = "failed"
+        if done is True:
+            waiting.pop(uid, None)
+        elif done in ("wait", "failed"):
+            since = ch.setdefault("since", _clock())
+            if _clock() - since > DOC_WAIT_SECONDS:
+                waiting.pop(uid, None)
+                snap.pop(DOCS_BACKFILLED, None)      # the next round lists the docs again, recovering it
+                why = "its item isn't in this store" if done == "wait" else "it couldn't be written here"
+                report.messages.append(f"doc {name} dropped after a day waiting: {why}")
+
+
+def _apply_doc(root: Path, remote, project, now: Local, ch: dict, report: Report, held: bool = False):
+    """True when written (or nothing to do), "wait" while its item isn't
+    here, False to retry next round."""
+    item_uid = ch["item_uid"]
+    row = None if ch.get("deleted") else ch.get("data")
+    if item_uid not in now.item_dirs:
+        return True if row is None else "wait"
+    with contextlib.nullcontext(True) if held else _hold(root, item_uid, wait=False) as free:
+        if not free:
+            return False
+        _follow(root, now, item_uid)
+        d = now.item_dirs[item_uid]
+        meta = docs.read_meta(d)
+        if docs.needs_rebuild(d):
+            return False            # its bases come back first
+        read = _same_meta(meta)
+        try:
+            return _write_doc(root, remote, project, d, item_uid, ch["uid"], row, meta, report)
+        finally:
+            if _same_meta(meta) != read:
+                docs.write_meta(d, meta)
+
+
+def _write_doc(root, remote, project, d: Path, item_uid: str, uid: str, row, meta: dict, report: Report) -> bool:
+    present = docs.files(d)
+    if row is None:
+        name = next((n for n in sorted(set(meta) | set(present)) if docs.doc_uid(item_uid, n) == uid), None)
+        if name is None:
+            return True
+        path = d / docs.DOCS_DIR / name
+        e = meta.get(name) or {}
+        if name in present and docs.sha256_file(path) != e.get("base"):
+            if e:
+                e["base"] = None    # edited here since: kept, and pushed again as new
+            return True
+        if name in present:
+            path.unlink()
+        meta.pop(name, None)
+        return True
+    name = row["name"]
+    bad = docs.name_error(name)
+    if bad:
+        report.doc_failures.append(f"{name} skipped: {bad}")
+        return True
+    here = docs.find(present, name)
+    e = meta.get(docs.find(meta, here or name) or "") or {}
+    local = docs.sha256_file(present[here]) if here else None
+    if row["sha256"] == e.get("base"):
+        if local == row["sha256"] and here == name:
+            meta[name] = _from_row(row)
+        return True                 # what this store last confirmed: any edit or delete here gets pushed
+    if local == row["sha256"]:
+        if here != name:
+            os.rename(present[here], d / docs.DOCS_DIR / name)
+            meta.pop(here, None)
+        meta[name] = _from_row(row)
+        return True
+    if local is not None and local != e.get("base"):
+        _keep_as_conflict(root, d, item_uid, here, meta, report)
+    elif here and here != name:
+        os.unlink(present[here])
+        meta.pop(here, None)
+    data = remote.doc_bytes(project, uid)
+    if docs.sha256_bytes(data) != row["sha256"]:
+        return False                # replaced again since; a later change brings it
+    docs.write_bytes(d, name, data)
+    meta[name] = _from_row(row)
+    return True
+
+
+def fetch_item_docs(root: Path, item_uid: str | None) -> None:
+    """Write one item's waiting doc changes now, whatever their size, for a
+    command about to show its docs. Skipped while a round is running."""
+    from .remote import remote_for
+
+    if not item_uid or offline() or not enabled(root):
+        return
+    snap = load_snapshot(root)
+    if not any(ch["item_uid"] == item_uid for ch in (snap.get("docs") or {}).values()):
+        return
+    rem = remote_for(root, timeout=30)
+    if rem is None:
+        return
+    with _lock_file(root, ROUND_LOCK_FILE) as runner:
+        if fcntl is not None:
+            try:
+                fcntl.flock(runner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+        snap = load_snapshot(root)
+        project = (sync_config(root) or {}).get("project")
+        report, now = Report(), scan(root, ())
+        for uid, ch in [(u, c) for u, c in snap["docs"].items() if c["item_uid"] == item_uid]:
+            row = None if ch.get("deleted") else ch.get("data")
+            try:
+                done = _apply_doc(root, rem, project, now, ch, report, held=True)
+            except (RemoteError, OSError) as e:
+                report.doc_failures.append(f"{(row or {}).get('name') or uid} ({e})")
+                continue
+            if done is True:
+                snap["docs"].pop(uid, None)
+        save_snapshot(root, snap)
+    _print_report(report)
+
+
 # ── CLI glue ──────────────────────────────────────────────────────────────────
 def offline() -> bool:
     return os.environ.get("TODO_OFFLINE", "").strip() not in ("", "0")
@@ -1409,7 +1855,8 @@ def quiet_round(root: Path, *, push_only: bool = False) -> Report | None:
     if remote is None:
         return None
     try:
-        report = run_round(root, remote, push_only=push_only)
+        # Before a command, only small docs move, so the command isn't kept waiting.
+        report = run_round(root, remote, push_only=push_only, doc_limit=None if push_only else QUICK_DOC_BYTES)
     except Exception as e:  # noqa: BLE001 — a sync bug must not block the command
         print(f"sync: error, changes stay local ({type(e).__name__}: {e})", file=sys.stderr)
         return None
@@ -1421,6 +1868,8 @@ def _print_report(report: Report) -> None:
     dim = sys.stderr.isatty()
     for m in report.messages:
         print(f"sync: {m}", file=sys.stderr)
+    if report.doc_failures:
+        print(doc_notice(report), file=sys.stderr)
     if report.error:
         if " 401 " in report.error:
             msg = f"sync: not logged in — run `todo login <url> <token>` ({report.error})"

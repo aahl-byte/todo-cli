@@ -1,8 +1,10 @@
 // Read models for the dashboard pages. Every entity carries its `versions`
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
-import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus } from "./model";
+import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches } from "./model";
+import { listDocs } from "./docs";
 import { matchEntries, matches, type Entry } from "./filters";
+import type { GitFacts } from "./gitfacts";
 import type { PrStatus } from "./github";
 
 export interface Project {
@@ -51,6 +53,8 @@ export interface Card extends Row {
   last_to: string | null;
   request_meta: { version: number; triaged: boolean } | null;
   extra: Record<string, any> | null;
+  /** Ids of the items whose unlanded work this one waits on, from its git facts (a stored value, so checked before use). */
+  waits_on: unknown;
   /** For the viewer passed to cards(): open questions they asked themself, which wait on someone else. */
   my_open_questions?: number;
   /** For the viewer: answers to their questions that arrived since they last opened the item, and comments they
@@ -86,7 +90,7 @@ export async function cards(d: Db, key: string, where = "", params: unknown[] = 
   const rows = await d.query(
     `select i.*,
        coalesce((select jsonb_agg(jsonb_build_object('key', l.jira_key, 'status', l.jira_status) order by l.linked_at, l.jira_key)
-                   from jira_links l where l.item_uid = i.uid and l.project = i.project), '[]'::jsonb) as jira,
+                   from jira_links l where l.item_uid = i.uid and l.project = i.project and l.source = 'field'), '[]'::jsonb) as jira,
        coalesce((select array_agg(t.status order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_statuses,
        coalesce((select array_agg(coalesce(t.phase, -1) order by t.phase nulls last, t.position, t.n) from tasks t where t.item_uid = i.uid and t.project = i.project), '{}') as task_phases,
        ${viewer ? "" : "(select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,"}
@@ -96,7 +100,8 @@ export async function cards(d: Db, key: string, where = "", params: unknown[] = 
        (select jsonb_build_object('version', coalesce((n.meta->>'version')::int, 1), 'triaged', coalesce((n.meta->>'triaged')::boolean, false))
           from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'ticket-request'
           order by coalesce((n.meta->>'version')::int, 1) desc, n.n desc limit 1) as request_meta,
-       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to${viewer}
+       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to,
+       (select g.data->'waits_on' from git_facts g where g.project = i.project and g.item_uid = i.uid) as waits_on${viewer}
      from items i
      where i.project = $1 ${where}
      order by i.created, i.id`, [key, ...params, ...(me ? [me] : [])]);
@@ -111,14 +116,14 @@ export interface BoardFilters {
   type?: string;
   app?: string;
   parked?: boolean;
-  /** Text in the title, id, branch or a linked Jira key. */
+  /** Text in the title, id, any branch or a linked Jira key. */
   search?: string;
 }
 
 export function searchMatches(c: Card, search: string): boolean {
   const s = search.trim().toLowerCase();
   if (!s) return true;
-  return [c.title, c.id, c.extra?.branch, ...c.jira.map((j) => j.key)]
+  return [c.title, c.id, ...itemBranches(c.extra), ...c.jira.map((j) => j.key)]
     .some((v) => typeof v === "string" && v.toLowerCase().includes(s));
 }
 
@@ -183,12 +188,13 @@ function columns(all: Card[], p: Project, f: BoardFilters, cutoff: number) {
 export async function item(d: Db, key: string, id: string) {
   const [it] = await cards(d, key, "and i.id = $2", [id]);
   if (!it) return null;
-  const [tasks, notes, logs, checks, history] = await Promise.all([
+  const [tasks, notes, logs, checks, history, docs] = await Promise.all([
     d.query("select * from tasks where project = $2 and item_uid = $1 order by phase nulls last, position, n", [it.uid, key]),
     d.query("select * from notes where project = $2 and item_uid = $1 order by n", [it.uid, key]),
     d.query("select * from logs where project = $2 and item_uid = $1 order by n", [it.uid, key]),
     d.query("select * from checks where project = $2 and item_uid = $1 order by timing = 'post-deploy', n", [it.uid, key]),
     d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [it.uid, key]),
+    listDocs(d, key, it.uid),
   ]);
   const by = (k: string) => notes.filter((n) => n.kind === k);
   const lastBlock = [...history].reverse().find((h) => h.to_status === "blocked");
@@ -204,10 +210,13 @@ export async function item(d: Db, key: string, id: string) {
     comments: notes.filter((n) => (n.kind === "comment" && !n.meta?.thread) || n.kind === "qa-rejection"),
     notes: by("context"),
     links: by("link"),
+    /** The plugin instance behind each dependency note a plugin wrote, for its edge in the git facts. */
+    pluginEdges: Object.fromEntries(by("dependency").filter((n) => n.meta?.plugin).map((n) => [n.uid, String(n.meta.plugin)])) as Record<string, string>,
     logs,
     tasks,
     checks,
     history,
+    docs,
     bounces: bounceCount(history),
     related: await related(d, key, it.uid),
     files: it.jira.length ? await d.query(
@@ -259,7 +268,7 @@ export async function choices(d: Db, key: string) {
 }
 
 /** The page adds live PR statuses, keyed by link uid. */
-export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus> };
+export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts; pluginNotices?: string[] };
 
 const versionOf = (n: Row) => Number(n.meta?.version ?? 1);
 

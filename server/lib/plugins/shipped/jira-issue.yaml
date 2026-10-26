@@ -1,0 +1,7 @@
+# Mirrors each Jira issue the item links: its status beside its key, its
+# comments as comments by their Jira authors, its images as docs, and, once granted post-request,
+# a newly linked issue's summary and description in the item's request.
+connections: [jira]
+every: 5m
+capabilities: [post-request]
+code: jira-issue.js

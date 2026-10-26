@@ -1,0 +1,27 @@
+# Moves each Jira issue the item links to the instance's status, as a Jira
+# trigger did: one instance per todo move, the first that fires wins.
+connections: [jira]
+per: jira
+exclusive: true
+gave_up: "Jira transition for {{issue}} gave up after {{attempts}} attempts: {{error}}"
+when: "!contains(settings.never, settings.to)"
+settings:
+  to:    {label: Jira status, type: text}
+  never: {label: Never move to, type: list, scope: plugin}
+steps:
+  - name: found
+    http: {method: GET, path: "/rest/api/3/issue/{{issue}}", query: {fields: status}}
+  - name: current
+    value: "found.fields.status.name"
+  - name: listed
+    when: "current != settings.to"
+    http: {method: GET, path: "/rest/api/3/issue/{{issue}}/transitions"}
+  - name: transition
+    value: "(listed.transitions[?to.name == {{settings.to}}] | [0]) || (listed.transitions[?name == {{settings.to}}] | [0])"
+  - name: shown
+    value: "current || '?'"
+  # As the Jira bridge did, a missing transition fails the run, which runs again until it gives up.
+  - when: "listed && !transition"
+    fail: "no transition from {{shown}} to {{settings.to}}"
+  - when: transition
+    http: {method: POST, path: "/rest/api/3/issue/{{issue}}/transitions", body: {transition: {id: "{{transition.id}}"}}}

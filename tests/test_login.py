@@ -129,3 +129,37 @@ def test_gate_401_is_not_blamed_on_the_token(stub, tmp_path):
     assert out.returncode == 1
     assert "gate" in out.stderr and "isn't open" in out.stderr
     assert "wrong" not in out.stderr
+
+
+def saved_token(tmp_path):
+    import yaml
+
+    return yaml.safe_load((tmp_path / ".todo" / "config.yaml").read_text())["tokens"]
+
+
+def test_login_again_keeps_a_saved_token_that_still_works(stub, tmp_path):
+    url = stub()
+    assert login(tmp_path, url, TOKEN).returncode == 0
+    out = login(tmp_path, url)
+    assert out.returncode == 0, out.stderr
+    assert "Already logged in" in out.stdout and "as alice" in out.stdout
+    assert "/login/device" not in out.stdout
+    assert saved_token(tmp_path)[url] == TOKEN
+
+
+def test_login_replaces_a_saved_token_that_no_longer_works(stub, tmp_path):
+    url = stub()
+    (tmp_path / ".todo").mkdir()
+    (tmp_path / ".todo" / "config.yaml").write_text(f"tokens:\n  {url}: revoked\n")
+    out = login(tmp_path, url)
+    assert out.returncode == 0, out.stderr
+    assert "/login/device" in out.stdout
+    assert saved_token(tmp_path)[url] == TOKEN
+
+
+def test_new_flag_signs_in_again_despite_a_working_token(stub, tmp_path):
+    url = stub()
+    assert login(tmp_path, url, TOKEN).returncode == 0
+    out = login(tmp_path, url, "--new")
+    assert out.returncode == 0, out.stderr
+    assert "/login/device" in out.stdout

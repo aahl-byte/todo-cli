@@ -9,7 +9,8 @@ export type ChecksState = "pass" | "fail" | "pending";
 export interface PrStatus { state: PrState; checks: ChecksState | null; unresolved: number | null }
 export interface PrRef { owner: string; repo: string; number: number }
 
-const API = "https://api.github.com";
+/** GitHub's REST base; GITHUB_API_URL points it elsewhere, such as GitHub Enterprise. */
+export const githubApi = () => (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/+$/, "");
 const TIMEOUT_MS = 5_000;
 const FRESH_MS = 2 * 60_000;
 const FAILED_MS = 30_000;
@@ -46,7 +47,7 @@ function headers(token: string | undefined): Record<string, string> {
 }
 
 async function get(path: string, fetchImpl: Fetch): Promise<any> {
-  const res = await fetchImpl(API + path, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(process.env.GITHUB_TOKEN) });
+  const res = await fetchImpl(githubApi() + path, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(process.env.GITHUB_TOKEN) });
   if (!res.ok) throw new Error(`GitHub GET ${path}: ${res.status}`);
   return res.json();
 }
@@ -59,7 +60,7 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
 async function unresolvedThreads({ owner, repo, number }: PrRef, fetchImpl: Fetch): Promise<number | null> {
   const token = process.env.GITHUB_TOKEN;
   if (!token) return null;
-  const res = await fetchImpl(`${API}/graphql`, {
+  const res = await fetchImpl(`${githubApi()}/graphql`, {
     method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(token),
     body: JSON.stringify({ query: THREADS_QUERY, variables: { owner, repo, number } }),
   });

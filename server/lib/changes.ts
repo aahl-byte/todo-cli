@@ -8,15 +8,23 @@ export interface Change {
   item_uid: string;
   deleted: boolean;
   data: Row | null;
+  /** For a deleted doc: its last content's sha256. */
+  last_sha256?: string;
+  /** For a deleted note: a plugin run removed it, rather than a person. */
+  by_plugin?: boolean;
 }
+
+const TABLES: Record<string, string> = { ...TABLE, doc: "docs" };
 
 /** Changes after `since`, each carrying its entity's current row. A uid that
  * changed more than once in the page appears once, at its first position, so
- * an item always precedes the children created after it. */
-export async function changesSince(db: Db, project: string, since: number, limit = 500):
+ * an item always precedes the children created after it. Doc changes come
+ * only to a client that asks for them with `docs`. */
+export async function changesSince(db: Db, project: string, since: number, limit = 500, docs = false):
     Promise<{ changes: Change[]; cursor: number; more: boolean }> {
   const rows = await db.query(
-    "select seq, entity, uid, item_uid, deleted from changes where project = $1 and seq > $2 order by seq limit $3",
+    `select seq, entity, uid, item_uid, deleted from changes where project = $1 and seq > $2 ${docs ? "" : "and entity <> 'doc'"}
+      order by seq limit $3`,
     [project, since, limit]);
   const latest = new Map<string, Row>();
   for (const r of rows) {
@@ -25,12 +33,21 @@ export async function changesSince(db: Db, project: string, since: number, limit
   }
   const changes: Change[] = [];
   for (const r of latest.values()) {
-    const table = TABLE[r.entity as keyof typeof TABLE];
+    const table = TABLES[r.entity];
     const [data] = await db.query(`select * from ${table} where uid = $1 and project = $2`, [r.uid, project]);
-    changes.push({
+    const change: Change = {
       seq: Number(r.seq), entity: r.entity, uid: r.uid, item_uid: r.item_uid,
       deleted: !data, data: data ? clean(data) : null,
-    });
+    };
+    if (!data && r.entity === "doc") {
+      const [tomb] = await db.query("select sha256 from doc_tombstones where project = $1 and uid = $2", [project, r.uid]);
+      if (tomb) change.last_sha256 = tomb.sha256;
+    }
+    if (!data && r.entity === "note") {
+      const [tomb] = await db.query("select by_plugin from tombstones where project = $1 and uid = $2", [project, r.uid]);
+      change.by_plugin = !!tomb?.by_plugin;
+    }
+    changes.push(change);
   }
   return {
     changes,

@@ -1,0 +1,9 @@
+about: the plugin's when skips every issue when the target status is on the never list
+plugin: jira-transition
+instance: {id: done, name: Done, settings: {to: Done, never: [Done]}}
+event: {type: status, from: review, to: done}
+connections:
+  jira: {kind: mcp}
+tools:
+  jira: []
+expect: {attached: [], wouldSend: [], log: [], skipped: "jira-transition: when is false: !contains(settings.never, settings.to)"}
