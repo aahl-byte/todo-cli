@@ -3,7 +3,9 @@
 // (GITHUB_TOKEN) and stores them per item in git_facts, keeping the conflicts
 // a CLI reports, since those need a checkout. Facts are never set by hand.
 // Each branch's unlanded commits come from one compare against its effective
-// target; pairs are related by intersecting those sets in memory. A failure
+// target, less the commits of the long-lived branches (the default and tracked
+// ones) that target lacks, listed once per target; pairs are related by
+// intersecting those sets in memory. A failure
 // never reads as "no edge": the stored facts stay, marked unknown.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
 import { parse } from "yaml";
@@ -190,6 +192,13 @@ class GitHubRepo {
         shas.push(...(c.commits ?? []).map((x: any) => String(x.sha).slice(0, SHA_KEY)));
         if (shas.length >= total || !(c.commits ?? []).length) return { shas: shas.reverse(), files: [...new Set(files)].sort() };
       }
+    });
+  }
+  /** The files head changes since its merge base with tip; null for an unknown commit. */
+  changed(tip: string, head: string): Promise<string[] | null> {
+    return cached(`files:${this.key}:${tip}:${head}`, async () => {
+      const c = await orNull(get(`${this.base}/compare/${tip}...${head}?per_page=1`, this.f));
+      return c ? [...new Set<string>((c.files ?? []).map((x: any) => String(x.filename)))].sort() : null;
     });
   }
   /** Whether `sha` is an ancestor of `tip`; null for a commit GitHub doesn't know. */
@@ -399,17 +408,36 @@ async function chainEdges(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, u
   return chained;
 }
 
+/** Per long-lived branch on the remote other than `target`, its commits not in `target`, which a branch can carry without
+ * depending on anyone; null when one can't be listed. */
+async function drift(c: Ctx, target: string): Promise<Map<string, Set<string>> | null> {
+  const out = new Map<string, Set<string>>();
+  for (const name of [...c.fixed].sort()) {
+    if (name === target || !c.tips[name]) continue;
+    const got = c.tips[name] === c.tips[target] ? { shas: [] } : await c.gh.unlanded(c.tips[target], c.tips[name]);
+    if (!got) return null;
+    out.set(name, new Set(got.shas));
+  }
+  return out;
+}
+
+/** The files a branch changes against T(B), and the long-lived branches whose commits T(B) lacks it carries. */
+interface Changed { files: string[]; carries: string[] }
+
 async function relations(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, stored: Map<string, GitFacts>, others: Map<string, ItemRow>) {
   const byUid = new Map(items.map((it) => [it.uid, it]));
-  const u = new Map<Key, string[]>(), files = new Map<Key, string[]>(), branch = new Map<Key, BranchFact>();
+  const u = new Map<Key, string[]>(), files = new Map<Key, Changed>(), branch = new Map<Key, BranchFact>();
   for (const it of items) {
     for (const b of facts.get(it.uid)!.branches) {
       branch.set(keyOf(it.uid, b.name), b);
       if (c.fixed.has(b.name) || b.unknown || !b.head || b.merged_gone) continue;
       const got = await c.gh.unlanded(c.tips[b.target!], b.head);
       if (!got) { b.unknown = `couldn't list its commits not in ${b.target} (or more than ${UNLANDED_CAP})`; continue; }
-      u.set(keyOf(it.uid, b.name), got.shas);
-      files.set(keyOf(it.uid, b.name), got.files);
+      const landed = await drift(c, b.target!);
+      if (!landed) { b.unknown = `couldn't list the long-lived branches' commits not in ${b.target} (or more than ${UNLANDED_CAP})`; continue; }
+      const carries = [...landed].filter(([, shas]) => got.shas.some((s) => shas.has(s))).map(([name]) => name);
+      u.set(keyOf(it.uid, b.name), got.shas.filter((s) => ![...landed.values()].some((shas) => shas.has(s))));
+      files.set(keyOf(it.uid, b.name), { files: got.files, carries });
     }
   }
   const chained = await chainEdges(c, items, facts, u, others, stored);
@@ -570,8 +598,20 @@ async function prEdge(url: string, into: string | null, f: Fetch): Promise<Parti
   return { state: c.status === "ahead" || c.status === "identical" ? "landed" : "waiting", pr };
 }
 
+/** Files B changes against T(B); when it carries commits of a long-lived branch that T(B) lacks, only those it also changes
+ * against that branch. */
+async function changedFiles(c: Ctx, b: BranchFact, got: Changed): Promise<string[]> {
+  let out = got.files;
+  for (const name of got.carries) {
+    const also = await c.gh.changed(c.tips[name], b.head!);
+    if (!also) return [];
+    out = out.filter((f) => also.includes(f));
+  }
+  return out;
+}
+
 /** Files both of two live, unrelated branches change: the overlap hint. */
-function overlaps(items: ItemRow[], facts: Map<string, Facts>, files: Map<Key, string[]>): void {
+async function overlaps(c: Ctx, items: ItemRow[], facts: Map<string, Facts>, changed: Map<Key, Changed>): Promise<void> {
   const related = new Set<string>();
   for (const it of items) {
     for (const e of [...facts.get(it.uid)!.needs, ...facts.get(it.uid)!.shares]) {
@@ -579,9 +619,16 @@ function overlaps(items: ItemRow[], facts: Map<string, Facts>, files: Map<Key, s
       if (other) related.add([keyOf(it.uid, e.via ?? ""), keyOf(other.uid, e.branch ?? "")].sort().join("\x1e"));
     }
   }
-  const live = items.filter((it) => it.status !== "cancelled").flatMap((it) => facts.get(it.uid)!.branches
-    .filter((b) => !b.unknown && !b.gone && b.head && b.pr?.state !== "merged" && b.pr?.state !== "closed" && files.get(keyOf(it.uid, b.name))?.length)
-    .map((b) => ({ it, b, files: new Set(files.get(keyOf(it.uid, b.name))) })));
+  const live: { it: ItemRow; b: BranchFact; files: Set<string> }[] = [];
+  for (const it of items) {
+    if (it.status === "cancelled") continue;
+    for (const b of facts.get(it.uid)!.branches) {
+      const got = changed.get(keyOf(it.uid, b.name));
+      if (b.unknown || b.gone || !b.head || b.pr?.state === "merged" || b.pr?.state === "closed" || !got?.files.length) continue;
+      const files = await changedFiles(c, b, got);
+      if (files.length) live.push({ it, b, files: new Set(files) });
+    }
+  }
   for (let i = 0; i < live.length; i++) {
     for (let j = i + 1; j < live.length; j++) {
       const x = live[i], y = live[j];
@@ -613,7 +660,7 @@ async function computeRepo(c: Ctx, items: ItemRow[], all: ItemRow[], stored: Map
       }
     }
   }
-  overlaps(items, facts, files);
+  await overlaps(c, items, facts, files);
   cycles(items, facts);
   for (const fx of facts.values()) fx.waits_on = waitsOn(fx.needs);
   return facts;
@@ -683,9 +730,9 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
     let facts: Map<string, Facts>;
     try {
       const [def, tips] = await Promise.all([gh.defaultBranch(), gh.tips()]);
-      const sig = signature(items, notes, stored, tips, def);
-      if (signatures.get(`${project}\x1f${key}`) === sig) continue;
       const track = tips[def] ? await gh.track(def, tips[def]) : [];
+      const sig = signature(items, notes, stored, tips, def, track);
+      if (signatures.get(`${project}\x1f${key}`) === sig) continue;
       const last = trackedTips.get(`${project}\x1f${key}`);
       const moved = track.filter((t) => tips[t] && (!last || last[t] !== tips[t]));
       const closed = new Map<string, PrFact[]>();
@@ -719,8 +766,8 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
 }
 
 /** What a compute depends on: the tips of the branches that matter, the items' statuses and branches, and their dependency notes. */
-function signature(items: ItemRow[], notes: Row[], stored: Map<string, GitFacts>, tips: Record<string, string>, def: string): string {
-  const names = new Set<string>([def]);
+function signature(items: ItemRow[], notes: Row[], stored: Map<string, GitFacts>, tips: Record<string, string>, def: string, track: string[]): string {
+  const names = new Set<string>([def, ...track]);
   for (const it of items) {
     for (const b of itemBranches(it.extra)) names.add(b);
     for (const n of notes) if (n.item_uid === it.uid && String(n.meta?.needs ?? "").startsWith("branch:")) names.add(String(n.meta.needs).slice(7));

@@ -25,7 +25,7 @@ interface Spec {
   tips: Record<string, string>;
   track?: string;
   prs?: Record<string, Record<string, unknown>[]>;
-  /** `tip...head` → commits oldest first, and the files head changes. */
+  /** `tip...head` → commits oldest first, and the files head changes. Between main's and staging's tips it defaults to none. */
   u?: Record<string, { commits: string[]; files?: string[]; total?: number }>;
   /** `sha...tip` → compare status. */
   anc?: Record<string, string>;
@@ -61,7 +61,8 @@ function fakeGitHub(spec: Spec) {
     if (pulls) return Response.json((spec.prs?.[decodeURIComponent(pulls[1])] ?? []).map((p) => ({ draft: false, html_url: "u", ...p })));
     const cmp = path.match(/\/compare\/(\w+)\.\.\.(\w+)(\?.*)?$/);
     if (cmp && cmp[3]) {
-      const hit = spec.u?.[`${n(cmp[1])}...${n(cmp[2])}`];
+      const longLived = [spec.tips.main, spec.tips.staging];
+      const hit = spec.u?.[`${n(cmp[1])}...${n(cmp[2])}`] ?? (longLived.includes(cmp[1]) && longLived.includes(cmp[2]) ? { commits: [] } : undefined);
       if (!hit) return new Response("", { status: 404 });
       return Response.json({ total_commits: hit.total ?? hit.commits.length, commits: hit.commits.map((s) => ({ sha: s })),
                              files: (hit.files ?? []).map((filename) => ({ filename })) });
@@ -459,6 +460,85 @@ describe("a PR based on a branch nothing tracks", () => {
     expect(b.branches![0].hint).toBeUndefined();
     const [r] = await w.d.query("select versions from items where uid = 'B'");
     expect((await w.one("alice", set("item", "B", "B", { status: "ready-to-deploy" }, { status: r.versions.status }))).rejected![0].reason).toBe("waits-on");
+  });
+});
+
+describe("commits already on a long-lived branch", () => {
+  // A hotfix (H, merged into main as M) staging lacks; feat/a and feat/b were cut from main after it, with PRs based on staging.
+  const [H, F, D] = ["1", "2", "d"].map(sha);
+  const hotfixSpec = (track?: string, extra: Partial<Spec> = {}): Spec => ({
+    tips: { main: M, staging: S, "hotfix/x": H, "feat/a": A, "feat/b": B }, track,
+    prs: { "feat/a": [open(7, A)], "feat/b": [open(8, B)] },
+    u: { ...u(S, M, [H, M], ["hotfix.txt"]), ...u(S, H, [H], ["hotfix.txt"]), ...u(M, H, [], []),
+         ...u(S, A, [H, M, A], ["a.txt", "hotfix.txt"]), ...u(M, A, [A], ["a.txt"]),
+         ...u(S, B, [H, M, B], ["b.txt", "hotfix.txt"]), ...u(M, B, [B], ["b.txt"]) },
+    ...extra,
+  });
+  const rowsOf = async (uid: string) => {
+    const f = await facts(uid);
+    return [...f.needs ?? [], ...f.needed_by ?? [], ...f.shares ?? [], ...f.overlaps ?? []];
+  };
+
+  for (const track of [undefined, TRACK]) {
+    describe(track ? "with track: [staging, main]" : "without a track list", () => {
+      it("never relates or overlaps branches cut from main after the hotfix", async () => {
+        await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+        await computeProject(w.d, "p", fakeGitHub(hotfixSpec(track)).impl);
+        for (const uid of ["A", "B"]) {
+          expect(await rowsOf(uid)).toEqual([]);
+          expect((await facts(uid)).waits_on).toEqual([]);
+          expect((await facts(uid)).branches![0].target).toBe("staging");
+        }
+      });
+
+      it("never makes them need an item on the hotfix branch", async () => {
+        await items(["H", ["hotfix/x"]], ["A", ["feat/a"]]);
+        await computeProject(w.d, "p", fakeGitHub(hotfixSpec(track, { prs: { "hotfix/x": [open(5, H)], "feat/a": [open(7, A)] } })).impl);
+        expect(await rowsOf("H")).toEqual([]);
+        expect(await rowsOf("A")).toEqual([]);
+      });
+
+      it("still finds branches that share a feature commit, counting only that commit", async () => {
+        await items(["C", ["feat/c"]], ["D", ["feat/d"]]);
+        await computeProject(w.d, "p", fakeGitHub(hotfixSpec(track, {
+          tips: { main: M, staging: S, "feat/c": C, "feat/d": D },
+          prs: { "feat/c": [open(9, C)], "feat/d": [open(10, D)] },
+          u: { ...u(S, M, [H, M]), ...u(S, C, [H, M, F, C]), ...u(S, D, [H, M, F, D]) },
+        })).impl);
+        for (const [uid, other] of [["C", "d"], ["D", "c"]]) {
+          const f = await facts(uid);
+          expect(f.needs).toEqual([]);
+          expect(f.shares).toMatchObject([{ id: other, shared: 1, commits: [F.slice(0, 7)] }]);
+        }
+      });
+    });
+  }
+
+  it("drops the shares and edges stored through the hotfix", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    const through = { branch: "feat/b", via: "feat/a", shared: 3, commits: [H, M, A].map((s) => s.slice(0, 7)) };
+    await w.d.query("insert into git_facts (project, item_uid, data, computed_by) values ('p', 'A', $1::jsonb, 'server')",
+      [JSON.stringify({ shares: [{ id: "b", item: "B", ...through, evidence: "x" }],
+                        needs: [{ id: "b", item: "B", ...through, target: "staging", state: "waiting", source: "git", mb: n(H) }] })]);
+    await computeProject(w.d, "p", fakeGitHub(hotfixSpec(TRACK, { anc: { [`${n(H)}...${n(S)}`]: "diverged" } })).impl);
+    expect(await rowsOf("A")).toEqual([]);
+    expect((await facts("A")).waits_on).toEqual([]);
+  });
+
+  it("leaves a branch unknown when main's commits staging lacks can't be listed", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    await computeProject(w.d, "p", fakeGitHub(hotfixSpec(undefined, { u: { ...hotfixSpec().u, [`${n(S)}...${n(M)}`]: { commits: [M], total: 2001 } } })).impl);
+    for (const uid of ["A", "B"]) {
+      expect((await facts(uid)).branches![0].unknown).toContain("long-lived");
+      expect(await rowsOf(uid)).toEqual([]);
+    }
+  });
+
+  it("lists main's commits staging lacks once per compute, however many branches carry them", async () => {
+    await items(["A", ["feat/a"]], ["B", ["feat/b"]]);
+    const gh = fakeGitHub(hotfixSpec(TRACK));
+    await computeProject(w.d, "p", gh.impl);
+    expect(gh.calls.filter((c) => c.startsWith(`/repos/acme/web/compare/${S}...${M}?`))).toHaveLength(1);
   });
 });
 

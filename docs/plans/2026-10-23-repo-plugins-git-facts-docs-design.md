@@ -114,9 +114,15 @@ Each item branch B has a **target**, T(B): where its work is headed.
   edge that blocks.
 - With no PR, the first tracked branch, else the default branch.
 
-B's **unlanded commits** are those in `T(B)..B`. Two branches are related only
-when their unlanded commits overlap, which one `rev-list` per branch finds
-without comparing every pair.
+B's **unlanded commits** are those in B but in neither T(B) nor any
+**long-lived branch**: the default branch and every tracked branch on the
+remote, with or without a `track:` list. A commit already on a long-lived
+branch has landed; a branch that carries it, such as one cut from `main` after
+a hotfix that `staging` lacks, is carrying upstream drift, not another item's
+work. Two branches are related only when their unlanded commits overlap, which
+one `rev-list` per branch finds without comparing every pair, less one listing
+per target and long-lived branch of the commits that branch holds and the
+target lacks.
 
 When they overlap, the direction comes from facts git or GitHub records:
 
@@ -155,6 +161,10 @@ These are hints. They block nothing.
   self-hosted server with one run it; the result syncs like any other fact.
 - **Overlaps with:** both branches change the same files, from the compare
   API's file lists. Any server can compute it.
+
+A branch's files are those it changes against T(B). When it carries commits of
+a long-lived branch that T(B) lacks, only the files it also changes against
+that branch count, so upstream drift never makes an overlap.
 
 The hint names the fix: whichever branch merges second merges the other in.
 

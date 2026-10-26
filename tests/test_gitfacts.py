@@ -1304,6 +1304,89 @@ def test_with_a_track_list_a_pr_based_on_an_untracked_branch_still_blocks(tmp_pa
     assert "which no item tracks" in refused(fx, b, capsys)
 
 
+# ── commits already on a long-lived branch ───────────────────────────────────
+def hotfix_on_main(tmp_path, monkeypatch, track):
+    """A hotfix merged into main only; feat/a and feat/b cut from main after it,
+    each with its own commit and a PR based on staging."""
+    fx = fake_github(Fixture(tmp_path, track=track), monkeypatch)
+    fx.branch("hotfix/x", "main")
+    fix = fx.commit("hotfix/x", "hotfix.txt", "fix\n")
+    merge = fx.merge("hotfix/x", "main")
+    for n, number in (("a", 7), ("b", 8)):
+        fx.branch(f"feat/{n}", "main")
+        fx.commit(f"feat/{n}", f"{n}.txt", f"{n}\n")
+        fx.pr(f"feat/{n}", number)
+    return fx, {fix[:7], merge[:7]}
+
+
+def rows_of(fx, i):
+    f = fx.facts(i)
+    return [r for k in ("needs", "needed_by", "shares", "conflicts", "overlaps") for r in f.get(k) or []]
+
+
+@pytest.mark.parametrize("track", [None, "[staging, main]"])
+def test_a_hotfix_on_main_never_relates_branches_cut_from_main(tmp_path, monkeypatch, track):
+    fx, hotfix = hotfix_on_main(tmp_path, monkeypatch, track)
+    a, b = fx.item("Alpha", ["feat/a"]), fx.item("Beta", ["feat/b"])
+    fx.refresh()
+    for i in (a, b):
+        f = fx.facts(i)
+        assert (f["needs"], f["needed_by"], f["shares"], f["waits_on"]) == ([], [], [], [])
+        assert f["branches"][0]["target"] == "staging"
+
+
+@pytest.mark.parametrize("track", [None, "[staging, main]"])
+def test_a_hotfix_on_main_isnt_an_overlap(tmp_path, monkeypatch, track):
+    fx, hotfix = hotfix_on_main(tmp_path, monkeypatch, track)
+    a, b = fx.item("Alpha", ["feat/a"]), fx.item("Beta", ["feat/b"])
+    fx.refresh()
+    assert rows_of(fx, a) == [] and rows_of(fx, b) == []
+
+
+@pytest.mark.parametrize("track", [None, "[staging, main]"])
+def test_an_item_on_the_hotfix_branch_isnt_needed_by_branches_cut_from_main(tmp_path, monkeypatch, track):
+    fx, hotfix = hotfix_on_main(tmp_path, monkeypatch, track)
+    fx.pr("hotfix/x", 5)
+    h, a = fx.item("Hotfix", ["hotfix/x"]), fx.item("Alpha", ["feat/a"])
+    fx.refresh()
+    assert rows_of(fx, h) == [] and rows_of(fx, a) == []
+
+
+@pytest.mark.parametrize("track", [None, "[staging, main]"])
+def test_branches_sharing_a_feature_commit_still_share_it_but_not_the_hotfix(tmp_path, monkeypatch, track):
+    fx, hotfix = hotfix_on_main(tmp_path, monkeypatch, track)
+    fx.branch("feat/base", "main")
+    common = fx.commit("feat/base", "common.txt", "c\n")
+    for n, number in (("c", 9), ("d", 10)):
+        fx.branch(f"feat/{n}", "feat/base")
+        fx.commit(f"feat/{n}", f"{n}.txt", f"{n}\n")
+        fx.pr(f"feat/{n}", number)
+    c, d = fx.item("Gamma", ["feat/c"]), fx.item("Delta", ["feat/d"])
+    fx.refresh()
+    for i, other in ((c, d), (d, c)):
+        [s] = fx.facts(i)["shares"]
+        assert (s["id"], s["shared"], s["commits"]) == (other, 1, [common[:7]])
+        assert fx.facts(i)["needs"] == []
+        assert not hotfix & {x for r in rows_of(fx, i) for x in r.get("commits") or []}
+
+
+def test_shared_commits_reaching_the_default_branch_clear_the_shares_in_a_round(tmp_path, monkeypatch):
+    fx = fake_github(Fixture(tmp_path, track=None), monkeypatch)
+    fx.branch("feat/base", "main")
+    fx.commit("feat/base", "common.txt", "c\n")
+    for n, number in (("c", 9), ("d", 10)):
+        fx.branch(f"feat/{n}", "feat/base")
+        fx.commit(f"feat/{n}", f"{n}.txt", f"{n}\n")
+        fx.pr(f"feat/{n}", number)
+    c, d = fx.item("Gamma", ["feat/c"]), fx.item("Delta", ["feat/d"])
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    gitfacts.on_round(fx.root)
+    assert shares(fx, c) == [(d, "feat/d")]
+    fx.merge("feat/base", "main")
+    assert set(gitfacts.on_round(fx.root)) == {c, d}
+    assert shares(fx, c) == [] and shares(fx, d) == []
+
+
 # ── todo needs ───────────────────────────────────────────────────────────────
 DB_PR = "https://github.com/acme/db/pull/3"
 
