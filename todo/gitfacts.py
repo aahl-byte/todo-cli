@@ -4,8 +4,10 @@ local checkout (and each branch's PRs on GitHub), live in the item folder as
 `git.yaml`, and are never set by hand. See
 docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
 
-Each branch's unlanded commits U(X) = T(X)..X come from one rev-list; pairs
-are related only by intersecting those sets in memory. A failure never reads
+Each branch's unlanded commits U(X) are those in X but in neither T(X) nor a
+long-lived branch (the default and tracked ones): one rev-list per branch, less
+one per target and long-lived branch. Pairs are related only by intersecting
+those sets in memory. A failure never reads
 as "no edge": the previous state stays, marked unknown, and the next round
 retries.
 """
@@ -196,6 +198,20 @@ class Repo:
             shas = [s[:SHA_KEY] for s in out.split()]
             return None if len(shas) > UNLANDED_CAP else shas
         return self._cached("u", f"{tip}:{head}", run)
+
+    def drift(self, target: str) -> dict | None:
+        """Per long-lived branch on the remote other than `target`, its commits
+        not in `target`, which a branch can carry without depending on anyone;
+        None when one can't be listed."""
+        out = {}
+        for name in sorted(self.fixed - {target}):
+            if name not in self.tips:
+                continue
+            got = [] if self.tips[name] == self.tips[target] else self.unlanded(self.tips[target], self.tips[name])
+            if got is None:
+                return None
+            out[name] = set(got)
+        return out
 
     def changed(self, tip: str, head: str) -> list | None:
         """Files `head` changes since its merge base with `tip`."""
@@ -581,7 +597,8 @@ def _pr_for_head(b: dict):
 
 
 def _unlanded(repo: Repo, items: list, facts: dict) -> dict:
-    """U per branch that can be read; branches that can't get `unknown`."""
+    """U per branch that can be read, less the commits already on a long-lived
+    branch; branches that can't be read get `unknown`."""
     u: dict = {}
     for it in items:
         for b in facts[it["id"]]["branches"]:
@@ -594,7 +611,13 @@ def _unlanded(repo: Repo, items: list, facts: dict) -> dict:
             if got is None:
                 b["unknown"] = f"couldn't list its commits not in {b['target']} (or more than {UNLANDED_CAP})"
                 continue
-            u[(it["id"], b["name"])] = got
+            drift = repo.drift(b["target"])
+            if drift is None:
+                b["unknown"] = (f"couldn't list the long-lived branches' commits not in {b['target']} "
+                                f"(or more than {UNLANDED_CAP})")
+                continue
+            landed = set().union(*drift.values())
+            u[(it["id"], b["name"])] = [s for s in got if s not in landed]
     return u
 
 
@@ -845,6 +868,23 @@ def _pr_edge(repo: Repo, url: str, target: str, meta: dict) -> dict:
     return {"state": "landed" if landed else "waiting", "pr": pr}
 
 
+def _changed(repo: Repo, b: dict) -> set | None:
+    """Files B changes against T(B); when it carries commits of a long-lived
+    branch that T(B) lacks, only those it also changes against that branch."""
+    tip = repo.tips[b["target"]]
+    files = repo.changed(tip, b["head"])
+    if not files:
+        return None
+    files, carried = set(files), set(repo.unlanded(tip, b["head"]) or ())
+    for name, commits in (repo.drift(b["target"]) or {}).items():
+        if commits & carried:
+            also = repo.changed(repo.tips[name], b["head"])
+            if also is None:
+                return None
+            files &= set(also)
+    return files
+
+
 def _hints(repo: Repo, items: list, facts: dict, notice: list) -> None:
     """Conflicts and overlaps between live, unrelated branches of different
     items: files both change, and merge-tree only where they do."""
@@ -857,9 +897,9 @@ def _hints(repo: Repo, items: list, facts: dict, notice: list) -> None:
         for b in facts[it["id"]]["branches"]:
             if "unknown" in b or b.get("gone") or not b.get("head") or (b.get("pr") or {}).get("state") in ("merged", "closed"):
                 continue
-            files = repo.changed(repo.tips[b["target"]], b["head"])
+            files = _changed(repo, b)
             if files:
-                live.append((it, b, set(files)))
+                live.append((it, b, files))
     can_merge_tree = git_version() >= MERGE_TREE_GIT
     if not can_merge_tree and live:
         notice.append("conflicts need git 2.38 or newer; skipped")
@@ -1003,10 +1043,10 @@ def _recorded(root: Path, it: dict) -> list:
     return [b.get("name") for b in load(root, it).get("branches") or [] if isinstance(b, dict)]
 
 
-def _relevant(root: Path, group: list) -> set:
+def _relevant(root: Path, group: list, repo: Repo) -> set:
     """Branches whose move can change a fact: the items' own, their targets and
     PR bases, the default and tracked ones, and those dependency notes name."""
-    names = {"HEAD"}
+    names = {"HEAD", repo.default, *repo.track()}
     for it in group:
         names.update(it["branches"])
         f = load(root, it)
@@ -1084,10 +1124,10 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
         if saved.get("default") not in (None, repo.default):
             moved.add("HEAD")
         done.add(key)
-        if not (force or touched or moved & _relevant(root, group) or saved.get("incomplete")):
+        repo.tips = tips
+        if not (force or touched or moved & _relevant(root, group, repo) or saved.get("incomplete")):
             state[key] = {**saved, "at": time.time(), "tips": tips, "default": repo.default}
             continue
-        repo.tips = tips
         failure = None
         if repo.shallow():
             failure = "this checkout is a shallow clone; git facts need its full history"
