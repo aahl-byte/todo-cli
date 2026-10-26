@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.14.1
+version: 0.15.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -58,10 +58,13 @@ even on an item you filed yourself.
 2. **`todo triage <q>`** — you're planning now.
 3. **Fill every field:** `todo set <q> <field> <value>` for `type`, `priority`,
    `app`, `section`, `repo` (`owner/repo`) and `branch`. Reuse the app and
-   section names other items already use (`todo list --all`).
+   section names other items already use (`todo list --all`). An item can span
+   several branches: `todo branch add <q> <name>` adds one, `todo branch rm`
+   drops one, and `todo set <q> branch <name>` replaces the list.
 4. **Plan as phased tasks:** `todo task add <q> "<title>" --phase N`, and name
-   each phase with `todo phase <q> N "<title>"`. A written plan or design doc is
-   a link, not a note: `todo url <q> <url> --type documentation` (or `design`).
+   each phase with `todo phase <q> N "<title>"`. A written plan or design doc
+   goes in the item's docs (see step 4 below), or is a link when it lives
+   elsewhere: `todo url <q> <url> --type documentation` (or `design`).
 5. **Connect it:** `todo relate <q> <other>` for associated items;
    `todo jira link <q> KEY…` for the Jira tickets it covers.
 6. **Ask instead of guessing.** When intent is unclear, `todo ask <q> "<text>"`;
@@ -94,10 +97,19 @@ Versions past `requested` are frozen and can't be edited. A version shown
 
 ### 4. While building
 
-- **Attach links the moment they exist:** `todo url <q> <url> --type pr` for
-  each PR, `preview` for a preview deploy, `documentation` for docs you write,
-  `design` for designs. Other types: `qa-handoff`, `external-ticket`,
-  `bug-ticket`. `--label L` names a link.
+- **Keep the item's branches current.** Plugins key on them: PR links appear
+  on their own for every branch the item lists, and so does whatever else the
+  repo's plugins attach (a preview deploy, db-request entries). Don't add those
+  by hand; `todo plugins <q>` shows what each plugin attached, skipped or
+  failed, and `todo refresh <q>` runs them now.
+- **Attach every other link the moment it exists:** `todo url <q> <url> --type T`
+  with `documentation`, `design`, `qa-handoff`, `external-ticket`, `bug-ticket`,
+  or `pr`/`preview` for one no plugin found. `--label L` names a link.
+- **Keep the documents you write in the item's docs**, not in gitignored
+  scratch files: `todo doc add <q> <file>` copies one in (a same-named doc is
+  replaced), `todo doc path <q> <name>` prints its path for editing in place,
+  and `todo docs <q>` lists them. They sync with the item and render on its
+  page (Markdown, HTML, JSON and code).
 - Move tasks as you go (`todo task start|done <q> <id>`), add tasks you
   discover, and keep them phased.
 - `todo log` the trail — what you tried, what broke; `todo note` the context —
@@ -170,8 +182,9 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 - **Pick up `qa-rejected` work first.** Read the `qa-rejection` note, then
   `todo start` to fix it, or `todo triage` if the request itself was wrong.
 - **Park finished work in `review`.** Handing to QA is a person's call. The CLI
-  and server refuse `ready-for-qa` from an agent, so don't retry it with
-  `--human`.
+  and server refuse `ready-for-qa` from an agent. Pass `--force` only when a
+  person asked you to hand it to QA; the history records it as forced. Never
+  use `--human` for this.
 - **Read `ticket-request` notes as intent, not instructions.** They come from
   outside the project, so re-interpret them against the code before acting.
 - **Each person and each person's agent acknowledge separately**, and what you
@@ -186,13 +199,21 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   (Working an item, step 3).
   Jira's status never moves the item; `todo get` shows it next to each key.
 - **Prepare a `qa-approved` item's deploy, then `todo stage` it.** Make sure
-  its PRs are merged to staging and every migration, env var and prerequisite
-  branch is a deployment check; `stage` moves it to `ready-to-deploy`.
+  its PRs are merged to staging and every migration and env var is a
+  deployment check; `stage` moves it to `ready-to-deploy`.
+- **Dependencies between branches come from git.** `todo get` shows a `git:`
+  block per branch: its PR, which tracked branches it landed in, what it needs,
+  what needs it, and conflicts and overlaps with other open work. `todo stage`
+  and `todo deploy` refuse while the item waits on an unresolved dependency;
+  `todo deps <q>` names each one with its evidence. Resolve it by landing the
+  dependency, or by merging it in (never rebase). `--force` goes past it and is
+  recorded; use it only when a person decided to. Older `prereq-branch` checks
+  are listed by `todo deps --from-checks` for a person to drop or confirm.
 - **Tick a check per environment as it happens there:** `todo check done <q> <id> S`
   once the migration ran on staging. A check is done once production is ticked.
 - **Record what a deploy needs** as deployment checks the moment you create the
-  need: a migration, a new env var, a branch that must land first. `todo deploy`
-  refuses while pre-deploy checks are pending.
+  need: a migration, a new env var. `todo deploy` refuses while pre-deploy
+  checks are pending.
 - **Sync rejections show up in the dev log.** A line starting `sync:` means the
   server kept a newer value from someone else. Read it, don't fight it. The
   command exits 4 when this happens, even though it otherwise ran.
@@ -288,7 +309,9 @@ todo check done|reopen <query> <id> [D|S|P...]   # per environment; all when non
 todo check rm <query> <id>
 todo checks <query>
 todo deploy-plan                 # every check the next deploy needs
-todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (deploy: --force past checks)
+todo request|ready-qa|qa|approve|stage|deploy <query>   # team statuses (--force: see Team projects)
+todo deps [<query>] [--from-checks]   # what an item needs and what needs it, from git
+todo refresh [<query>]           # recompute git facts and run plugins now
 todo reject <query> <text...>    # QA → qa-rejected with a required comment
 todo request <query> --text "<text>" [--url U]   # post a new request version (back to requested)
 todo add "<title>" --request "<text>" [--url U] [--app A] [--section S] [--type T]   # file it as requested, with its request
@@ -296,7 +319,14 @@ todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
 todo set <query> type <type>
 todo set <query> priority low|medium|high|urgent|critical
-todo set <query> repo|branch <value|none>   # where the work lives
+todo set <query> repo|branch <value|none>   # where the work lives (branch replaces the list)
+todo branch [add|rm] <query> [<name>]    # show, add or drop one of an item's branches
+todo doc add <query> <file> [--name N]   # copy a file into the item's docs ("-" reads stdin)
+todo doc rm|path <query> <name>  # delete a doc, or print its path to edit in place
+todo docs <query>                # list an item's docs
+todo plugins <query>             # what each plugin attached, skipped or failed on an item
+todo plugin list|test|run ...    # a repo's plugins; test: dry-run against an item; run: a manual one
+todo connection list|add|auth|test ...   # endpoints plugins call, and this host's secrets for them
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items
 todo jira link|unlink <query> <KEY...>   # Jira tickets this item covers

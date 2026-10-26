@@ -130,6 +130,32 @@ one. Unmatched Jira users show up as `jira:<Display Name>`.
 The outbox flushes after every request. The cron in `vercel.json` retries
 daily, which Hobby plans allow; on Pro, set it to `*/5 * * * *`.
 
+## Plugins and git facts
+
+Both need `GITHUB_TOKEN` and `TODO_PLUGIN_OWNERS` (see the table above).
+
+- **Hear GitHub:** add a webhook on each repo (or the organization) to
+  `<server>/api/github/webhook`, content type JSON, secret
+  `GITHUB_WEBHOOK_SECRET`, with the `push`, `pull_request` and
+  `deployment_status` events. Repos without one are polled.
+- **Run the tick** every 5 minutes: `/api/plugins/tick` delivers queued runs,
+  polls repos with no recent webhook and runs due `every:` plugins, and
+  `/api/git-facts/tick` recomputes facts. Both take
+  `Authorization: Bearer $CRON_SECRET`. The daily entries in `vercel.json` suit
+  Hobby; on Pro set them to `*/5 * * * *`. Off Vercel, a systemd timer can
+  `curl` both.
+- **Port Actions and Jira triggers** to plugin instances:
+  `npx tsx scripts/plugins-port.ts <project> [--repo owner/name]` prints the
+  instances, the connections and env entries they need, and the `use: shipped`
+  lines each repo's plugins file needs; `--write` stores them. Every ported
+  instance is stored in dry-run, so nothing sends twice while Actions and the
+  Jira bridge still run.
+- **Check parity before the cutover:**
+  `npx tsx scripts/plugins-parity.ts <project> [--since 7d]` replays recent
+  status moves through Actions, the Jira outbox and the ported instances, all
+  in dry-run, and prints every difference. The cutover is turning Actions and
+  Jira triggers off, then clearing each instance's dry-run switch.
+
 ## Local development
 
 ```bash
