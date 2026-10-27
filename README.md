@@ -176,6 +176,8 @@ todo needs rm <query> <id>                # remove a dependency you recorded
 todo refresh [<query>]                    # recompute git facts and run plugins now
 todo plugins <query>                      # what each plugin attached, skipped or failed on an item
 todo plugin list|add|set|rm|test|run ...  # a repo's plugins and their instances
+todo plugin enable|disable <plugin>       # switch a shipped plugin on or off for a repo
+todo plugin deploy-branches [<b>...]      # show or set a repo's deploy branches (--add, --remove, --clear)
 todo connection list|add|auth|test ...    # endpoints plugins call, and this host's secrets
 todo assign <query> [--dev H] [--qa H]    # people fields ("none" clears)
 todo history <query>                      # status transitions
@@ -332,20 +334,21 @@ branches depend on others, and which conflict or overlap. `todo get` shows them
 as a `git:` block, `todo list` flags `waits on <id>`, and `todo deps <q>`
 prints them with their evidence.
 
-- **Landed in:** a repo lists its trackable branches in
-  `.todo-plugins/plugins.yaml` on its default branch, as `track: [staging, main]`.
-  A branch is in one once its PR's merge commit (or its last head, with no PR)
-  is an ancestor of that branch's tip, so the fact survives deleting the
-  branch.
+- **Landed in:** each repo has deploy branches, such as `staging` and `main`,
+  set on the server's Settings → Automation or with
+  `todo plugin deploy-branches staging main`. A branch is in one once its PR's
+  merge commit (or its last head, with no PR) is an ancestor of that branch's
+  tip, so the fact survives deleting the branch.
 - **Depends on:** B depends on A when B carries commits of A that B's target
   doesn't have yet, or when B's PR is based on A's branch. The edge resolves
   once A lands in B's target. Whichever merges second merges the other in.
 - **Target:** B's target is its open PR's base, followed through other items'
   branches to the first branch no open item owns; with no open PR, the first
-  tracked branch, else the default. In a repo with no `track:` list, a PR based
+  deploy branch, else the default. In a repo with no deploy branches, a PR based
   on a branch like `staging` gets a hint that blocks nothing: if `staging` is
-  long-lived, add it under `track:`. Beside a `track:` list, a base nothing
-  tracks blocks until it's tracked, added to an item, or the PR is retargeted.
+  long-lived, make it a deploy branch. Beside deploy branches, a base nothing
+  tracks blocks until it's a deploy branch, added to an item, or the PR is
+  retargeted.
 - **By hand:** `todo needs <q> <ref>` records what git can't see. `ref` is a
   GitHub PR URL (any repo), `branch:<name>`, or another item. A PR lands once
   merged; with `--in staging`, once its merge commit is in staging. It blocks
@@ -363,30 +366,50 @@ A plugin attaches things to items from outside todo: links, dependency edges,
 docs, dev-log lines, comments and request versions. It never changes an
 item's fields or status. The same plugin runs in the CLI and on the server.
 
+What a repo runs is its **plugin config**, which todo keeps: the server on a
+synced store, edited on Settings → Automation; `.TODO/.plugins.yaml` on a
+local-only store. Nothing is read from the repo itself.
+
 - **Shipped plugins:** `pr-link` (on for every repo: each item branch's PR),
   `vercel-preview`, `db-request`, `rest`, `watchtower-session`,
-  `jira-transition` and `jira-issue`. A repo turns one on with
-  `<name>: {use: shipped}` under `plugins:` in its `.todo-plugins/plugins.yaml`.
-- **Repo plugins** live in the same file, as YAML steps or a JavaScript
-  `run()` in a sandbox, and are read from the repo's default branch only.
-  `todo plugin test <name> [--local] <q>` dry-runs one against an item; `--local`
-  reads the working tree.
+  `jira-transition` and `jira-issue`. Switch one on with its switch on
+  Settings → Automation, or `todo plugin enable <name>`.
+- **Custom plugins** are YAML steps, or a JavaScript `run()` in a sandbox,
+  added on Settings → Automation, which checks the YAML as it's typed.
+  `todo plugin test <name> <q> --draft plugin.yaml` dry-runs a draft from a
+  file against an item, with the code file its `code:` names beside it.
 - **Instances:** each configured use of a plugin is an instance, with its own
   triggers (status moves, push, pr, deployment, manual), settings and dry-run
   switch. Edit them under the server's Settings → Automation, or with
   `todo plugin add|set|rm`.
-- **Connections** are the endpoints plugins call. A repo declares its own; the
-  host declares host-wide ones (`todo connection add`, or the server's
-  `TODO_PLUGIN_CONNECTIONS`). Host connections and their secrets go only to a
-  shipped plugin's default instance or to stored instances, never to a repo's
-  own plugin or an instance its plugins file declares.
+- **Connections** are the endpoints plugins call. A repo's config declares its
+  own; the host declares host-wide ones (`todo connection add`, or the server's
+  `TODO_PLUGIN_CONNECTIONS`). Host connections and their secrets go only to
+  shipped plugins. A custom plugin gets the repo's connections, and `github`
+  without the host's token.
   `todo connection auth <name> [--repo owner/name] [--server]` stores a secret.
 - **Where it runs:** each instance runs on one host. The server runs whatever
   it can reach and authorize; the rest run in the CLI of a developer with the
-  repo checked out, after the command prints.
+  repo checked out, after the command prints. A CLI never starts a command a
+  connection from the server's config names.
+
+A local-only store's `.TODO/.plugins.yaml` holds one map per repo, with code
+files under `.TODO/.plugins/<owner>/<name>/`:
+
+```yaml
+acme/web:
+  track: [staging, main]
+  connections:
+    hooks: {http: {url: "https://hooks.example.com", auth: bearer}}
+  plugins:
+    vercel-preview: {use: shipped}
+    notes-link: {on: [manual], attach: [{link: {type: other, url: "https://notes.example/{{item.id}}"}}]}
+  instances:
+    vercel-preview: [{id: web, name: Web, settings: {project: prj_1, team: team_1}}]
+```
 
 Without `node` on PATH the CLI skips plugins with one notice. Design:
-[docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md](docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md).
+[docs/plans/2026-10-27-server-owned-plugins-design.md](docs/plans/2026-10-27-server-owned-plugins-design.md).
 
 ## Syncing with a team server
 
