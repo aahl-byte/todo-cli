@@ -16,7 +16,8 @@ export async function POST(req: Request, ctx: Ctx) {
   return json({ errors, warnings });
 }
 
-/** Add or replace a custom plugin: `{repo, name, manifest, code?, was?}`, `was` the name it's stored under when it's renamed. */
+/** Add or replace a custom plugin: `{repo, name, manifest, code?, was?, base?}`. An edit gives `was`, the name it's stored under,
+ * and `base`, the version it began from; it's refused with a 409 once the plugin has been saved since. */
 export async function PUT(req: Request, ctx: Ctx) {
   const body = await req.clone().json().catch(() => null);
   const a = await projectRepo(req, ctx, body?.repo);

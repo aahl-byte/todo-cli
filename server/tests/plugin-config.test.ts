@@ -11,7 +11,7 @@ import { branchList, checkCustom, composeConfig } from "@/lib/plugins/config";
 import { readConfig } from "@/lib/plugins/host";
 import { migrate } from "@/lib/db";
 import { encryptSecret, secretKey } from "@/lib/plugins/secrets";
-import { loadConfig, PluginConflict, putCustom, repoSecrets, storedInstances } from "@/lib/plugins/store";
+import { loadConfig, PluginConflict, putCustom, putInstances, repoSecrets, storedInstances } from "@/lib/plugins/store";
 import { world, type World } from "./helpers";
 import { params, req } from "./plugin-github";
 
@@ -112,6 +112,16 @@ describe("the config API", () => {
     expect(await (await put({ track: ["no good"] })).json()).toEqual({ error: "not a branch name: no good", errors: ["not a branch name: no good"] });
     expect((await put({ track: [] })).status).toBe(200);
     expect(await deployBranches(w.d, "p", "acme/web")).toEqual([]);
+  });
+
+  it("refuses a deploy-branch change made on a list that has changed since, so a stale page drops no one's branch", async () => {
+    await put({ track: ["staging", "main"] });
+    const stale = await put({ track: ["main", "qa"], base: ["main"] });
+    expect([stale.status, await stale.json()]).toEqual([409,
+      { error: "the deploy branches changed since this page loaded: they're staging, main now; reload and change them again" }]);
+    expect(await deployBranches(w.d, "p", "acme/web")).toEqual(["staging", "main"]);
+    expect((await put({ track: ["staging", "main", "qa"], base: ["staging", "main"] })).status).toBe(200);
+    expect(await deployBranches(w.d, "p", "acme/web")).toEqual(["staging", "main", "qa"]);
   });
 
   it("keeps a project's config apart from another project's for the same repo", async () => {
@@ -222,10 +232,10 @@ describe("the config API", () => {
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "notes", instances: [{ id: "go", name: "Go", button: "Notes" }] }), params("p"));
     expect(await (await custom("PUT", { name: "pr-link", manifest: NOTES })).json())
       .toMatchObject({ errors: ["pr-link is taken: a plugin ships with todo or this repo has one by that name"] });
-    expect(await (await custom("PUT", { name: "notes-link", manifest: NOTES, was: "notes" })).json()).toMatchObject({ ok: true });
+    expect(await (await custom("PUT", { name: "notes-link", manifest: NOTES, was: "notes", base: 1 })).json()).toMatchObject({ ok: true });
     expect((await loadConfig(w.d, "p", "acme/web")).custom.map((c) => c.name)).toEqual(["notes-link"]);
     expect((await listed()).instances).toEqual({ "notes-link": [{ id: "go", name: "Go", button: "Notes", settings: {} }] });
-    const gone = await custom("PUT", { name: "x", manifest: NOTES, was: "gone" });
+    const gone = await custom("PUT", { name: "x", manifest: NOTES, was: "gone", base: 1 });
     expect([gone.status, await gone.json()]).toEqual([409, { error: "gone was removed meanwhile; reload to see the plugins as they are" }]);
     expect((await custom("DELETE", { name: "notes-link" })).status).toBe(200);
     expect(await listed()).toMatchObject({ instances: {}, config: { code: {} } });
@@ -269,11 +279,44 @@ describe("the config API", () => {
       .rejects.toThrow(new PluginConflict("a plugin named bar was saved meanwhile; reload to see it"));
   });
 
+  it("refuses saving a custom plugin someone changed since the page loaded, and asks an edit for the version it began from", async () => {
+    await custom("PUT", { name: "notes", manifest: NOTES });
+    const [first] = (await loadConfig(w.d, "p", "acme/web")).custom;
+    expect(first.version).toBe(1);
+    expect((await custom("PUT", { name: "notes", manifest: NOTES.replace("Notes}", "Notes 2}"), was: "notes", base: 1 })).status).toBe(200);
+    const stale = await custom("PUT", { name: "notes", manifest: NOTES, was: "notes", base: 1 });
+    expect([stale.status, await stale.json()]).toEqual([409, { error: "notes was changed by alice since this page loaded; reload to see it" }]);
+    expect((await custom("PUT", { name: "renamed", manifest: NOTES, was: "notes", base: 1 })).status).toBe(409);
+    expect(await (await custom("PUT", { name: "notes", manifest: NOTES, was: "notes" })).json())
+      .toMatchObject({ error: "give base: the version of notes the edit began from" });
+    expect((await loadConfig(w.d, "p", "acme/web")).custom.map((c) => [c.name, c.version, c.manifest.includes("Notes 2")])).toEqual([["notes", 2, true]]);
+  });
+
+  it("checks a new name against plugins saved since the request began", async () => {
+    const racing = { ...w.d, tx: async <T>(fn: (t: typeof w.d) => Promise<T>) => {
+      await w.d.query("insert into plugin_custom (project, repo, name, manifest, updated_by) values ('p', 'acme/web', 'bar', 'on: [push]', 'bob')");
+      return w.d.tx(fn);
+    } };
+    await expect(putCustom(racing as typeof w.d, "p", "acme/web", { name: "bar", manifest: "on: [manual]\n" }, "alice"))
+      .rejects.toThrow("bar is taken: a plugin ships with todo or this repo has one by that name");
+  });
+
+  it("refuses instances for a custom plugin renamed while they were being saved, stranding none", async () => {
+    await custom("PUT", { name: "foo", manifest: "on: [manual]\n" });
+    const racing = { ...w.d, tx: async <T>(fn: (t: typeof w.d) => Promise<T>) => {
+      await putCustom(w.d, "p", "acme/web", { name: "bar", manifest: "on: [manual]\n", was: "foo", base: 1 }, "bob");
+      return w.d.tx(fn);
+    } };
+    await expect(putInstances(racing as typeof w.d, "p", "acme/web", "foo", [{ id: "a", name: "A" }], "alice"))
+      .rejects.toThrow(new PluginConflict("foo was renamed or removed meanwhile; reload to see the plugins as they are"));
+    expect(await storedInstances(w.d, "p", "acme/web")).toEqual({});
+  });
+
   it("keeps an instance's secret setting readable when its custom plugin is renamed", async () => {
     const manifest = "on: [manual]\nsettings: {token: {label: Token, type: secret}}\nattach: [{log: hi}]\n";
     await custom("PUT", { name: "keyed", manifest });
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "keyed", instances: [{ id: "a", name: "A", settings: { token: "s3cret" } }] }), params("p"));
-    expect(await (await custom("PUT", { name: "renamed", manifest, was: "keyed" })).json()).toMatchObject({ ok: true });
+    expect(await (await custom("PUT", { name: "renamed", manifest, was: "keyed", base: 1 })).json()).toMatchObject({ ok: true });
     expect((await storedInstances(w.d, "p", "acme/web", { secrets: true })).renamed).toEqual([{ id: "a", name: "A", settings: { token: "s3cret" } }]);
   });
 

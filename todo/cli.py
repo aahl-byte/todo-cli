@@ -1711,7 +1711,7 @@ def cmd_plugin_deploy_branches(root: Path, args) -> None:
     if bad:
         die(f"Not a branch name: {', '.join(bad)}", 2)
     stored: list = []
-    _config_change(lambda: stored.extend(plugin_config.set_deploy_branches(root, key, want)))
+    _config_change(lambda: stored.extend(plugin_config.set_deploy_branches(root, key, want, now if editing else None)))
     print(_deploy_line(key, stored))
 
 

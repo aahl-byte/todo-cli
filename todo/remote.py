@@ -198,7 +198,7 @@ class Remote:
         return self.request("PUT", self._plugins_path(project), body)
 
     def put_plugin_config(self, project: str, repo: str, **change) -> dict:
-        """Change the repo's plugin config: `track=[...]`, `enable=name` or `disable=name`."""
+        """Change the repo's plugin config: `track=[...]` (with `base`, the list it was made on), `enable=name` or `disable=name`."""
         return self.request("PUT", self._plugins_path(project, "/config"), {"repo": repo, **change})
 
     def plugin_credential(self, project: str, repo: str, connection: str, secret: str, endpoint: str | None) -> dict:

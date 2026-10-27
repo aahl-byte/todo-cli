@@ -397,11 +397,13 @@ class FakeServer:
                         "config": copy.deepcopy(got.get("config") or {"text": "{}\n", "code": {}}),
                         "track": list(got.get("track") or [])}
 
-            def put_plugin_config(self, project, repo, track=None, enable=None, disable=None):
+            def put_plugin_config(self, project, repo, track=None, enable=None, disable=None, base=None):
                 from todo.remote import RemoteError
                 if server.offline or server.plugins_down:
                     raise RemoteError("fake offline")
                 got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
+                if base is not None and list(got.get("track") or []) != list(base):
+                    raise RemoteError("the deploy branches changed since this page loaded", 409)
                 if track is not None:
                     got["track"] = list(track)
                 shipped = got.setdefault("shipped", [])

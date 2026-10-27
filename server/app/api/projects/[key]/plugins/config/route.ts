@@ -1,7 +1,7 @@
 import { json } from "@/lib/http";
 import { scheduleRecompute } from "@/lib/gitfacts";
 import { projectRepo } from "@/lib/plugins/route-helpers";
-import { loadConfig, PluginInputError, putConnection, putTrack, setShipped } from "@/lib/plugins/store";
+import { loadConfig, PluginConflict, PluginInputError, putConnection, putTrack, setShipped } from "@/lib/plugins/store";
 
 type Ctx = { params: Promise<{ key: string }> };
 
@@ -12,7 +12,8 @@ export async function GET(req: Request, ctx: Ctx) {
   return json(await loadConfig(a.d, a.key, a.repo));
 }
 
-/** Change one repo's plugin config: `{repo, track?, enable?, disable?, connection?: {name, def}}`, def null to drop it. */
+/** Change one repo's plugin config: `{repo, track?, base?, enable?, disable?, connection?: {name, def}}`, def null to drop it;
+ * `base` is the deploy-branch list a change of `track` was made on, refused with a 409 once it's not the list any more. */
 export async function PUT(req: Request, ctx: Ctx) {
   const body = await req.clone().json().catch(() => null);
   const a = await projectRepo(req, ctx, body?.repo);
@@ -21,12 +22,13 @@ export async function PUT(req: Request, ctx: Ctx) {
   if (!changes.length) return json({ error: "give track, enable, disable or connection" }, 400);
   if (body.connection !== undefined && body.connection?.def === undefined) return json({ error: "connection is {name, def}, def null to drop it" }, 400);
   try {
-    if (body.track !== undefined) await putTrack(a.d, a.key, a.repo, body.track, a.user.handle);
+    if (body.track !== undefined) await putTrack(a.d, a.key, a.repo, body.track, a.user.handle, body.base);
     if (body.enable !== undefined) await setShipped(a.d, a.key, a.repo, body.enable, true, a.user.handle);
     if (body.disable !== undefined) await setShipped(a.d, a.key, a.repo, body.disable, false, a.user.handle);
     if (body.connection !== undefined) await putConnection(a.d, a.key, a.repo, body.connection?.name, body.connection.def, a.user.handle);
   } catch (e) {
     if (e instanceof PluginInputError) return json({ error: e.message, errors: e.errors }, 400);
+    if (e instanceof PluginConflict) return json({ error: e.message }, 409);
     throw e;
   }
   if (body.track !== undefined) void scheduleRecompute(a.d, a.key, fetch, a.repo);

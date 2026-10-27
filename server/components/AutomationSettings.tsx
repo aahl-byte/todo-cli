@@ -23,14 +23,31 @@ import { notify } from "./Toaster";
 import { Ago, Stamp } from "./ui";
 
 /** Send a write to a plugins API route; the error text when it's refused. */
-async function send(project: string, path: string, method: "PUT" | "POST" | "DELETE", body: unknown): Promise<string | null> {
+/** Send a write to a plugins API route; what refused it, with the status, or null when it went through. */
+async function sendFor(project: string, path: string, method: "PUT" | "POST" | "DELETE", body: unknown):
+    Promise<{ error: string; status: number } | null> {
   const res = await fetch(withBase(`/api/projects/${encodeURIComponent(project)}/plugins${path}`), {
     method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   }).catch(() => null);
-  if (!res) return "the server couldn't be reached";
+  if (!res) return { error: "the server couldn't be reached", status: 0 };
   if (res.ok) return null;
   const err = await res.json().catch(() => null);
-  return err?.error ?? `the server answered ${res.status}`;
+  return { error: err?.error ?? `the server answered ${res.status}`, status: res.status };
+}
+
+/** Send a write to a plugins API route; the error text when it's refused. */
+async function send(project: string, path: string, method: "PUT" | "POST" | "DELETE", body: unknown): Promise<string | null> {
+  return (await sendFor(project, path, method, body))?.error ?? null;
+}
+
+/** A save refused because someone else saved first: what changed, and a reload that shows it. */
+function Stale({ message, onReload }: { message: string; onReload: () => void }) {
+  return (
+    <span className="hot stale">
+      Not saved: {message}.{" "}
+      <button type="button" className="link-btn" onClick={onReload}>Reload ›</button>
+    </span>
+  );
 }
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -362,7 +379,7 @@ function SetupPanel({ projectKey, repo, plugin, statuses, secretKeySet }: {
 function BranchesPanel({ projectKey, repo }: { projectKey: string; repo: DashRepo }) {
   const router = useRouter();
   const [text, setText] = useState(repo.track.join(", "));
-  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(null);
+  const [saved, setSaved] = useState<{ ok: boolean; message: string; stale?: boolean } | null>(null);
   const [pending, start] = useTransition();
   const chosen = splitBranches(text);
   const suggested = suggestBranches(repo.branches, chosen);
@@ -370,8 +387,9 @@ function BranchesPanel({ projectKey, repo }: { projectKey: string; repo: DashRep
   const listId = `branches-${repo.repo.replace(/\W/g, "-")}`;
   const example = suggestBranches(repo.branches, []).slice(0, 2);
   const save = (track: string[]) => start(async () => {
-    const err = await send(projectKey, "/config", "PUT", { repo: repo.repo, track });
-    setSaved(err ? { ok: false, message: err } : { ok: true, message: "Saved." });
+    // base: the list this page shows, so the server refuses the change if someone has changed it since.
+    const err = await sendFor(projectKey, "/config", "PUT", { repo: repo.repo, track, base: repo.track });
+    setSaved(err ? { ok: false, message: err.error, stale: err.status === 409 } : { ok: true, message: "Saved." });
     if (!err) router.refresh();
   });
   return (
@@ -395,7 +413,8 @@ function BranchesPanel({ projectKey, repo }: { projectKey: string; repo: DashRep
       <div className="save-row">
         <button type="submit" className="btn primary" disabled={pending || !dirty}>{pending ? "Saving…" : "Save"}</button>
         {repo.track.length > 0 && <button type="button" className="btn" disabled={pending} onClick={() => { setText(""); save([]); }}>Clear</button>}
-        {saved && <span className={saved.ok ? "hint" : "hot"}>{saved.ok ? saved.message : `Not saved: ${saved.message}.`}</span>}
+        {saved?.stale && <Stale message={saved.message} onReload={() => router.refresh()} />}
+        {saved && !saved.stale && <span className={saved.ok ? "hint" : "hot"}>{saved.ok ? saved.message : `Not saved: ${saved.message}.`}</span>}
       </div>
     </form>
   );
@@ -412,7 +431,7 @@ function CustomEditor({ projectKey, repo, custom, shipped, onClose }: {
   const [name, setName] = useState(custom?.name ?? "");
   const [manifest, setManifest] = useState(custom?.manifest ?? CUSTOM_STARTER);
   const [code, setCode] = useState(custom?.code ?? "");
-  const [refused, setRefused] = useState<string | null>(null);
+  const [refused, setRefused] = useState<{ error: string; status: number } | null>(null);
   const [pending, start] = useTransition();
   const reserved = useMemo(() => [...shipped, ...repo.custom.map((c) => c.name).filter((n) => n !== custom?.name)], [shipped, repo.custom, custom]);
   const check = useMemo(() => checkCustom({ name, manifest, code: code.trim() ? code : null }, { reserved, connections: repo.available.repo }),
@@ -421,7 +440,9 @@ function CustomEditor({ projectKey, repo, custom, shipped, onClose }: {
   const dirty = !custom || name !== custom.name || manifest !== custom.manifest || code !== (custom.code ?? "");
   const edit = (f: () => void) => { f(); setRefused(null); };
   const save = () => start(async () => {
-    const err = await send(projectKey, "/custom", "PUT", { repo: repo.repo, name: name.trim(), manifest, code, was: custom?.name ?? null });
+    // base: the version this page loaded, so a save on top of someone else's is refused, not lost.
+    const err = await sendFor(projectKey, "/custom", "PUT", { repo: repo.repo, name: name.trim(), manifest, code, was: custom?.name ?? null,
+                                                           base: custom?.version ?? null });
     setRefused(err);
     if (!err) {
       router.refresh();
@@ -430,10 +451,10 @@ function CustomEditor({ projectKey, repo, custom, shipped, onClose }: {
   });
   const remove = () => start(async () => {
     if (!custom || !window.confirm(`Remove ${custom.name}? Its instances go with it.`)) return;
-    const err = await send(projectKey, "/custom", "DELETE", { repo: repo.repo, name: custom.name });
-    setRefused(err);
-    if (!err) router.refresh();
+    setRefused(await sendFor(projectKey, "/custom", "DELETE", { repo: repo.repo, name: custom.name }));
+    router.refresh();
   });
+  const reload = () => { router.refresh(); onClose(); };
   return (
     <form className="auto-panel custom-editor" data-custom={custom?.name ?? "new"} onSubmit={(e) => { e.preventDefault(); save(); }}>
       <label className="field">
@@ -462,7 +483,8 @@ function CustomEditor({ projectKey, repo, custom, shipped, onClose }: {
         <button type="submit" className="btn primary" disabled={pending || !dirty || check.errors.length > 0}>{pending ? "Saving…" : custom ? "Save" : "Add plugin"}</button>
         <button type="button" className="btn" disabled={pending} onClick={onClose}>Cancel</button>
         {custom && <button type="button" className="btn danger" disabled={pending} onClick={remove}>Remove plugin</button>}
-        {refused && <span className="hot">Not saved: {refused}.</span>}
+        {refused?.status === 409 && <Stale message={`${refused.error}; reloading drops this draft`} onReload={reload} />}
+        {refused && refused.status !== 409 && <span className="hot">Not saved: {refused.error}.</span>}
       </div>
     </form>
   );

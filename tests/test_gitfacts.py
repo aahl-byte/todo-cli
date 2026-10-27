@@ -550,6 +550,16 @@ def test_deploy_branches_are_shown_and_set_in_a_local_only_store(fx, capsys, mon
     assert "Not a branch name: no..good" in capsys.readouterr().err
 
 
+def test_a_deploy_branch_edit_on_a_list_the_server_no_longer_has_is_refused(fx, synced, monkeypatch, capsys):
+    synced.plugin_config[fx.key]["track"] = ["staging", "main"]
+    real = plugin_config.synced
+    monkeypatch.setattr(plugin_config, "synced", lambda *a, **kw: {**real(*a, **kw), "track": ["staging"]})   # read before main was added
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "deploy-branches", "--repo", fx.key, "--add", "qa"])
+    assert "the deploy branches changed since this page loaded" in capsys.readouterr().err
+    assert synced.plugin_config[fx.key]["track"] == ["staging", "main"]
+
+
 def test_changing_the_deploy_branches_recomputes_with_no_tip_moving(fx, monkeypatch):
     monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
     fx.branch("feat/a")

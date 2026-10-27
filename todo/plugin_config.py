@@ -188,11 +188,12 @@ def _forget_cached(root: Path, key: str) -> None:
         cache.pop(key, None)
 
 
-def set_deploy_branches(root: Path, key: str, branches: list) -> list:
-    """Replace the repo's deploy branches; the list as stored."""
+def set_deploy_branches(root: Path, key: str, branches: list, base: list | None = None) -> list:
+    """Replace the repo's deploy branches; the list as stored. `base` is the list the change was made on, which the server
+    checks is still the list."""
     cfg = sync_config(root)
     if cfg:
-        out = _remote(root).put_plugin_config(cfg["project"], key, track=branches)
+        out = _remote(root).put_plugin_config(cfg["project"], key, track=branches, **({"base": base} if base is not None else {}))
         _forget_cached(root, key)
         return _strs((out.get("config") or {}).get("track"))
     with editing_local(root, key) as entry:

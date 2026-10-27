@@ -448,6 +448,8 @@ create table if not exists plugin_custom (
   updated_at timestamptz not null default now(),
   primary key (project, repo, name)
 );
+-- version: counts its saves, so an edit made on an older one is refused.
+alter table plugin_custom add column if not exists version integer not null default 1;
 
 drop table if exists plugin_defs;
 

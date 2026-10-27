@@ -29,7 +29,7 @@ const repo = (over: Partial<DashRepo> = {}): DashRepo => ({
 });
 
 const custom = (name: string, over: Partial<DashCustom> = {}): DashCustom => ({
-  name, manifest: "on: [manual]\n", code: null, codeFile: null, errors: [], updated: { by: "pat", at: "2026-10-26T10:00:00.000Z" }, ...over,
+  name, manifest: "on: [manual]\n", code: null, codeFile: null, errors: [], version: 1, updated: { by: "pat", at: "2026-10-26T10:00:00.000Z" }, ...over,
 });
 
 const offer = (name: string, connections: string[] = []) => ({ name, description: `${name} does things.`, connections });

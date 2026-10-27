@@ -46,7 +46,7 @@ export function endpointOf(def: unknown): string | null {
 }
 
 // ── the config ────────────────────────────────────────────────────────────────
-export interface StoredCustom extends CustomPlugin { updated_by: string; updated_at: string }
+export interface StoredCustom extends CustomPlugin { version: number; updated_by: string; updated_at: string }
 
 export interface StoredConfig extends ConfigParts {
   custom: StoredCustom[];
@@ -60,12 +60,13 @@ const iso = (v: unknown) => new Date(v as string).toISOString();
 export async function loadConfig(d: Pick<Db, "query">, project: string, repo: string): Promise<StoredConfig> {
   const [row] = await d.query("select track, shipped, connections, updated_by, updated_at from plugin_configs where project = $1 and repo = $2",
                               [project, repo]);
-  const custom = await d.query("select name, manifest, code, updated_by, updated_at from plugin_custom where project = $1 and repo = $2 order by name",
+  const custom = await d.query("select name, manifest, code, version, updated_by, updated_at from plugin_custom where project = $1 and repo = $2 order by name",
                                [project, repo]);
   return {
     track: row?.track ?? [], shipped: (row?.shipped ?? []).filter((n: string) => isShipped(n)),
     connections: isMap(row?.connections) ? row.connections : {},
-    custom: custom.map((c) => ({ name: c.name, manifest: c.manifest, code: c.code ?? null, updated_by: c.updated_by, updated_at: iso(c.updated_at) })),
+    custom: custom.map((c) => ({ name: c.name, manifest: c.manifest, code: c.code ?? null, version: Number(c.version), updated_by: c.updated_by,
+                                 updated_at: iso(c.updated_at) })),
     updated: row ? { by: row.updated_by, at: iso(row.updated_at) } : null,
   };
 }
@@ -83,15 +84,26 @@ async function updateConfig(d: Pick<Db, "query">, project: string, repo: string,
                 [project, repo, handle, ...args]);
 }
 
-/** Replace the repo's deploy branches. */
-export async function putTrack(d: Pick<Db, "query">, project: string, repo: string, raw: unknown, handle: string): Promise<string[]> {
+/** Replace the repo's deploy branches. With `base`, the list the change was made on, it's refused unless the list still is that,
+ * so a page loaded before someone else's change can't drop their branch. */
+export async function putTrack(d: Db, project: string, repo: string, raw: unknown, handle: string, base?: unknown): Promise<string[]> {
   let track: string[];
+  let was: string[] | undefined;
   try {
     track = branchList(raw);
+    was = base === undefined ? undefined : branchList(base);
   } catch (e) {
     throw new PluginInputError(message(e));
   }
-  await updateConfig(d, project, repo, handle, "track = $4", [track]);
+  await d.tx(async (t) => {
+    await t.query("insert into plugin_configs (project, repo, updated_by) values ($1, $2, $3) on conflict (project, repo) do nothing", [project, repo, handle]);
+    const [row] = await t.query("select track from plugin_configs where project = $1 and repo = $2 for update", [project, repo]);
+    if (was && JSON.stringify(row.track ?? []) !== JSON.stringify(was)) {
+      const now = (row.track ?? []).join(", ") || "none";
+      throw new PluginConflict(`the deploy branches changed since this page loaded: they're ${now} now; reload and change them again`);
+    }
+    await updateConfig(t, project, repo, handle, "track = $4", [track]);
+  });
   return track;
 }
 
@@ -161,44 +173,51 @@ async function moveInstances(t: Pick<Db, "query">, project: string, repo: string
   }
 }
 
-/** Add or replace a custom plugin, renaming it from `was`, whose instances and grants follow it. Refused, every problem listed,
- * unless it checks clean. */
+/** Add or replace a custom plugin, renaming it from `was`, whose instances and grants follow it. An edit gives `base`, the version
+ * it began from, and is refused when the plugin has been saved since. Refused, every problem listed, unless it checks clean
+ * against the repo's plugins as they are when it's written. */
 export async function putCustom(d: Db, project: string, repo: string, raw: unknown, handle: string): Promise<CustomCheck> {
   if (!isMap(raw) || typeof raw.name !== "string" || typeof raw.manifest !== "string"
       || !(raw.code === undefined || raw.code === null || typeof raw.code === "string") || !(raw.was === undefined || raw.was === null || typeof raw.was === "string")) {
-    throw new PluginInputError("give {name, manifest, code?, was?}, each text");
+    throw new PluginInputError("give {name, manifest, code?, was?, base?}, each text but base");
   }
   const p: CustomPlugin = { name: raw.name.trim(), manifest: raw.manifest, code: raw.code?.trim() ? raw.code : null };
   const was = raw.was ?? null;
-  const check = await checkStoredCustom(d, project, repo, p, was);
-  if (check.errors.length) throw new PluginInputError(check.errors.join("; "), check.errors);
+  if (was && typeof raw.base !== "number") throw new PluginInputError(`give base: the version of ${was} the edit began from`);
   try {
-    await d.tx(async (t) => {
+    return await d.tx(async (t) => {
+      let version = 1;
+      if (was) {
+        const [cur] = await t.query("select version, updated_by from plugin_custom where project = $1 and repo = $2 and name = $3 for update",
+                                    [project, repo, was]);
+        if (!cur) throw new PluginConflict(`${was} was removed meanwhile; reload to see the plugins as they are`);
+        if (Number(cur.version) !== raw.base) throw new PluginConflict(`${was} was changed by ${cur.updated_by} since this page loaded; reload to see it`);
+        version = Number(cur.version) + 1;
+      }
+      const check = await checkStoredCustom(t, project, repo, p, was);
+      if (check.errors.length) throw new PluginInputError(check.errors.join("; "), check.errors);
       if (was === p.name) {
-        const [kept] = await t.query(
-          "update plugin_custom set manifest = $4, code = $5, updated_by = $6, updated_at = now() where project = $1 and repo = $2 and name = $3 returning name",
-          [project, repo, p.name, p.manifest, p.code, handle]);
-        if (!kept) throw new PluginConflict(`${p.name} was removed meanwhile; reload to see the plugins as they are`);
-        return;
+        await t.query("update plugin_custom set manifest = $4, code = $5, version = $6, updated_by = $7, updated_at = now() where project = $1 and repo = $2 and name = $3",
+                      [project, repo, p.name, p.manifest, p.code, version, handle]);
+        return check;
       }
       // A name new to the repo starts clean: nothing stored under it from before belongs to this plugin.
       for (const table of ["plugin_instances", "plugin_grants"]) {
         await t.query(`delete from ${table} where project = $1 and repo = $2 and plugin = $3`, [project, repo, p.name]);
       }
       if (was) {
-        const [old] = await t.query("delete from plugin_custom where project = $1 and repo = $2 and name = $3 returning name", [project, repo, was]);
-        if (!old) throw new PluginConflict(`${was} was removed meanwhile; reload to see the plugins as they are`);
+        await t.query("delete from plugin_custom where project = $1 and repo = $2 and name = $3", [project, repo, was]);
         await moveInstances(t, project, repo, was, p.name);
         await t.query("update plugin_grants set plugin = $4 where project = $1 and repo = $2 and plugin = $3", [project, repo, was, p.name]);
       }
-      await t.query("insert into plugin_custom (project, repo, name, manifest, code, updated_by) values ($1, $2, $3, $4, $5, $6)",
-                    [project, repo, p.name, p.manifest, p.code, handle]);
+      await t.query("insert into plugin_custom (project, repo, name, manifest, code, version, updated_by) values ($1, $2, $3, $4, $5, $6, $7)",
+                    [project, repo, p.name, p.manifest, p.code, version, handle]);
+      return check;
     });
   } catch (e) {
     if ((e as { code?: string }).code === UNIQUE_VIOLATION) throw new PluginConflict(`a plugin named ${p.name} was saved meanwhile; reload to see it`);
     throw e;
   }
-  return check;
 }
 
 /** Drop instances and grants stored for a plugin that neither ships with todo nor is one of the repo's custom plugins: left from
@@ -326,6 +345,11 @@ export async function putInstances(d: Db, project: string, repo: string, plugin:
   const key = secretKey();
   if (list.some((x) => Object.keys(x.secrets).length) && !key) throw new NoSecretKey();
   await d.tx(async (t) => {
+    // A rename or removal between the check above and this write would strand what it stores under the old name.
+    if (!isShipped(plugin)) {
+      const [still] = await t.query("select 1 from plugin_custom where project = $1 and repo = $2 and name = $3 for update", [project, repo, plugin]);
+      if (!still) throw new PluginConflict(`${plugin} was renamed or removed meanwhile; reload to see the plugins as they are`);
+    }
     await t.query("delete from plugin_instances where project = $1 and repo = $2 and plugin = $3", [project, repo, plugin]);
     for (const [i, { def, secrets }] of list.entries()) {
       const names = Object.keys(secrets);

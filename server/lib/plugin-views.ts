@@ -79,6 +79,8 @@ export interface DashCustom {
   codeFile: string | null;
   /** Why it doesn't load as stored; empty when it does. */
   errors: string[];
+  /** Counts its saves; an edit sends the one it began from. */
+  version: number;
   updated: { by: string; at: string };
 }
 
@@ -236,7 +238,7 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
     .map(([name, { def }]) => ({ name, description: def.description ?? null, connections: def.connections ?? [] }));
   const custom = stored.custom.map((c): DashCustom => ({
     name: c.name, manifest: c.manifest, code: c.code, codeFile: codeFileOf(c.manifest), errors: errorsOf(c.name, view.errors),
-    updated: { by: c.updated_by, at: c.updated_at },
+    version: c.version, updated: { by: c.updated_by, at: c.updated_at },
   }));
   const own = new Set(custom.map((c) => c.name));
   return {
