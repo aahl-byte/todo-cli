@@ -6,6 +6,7 @@ import { applyOps, type Op } from "../lib/apply";
 import { addProject, addUser } from "../lib/auth";
 import { addDisplay } from "../lib/display";
 import { db } from "../lib/db";
+import { tokenHash } from "../lib/github-token";
 import { putConnection, putCustom, putInstances, putTrack, setShipped } from "../lib/plugins/store";
 import { ulid } from "../lib/ulid";
 
@@ -128,8 +129,10 @@ await putCustom(d, "web", "acme/web", { name: "ping", manifest: PING }, "dev");
 await putInstances(d, "web", "acme/web", "notes-link", [{ id: "go", name: "Go", button: "Link notes" }], "pat");
 await putInstances(d, "web", "acme/web", "rest", [{ id: "hook", name: "Hook", settings: { connection: "hooks", path: "/notify/{{item.id}}" } }], "pat");
 // Each repo's branches as the tick would have polled them, so the deploy-branches field has the remote's to suggest.
-const polled = (repo: string, branches: string[]) => d.query("insert into repo_polls (repo, tips, polled_at) values ($1, $2::jsonb, now())",
-  [repo, JSON.stringify(Object.fromEntries(branches.map((b, i) => [b, String(i + 1).repeat(40)])))]);
+// Polled with the demo server's GITHUB_TOKEN, as the README starts it, so its deploy-branch field offers these while GitHub refuses it.
+const polled = (repo: string, branches: string[]) => d.query(
+  "insert into repo_polls (repo, tips, polled_at, polled_with) values ($1, $2::jsonb, now(), $3)",
+  [repo, JSON.stringify(Object.fromEntries(branches.map((b, i) => [b, String(i + 1).repeat(40)]))), tokenHash("demo")]);
 await polled("acme/web", ["main", "staging", "feat/api-tokens", "feat/signed-hooks"]);
 await polled("acme/api", ["main", "staging", "feat/rate-limit"]);
 const playground = await item("web", "Plugin playground", { ...W, priority: "low", extra: { repo: "acme/web" } }, "Try the repo's plugins here.");

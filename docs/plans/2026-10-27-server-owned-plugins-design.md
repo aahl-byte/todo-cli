@@ -123,8 +123,8 @@ allowPrivate?}`:
   `/repos/<owner>/` of those owners, or one with an encoded separator. A repo added on
   the page is the project's whatever its owner; a checkout brings one in only
   for those owners. The tick polls a repo with the first of its projects'
-  tokens GitHub accepts, and records which; a project sees polled branch names
-  only when that was its own token.
+  tokens GitHub accepts, and records which; when GitHub fails, a project sees
+  polled branch names only if its own token polled them.
 
 ## The trust rule
 

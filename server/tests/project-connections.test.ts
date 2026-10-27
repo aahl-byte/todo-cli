@@ -403,18 +403,20 @@ describe("the branches a project sees of a repo", () => {
   });
   const answering = (status: number) => (async () => new Response("", { status })) as Fetch;
 
-  it("are none without a token, or once GitHub says its token can't see the repo, though the tick polled it with another's", async () => {
+  it("are none without a token, or once GitHub says the repo isn't there for it, and only those polled with its own token when GitHub fails", async () => {
     vi.stubEnv("GITHUB_TOKEN", "");
     expect(await remoteBranches(w.d, "p", "acme/web", answering(200))).toEqual({ names: [], default: null, visible: null });
     await put({ name: "github", secret: "page-token", base: null });
     expect(await remoteBranches(w.d, "p", "acme/web", answering(404))).toEqual({ names: [], default: null, visible: false });
-    resetGitFactsCache();
-    expect((await remoteBranches(w.d, "p", "acme/web", answering(403))).names).toEqual([]);
-    resetGitFactsCache();
-    expect((await remoteBranches(w.d, "p", "acme/web", answering(502))).names).toEqual([]);
+    for (const status of [403, 502]) {
+      resetGitFactsCache();
+      expect((await remoteBranches(w.d, "p", "acme/web", answering(status))).names, String(status)).toEqual([]);
+    }
     await w.d.query("update repo_polls set polled_with = $1", [tokenHash("page-token")]);
-    resetGitFactsCache();
-    expect((await remoteBranches(w.d, "p", "acme/web", answering(502))).names).toEqual(["secret-branch"]);
+    for (const status of [403, 502]) {
+      resetGitFactsCache();
+      expect((await remoteBranches(w.d, "p", "acme/web", answering(status))).names, String(status)).toEqual(["secret-branch"]);
+    }
   });
 });
 
