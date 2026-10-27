@@ -1,11 +1,12 @@
 """End to end: the built Next.js server runs a repo's plugins. GitHub and
 Watchtower are one local fake. Creating an item on a branch links its PR through
-the shipped pr-link plugin; moving it to review runs the repo's own Watchtower
-code plugin in the host's worker. Both attachments reach /changes.
+the shipped pr-link plugin; moving it to review runs a custom Watchtower code
+plugin, stored through the API, in the host's worker. Both attachments reach
+/changes.
 
 Needs `cd server && npm install && npm run build`; skipped otherwise."""
 
-import base64
+import io
 import json
 import os
 import shutil
@@ -20,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from ruamel.yaml import YAML
 
 SERVER = Path(__file__).resolve().parent.parent / "server"
 FIXTURES = SERVER / "tests" / "fixtures" / "plugins"
@@ -37,16 +39,7 @@ def _port() -> int:
 
 def _fake(port: int) -> dict:
     """GitHub's answers for acme/web and Watchtower's for one new session, under /wt."""
-    # Named apart from the shipped watchtower-session, which a repo can only enable.
-    plugins = (FIXTURES / "watchtower.yaml").read_text().replace("http://leaf-rain:10011", f"http://127.0.0.1:{port}/wt") \
-        .replace("watchtower-session:", "wt-agent:")
-    content = lambda text: {"content": base64.b64encode(text.encode()).decode()}  # noqa: E731
     return {
-        ("GET", "/repos/acme/web"): {"default_branch": "main"},
-        ("GET", "/repos/acme/web/branches/main"): {"commit": {"sha": "s1"}},
-        ("GET", "/repos/acme/web/contents/.todo-plugins/plugins.yaml?ref=s1"): content(plugins),
-        ("GET", "/repos/acme/web/contents/.todo-plugins/watchtower-session.js?ref=s1"):
-            content((FIXTURES / "watchtower-session.js").read_text()),
         ("GET", "/repos/acme/web/pulls?head=acme%3Afeat%2Fx&state=all"):
             [{"number": 5, "title": "Login", "html_url": "https://github.com/acme/web/pull/5"}],
         ("GET", "/wt/api/roster"): {"sessions": []},
@@ -135,8 +128,8 @@ def _stop(proc):
         pass
 
 
-def _call(url, token, path, body=None):
-    req = urllib.request.Request(url + path, method="GET" if body is None else "POST",
+def _call(url, token, path, body=None, method=None):
+    req = urllib.request.Request(url + path, method=method or ("GET" if body is None else "POST"),
                                  data=None if body is None else json.dumps(body).encode(),
                                  headers={"authorization": f"Bearer {token}", "content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as res:
@@ -161,9 +154,17 @@ def test_built_server_runs_shipped_and_code_plugins(server, fake):
     url, token, log_path = server
     _, seen = fake
     _call(url, token, "/api/projects", {"key": "p"})
-    req = urllib.request.Request(url + "/api/projects/p/plugins/repos", method="PUT", data=json.dumps({"repos": ["acme/web"]}).encode(),
-                                 headers={"authorization": f"Bearer {token}", "content-type": "application/json"})
-    urllib.request.urlopen(req, timeout=30).close()
+    _call(url, token, "/api/projects/p/plugins/repos", {"repos": ["acme/web"]}, "PUT")
+    # The fixture's plugin, named apart from the shipped watchtower-session, which is switched on and never redefined.
+    fixture = YAML(typ="safe").load((FIXTURES / "watchtower.yaml").read_text())
+    wt = f"{fake[0]}/wt"
+    _call(url, token, "/api/projects/p/plugins/config", {"repo": "acme/web", "connection": {"name": "watchtower", "def": {"http": {"url": wt}}}}, "PUT")
+    manifest = io.StringIO()
+    YAML().dump(fixture["plugins"]["watchtower-session"], manifest)
+    _call(url, token, "/api/projects/p/plugins/custom", {"repo": "acme/web", "name": "wt-agent", "manifest": manifest.getvalue(),
+                                                       "code": (FIXTURES / "watchtower-session.js").read_text()}, "PUT")
+    _call(url, token, "/api/projects/p/plugins", {"repo": "acme/web", "plugin": "wt-agent",
+                                                "instances": fixture["instances"]["watchtower-session"]}, "PUT")
     [created] = _call(url, token, "/api/projects/p/ops", {"ops": [{
         "op_id": "c1", "op": "create", "entity": "item", "uid": "I1", "item_uid": "I1",
         "data": {"id": "fix-login", "title": "Fix login", "status": "in-progress", "created": "2026-10-25T00:00:00Z",

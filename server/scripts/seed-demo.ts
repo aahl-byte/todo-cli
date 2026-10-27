@@ -6,6 +6,7 @@ import { applyOps, type Op } from "../lib/apply";
 import { addProject, addUser } from "../lib/auth";
 import { addDisplay } from "../lib/display";
 import { db } from "../lib/db";
+import { putConnection, putCustom, putInstances, putTrack, setShipped } from "../lib/plugins/store";
 import { ulid } from "../lib/ulid";
 
 const d = await db();
@@ -94,51 +95,48 @@ await child(tz, "dev", "check", { kind: "db-script", title: "convert timestamps"
 await child(tz, "dev", "check", { kind: "env-var", title: "set TZ", payload: "TZ=UTC" });
 await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check reports", timing: "post-deploy" });
 
-// A repo with a plugins file, as if read from its default branch, and an item in it: Settings → Automation and the
-// item's plugin button work without GitHub once the server runs with TODO_PLUGIN_OWNERS=acme.
-const PLUGINS_YAML = `track: [staging, main]
-connections:
-  hooks: {http: {url: "https://hooks.example.com", auth: bearer}}
-plugins:
-  notes-link:
-    description: Links the item to its page in the team's notes.
-    on: [manual]
-    settings:
-      title: {label: Link title, type: text, default: Notes}
-      body: {label: Message, type: long-text, optional: true}
-      model: {label: Model, type: choice, options: [opus, sonnet], optional: true}
-      jira: {label: Jira status, type: choice, options_from: {tool: list_statuses}, optional: true}
-      loud: {label: Loud, type: toggle}
-      retries: {label: Retries, type: number, optional: true}
-      tags: {label: Tags, type: list}
-      token: {label: Token, type: secret, optional: true}
-      never: {label: Never move to, type: list, scope: plugin}
-    steps: [{name: v, value: "\`1\`"}]
-    attach:
-      - link: {type: other, url: "https://example.com/notes/{{item.id}}", label: "{{settings.title}}"}
-  ping:
-    connections: [hooks]
-    on: [push]
-    steps: [{http: {method: GET, path: /}}]
-    attach: []
-  rest: {use: shipped}
-  jira-transition: {use: shipped}
-  vercel-preview: {use: shipped}
-instances:
-  notes-link: [{id: go, name: Go, button: Link notes}]
-  rest: [{id: hook, name: Hook, settings: {connection: hooks, path: "/notify/{{item.id}}"}}]
+// acme/web's plugin config as Settings → Automation would leave it: deploy branches, three shipped plugins switched on, a
+// connection, and two custom plugins with instances. Settings → Automation and the item's plugin button work without GitHub
+// once the server runs with TODO_PLUGIN_OWNERS=acme.
+const NOTES_LINK = `description: Links the item to its page in the team's notes.
+on: [manual]
+settings:
+  title: {label: Link title, type: text, default: Notes}
+  body: {label: Message, type: long-text, optional: true}
+  model: {label: Model, type: choice, options: [opus, sonnet], optional: true}
+  jira: {label: Jira status, type: choice, options_from: {tool: list_statuses}, optional: true}
+  loud: {label: Loud, type: toggle}
+  retries: {label: Retries, type: number, optional: true}
+  tags: {label: Tags, type: list}
+  token: {label: Token, type: secret, optional: true}
+  never: {label: Never move to, type: list, scope: plugin}
+steps: [{name: v, value: "\`1\`"}]
+attach:
+  - link: {type: other, url: "https://example.com/notes/{{item.id}}", label: "{{settings.title}}"}
+`;
+const PING = `connections: [hooks]
+on: [push]
+steps: [{http: {method: GET, path: /}}]
+attach: []
 `;
 await d.query("insert into project_plugin_repos (project, repo, added_by) values ('web', 'acme/web', 'pat')");
-await d.query(`insert into plugin_defs (repo, sha, default_branch, files, stale, fetched_at) values ('acme/web', 'demo', 'main', $1::jsonb, false, now())`,
-              [JSON.stringify({ "plugins.yaml": PLUGINS_YAML })]);
+await putTrack(d, "web", "acme/web", ["staging", "main"], "pat");
+for (const name of ["rest", "jira-transition", "vercel-preview"]) await setShipped(d, "web", "acme/web", name, true, "pat");
+await putConnection(d, "web", "acme/web", "hooks", { http: { url: "https://hooks.example.com", auth: "bearer" } }, "pat");
+await putCustom(d, "web", "acme/web", { name: "notes-link", manifest: NOTES_LINK }, "pat");
+await putCustom(d, "web", "acme/web", { name: "ping", manifest: PING }, "dev");
+await putInstances(d, "web", "acme/web", "notes-link", [{ id: "go", name: "Go", button: "Link notes" }], "pat");
+await putInstances(d, "web", "acme/web", "rest", [{ id: "hook", name: "Hook", settings: { connection: "hooks", path: "/notify/{{item.id}}" } }], "pat");
+// Each repo's branches as the tick would have polled them, so the deploy-branches field has the remote's to suggest.
+const polled = (repo: string, branches: string[]) => d.query("insert into repo_polls (repo, tips, polled_at) values ($1, $2::jsonb, now())",
+  [repo, JSON.stringify(Object.fromEntries(branches.map((b, i) => [b, String(i + 1).repeat(40)])))]);
+await polled("acme/web", ["main", "staging", "feat/api-tokens", "feat/signed-hooks"]);
+await polled("acme/api", ["main", "staging", "feat/rate-limit"]);
 const playground = await item("web", "Plugin playground", { ...W, priority: "low", extra: { repo: "acme/web" } }, "Try the repo's plugins here.");
 for (const s of ["in-triage", "todo", "in-progress"]) await status(playground, "dev", s);
 
-// A repo with no plugins file that an item names, and two only a teammate's checkout brings in.
-const noFile = (repo: string) => d.query(
-  "insert into plugin_defs (repo, sha, default_branch, files, stale, fetched_at) values ($1, 'demo', 'main', '{}'::jsonb, false, now())", [repo]);
+// A repo nobody has set up that an item names, and two only a teammate's checkout brings in.
 for (const repo of ["acme/api", "acme/infra", "acme/tools"]) {
-  await noFile(repo);
   await d.query("insert into checkouts (handle, project, repo, dir) values ('dev', 'web', $1, $2)", [repo, `/src/${repo.split("/")[1]}`]);
 }
 const limiter = await item("web", "Rate limiter for the public API", { ...W, priority: "medium", extra: { repo: "acme/api" } }, "Throttle anonymous calls.");

@@ -7,14 +7,15 @@ import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { storedActions } from "./actions/model";
 import { outboundRules } from "./jira/rules";
 import { jiraReadOnly } from "./jira/config";
-import { hostConnections, hostSecrets, loadDefs, merge, projectRepos, repoPlugins, type RepoDefs, type RepoPlugins } from "./plugins/store";
+import { remoteBranches, type Fetch, type RemoteBranches } from "./gitfacts";
+import { hostConnections, hostSecrets, loadConfig, merge, projectRepos, repoPlugins, type RepoPlugins } from "./plugins/store";
 import { finished, pluginsEnabled } from "./plugins/queue";
 import { ALWAYS_ON, SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
 import { attachedSummary, connectionKeysOf } from "./plugin-form";
-import { PLUGINS_FILE } from "./plugin-summary";
 import { pickRepo } from "./automation";
-import type { Attachment, Call, ConnectionDef, InstanceDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
+import { parse } from "yaml";
+import type { Attachment, Call, ConnectionDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
 
 /** Runs the log shows per instance. */
 export const RUNS_SHOWN = 20;
@@ -34,7 +35,7 @@ export interface RunRow {
 
 export interface DashConnection {
   name: string;
-  /** Declared in the repo file, by this server for every repo, or nowhere. */
+  /** Declared in the repo's config, by this server for every repo, or nowhere. */
   origin: "repo" | "host" | "missing";
   kind: "http" | "mcp" | null;
   url: string | null;
@@ -53,7 +54,7 @@ export interface DashPlugin {
   name: string;
   description: string | null;
   shipped: boolean;
-  /** Shipped and on in every repo, without the file asking. */
+  /** Shipped and on in every repo, without being switched on. */
   always: boolean;
   connections: string[];
   on: PluginDef["on"];
@@ -63,26 +64,25 @@ export interface DashPlugin {
   code: boolean;
   settings: PluginDef["settings"];
   instances: DashInstance[];
-  /** Instances the repo file declares, as it declares them. */
-  declared: Record<string, InstanceDef>;
   /** Capabilities a shipped plugin declares, and what's granted. */
   capabilities: string[];
   grant: { capabilities: string[]; by: string; at: string } | null;
   runs: Record<string, RunRow[]>;
 }
 
-/** Where the repo's plugins come from: the plugins file on its default branch, as the server last read it. */
-export interface DashSource {
-  path: string;
-  /** null when GitHub doesn't show the repo to this server. */
-  branch: string | null;
-  exists: boolean;
-  /** The file has a `plugins:` map, so a new plugin's line goes under it. */
-  pluginsKey: boolean;
-  commit: string | null;
+/** A custom plugin as stored: what its editor opens with, and what keeps it from loading. */
+export interface DashCustom {
+  name: string;
+  manifest: string;
+  code: string | null;
+  /** The file name its code: key gives, if it has one. */
+  codeFile: string | null;
+  /** Why it doesn't load as stored; empty when it does. */
+  errors: string[];
+  updated: { by: string; at: string };
 }
 
-/** A shipped plugin the repo's file doesn't turn on. */
+/** A shipped plugin the repo doesn't have switched on. */
 export interface DashOffer { name: string; description: string | null; connections: string[] }
 
 /** What the repo picker knows of a repo before its plugins are read. */
@@ -101,15 +101,19 @@ export interface RepoEntry {
 }
 
 export interface DashRepo extends RepoEntry {
-  source: DashSource | null;
-  /** The deploy branches its file tracks. */
+  /** Its deploy branches. */
   track: string[];
+  /** The remote's branches, for the deploy-branches field to suggest. */
+  branches: RemoteBranches;
   plugins: DashPlugin[];
   offered: DashOffer[];
+  custom: DashCustom[];
   connections: DashConnection[];
   /** Connection names an instance may pick: the repo's own, and this server's, which only instances stored here get. */
   available: { repo: string[]; host: string[] };
   errors: string[];
+  /** Who last changed the repo's config, and when; null for a repo nobody has set up. */
+  updated: { by: string; at: string } | null;
 }
 
 export interface PluginsPage { ownersSet: boolean; repos: DashRepo[] }
@@ -140,6 +144,8 @@ export interface AutomationPage {
   selected: DashRepo | null;
   bridge: BridgeFacts;
   host: HostConnection[];
+  /** Every plugin that ships with todo, which a custom plugin can't be named after. */
+  shipped: string[];
 }
 
 const iso = (v: unknown) => new Date(v as string).toISOString();
@@ -185,25 +191,32 @@ function connectionOf(name: string, repoDefs: Record<string, ConnectionDef>, hos
   };
 }
 
-/** One allowed repo as the settings page shows it. */
-export async function dashRepo(d: Pick<Db, "query">, project: string, repo: string):
-    Promise<Pick<DashRepo, "source" | "track" | "plugins" | "offered" | "connections" | "available" | "errors">> {
-  const view = await repoPlugins(d, project, repo);
-  let defs: RepoDefs = { files: {}, sha: null, defaultBranch: null };
+const codeFileOf = (manifest: string): string | null => {
   try {
-    defs = await loadDefs(d, repo);
+    const def = parse(manifest) as { code?: unknown } | null;
+    return typeof def?.code === "string" ? def.code : null;
   } catch {
-    // repoPlugins has already said why.
+    return null;
   }
-  const bare = merge(defs, {});
+};
+
+/** The load errors that name a plugin, without its name. */
+const errorsOf = (name: string, errors: string[]) =>
+  errors.filter((e) => e.startsWith(`plugin ${name}: `)).map((e) => e.slice(`plugin ${name}: `.length));
+
+/** One allowed repo as the settings page shows it. */
+export async function dashRepo(d: Pick<Db, "query">, project: string, repo: string, f: Fetch = fetch):
+    Promise<Pick<DashRepo, "track" | "branches" | "plugins" | "offered" | "custom" | "connections" | "available" | "errors" | "updated">> {
+  const view = await repoPlugins(d, project, repo);
+  const stored = await loadConfig(d, project, repo);
+  const bare = merge(stored, {});
   const grants = await grantsOf(d, project, repo);
   const runs = await repoRuns(d, project, repo);
   const plugins = view.plugins.map((p): DashPlugin => {
     const def = bare.resolved.find((r) => r.name === p.name)?.def ?? SHIPPED[p.name]?.def ?? {};
-    const declared = Object.fromEntries((bare.file.instances?.[p.name] ?? []).map((i) => [i.id, i]));
     return {
       name: p.name, description: def.description ?? null, shipped: p.shipped, always: ALWAYS_ON.includes(p.name), connections: p.connections, on: p.on, every: p.every, exclusive: !!def.exclusive,
-      per: def.per ?? null, code: !!def.code, settings: p.settings, instances: p.instances, declared,
+      per: def.per ?? null, code: !!def.code, settings: p.settings, instances: p.instances,
       capabilities: p.shipped ? def.capabilities ?? [] : [], grant: grants[p.name] ?? null,
       runs: Object.fromEntries(p.instances.map((i) => [i.id, runs[`${p.name}/${i.id}`] ?? []])),
     };
@@ -221,10 +234,16 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
   const names = [...new Set([...used.keys(), ...Object.keys(repoDefs)])].sort();
   const offered = Object.entries(SHIPPED).filter(([name]) => !plugins.some((p) => p.name === name)).sort(([a], [b]) => a.localeCompare(b))
     .map(([name, { def }]) => ({ name, description: def.description ?? null, connections: def.connections ?? [] }));
+  const custom = stored.custom.map((c): DashCustom => ({
+    name: c.name, manifest: c.manifest, code: c.code, codeFile: codeFileOf(c.manifest), errors: errorsOf(c.name, view.errors),
+    updated: { by: c.updated_by, at: c.updated_at },
+  }));
+  const own = new Set(custom.map((c) => c.name));
   return {
-    source: { path: PLUGINS_FILE, branch: defs.defaultBranch, exists: defs.text !== undefined, pluginsKey: !!bare.file.plugins, commit: defs.sha },
-    track: bare.file.track ?? [], plugins, offered, connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
-    available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() }, errors: view.errors,
+    track: stored.track, branches: await remoteBranches(d, repo, f), plugins, offered, custom,
+    connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
+    available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() },
+    errors: view.errors.filter((e) => ![...own].some((n) => e.startsWith(`plugin ${n}: `))), updated: stored.updated,
   };
 }
 
@@ -259,12 +278,15 @@ async function repoEntries(d: Pick<Db, "query">, project: string): Promise<RepoE
   return [...out.filter((r) => !r.folded), ...out.filter((r) => r.folded)];
 }
 
-const UNREAD: Omit<DashRepo, keyof RepoEntry> = { source: null, track: [], plugins: [], offered: [], connections: [], available: { repo: [], host: [] }, errors: [] };
+const UNREAD: Omit<DashRepo, keyof RepoEntry> = {
+  track: [], branches: { names: [], default: null, visible: null }, plugins: [], offered: [], custom: [], connections: [],
+  available: { repo: [], host: [] }, errors: [], updated: null,
+};
 
 /** Every repo the project uses, each with its plugins when the project may use it. */
-export async function pluginsPage(d: Pick<Db, "query">, project: string): Promise<PluginsPage> {
+export async function pluginsPage(d: Pick<Db, "query">, project: string, f: Fetch = fetch): Promise<PluginsPage> {
   const out: DashRepo[] = [];
-  for (const e of await repoEntries(d, project)) out.push(e.refusal ? { ...e, ...UNREAD } : { ...e, ...(await dashRepo(d, project, e.repo)) });
+  for (const e of await repoEntries(d, project)) out.push(e.refusal ? { ...e, ...UNREAD } : { ...e, ...(await dashRepo(d, project, e.repo, f)) });
   return { ownersSet: pluginOwners().length > 0, repos: out };
 }
 
@@ -283,7 +305,7 @@ export async function bridgeFacts(d: Pick<Db, "query">, project: string): Promis
 
 /** The Automation page: the repo picker's repos, the one asked for (or the one most items name) with its plugins, and
  * what the server and the General tab bring to every repo. */
-export async function automationPage(d: Pick<Db, "query">, project: string, wanted: string | null): Promise<AutomationPage> {
+export async function automationPage(d: Pick<Db, "query">, project: string, wanted: string | null, f: Fetch = fetch): Promise<AutomationPage> {
   const repos = await repoEntries(d, project);
   const choice = pickRepo(repos, wanted);
   const entry = repos.find((r) => r.repo === choice);
@@ -291,8 +313,8 @@ export async function automationPage(d: Pick<Db, "query">, project: string, want
   const host = Object.entries(hostConnections()).map(([name, def]) => ({ name, auth: "http" in def && !!def.http.auth, held: name in secrets }));
   return {
     ownersSet: pluginOwners().length > 0, pluginsOn: pluginsEnabled(), repos,
-    selected: entry ? { ...entry, ...(await dashRepo(d, project, entry.repo)) } : null,
-    bridge: await bridgeFacts(d, project), host,
+    selected: entry ? { ...entry, ...(await dashRepo(d, project, entry.repo, f)) } : null,
+    bridge: await bridgeFacts(d, project), host, shipped: Object.keys(SHIPPED).sort(),
   };
 }
 

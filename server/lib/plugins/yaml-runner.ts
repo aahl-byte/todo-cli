@@ -14,7 +14,7 @@ export interface YamlRun {
   item: PluginItem;
   event: PluginEvent;
   settings: Record<string, unknown>;
-  /** The branches the repo's plugins file tracks. */
+  /** The repo's deploy branches. */
   track: string[];
   /** The run's own facts: its instance, what set it off, and when. */
   self: Scope;

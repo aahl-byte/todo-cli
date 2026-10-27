@@ -764,14 +764,29 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .auto-actions { display: flex; gap: 16px; margin-top: 8px; }
 .auto-panel { display: grid; gap: 8px; margin-top: 10px; padding: 10px 12px; background: var(--tray); border: 1px solid var(--line); border-radius: 7px; }
 .auto-panel.plugin-card { border-top: 1px solid var(--line); padding: 10px 12px; }
-.unused-connections { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line-2); }
-.unused-connections > summary { cursor: pointer; list-style: none; font-size: 12px; color: var(--dim); }
-.unused-connections > summary::-webkit-details-marker { display: none; }
-.unused-connections > summary .chev { display: inline-block; transition: transform .12s; }
-.unused-connections[open] > summary .chev { transform: rotate(90deg); }
+.auto-switch { display: inline-flex; gap: 6px; align-items: center; flex: none; font: 600 9px var(--disp); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--dim); cursor: pointer; }
+.auto-switch input { accent-color: var(--cyan); margin: 0; }
+.auto-row.on .auto-switch { color: var(--cyan); }
+.branches-panel .branches-field { display: flex; }
+.branches-panel .branches-field input { flex: 1; min-width: 0; font: 12px var(--mono); }
+.branch-suggest { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; }
+.branch-suggest .chip { cursor: pointer; background: none; font-family: var(--mono); padding: 1px 8px; }
+.branch-suggest .chip:hover { color: var(--text); border-color: var(--faint); }
+.custom-editor .code-field { display: grid; gap: 4px; }
+.custom-editor textarea { width: 100%; box-sizing: border-box; font: 12px/1.5 var(--mono); tab-size: 2; resize: vertical; }
+.auto-add { padding: 10px 0; border-top: 1px solid var(--line-2); }
+.auto-connections { display: grid; gap: 6px; padding: 12px 0 0; border-top: 1px solid var(--line-2); }
+.auto-connections .label.sub { margin: 0; }
+.auto-connections > .hint { margin: 0; }
+.auto-connections > .add { justify-self: start; }
+.add-connection { flex-wrap: wrap; }
+.add-connection input { font: 12px var(--mono); }
+.conn-url { font-size: 11px; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
   .auto-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .auto-head { flex-wrap: wrap; gap: 2px 12px; }
+  .add-connection input, .add-connection select { flex: 1 1 100%; }
   .auto-plugins { text-align: left; }
   .auto-steps li { grid-template-columns: 1.8em minmax(0, 1fr); }
   .auto-steps li .step-body { grid-column: 2; }

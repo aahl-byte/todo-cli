@@ -39,7 +39,7 @@ class FakeServer:
         self.doc_tombs = {}      # deleted doc uid → its last sha256
         self.git_facts = []
         self.git_facts_offline = False
-        self.plugin_config = {}  # repo → {instances, grants}; None answers 404, like an older server
+        self.plugin_config = {}  # repo → {config, track, shipped, instances, grants}; None answers 404, like an older server
         self.plugin_creds = []   # (repo, connection, secret) per credential posted
         self.plugin_gets = 0
         self.plugin_tombs = set()
@@ -391,7 +391,23 @@ class FakeServer:
                         "grants": copy.deepcopy(got.get("grants") or {}),
                         "plugins": copy.deepcopy(got.get("plugins") or []),
                         "secrets": [c for r, c, _ in server.plugin_creds if r == repo],
-                        "host_secrets": list(server.host_secrets), "runs": {}}
+                        "host_secrets": list(server.host_secrets), "runs": {},
+                        "config": copy.deepcopy(got.get("config") or {"text": "{}\n", "code": {}}),
+                        "track": list(got.get("track") or [])}
+
+            def put_plugin_config(self, project, repo, track=None, enable=None, disable=None):
+                from todo.remote import RemoteError
+                if server.offline or server.plugins_down:
+                    raise RemoteError("fake offline")
+                got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
+                if track is not None:
+                    got["track"] = list(track)
+                shipped = got.setdefault("shipped", [])
+                if enable is not None and enable not in shipped:
+                    shipped.append(enable)
+                if disable is not None and disable in shipped:
+                    shipped.remove(disable)
+                return {"ok": True, "config": {"track": list(got.get("track") or []), "shipped": list(shipped)}}
 
             def put_plugins(self, project, repo, plugin, instances=None, grants=None):
                 got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})

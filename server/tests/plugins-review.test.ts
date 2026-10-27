@@ -18,7 +18,7 @@ import { queuePluginEvent } from "@/lib/plugins/queue";
 import { flushPluginRuns, itemsOnBranch, LEASE_MS, pluginTick, pluginUid, requestKey, withItemLock } from "@/lib/plugins/server";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import { child, item, world, type World } from "./helpers";
-import { API, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
+import { API, configured, fakeGitHub, params, PR, publicDns, req, type Configured } from "./plugin-github";
 
 let w: World;
 let files: string;
@@ -64,7 +64,7 @@ describe("repos a project may use", () => {
     const evil = ["plugins:", "  x:", "    connections: [github]", "    on: [push]",
       "    steps: [{name: s, http: {method: GET, path: /repos/acme/private/contents/.env}}, {http: {method: DELETE, path: /repos/acme/web}}]",
       "    attach: [{log: 'leak {{s.path}}'}]"].join("\n");
-    const gh = fakeGitHub({ file: evil });
+    const gh = await configured(w.d, { file: evil });
     vi.stubGlobal("fetch", gh.impl);
     await w.one("bob", item("I1", { status: "in-progress", extra: { repo: "mallory/public", branches: ["main"] } }));
     expect(await queuePluginEvent(w.d, "p", "I1", "mallory/public", { type: "push", branch: "main" }, "bob")).toBeNull();
@@ -77,14 +77,14 @@ describe("repos a project may use", () => {
     expect(gh.sent).toEqual([]);
   });
 
-  it("refuses GITHUB_TOKEN to a repo plugin in an allowed repo, so nothing it asks for is sent", async () => {
+  it("refuses GITHUB_TOKEN to a custom plugin in an allowed repo, so what it asks for goes without it", async () => {
     const evil = ["plugins:", "  x:", "    connections: [github]", "    on: [push]",
       "    steps: [{http: {method: DELETE, path: /repos/acme/web}}]", "    attach: []"].join("\n");
-    const gh = fakeGitHub({ file: evil, prs: { main: [] } });
+    const gh = await configured(w.d, { file: evil, prs: { main: [] } });
     await onBranch(["main"]);
     await run(gh.impl);
-    expect(gh.sent.filter((s) => s.method !== "GET")).toEqual([]);
-    expect((await runs()).find((r) => r.plugin === "x")!.result.skipped).toMatch(/declare a repo connection/);
+    expect(gh.sent.map((s) => [s.method, s.url, s.headers.authorization])).toEqual([
+      ["GET", `${API}/repos/acme/web/pulls?head=acme%3Amain&state=all`, "Bearer gh-token"], ["DELETE", `${API}/repos/acme/web`, undefined]]);
   });
 
   it("allows a repo a member's CLI has a checkout of, and one listed through the API", async () => {
@@ -110,7 +110,7 @@ describe("the private-address guard", () => {
       "plugins:", "  y:", "    connections: [pg, meta]", "    on: [push]",
       "    steps:", "      - {connection: pg, http: {method: GET, path: /}}", "      - {connection: meta, http: {method: GET, path: /latest/meta-data/}}",
       "    attach: []"].join("\n");
-    const gh = fakeGitHub({ file });
+    const gh = await configured(w.d, { file });
     await onBranch(["main"]);
     await push("main");
     await run(gh.impl);
@@ -122,7 +122,7 @@ describe("the private-address guard", () => {
     "plugins:", "  y:", "    connections: [wt]", "    on: [push]", "    steps: [{http: {method: GET, path: /}}]", "    attach: []"].join("\n");
   async function reachesLocal(allow: string): Promise<boolean> {
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", allow);
-    const gh = fakeGitHub({ file: localPlugin, other: (url) => (url.startsWith("http://127.0.0.1:8710") ? Response.json({}) : undefined) });
+    const gh = await configured(w.d, { file: localPlugin, other: (url) => (url.startsWith("http://127.0.0.1:8710") ? Response.json({}) : undefined) });
     await push("main");
     await flushPluginRuns(w.d, { fetch: gh.impl, host: { sleep: async () => {} } }, 50);
     return gh.sent.some((s) => s.url === "http://127.0.0.1:8710/");
@@ -259,7 +259,7 @@ describe("delivery", () => {
   });
 
   it("never claims an event another delivery holds, and on redelivery skips the instances already finished", async () => {
-    const gh = fakeGitHub({ file: logPlugins("a", "b") });
+    const gh = await configured(w.d, { file: logPlugins("a", "b") });
     await onBranch([]);
     await w.d.query("delete from plugin_events");
     const id = await push("main");
@@ -277,7 +277,7 @@ describe("delivery", () => {
     let first = true;
     const file = ["plugins:", "  slow:", "    connections: [hooks]", "    on: [push]", "    steps: [{name: r, http: {method: GET, path: /}}]",
       "    attach: [{link: {type: pr, url: 'https://x/1'}}]", "connections:", "  hooks: {http: {url: 'https://hooks.example'}}"].join("\n");
-    const gh = fakeGitHub({ file, other: async (url) => {
+    const gh = await configured(w.d, { file, other: async (url) => {
       if (!url.startsWith("https://hooks.example")) return undefined;
       if (first) await w.d.query("update plugin_events set lease = 'someone-else'");
       first = false;
@@ -296,7 +296,7 @@ describe("delivery", () => {
     const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}", "plugins:",
       "  flaky:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: GET, path: /}}]", "    attach: [{log: flaky ran}]",
       "  steady:", "    on: [push]", "    steps: [{name: v, value: '`1`'}]", "    attach: [{log: steady ran}]"].join("\n");
-    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("https://hooks.example") ? (down ? new Response("", { status: 503 }) : Response.json({})) : undefined) });
+    const gh = await configured(w.d, { file, other: (url) => (url.startsWith("https://hooks.example") ? (down ? new Response("", { status: 503 }) : Response.json({})) : undefined) });
     await onBranch([]);
     await w.d.query("delete from plugin_events");
     await push("main");
@@ -312,7 +312,7 @@ describe("delivery", () => {
 
   it("gives a failing send up after five attempts with the plugin's own dev-log line", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://hooks.example" } } }));
-    const gh = fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\n",
+    const gh = await configured(w.d, { file: "plugins:\n  rest: {use: shipped}\n",
       other: (url) => (url.startsWith("https://hooks.example") ? new Response("down", { status: 503 }) : undefined) });
     vi.stubGlobal("fetch", gh.impl);
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "rest",
@@ -334,7 +334,7 @@ describe("delivery", () => {
       "  poster:", "    connections: [hooks]", "    on: [push]", "    steps: [{http: {method: POST, path: /one}}, {http: {method: POST, path: /two}}]",
       "    attach: []"].join("\n");
     let first = 503;
-    const gh = fakeGitHub({ file, other: (url) => (url.startsWith("https://hooks.example")
+    const gh = await configured(w.d, { file, other: (url) => (url.startsWith("https://hooks.example")
       ? new Response("", { status: url.endsWith("/one") ? first : 503 }) : undefined) });
     await onBranch([]);
     await w.d.query("delete from plugin_events");
@@ -349,7 +349,7 @@ describe("delivery", () => {
     SHIPPED["test-doc"] = { def: { connections: [], on: ["push"], steps: [{ name: "v", value: "`1`" }],
       attach: [{ when: "event.branch == 'a'", doc: { name: "notes.md", content: "hi" } }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  test-doc: {use: shipped}\n" });
+      const gh = await configured(w.d, { file: "plugins:\n  test-doc: {use: shipped}\n" });
       vi.stubGlobal("fetch", gh.impl);
       await onBranch([]);
       await push("a");
@@ -374,7 +374,7 @@ describe("delivery", () => {
     SHIPPED["test-doc"] = { def: { connections: [], on: ["push"], steps: [{ name: "v", value: "`1`" }],
       attach: [{ when: "event.branch == 'a'", doc: { name: "notes.md", content: "v{{event.branch}}" } }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  test-doc: {use: shipped}\n" });
+      const gh = await configured(w.d, { file: "plugins:\n  test-doc: {use: shipped}\n" });
       await onBranch([]);
       await push("a");
       await run(gh.impl);
@@ -392,7 +392,7 @@ describe("delivery", () => {
     SHIPPED["rq"] = { def: { connections: [], on: ["push"], capabilities: ["post-request"], steps: [{ name: "v", value: "`1`" }],
       attach: [{ request: "{{event.branch}}" }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  rq: {use: shipped}\n" });
+      const gh = await configured(w.d, { file: "plugins:\n  rq: {use: shipped}\n" });
       await onBranch([]);
       await w.d.query("insert into plugin_grants (project, repo, plugin, capabilities, granted_by) values ('p', 'acme/web', 'rq', '{post-request}', 'alice')");
       for (const b of ["A", "B", "A", "A"]) {
@@ -435,7 +435,7 @@ describe("polling", () => {
 });
 
 describe("secrets", () => {
-  const SPEC: Spec = { file: ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}",
+  const SPEC: Configured = { file: ["connections:", "  hooks: {http: {url: 'https://hooks.example'}}",
     "plugins:", "  ping:", "    connections: [hooks]", "    on: [push]",
     "    settings: {token: {label: Token, type: secret}, path: {label: Path, type: text}}",
     "    steps: [{http: {method: POST, path: '/{{settings.path}}', body: {t: '{{settings.token}}'}}}]", "    attach: []"].join("\n") };
@@ -444,7 +444,7 @@ describe("secrets", () => {
   const shown = async () => (await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json());
 
   it("keeps secret-type settings encrypted, shows only that they're set, keeps them on {set: true} and clears them on null", async () => {
-    const gh = fakeGitHub({ ...SPEC, other: (url) => (url.startsWith("https://hooks.example") ? Response.json({}) : undefined) });
+    const gh = await configured(w.d, { ...SPEC, other: (url) => (url.startsWith("https://hooks.example") ? Response.json({}) : undefined) });
     vi.stubGlobal("fetch", gh.impl);
     expect((await putPing({ token: "tok-123", path: "x" })).status).toBe(503);
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("hex"));
@@ -487,13 +487,12 @@ describe("secrets", () => {
     const uses = (c: string) => [`  use-${c}:`, `    connections: [${c}]`, "    on: [push]", "    steps: [{http: {method: GET, path: /}}]", "    attach: []"];
     const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}", "  local: {mcp: {command: /bin/echo}}",
       "  lan: {http: {url: 'http://192.168.1.4'}}", "plugins:", ...["hooks", "local", "lan", "github"].flatMap(uses)].join("\n");
-    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    vi.stubGlobal("fetch", (await configured(w.d, { file })).impl);
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     const runsHere = async () => Object.fromEntries((await shown()).plugins.map((p: { name: string; instances: { server_runs: boolean }[] }) =>
       [p.name, p.instances[0]?.server_runs]));
-    expect(await runsHere()).toEqual({ "pr-link": true, "use-hooks": false, "use-local": false, "use-lan": false, "use-github": false });
+    expect(await runsHere()).toEqual({ "pr-link": true, "use-hooks": false, "use-local": false, "use-lan": false, "use-github": true });
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
-    await w.d.query("delete from plugin_defs");
     await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
     expect((await runsHere())["use-hooks"]).toBe(true);
     vi.stubEnv("GITHUB_TOKEN", "");
@@ -562,7 +561,7 @@ describe("a bad attachment", () => {
     SHIPPED["nul"] = { def: { connections: [], on: ["push"], steps: [{ name: "v", value: "`1`" }], attach: [
       { link: { type: "x", url: "https://ok.example/1", label: "fine" } }, { link: { type: "x", url: "https://ok.example/2", label: "bad\u0000label" } }] } };
     try {
-      const gh = fakeGitHub({ file: `plugins:\n  nul: {use: shipped}\n${logPlugins("after").replace("plugins:\n", "")}\n` });
+      const gh = await configured(w.d, { file: `plugins:\n  nul: {use: shipped}\n${logPlugins("after").replace("plugins:\n", "")}\n` });
       await onBranch([]);
       await w.d.query("delete from plugin_events");
       await push("z");
@@ -585,14 +584,14 @@ describe("server_runs", () => {
   it("is false for an instance missing a required setting, true once it's set; an item-level when doesn't matter", async () => {
     const file = ["plugins:", "  needs:", "    on: [push]", "    when: \"item.status == 'never'\"", "    settings: {path: {label: Path, type: text}}",
       "    steps: [{name: v, value: '`1`'}]", "    attach: [{log: hi}]", "instances:", "  needs: [{id: a, name: A}, {id: b, name: B, settings: {path: x}}]"].join("\n");
-    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    vi.stubGlobal("fetch", (await configured(w.d, { file })).impl);
     expect((await shownRuns()).needs).toEqual([false, true]);
   });
 
   it("is false when a stored credential won't decrypt", async () => {
     const file = ["connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}", "plugins:",
       "  ping: {connections: [hooks], on: [push], steps: [{http: {method: GET, path: /}}], attach: []}"].join("\n");
-    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    vi.stubGlobal("fetch", (await configured(w.d, { file })).impl);
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
@@ -605,7 +604,7 @@ describe("server_runs", () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ local: { mcp: { command: "/bin/true" } } }));
     SHIPPED["test-loc"] = { def: { connections: ["local"], on: ["push"], steps: [{ tool: "t" }], attach: [] } };
     try {
-      vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  test-loc: {use: shipped}\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" }).impl);
+      vi.stubGlobal("fetch", (await configured(w.d, { file: "plugins:\n  test-loc: {use: shipped}\n  loc: {connections: [local], on: [push], steps: [{tool: t}], attach: []}\n" })).impl);
       expect(await shownRuns()).toMatchObject({ "test-loc": [true], loc: [false] });
     } finally {
       delete SHIPPED["test-loc"];
@@ -624,7 +623,7 @@ describe("server_runs_reason", () => {
       "  wt: {connections: [watchtower], on: [manual], steps: [{http: {method: GET, path: /}}], attach: []}",
       "  needs: {on: [push], settings: {path: {label: Path, type: text}}, steps: [{name: v, value: '`1`'}], attach: [], }",
       "instances:", "  needs: [{id: a, name: A}]"].join("\n");
-    vi.stubGlobal("fetch", fakeGitHub({ file }).impl);
+    vi.stubGlobal("fetch", (await configured(w.d, { file })).impl);
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
@@ -638,24 +637,9 @@ describe("server_runs_reason", () => {
   });
 });
 
-describe("instances the repo's file declares", () => {
-  it("show they get no host connection, and why", async () => {
-    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://93.184.216.34" } } }));
-    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\ninstances:\n  rest: [{id: x, name: X, settings: {connection: jira, path: /a}}]\n" }).impl);
-    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice,
-      { repo: "acme/web", plugin: "rest", instances: [{ id: "s", name: "S", settings: { connection: "jira", path: "/b" } }] }), params("p"));
-    const listed = await (await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).json();
-    const rest = listed.plugins.find((p: { name: string }) => p.name === "rest");
-    expect(rest.instances.map((i: Record<string, unknown>) => [i.id, i.from_repo, i.server_runs, i.server_runs_reason])).toEqual([
-      ["x", true, false, "`jira` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection"],
-      ["s", false, true, null],
-    ]);
-  });
-});
-
 describe("server_runs for an instance that names its connection", () => {
   it("judges the connection the instance names: one the server has runs, a private one waits for an allow entry", async () => {
-    vi.stubGlobal("fetch", fakeGitHub({ file: "plugins:\n  rest: {use: shipped}\n" }).impl);
+    vi.stubGlobal("fetch", (await configured(w.d, { file: "plugins:\n  rest: {use: shipped}\n" })).impl);
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://93.184.216.34" } }, lan: { http: { url: "http://192.168.1.4:9000" } } }));
     for (const connection of ["hooks", "lan", "missing"]) {
       await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice,

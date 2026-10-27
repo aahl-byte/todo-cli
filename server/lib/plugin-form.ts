@@ -1,4 +1,4 @@
-// The Plugins settings form as data: a field per `settings:` entry, drafts of a
+// A plugin's settings form as data: a field per `settings:` entry, drafts of a
 // plugin's instances as the dashboard edits them, and the instance list those
 // drafts save as. Pure, so the page and the tests share it.
 import type { Attachment, InstanceDef, SettingDef, Trigger } from "./plugins/types";
@@ -38,7 +38,7 @@ const CONTROL: Record<SettingDef["type"], Control> = {
 const shown = (v: unknown) => (v === undefined || v === null ? "" : Array.isArray(v) ? v.join(", ") : String(v));
 
 const TEMPLATE_NOTE = "A template: {{item.id}} and other fields fill in where it's used, URL-encoded in a path and as JSON values in a JSON body.";
-const CONNECTION_NOTE = "The connection it calls; the server's own are offered only to instances stored here.";
+const CONNECTION_NOTE = "The connection it calls: this repo's, and for a plugin that ships with todo, the server's too.";
 const SETTING_REF = /^\{\{\s*settings\.([A-Za-z_$][\w$-]*)\s*\}\}$/;
 
 /** The settings a plugin's connections list names by {{settings.<key>}}. */
@@ -51,9 +51,9 @@ export function describeConnections(connections: string[]): string {
   return connections.map((c) => (SETTING_REF.test(c) ? "the connection each instance names" : c)).join(", ");
 }
 
-/** The connections an instance may name: the repo's own, and, unless the repo file declares the instance, this server's. */
-export function connectionChoices(available: { repo: string[]; host: string[] }, declared: boolean): string[] {
-  return [...new Set(declared ? available.repo : [...available.repo, ...available.host])].sort();
+/** The connections an instance may name: the repo's own, and this server's for a plugin shipped with todo, github for any. */
+export function connectionChoices(available: { repo: string[]; host: string[] }, shipped: boolean): string[] {
+  return [...new Set(shipped ? [...available.repo, ...available.host] : [...available.repo, "github"])].sort();
 }
 
 export function fieldOf(key: string, def: SettingDef, opts: { connection?: boolean } = {}): Field {
@@ -175,10 +175,6 @@ export interface InstanceDraft {
   inherit: boolean;
   triggers: TriggerDraft[];
   settings: Record<string, Value>;
-  /** The repo file declares it (or it's the plugin's automatic default), so removing it only switches it off. */
-  declared: boolean;
-  /** The repo file's version of a declared instance, which a save overrides only where the draft differs. */
-  base?: InstanceDef;
   /** The id the server lists it under, which keeps its secrets; null for a new or duplicated instance. */
   storedAs: string | null;
   /** Its settings as they were loaded, secrets masked. */
@@ -196,7 +192,7 @@ export interface PluginDraft {
 let counter = 0;
 const nextKey = () => `d${++counter}`;
 
-export function draftInstance(plugin: PluginShape, inst: InstanceDef, opts: { declared: boolean; base?: InstanceDef; loaded: boolean }): InstanceDraft {
+export function draftInstance(plugin: PluginShape, inst: InstanceDef, opts: { loaded: boolean }): InstanceDraft {
   const settings: Record<string, Value> = {};
   for (const [k, def] of Object.entries(plugin.settings ?? {})) {
     if (def.scope !== "plugin") settings[k] = draftValue(def, inst.settings?.[k]);
@@ -204,12 +200,12 @@ export function draftInstance(plugin: PluginShape, inst: InstanceDef, opts: { de
   return {
     key: nextKey(), id: inst.id, name: inst.name ?? inst.id, enabled: inst.enabled !== false, dryRun: !!inst.dry_run, button: inst.button ?? "",
     inherit: inst.on === undefined, triggers: (inst.on ?? plugin.on ?? []).map(draftTrigger), settings,
-    declared: opts.declared, base: opts.base, storedAs: opts.loaded ? inst.id : null, loaded: { ...(inst.settings ?? {}) },
+    storedAs: opts.loaded ? inst.id : null, loaded: { ...(inst.settings ?? {}) },
   };
 }
 
-/** Drafts for a plugin's instances as the server lists them. `declared` maps each id the repo file declares to its definition there. */
-export function draftPlugin(plugin: PluginShape, instances: InstanceDef[], declared: Record<string, InstanceDef>): PluginDraft {
+/** Drafts for a plugin's instances as the server lists them. */
+export function draftPlugin(plugin: PluginShape, instances: InstanceDef[]): PluginDraft {
   const shared: Record<string, Value> = {};
   for (const [k, def] of Object.entries(plugin.settings ?? {})) {
     if (def.scope !== "plugin") continue;
@@ -217,7 +213,7 @@ export function draftPlugin(plugin: PluginShape, instances: InstanceDef[], decla
     shared[k] = draftValue(def, withValue?.settings?.[k]);
   }
   return {
-    instances: instances.map((i) => draftInstance(plugin, i, { declared: i.id in declared, base: declared[i.id], loaded: true })),
+    instances: instances.map((i) => draftInstance(plugin, i, { loaded: true })),
     shared,
   };
 }
@@ -230,7 +226,7 @@ function uniqueId(base: string, taken: string[]): string {
 
 export function addInstance(plugin: PluginShape, draft: PluginDraft): PluginDraft {
   const id = uniqueId("instance", draft.instances.map((i) => i.id));
-  const inst = draftInstance(plugin, { id, name: id }, { declared: false, loaded: false });
+  const inst = draftInstance(plugin, { id, name: id }, { loaded: false });
   return { ...draft, instances: [...draft.instances, inst] };
 }
 
@@ -243,24 +239,20 @@ export function duplicateInstance(plugin: PluginShape, draft: PluginDraft, key: 
   for (const [k, def] of Object.entries(plugin.settings ?? {})) if (def.type === "secret" && k in settings) settings[k] = { state: "unset" };
   const copy: InstanceDraft = {
     ...src, key: nextKey(), id: uniqueId(`${src.id}-copy`, draft.instances.map((x) => x.id)), name: `${src.name} (copy)`,
-    settings, triggers: src.triggers.map((t) => ({ ...t })), declared: false, base: undefined, storedAs: null, loaded: {},
+    settings, triggers: src.triggers.map((t) => ({ ...t })), storedAs: null, loaded: {},
   };
   return { ...draft, instances: [...draft.instances.slice(0, i + 1), copy, ...draft.instances.slice(i + 1)] };
 }
 
-/** Drop an instance the dashboard added; one the repo file declares is switched off instead, since it would come back. */
 export function removeInstance(draft: PluginDraft, key: string): PluginDraft {
-  return {
-    ...draft,
-    instances: draft.instances.flatMap((x) => (x.key !== key ? [x] : x.declared ? [{ ...x, enabled: false }] : [])),
-  };
+  return { ...draft, instances: draft.instances.filter((x) => x.key !== key) };
 }
 
-/** Whether an instance can move: declared ones keep the repo file's order, ahead of the ones the dashboard added. */
+/** Whether an instance can move that way and stay in the list. */
 export function canMove(draft: PluginDraft, key: string, by: -1 | 1): boolean {
   const i = draft.instances.findIndex((x) => x.key === key);
   const j = i + by;
-  return i >= 0 && j >= 0 && j < draft.instances.length && !draft.instances[i].declared && !draft.instances[j].declared;
+  return i >= 0 && j >= 0 && j < draft.instances.length;
 }
 
 export function moveInstance(draft: PluginDraft, key: string, by: -1 | 1): PluginDraft {
@@ -278,7 +270,6 @@ export function editInstance(draft: PluginDraft, key: string, patch: Partial<Ins
 // ── saving ────────────────────────────────────────────────────────────────────
 export interface Saved { instances: InstanceDef[]; errors: string[]; warnings: string[] }
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 /** The full definition a draft stands for, or the errors that stop it saving. */
 function fullDef(plugin: PluginShape, draft: PluginDraft, x: InstanceDraft, errors: string[]): InstanceDef {
@@ -302,23 +293,7 @@ function fullDef(plugin: PluginShape, draft: PluginDraft, x: InstanceDraft, erro
   return def;
 }
 
-/** Only what differs from the repo file's version, or null when nothing does. */
-function override(full: InstanceDef, base: InstanceDef): InstanceDef | null {
-  const out: InstanceDef = { id: full.id, name: full.name };
-  let differs = !same(full.name, base.name);
-  if ((full.enabled !== false) !== (base.enabled !== false)) { out.enabled = full.enabled !== false; differs = true; }
-  if (!same(full.on, base.on)) { if (full.on !== undefined) out.on = full.on; differs = true; }
-  if (!same(full.button, base.button)) { out.button = full.button ?? ""; differs = true; }
-  if (!!full.dry_run !== !!base.dry_run) { out.dry_run = !!full.dry_run; differs = true; }
-  const settings: Record<string, unknown> = {};
-  // null always goes through: it clears a stored secret the repo file knows nothing of.
-  for (const [k, v] of Object.entries(full.settings ?? {})) if (v === null || !same(v, base.settings?.[k])) settings[k] = v;
-  for (const k of Object.keys(base.settings ?? {})) if (!(k in (full.settings ?? {}))) settings[k] = null;
-  if (Object.keys(settings).length) { out.settings = settings; differs = true; }
-  return differs ? out : null;
-}
-
-/** The instance list a PUT stores: every instance the dashboard added, and overrides of declared ones where they differ. */
+/** The instance list a PUT stores, or the errors that stop it saving. */
 export function savedInstances(plugin: PluginShape, draft: PluginDraft): Saved {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -340,11 +315,7 @@ export function savedInstances(plugin: PluginShape, draft: PluginDraft): Saved {
         if (f.required && full.settings?.[f.key] === undefined) warnings.push(`${x.id}: ${f.label} is empty, so it's skipped until it has a value`);
       }
     }
-    if (!x.declared) instances.push(full);
-    else {
-      const o = override(full, x.base ?? { id: x.id, name: x.id });
-      if (o) instances.push(o);
-    }
+    instances.push(full);
   }
   return { instances, errors, warnings };
 }

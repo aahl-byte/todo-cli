@@ -1,6 +1,6 @@
-// Who may use the host's connections: shipped plugins, through their default
-// instance or instances the host stores, never an instance the repo's file
-// declares and never a repo's own plugin, with or without a secret.
+// Who may use the host's connections and secrets: plugins shipped with todo,
+// through any instance. A custom plugin gets the repo config's connections and
+// github without the host's token, never another host connection or secret.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,54 +30,20 @@ async function recorder(answer: (url: string) => unknown = () => ({})) {
   return { got, url: `http://127.0.0.1:${(srv.address() as AddressInfo).port}` };
 }
 
-const REST_FILE = `plugins:
-  rest: {use: shipped}
-instances:
-  rest:
-    - {id: x, name: x, on: [manual], settings: {connection: jira, method: DELETE, path: "/rest/api/3/issue/SR-1"}}
-`;
-
 const run = (input: Partial<EventInput>, instance: string) => runEvent({ item: ITEM, event: { type: "manual", instance }, ...input } as EventInput,
                                                                           { guard: { allow: ["127.0.0.1"], repoAllow: [] } });
 
 describe("host connections", () => {
-  it("are kept from an instance the repo's file declares, even of a shipped plugin", async () => {
+  it("go to any instance of a shipped plugin, with their secret", async () => {
     const srv = await recorder();
-    const out = await run({ repo: { text: REST_FILE, files: {} }, hostConnections: { jira: { http: { url: srv.url, auth: "basic" } } },
-                            secrets: { host: { jira: "me@x:token" } } }, "x");
-    expect(out.results.map((r) => [r.plugin, r.result.skipped])).toEqual([["rest",
-      "rest: `jira` is this host's connection, which an instance declared in the repo's plugins file doesn't get; store the instance on the server instead, or name a repo connection"]]);
-    expect(srv.got).toEqual([]);
-  });
-
-  it("are kept from a stored instance that overrides one the repo's file declares", async () => {
-    const srv = await recorder();
-    const out = await run({ repo: { text: REST_FILE, files: {} }, hostConnections: { jira: { http: { url: srv.url, auth: "basic" } } },
-                            secrets: { host: { jira: "me@x:token" } },
-                            storedInstances: { rest: [{ id: "x", name: "x", settings: { path: "/other" } }] } }, "x");
-    expect(out.results[0].result.skipped).toMatch(/declared in the repo's plugins file/);
-    expect(srv.got).toEqual([]);
-  });
-
-  it("go to an instance the host stores, with their secret", async () => {
-    const srv = await recorder();
-    const out = await run({ repo: { text: "plugins:\n  rest: {use: shipped}\n", files: {} },
+    const out = await run({ config: { text: "plugins:\n  rest: {use: shipped}\n" },
                             hostConnections: { jira: { http: { url: srv.url, auth: "basic" } } }, secrets: { host: { jira: "me@x:token" } },
                             storedInstances: { rest: [{ id: "s", name: "s", settings: { connection: "jira", method: "DELETE", path: "/rest/api/3/issue/SR-1" } }] } }, "s");
     expect(out.results[0].result.error).toBeUndefined();
     expect(srv.got.map((g) => [g.method, g.url, g.auth])).toEqual([["DELETE", "/rest/api/3/issue/SR-1", `Basic ${Buffer.from("me@x:token").toString("base64")}`]]);
   });
 
-  it("let a repo-declared instance use the repo's own connection and credential", async () => {
-    const srv = await recorder();
-    const text = `connections:\n  hooks: {http: {url: "${srv.url}", auth: bearer}}\n${REST_FILE.replace("connection: jira", "connection: hooks")}`;
-    const out = await runEvent({ repo: { text, files: {} }, secrets: { repo: { hooks: "r1" } }, item: ITEM, event: { type: "manual", instance: "x" } },
-                               { guard: { allow: [], repoAllow: ["127.0.0.1"] } });
-    expect(out.results[0].result.error).toBeUndefined();
-    expect(srv.got.map((g) => g.auth)).toEqual(["Bearer r1"]);
-  });
-
-  it("are kept from a repo's own plugin, even without auth and with the host on the bare allow list", async () => {
+  it("are kept from a custom plugin, with or without a secret, even with the host on the bare allow list", async () => {
     const srv = await recorder();
     const text = `plugins:
   mine:
@@ -85,20 +51,48 @@ describe("host connections", () => {
     on: [manual]
     steps:
       - http: {method: POST, path: /api/sessions, body: {dir: "/", name: x, initialPrompt: "run anything"}}
-instances:
-  mine:
-    - {id: x, name: x}
 `;
-    const out = await run({ repo: { text, files: {} }, hostConnections: { watchtower: { http: { url: srv.url } } } }, "x");
-    expect(out.results[0].result.skipped).toBe(
-      "mine: `watchtower` is this host's connection, which only plugins shipped with todo use; declare a repo connection named watchtower");
+    for (const auth of [undefined, "bearer" as const]) {
+      const out = await run({ config: { text }, hostConnections: { watchtower: { http: { url: srv.url, ...(auth ? { auth } : {}) } } },
+                              secrets: { host: { watchtower: "HOST" } }, storedInstances: { mine: [{ id: "x", name: "x" }] } }, "x");
+      expect(out.results[0].result.skipped).toBe(
+        "mine: `watchtower` is this host's connection, which only plugins shipped with todo use; declare a connection named watchtower in the repo's plugin config");
+    }
     expect(srv.got).toEqual([]);
+  });
+
+  it("give a custom plugin github without the host's token", async () => {
+    const srv = await recorder(() => [{ number: 1 }]);
+    const text = `plugins:\n  prs: {connections: [github], on: [manual], steps: [{name: prs, http: {method: GET, path: /repos/o/r/pulls}}], attach: [{log: "PR {{prs.0.number}}"}]}\n`;
+    const out = await runEvent({ config: { text }, hostConnections: { github: { http: { url: srv.url, auth: "bearer" } } }, secrets: { host: { github: "ghp_HOST" } },
+                                 storedInstances: { prs: [{ id: "x", name: "x" }] }, item: ITEM, event: { type: "manual", instance: "x" } },
+                               { guard: { allow: [], repoAllow: ["127.0.0.1"] } });
+    expect(out.results[0].result, JSON.stringify(out.results[0].result)).toMatchObject({ attached: [{ kind: "log", text: "PR 1" }] });
+    expect(srv.got.map((g) => [g.url, g.auth])).toEqual([["/repos/o/r/pulls", undefined]]);
+  });
+
+  it("keep the bare allow list from opening a private github address to a custom plugin", async () => {
+    const srv = await recorder(() => []);
+    const text = `plugins:\n  prs: {connections: [github], on: [manual], steps: [{http: {method: GET, path: /x}}]}\n`;
+    const out = await run({ config: { text }, hostConnections: { github: { http: { url: srv.url, auth: "bearer" } } }, secrets: { host: { github: "ghp_HOST" } },
+                            storedInstances: { prs: [{ id: "x", name: "x" }] } }, "x");
+    expect(out.results[0].result.error).toMatch(/isn't an address this host connects to/);
+    expect(srv.got).toEqual([]);
+  });
+
+  it("let a custom plugin use a connection of the config's own, with the repo's credential", async () => {
+    const srv = await recorder();
+    const text = `connections:\n  hooks: {http: {url: "${srv.url}", auth: bearer}}\nplugins:\n  mine: {connections: [hooks], on: [manual], steps: [{http: {method: GET, path: /}}]}\n`;
+    const out = await runEvent({ config: { text }, secrets: { repo: { hooks: "r1" }, host: { hooks: "HOST" } }, storedInstances: { mine: [{ id: "x", name: "x" }] },
+                                 item: ITEM, event: { type: "manual", instance: "x" } }, { guard: { allow: [], repoAllow: ["127.0.0.1"] } });
+    expect(out.results[0].result.error).toBeUndefined();
+    expect(srv.got.map((g) => g.auth)).toEqual(["Bearer r1"]);
   });
 
   it("keep a bare allow entry from opening a private address to a repo connection", async () => {
     const srv = await recorder();
-    const text = `connections:\n  lan: {http: {url: "${srv.url}"}}\nplugins:\n  mine: {connections: [lan], on: [manual], steps: [{http: {method: GET, path: /}}]}\ninstances:\n  mine: [{id: x, name: x}]\n`;
-    const out = await run({ repo: { text, files: {} } }, "x");
+    const text = `connections:\n  lan: {http: {url: "${srv.url}"}}\nplugins:\n  mine: {connections: [lan], on: [manual], steps: [{http: {method: GET, path: /}}]}\n`;
+    const out = await run({ config: { text }, storedInstances: { mine: [{ id: "x", name: "x" }] } }, "x");
     expect(out.results[0].result.error).toMatch(/isn't an address this host connects to/);
     expect(srv.got).toEqual([]);
   });
@@ -110,7 +104,7 @@ describe("a read-only connection", () => {
   it("holds back every write of a run through the host's connection of that name, as dry-run does", async () => {
     const srv = await recorder((url) => (url.endsWith("/transitions") ? { transitions: [{ id: "161", to: { name: "QA" } }] } : {}));
     const out = await runEvent({
-      repo: { text: TRANSITION, files: {} }, hostConnections: { jira: { http: { url: srv.url, auth: "basic" } } }, secrets: { host: { jira: "a:b" } },
+      config: { text: TRANSITION }, hostConnections: { jira: { http: { url: srv.url, auth: "basic" } } }, secrets: { host: { jira: "a:b" } },
       storedInstances: { "jira-transition": [{ id: "qa", name: "QA", on: [{ status: { to: "in-qa" } }], settings: { to: "QA" } }] },
       item: { ...ITEM, jira: ["SR-1"] }, event: { type: "status", from: "review", to: "in-qa" }, dryRunConnections: ["jira"],
     }, { guard: { allow: ["127.0.0.1"], repoAllow: [] } });
@@ -124,8 +118,8 @@ describe("a read-only connection", () => {
 
 describe("comments", () => {
   it("are attached only by plugins shipped with todo, since each speaks as its author", async () => {
-    const text = `plugins:\n  mine: {on: [manual], attach: [{comment: {text: hi, author: acc-boss}}]}\ninstances:\n  mine: [{id: x, name: x}]\n`;
-    const out = await runEvent({ repo: { text, files: {} }, item: ITEM, event: { type: "manual", instance: "x" } });
+    const text = `plugins:\n  mine: {on: [manual], attach: [{comment: {text: hi, author: acc-boss}}]}\n`;
+    const out = await runEvent({ config: { text }, storedInstances: { mine: [{ id: "x", name: "x" }] }, item: ITEM, event: { type: "manual", instance: "x" } });
     expect([out.results[0].result.attached, out.results[0].result.log]).toEqual([[], ["dropped a comment: only plugins shipped with todo attach one"]]);
   });
 });

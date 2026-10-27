@@ -1,11 +1,11 @@
-about: stored instances override and extend the repo's, an implicit default appears only when nothing must be set, and the repo's connection wins
-repo: merge.yaml
+about: stored instances run, an implicit default appears only when nothing must be set, and the config's connection wins
+config: merge.yaml
 hostConnections:
   api: {http: {url: "http://127.0.0.1:9"}}
 secrets: {repo: {api: k1}}
 storedInstances:
   ping:
-    - {id: one, name: One stored, settings: {tag: s1}}
+    - {id: one, name: One, settings: {tag: s1, other: keep}}
     - {id: two, name: Two, enabled: false}
     - {id: three, name: Three, settings: {tag: s3}}
   pr-link:

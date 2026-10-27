@@ -26,8 +26,8 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
   serverRuns: { runs: boolean; reason: string | null } | null;
 }) {
   const edit = (patch: Partial<InstanceDraft>) => onChange(editInstance(draft, x.key, patch));
-  // A connection setting offers what this instance may use: a repo-declared one gets the repo's connections only.
-  const choices = connectionChoices(available, x.declared);
+  // A connection setting offers what this instance may use: a custom plugin gets the repo's connections only.
+  const choices = connectionChoices(available, plugin.shipped);
   const fields = fieldsOf(plugin.settings, connectionKeysOf(plugin.connections)).filter((f) => f.scope === "instance")
     .map((f) => (f.connection ? { ...f, options: choices } : f));
   const manual = (x.inherit ? (plugin.on ?? []) : x.triggers.map((t) => t.kind)).includes("manual");
@@ -42,16 +42,15 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
           <span className="field-label">Name</span>
           <input aria-label="name" value={x.name} onChange={(e) => edit({ name: e.target.value })} />
         </label>
-        <label className="field" data-tip={x.declared ? "declared in the repo file" : "unique within the plugin; todo plugin run uses it"}>
+        <label className="field" data-tip="unique within the plugin; todo plugin run uses it">
           <span className="field-label">Id</span>
-          <input aria-label="id" value={x.id} disabled={x.declared} onChange={(e) => edit({ id: e.target.value })} />
+          <input aria-label="id" value={x.id} onChange={(e) => edit({ id: e.target.value })} />
         </label>
         <label className="check">
           <input type="checkbox" aria-label={`${x.id} test mode`} checked={x.dryRun} onChange={(e) => edit({ dryRun: e.target.checked })} />
           Test mode: show what it would do without doing it
         </label>
         <span className="grow" />
-        {x.declared && <span className="tag" data-tip="the repo file declares it: it keeps the file's order, and removing it switches it off">repo file</span>}
         {ordered && (
           <span className="order">
             <span className="faint">#{index + 1}</span>
@@ -60,8 +59,7 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
           </span>
         )}
         <button type="button" className="btn" aria-label={`duplicate ${x.id}`} onClick={() => onChange(duplicateInstance(plugin, draft, x.key))}>duplicate</button>
-        <button type="button" className="btn danger" aria-label={`remove ${x.id}`} onClick={() => onChange(removeInstance(draft, x.key))}
-                data-tip={x.declared ? "switches it off; the repo file declares it" : undefined}>remove</button>
+        <button type="button" className="btn danger" aria-label={`remove ${x.id}`} onClick={() => onChange(removeInstance(draft, x.key))}>remove</button>
       </div>
       <Triggers plugin={plugin} x={x} statuses={statuses} edit={edit} />
       {manual && (
@@ -76,12 +74,6 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
             <SettingInput key={f.key} field={f} value={x.settings[f.key]} onChange={(v) => edit({ settings: { ...x.settings, [f.key]: v } })} />
           ))}
         </div>
-      )}
-      {x.declared && plugin.shipped && plugin.connections.length > 0 && (
-        <p className="hint repo-declared">
-          Declared in the repo file, so it gets only the repo&apos;s own connections, never this server&apos;s: a repo file can&apos;t point a
-          shipped plugin at the server&apos;s credentials. Add an instance here to use them.
-        </p>
       )}
       {serverRuns && (
         <p className={`hint runs-where${serverRuns.runs ? "" : " cli"}`}>

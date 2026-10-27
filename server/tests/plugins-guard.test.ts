@@ -20,31 +20,31 @@ function recorder() {
 }
 
 describe("host secrets", () => {
-  it("go only to shipped plugins; a repo plugin naming a host connection is skipped with how to fix it", async () => {
+  it("go only to shipped plugins; a custom plugin calling github gets it without the host's token", async () => {
     const { sent, fetch } = recorder();
-    const repo = { text: [
+    const config = { text: [
       "plugins:", "  mine:", "    connections: [github]", "    on: [push]",
       "    steps: [{name: x, http: {method: GET, path: /repos/acme/private/contents/.env}}]", "    attach: [{log: 'got {{x.path}}'}]",
-    ].join("\n"), files: {} };
+    ].join("\n") };
     const out = await runEvent({
-      repo, item: ITEM, event: { type: "push", branch: "feat/login" },
+      config, item: ITEM, event: { type: "push", branch: "feat/login" },
       hostConnections: { github: { http: { url: "https://api.github.com", auth: "bearer" } } }, secrets: { host: { github: "ghp_host" } },
     }, { fetch });
-    const mine = out.results.find((r) => r.plugin === "mine")!;
-    expect(mine.result.skipped).toMatch(/`github` is this host.s connection, which only plugins shipped with todo use; declare a repo connection named github/);
+    expect(out.results.map((r) => [r.plugin, r.result.error ?? r.result.skipped ?? null])).toEqual([["pr-link", null], ["mine", null]]);
     expect(sent.map((s) => [s.url, s.auth])).toEqual([
-      ["https://api.github.com/repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all", "Bearer ghp_host"]]);
+      ["https://api.github.com/repos/acme/web/pulls?head=acme%3Afeat%2Flogin&state=all", "Bearer ghp_host"],
+      ["https://api.github.com/repos/acme/private/contents/.env", undefined]]);
   });
 
-  it("are kept from a repo plugin run on its own as well", async () => {
+  it("are kept from a custom plugin run on its own as well: github goes without the token", async () => {
     const { sent, fetch } = recorder();
     const input: RunInput = {
       plugin: { connections: ["github"], on: ["push"], steps: [{ http: { method: "GET", path: "/user" } }], attach: [] }, name: "mine",
       instance: { id: "default", name: "default" }, item: ITEM, event: { type: "push", branch: "x" }, dryRun: false,
       connections: { github: { kind: "http", url: "https://api.github.com", auth: "bearer", secret: "ghp_host", origin: "host" } },
     };
-    expect((await runInstance(input, { fetch })).skipped).toMatch(/this host's connection/);
-    expect(sent).toEqual([]);
+    expect((await runInstance(input, { fetch })).skipped).toBeUndefined();
+    expect(sent).toEqual([{ url: "https://api.github.com/user", auth: undefined }]);
   });
 });
 
@@ -161,9 +161,9 @@ describe("retrying", () => {
 describe("event hooks", () => {
   it("skip an instance when before says so, and hear each result as it comes", async () => {
     const { fetch } = recorder();
-    const repo = { text: "plugins:\n  a: {on: [push], steps: [{name: v, value: '`1`'}], attach: [{log: a}]}\n  b: {on: [push], steps: [{name: v, value: '`1`'}], attach: [{log: b}]}\n", files: {} };
+    const config = { text: "plugins:\n  a: {on: [push], steps: [{name: v, value: '`1`'}], attach: [{log: a}]}\n  b: {on: [push], steps: [{name: v, value: '`1`'}], attach: [{log: b}]}\n" };
     const heard: string[] = [];
-    const out = await runEvent({ repo, item: ITEM, event: { type: "push", branch: "feat/login" } }, { fetch },
+    const out = await runEvent({ config, item: ITEM, event: { type: "push", branch: "feat/login" } }, { fetch },
       { before: async (plugin) => plugin !== "a", after: async (r) => { heard.push(r.plugin); } });
     expect(out.results.map((r) => r.plugin)).toEqual(["pr-link", "b"]);
     expect(heard).toEqual(["pr-link", "b"]);

@@ -4,9 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Fetch } from "@/lib/gitfacts";
 import { describeParity, parity } from "@/lib/plugins/parity";
 import { describePlan, planPort, writePlan } from "@/lib/plugins/port";
-import { storedGrants, storedInstances } from "@/lib/plugins/store";
+import { loadConfig, storedGrants, storedInstances } from "@/lib/plugins/store";
 import { item, world, type World } from "./helpers";
-import { fakeGitHub, publicDns } from "./plugin-github";
+import { publicDns } from "./plugin-github";
 
 let w: World;
 
@@ -32,7 +32,6 @@ const OUTBOUND = {
     { from: "ready-to-deploy", to: "deployed", jira: "Done" },
   ],
 };
-const ENABLED = "plugins:\n  rest: {use: shipped}\n  watchtower-session: {use: shipped}\n  jira-transition: {use: shipped}\n  jira-issue: {use: shipped}\n";
 
 beforeEach(async () => {
   w = await world();
@@ -112,7 +111,7 @@ describe("plugins-port", () => {
     expect(plan.notes).toContain("1 item(s) name no GitHub repo, so no plugin runs for them");
     expect(plan.notes).toContain('action send-to-watchtower dir: {{project.dir}} is fixed as "/work/web", its value now; it no longer follows the CLI\'s reports');
     const text = describePlan(plan);
-    expect(text).toContain("    jira-transition: {use: shipped}");
+    expect(text).toContain("--write switches on, in each repo: rest, watchtower-session, jira-transition, jira-issue");
     expect(text).toContain("TODO_PLUGIN_SECRET_JIRA=<JIRA_EMAIL:JIRA_API_TOKEN>");
     expect(text).toContain("TODO_PLUGIN_ALLOW_HOSTS needs 127.0.0.1:10010");
     expect(text).toContain("every instance is stored in dry-run");
@@ -120,21 +119,14 @@ describe("plugins-port", () => {
     expect(text).not.toMatch(/abc|s3cr3t/);
   });
 
-  it("writes only with --write, beside instances already stored, and refuses a plugin the repo doesn't enable", async () => {
+  it("writes only with --write: switches the plugins on in the repo's config, beside instances already stored", async () => {
     const plan = await planPort(w.d, "p", { lookup: publicDns });
     expect(await storedInstances(w.d, "p", "acme/web")).toEqual({});
-    const partial = fakeGitHub({ file: "plugins:\n  jira-transition: {use: shipped}\n" });
-    const problems = await writePlan(w.d, plan, "alice", partial.impl);
-    expect(problems).toEqual([
-      "acme/web rest: no plugin named rest runs in acme/web",
-      "acme/web watchtower-session: no plugin named watchtower-session runs in acme/web",
-      "acme/web jira-issue: no plugin named jira-issue runs in acme/web",
-    ]);
-    await w.d.query("delete from plugin_defs");
-    const gh = fakeGitHub({ file: ENABLED });
+    expect((await loadConfig(w.d, "p", "acme/web")).shipped).toEqual([]);
     await w.d.query(`insert into plugin_instances (project, repo, plugin, id, def, position, updated_by, secret_keys)
                      values ('p', 'acme/web', 'rest', 'mine', '{"id": "mine", "name": "Mine", "settings": {"connection": "x", "path": "/"}}', 0, 'bob', '{}')`);
-    expect(await writePlan(w.d, plan, "alice", gh.impl)).toEqual([]);
+    expect(await writePlan(w.d, plan, "alice")).toEqual([]);
+    expect((await loadConfig(w.d, "p", "acme/web")).shipped).toEqual(["rest", "watchtower-session", "jira-transition", "jira-issue"]);
     const stored = await storedInstances(w.d, "p", "acme/web");
     expect(stored.rest.map((i) => i.id)).toEqual(["mine", "action-notify", "action-ping"]);
     expect(stored["jira-transition"].map((i) => i.id)).toEqual(["jira-review-in-qa", "jira-in-qa-qa-rejected", "jira-in-qa-requested",
