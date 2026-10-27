@@ -1,6 +1,7 @@
 // The GitHub token todo reads a project's repos with, for git facts, polling and
 // plugins: the one given for the project on Settings → Automation, else the
 // server's GITHUB_TOKEN for a repo of an owner TODO_PLUGIN_OWNERS lists.
+import crypto from "node:crypto";
 import type { Db } from "./db";
 import { pluginOwners } from "./checkouts";
 import { githubApi } from "./github";
@@ -42,11 +43,14 @@ export async function githubToken(d: Pick<Db, "query">, project: string, repo: s
   return server ? { token: server, source: "server" } : null;
 }
 
-/** The token a project's pull-request links are read with: its own, else the server's. */
-export async function prToken(d: Pick<Db, "query">, project: string): Promise<string | null> {
+/** What reads a project's pull-request links, by the link's repo: its own token, else the server's for a repo of its owners. */
+export async function prTokens(d: Pick<Db, "query">, project: string): Promise<(repo: string) => string | null> {
   const page = await pageGithub(d, project);
-  return page.given ? page.token : serverToken();
+  return (repo) => (page.given ? page.token : serverGithubToken(repo));
 }
+
+/** A token's fingerprint, for telling apart what each token saw without keeping the token. */
+export const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
 
 /** Whether any project could read GitHub here, so a tick has work to look for. */
 export async function anyGithubToken(d: Pick<Db, "query">): Promise<boolean> {

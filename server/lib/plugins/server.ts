@@ -11,7 +11,7 @@ import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs"
 import { docType, putObject } from "../files";
 import { scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
-import { anyGithubToken, githubToken } from "../github-token";
+import { anyGithubToken, githubToken, tokenHash } from "../github-token";
 import { itemBranches, nowIso } from "../model";
 import { jiraReadOnly } from "../jira/config";
 import { hashUid, ulid } from "../ulid";
@@ -589,12 +589,12 @@ async function pollTokens(d: Db, repo: string, items: OpenItem[]): Promise<strin
   return out;
 }
 
-/** The repo's branch pages, read with the first of its tokens GitHub doesn't refuse. */
-async function pollWith(repo: string, before: Page[], f: Fetch, tokens: string[]): Promise<Page[] | null> {
+/** The repo's branch pages, read with the first of its tokens GitHub doesn't refuse, and that token. */
+async function pollWith(repo: string, before: Page[], f: Fetch, tokens: string[]): Promise<{ pages: Page[]; token: string } | null> {
   let refused: Error | null = null;
   for (const token of tokens) {
     try {
-      return await branchPages(repo, before, f, token);
+      return { pages: await branchPages(repo, before, f, token), token };
     } catch (e) {
       if (!(e instanceof Refused)) throw e;
       refused = e;
@@ -612,14 +612,15 @@ async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: 
   for (const repo of repos) {
     const [state] = await d.query("select * from repo_polls where repo = $1", [repo]);
     if (state?.hook_at && Date.now() - new Date(state.hook_at).getTime() < HOOK_FRESH_MINUTES * 60_000) continue;
-    let pages: Page[] | null;
+    let got: { pages: Page[]; token: string } | null;
     try {
-      pages = await pollWith(repo, state?.pages ?? [], f, await pollTokens(d, repo, items));
+      got = await pollWith(repo, state?.pages ?? [], f, await pollTokens(d, repo, items));
     } catch (e) {
       console.error(`plugins: polling ${repo}: ${message(e)}`);
       continue;
     }
-    if (!pages) continue;
+    if (!got) continue;
+    const { pages } = got;
     polled++;
     const tips = Object.assign({}, ...pages.map((p) => p.tips)) as Record<string, string>;
     const before: Record<string, string> | null = state?.polled_at ? state.tips ?? {} : null;
@@ -628,9 +629,10 @@ async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: 
       for (const branch of moved) queued += await queueBranch(d, repo, branch, { type: "push", branch });
     }
     await d.query(
-      `insert into repo_polls (repo, pages, tips, polled_at) values ($1, $2::jsonb, $3::jsonb, now())
-       on conflict (repo) do update set pages = excluded.pages, tips = excluded.tips, polled_at = excluded.polled_at`,
-      [repo, JSON.stringify(pages), JSON.stringify(tips)]);
+      `insert into repo_polls (repo, pages, tips, polled_at, polled_with) values ($1, $2::jsonb, $3::jsonb, now(), $4)
+       on conflict (repo) do update set pages = excluded.pages, tips = excluded.tips, polled_at = excluded.polled_at,
+         polled_with = excluded.polled_with`,
+      [repo, JSON.stringify(pages), JSON.stringify(tips), tokenHash(got.token)]);
   }
   return { polled, queued };
 }

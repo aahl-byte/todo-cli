@@ -18,7 +18,7 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `CRON_SECRET` | the Jira retry cron (`/api/jira/flush`) |
    | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | the Jira bridge |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
-   | `GITHUB_TOKEN` | optional; the server-wide GitHub token: PR link status for private repos (read-only Pull requests, Checks and Commit statuses), and git facts and plugins for repos of `TODO_PLUGIN_OWNERS`. A project that gives its own token on Settings → Automation uses that for all its repos instead. Only plugins shipped with todo receive either; a custom plugin's `github` goes without it |
+   | `GITHUB_TOKEN` | optional; the server-wide GitHub token, for repos of `TODO_PLUGIN_OWNERS` only: PR link status on private repos (read-only Pull requests, Checks and Commit statuses), git facts and plugins. A project that gives its own token on Settings → Automation uses that for all its repos instead. Only plugins shipped with todo receive either; a custom plugin's `github` goes without it |
    | `GITHUB_WEBHOOK_SECRET` | optional; GitHub webhooks (`push`, `pull_request`, `deployment_status`) at `/api/github/webhook` |
    | `GITHUB_API_URL` | optional; GitHub's REST base, for GitHub Enterprise |
    | `TODO_SECRET_KEY` | 32 bytes (`openssl rand -base64 32`) that encrypt the tokens set on Settings → Automation, repo connection credentials and secret settings; without it the page can't save any of them, and says so |

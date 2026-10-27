@@ -8,8 +8,9 @@ import { PUT as configPUT } from "@/app/api/projects/[key]/plugins/config/route"
 import { GET as pluginsGET } from "@/app/api/projects/[key]/plugins/route";
 import { addProject } from "@/lib/auth";
 import { recomputeAll, remoteBranches, resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
-import { githubToken } from "@/lib/github-token";
-import { addressAllowed, type Resolved } from "@/lib/plugins/connections";
+import { linkPrStatuses, resetPrCache } from "@/lib/github";
+import { githubToken, prTokens, tokenHash } from "@/lib/github-token";
+import { addressAllowed, pathAllowed, type Resolved } from "@/lib/plugins/connections";
 import { queuePluginEvent } from "@/lib/plugins/queue";
 import { NoSecretKey } from "@/lib/plugins/secrets";
 import { flushPluginRuns, pluginTick } from "@/lib/plugins/server";
@@ -410,6 +411,9 @@ describe("the branches a project sees of a repo", () => {
     resetGitFactsCache();
     expect((await remoteBranches(w.d, "p", "acme/web", answering(403))).names).toEqual([]);
     resetGitFactsCache();
+    expect((await remoteBranches(w.d, "p", "acme/web", answering(502))).names).toEqual([]);
+    await w.d.query("update repo_polls set polled_with = $1", [tokenHash("page-token")]);
+    resetGitFactsCache();
     expect((await remoteBranches(w.d, "p", "acme/web", answering(502))).names).toEqual(["secret-branch"]);
   });
 });
@@ -461,5 +465,60 @@ describe("a repo connection edited in place, by two people", () => {
     await putConnection(w.d, "p", "acme/web", "hooks", { http: { url: "https://hooks.example", auth: "header:X-Key" } }, "bob", seen);
     await expect(putConnection(w.d, "p", "acme/web", "hooks", { http: { url: "https://hooks.example", auth: "basic" } }, "carol", seen))
       .rejects.toThrow(PluginConflict);
+  });
+});
+
+describe("a page's allowance at call time", () => {
+  it("gives way to a link-local address the name resolves to now, and keeps opening a private one", async () => {
+    const def = { http: { url: "http://rebind.example" } };
+    await put({ name: "wt", def, base: null, allowPrivate: true }, "p", privateDns);
+    const set = await hostSet(w.d, "p", "acme/web");
+    const at = (address: string) => guardFor("acme/web", async () => [{ address, family: address.includes(":") ? 6 : 4 }], set.privateOk);
+    expect(await addressAllowed("http://rebind.example", at("10.0.0.5"), "host", "wt")).toBe(true);
+    for (const address of ["169.254.169.254", "fe80::1", "::ffff:169.254.169.254"]) {
+      expect(await addressAllowed("http://rebind.example", at(address), "host", "wt"), address).toBe(false);
+    }
+    vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "rebind.example");
+    expect(await addressAllowed("http://rebind.example", at("169.254.169.254"), "host", "wt")).toBe(true);
+  });
+});
+
+describe("a path the server's token is kept to", () => {
+  it("can't hide a way out in encoded separators or dots, though a query may carry them", () => {
+    const prefixes = ["/repos/acme/"];
+    expect(pathAllowed("https://api.github.com", "/repos/acme/web/pulls?head=acme%3Afeat%2Fx", prefixes)).toBe(true);
+    for (const path of ["/repos/acme/%2e%2e%2fother/x", "/repos/acme/x%2F..%2Fother", "/repos/acme/%5c..%5cother"]) {
+      expect(pathAllowed("https://api.github.com", path, prefixes), path).toBe(false);
+    }
+  });
+});
+
+describe("pull-request links", () => {
+  const pr = (url: string) => ({ uid: url, meta: { url } });
+  const answers = () => {
+    const seen: { url: string; auth?: string }[] = [];
+    const f = (async (url: unknown, init?: RequestInit) => {
+      seen.push({ url: String(url), auth: (init?.headers as Record<string, string>)?.authorization });
+      return Response.json(String(url).includes("/pulls/") ? { number: 1, state: "closed", merged_at: "2026-10-01T00:00:00Z" } : {});
+    }) as Fetch;
+    return { f, pulls: () => seen.filter((s) => s.url.includes("/pulls/")) };
+  };
+
+  it("are read with the server's token only for its owners' repos, and with the project's own for any", async () => {
+    resetPrCache();
+    const one = answers();
+    await linkPrStatuses([pr("https://github.com/acme/web/pull/1"), pr("https://github.com/other/private/pull/1")], one.f, await prTokens(w.d, "p"));
+    expect(one.pulls().map((s) => [s.url.replace("https://api.github.com", ""), s.auth])).toEqual([
+      ["/repos/acme/web/pulls/1", "Bearer gh-token"], ["/repos/other/private/pulls/1", undefined]]);
+    await put({ name: "github", secret: "page-token", base: null });
+    resetPrCache();
+    const two = answers();
+    await linkPrStatuses([pr("https://github.com/other/private/pull/1")], two.f, await prTokens(w.d, "p"));
+    expect(two.pulls().map((s) => s.auth)).toEqual(["Bearer page-token"]);
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    resetPrCache();
+    const three = answers();
+    await linkPrStatuses([pr("https://github.com/acme/web/pull/1")], three.f, await prTokens(w.d, "p"));
+    expect(three.pulls().map((s) => s.auth)).toEqual([undefined]);
   });
 });

@@ -599,6 +599,16 @@ describe("a dependency note on a PR in another repo", () => {
     expect((await facts("B")).needs).toMatchObject([{ state: "unknown", reason: "couldn't check PR #3 against staging" }]);
   });
 
+  it("reads no PR with the server's token for a project whose own token doesn't decrypt", async () => {
+    await noted({});
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await putProjectConnection(w.d, "p", { name: "github", secret: "page-token", base: null }, "alice");
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    const gh = fakeGitHub(spec((p) => (p === "/repos/acme/db/pulls/3" ? dbPr("open") : undefined)));
+    await computeProject(w.d, "p", gh.impl);
+    expect(gh.calls).toEqual([]);
+  });
+
   it("reads no PR of an owner the server's token doesn't read, until the project gives a token of its own", async () => {
     await noted({});
     await w.d.query("update notes set meta = jsonb_set(meta, '{needs}', '\"https://github.com/elsewhere/db/pull/3\"') where uid = 'N1'");

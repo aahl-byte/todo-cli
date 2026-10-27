@@ -468,6 +468,9 @@ create table if not exists repo_polls (
   polled_at timestamptz,
   hook_at   timestamptz
 );
+-- polled_with: a hash of the token the tips were read with, so only a project
+-- reading with that token is shown them.
+alter table repo_polls add column if not exists polled_with text;
 
 -- Repos a project may read from GitHub and run plugins for, beyond the ones
 -- its members' CLIs report checkouts of.

@@ -113,17 +113,18 @@ allowPrivate?}`:
   recorded only for an address that is private when it's given. The guard
   waives the rule for that connection's name and host:port alone, and only for
   host-origin calls. A link-local address, where a cloud's metadata service
-  answers, is never allowed from the page.
+  answers, is never allowed from the page, at save time or when a call finds
+  the name resolving there.
 - **GitHub reads.** The project's github token reads its repos for git facts,
   polling, PR status and plugins, and a project that gave one never falls back
   to the server's, even while its own doesn't decrypt. The server's
-  `GITHUB_TOKEN` reads only repos of `TODO_PLUGIN_OWNERS`: the `github`
-  connection holding it refuses a path outside `/repos/<owner>/` of those
-  owners. PR link status alone still reads any link with it. A repo added on
+  `GITHUB_TOKEN` reads only repos of `TODO_PLUGIN_OWNERS`, PR link status
+  included: the `github` connection holding it refuses a path outside
+  `/repos/<owner>/` of those owners, or one with an encoded separator. A repo added on
   the page is the project's whatever its owner; a checkout brings one in only
   for those owners. The tick polls a repo with the first of its projects'
-  tokens GitHub accepts, and a project sees polled branch names only while its
-  own token can read the repo.
+  tokens GitHub accepts, and records which; a project sees polled branch names
+  only when that was its own token.
 
 ## The trust rule
 

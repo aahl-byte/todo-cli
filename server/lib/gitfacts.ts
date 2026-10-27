@@ -8,11 +8,10 @@
 // intersecting those sets in memory. A failure
 // never reads as "no edge": the stored facts stay, marked unknown.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
-import crypto from "node:crypto";
 import { db as appDb, type Db, type Row } from "./db";
 import { repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { githubApi } from "./github";
-import { anyGithubToken, githubToken, pageGithubToken, serverGithubToken } from "./github-token";
+import { anyGithubToken, githubToken, pageGithub, serverGithubToken, tokenHash } from "./github-token";
 import { later } from "./http";
 import { itemBranches } from "./model";
 
@@ -128,12 +127,12 @@ const BRANCH_LIST_MS = 5 * 60_000;
 const branchLists = new Map<string, { at: number; value: RemoteBranches }>();
 
 /** The repo's branches as the project's token sees them: GitHub's first page of them, or, while GitHub doesn't answer, the tips the
- * tick last polled; none without a token or once GitHub says the token can't see the repo, since the tick may poll with another
- * project's. Kept a few minutes for each token. */
+ * tick last polled with this same token; none without a token or once GitHub says the token can't see the repo. Kept a few
+ * minutes for each token. */
 export async function remoteBranches(d: Pick<Db, "query">, project: string, repo: string, f: Fetch = fetch): Promise<RemoteBranches> {
   const auth = await githubToken(d, project, repo);
   if (!auth) return { names: [], default: null, visible: null };
-  const at = `${repo}\x1f${crypto.createHash("sha256").update(auth.token).digest("hex")}`;
+  const at = `${repo}\x1f${tokenHash(auth.token)}`;
   const hit = branchLists.get(at);
   if (hit && Date.now() - hit.at < BRANCH_LIST_MS) return hit.value;
   let value: RemoteBranches;
@@ -146,7 +145,7 @@ export async function remoteBranches(d: Pick<Db, "query">, project: string, repo
     if (e instanceof NotFound) value = { names: [], default: null, visible: false };
     else if (e instanceof GitHubError && e.status < 500) value = { names: [], default: null, visible: null };
     else {
-      const [poll] = await d.query("select tips from repo_polls where repo = $1", [repo]);
+      const [poll] = await d.query("select tips from repo_polls where repo = $1 and polled_with = $2", [repo, tokenHash(auth.token)]);
       value = { names: Object.keys(poll?.tips ?? {}).sort(), default: null, visible: null };
     }
   }
@@ -237,8 +236,8 @@ type Facts = Required<Pick<GitFacts, "repo" | "branches" | "needs" | "needed_by"
  * branches in `covered`, which moved; an open PR with another base is refetched when `refetchOpen`. */
 interface Ctx {
   gh: GitHubRepo; tips: Record<string, string>; def: string; track: string[]; fixed: Set<string>;
-  /** The project's own GitHub token, which reads a PR a dependency names in another repo. */
-  own: string | null;
+  /** The project's own GitHub token, which reads a PR a dependency names in another repo; `token` is null while it doesn't decrypt. */
+  own: { given: boolean; token: string | null };
   closed: Map<string, PrFact[]>; covered: Set<string>; refetchOpen?: boolean;
 }
 type Key = string;
@@ -602,11 +601,11 @@ async function noteState(c: Ctx, dep: ItemRow | null, branches: BranchFact[], ti
 /** A dependency on a PR by URL, in any repo: landed once merged, and once its merge commit is in `into` when that's named.
  * Unknown when GitHub can't answer, and when todo has no token that reads the PR's repo: the project's own, or the server's for
  * an owner it reads. */
-async function prEdge(url: string, into: string | null, f: Fetch, own: string | null): Promise<Partial<Edge>> {
+async function prEdge(url: string, into: string | null, f: Fetch, own: Ctx["own"]): Promise<Partial<Edge>> {
   const m = url.match(/^https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#]|$)/i);
   if (!m) return { state: "waiting" };
   const [, owner, name, number] = m;
-  const token = own ?? serverGithubToken(`${owner}/${name}`.toLowerCase());
+  const token = own.given ? own.token : serverGithubToken(`${owner}/${name}`.toLowerCase());
   if (!token) {
     return { state: "unknown", reason: `todo has no GitHub token that reads ${owner}/${name}; give the project one on Settings → Automation` };
   }
@@ -734,7 +733,7 @@ function failed(old: GitFacts, why: string): GitFacts {
 /** Recompute every item's facts in the project from GitHub, keeping the CLI's conflicts; with `only`, just that repo's.
  * A repo the project may not use is never read. */
 export async function computeProject(d: Db, project: string, fetchImpl: Fetch = fetch, only?: string): Promise<void> {
-  const own = await pageGithubToken(d, project);
+  const own = await pageGithub(d, project);
   const everything = await d.query<ItemRow>("select uid, id, status, extra from items where project = $1 order by created, id", [project]);
   const all = everything.filter((it) => !it.extra?.archived);
   const stored = new Map<string, GitFacts>((await d.query("select item_uid, data from git_facts where project = $1", [project]))

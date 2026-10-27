@@ -120,11 +120,13 @@ export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch, token: string | n
   return entry.value;
 }
 
-/** Statuses for every link pointing at a GitHub PR, keyed by the link's uid, read with `token` (the server's by default). */
-export async function linkPrStatuses(links: Record<string, any>[], fetchImpl?: Fetch, token?: string | null): Promise<Record<string, PrStatus>> {
+/** Statuses for every link pointing at a GitHub PR, keyed by the link's uid, each read with the token `tokenFor` gives its repo
+ * (the server's by default). */
+export async function linkPrStatuses(links: Record<string, any>[], fetchImpl?: Fetch,
+                                     tokenFor: (repo: string) => string | null = () => process.env.GITHUB_TOKEN ?? null): Promise<Record<string, PrStatus>> {
   const found = await Promise.all(links.map(async (l) => {
     const ref = parsePrUrl(l.meta?.url);
-    return [l.uid, ref && (await prStatus(ref, fetchImpl, token === undefined ? process.env.GITHUB_TOKEN : token))] as const;
+    return [l.uid, ref && (await prStatus(ref, fetchImpl, tokenFor(`${ref.owner}/${ref.repo}`.toLowerCase())))] as const;
   }));
   return Object.fromEntries(found.filter((f): f is readonly [string, PrStatus] => !!f[1]));
 }
