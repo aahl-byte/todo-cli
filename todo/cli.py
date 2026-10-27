@@ -1666,6 +1666,39 @@ def _config_change(fn) -> None:
         die(str(e), 2)
 
 
+_BRANCH = re.compile(r"^(?!-)(?!.*\.\.)(?!.*//)[^\s~^:?*\[\\]+(?<![./])$")
+
+
+def _deploy_line(key: str, branches: list) -> str:
+    return f"{key}: deploy branches: {', '.join(branches)}" if branches else f"{key}: no deploy branches"
+
+
+def cmd_plugin_deploy_branches(root: Path, args) -> None:
+    _require_root(root)
+    key = _repo_arg(root, args)
+    if args.clear and (args.branches or args.add or args.remove):
+        die("--clear takes no branches.", 2)
+    if args.branches and (args.add or args.remove):
+        die("Give the branches, or --add and --remove, not both.", 2)
+    now = plugin_config.synced(root, key, fresh=True)["track"] if sync.enabled(root) else plugin_config.deploy_branches(root, key)
+    if not (args.clear or args.branches or args.add or args.remove):
+        print(_deploy_line(key, now))
+        return
+    if args.clear:
+        want = []
+    elif args.branches:
+        want = list(args.branches)
+    else:
+        want = [b for b in now if b not in (args.remove or [])] + [b for b in (args.add or []) if b not in now]
+    want = list(dict.fromkeys(b.strip() for b in want if b.strip()))
+    bad = [b for b in want if not _BRANCH.match(b)]
+    if bad:
+        die(f"Not a branch name: {', '.join(bad)}", 2)
+    stored: list = []
+    _config_change(lambda: stored.extend(plugin_config.set_deploy_branches(root, key, want)))
+    print(_deploy_line(key, stored))
+
+
 def cmd_plugin_switch(root: Path, args) -> None:
     _require_root(root)
     _plugins_on()
@@ -1953,7 +1986,7 @@ def build_parser() -> argparse.ArgumentParser:
     cu.add_argument("--server", action="store_true", help="also send it to the server, which keeps it encrypted")
     cu.set_defaults(func=cmd_connection_auth)
 
-    pp = sub.add_parser("plugin", parents=[common], help="list, configure, test and run a repo's plugins")
+    pp = sub.add_parser("plugin", parents=[common], help="list, configure, test and run a repo's plugins, and set its deploy branches")
     psub = pp.add_subparsers(dest="plugincmd", metavar="<plugincmd>")
     pl = psub.add_parser("list", parents=[common], help="each repo's plugins, instances, triggers and on/off state")
     pl.add_argument("--repo", help="owner/name (default: every repo with open items)")
@@ -1997,6 +2030,13 @@ def build_parser() -> argparse.ArgumentParser:
     pt.add_argument("--event", help="refresh (default), push[:branch], pr[:branch], deployment[:branch], "
                                     "status:<from>:<to> or manual:<instance>")
     pt.set_defaults(func=cmd_plugin_test)
+    pb = psub.add_parser("deploy-branches", parents=[common], help="show or set a repo's deploy branches, which git facts check work against")
+    pb.add_argument("branches", nargs="*", help="the deploy branches in the order work reaches them, e.g. staging main (replaces the list)")
+    pb.add_argument("--repo", help="owner/name (default: the repo here)")
+    pb.add_argument("--add", action="append", metavar="BRANCH", help="add one to the end; repeat for more")
+    pb.add_argument("--remove", action="append", metavar="BRANCH", help="take one off; repeat for more")
+    pb.add_argument("--clear", action="store_true", help="no deploy branches")
+    pb.set_defaults(func=cmd_plugin_deploy_branches)
     for verb, what in (("enable", "switch a plugin that ships with todo on for a repo"),
                        ("disable", "switch a shipped plugin off for a repo; its instances stay")):
         pe = psub.add_parser(verb, parents=[common], help=what)

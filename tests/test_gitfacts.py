@@ -8,7 +8,9 @@ import subprocess
 
 import pytest
 
-from todo import gitfacts, remote, store, sync
+from ruamel.yaml import YAML
+
+from todo import gitfacts, plugin_config, remote, store, sync, yamlio
 
 from .conftest import run_cli
 from .fake_server import FakeServer
@@ -22,15 +24,14 @@ def git(cwd, *args) -> str:
 
 
 class Fixture:
-    """`origin.git` (bare) and `work`, a clone that holds the store in work/.TODO."""
+    """`origin.git` (bare) and `work`, a clone that holds the store in work/.TODO, its deploy branches `track` (YAML, e.g.
+    "[staging, main]") in the store's .TODO/.plugins.yaml."""
 
     def __init__(self, tmp, track="[staging, main]"):
         self.origin, self.work = tmp / "origin.git", tmp / "work"
         git(tmp, "init", "--bare", "-b", "main", str(self.origin))
         git(tmp, "clone", "-q", str(self.origin), str(self.work))
         self.write("README", "hello\n")
-        if track is not None:
-            self.write(".todo-plugins/plugins.yaml", f"track: {track}\n")
         git(self.work, "commit", "-qm", "init")
         git(self.work, "push", "-q", "origin", "main")
         git(self.work, "remote", "set-head", "origin", "main")
@@ -39,6 +40,10 @@ class Fixture:
         self.root = self.work / store.ROOT_NAME
         (self.root / store.OPEN).mkdir(parents=True)
         self.prs = {}
+        self.key = gitfacts.store_repo(self.root)[0]
+        self.track = YAML(typ="safe").load(track) if track is not None else []
+        if self.track:
+            yamlio.write_atomic(self.root / plugin_config.LOCAL_FILE, yamlio.dump(yamlio.yaml(), {self.key: {"track": self.track}}))
 
     def write(self, path, text):
         f = self.work / path
@@ -508,7 +513,72 @@ def synced(fx, monkeypatch):
     server = FakeServer()
     remote.save_sync_config(fx.root, {"url": "http://fake", "project": "p", "deploy_step": True})
     monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    monkeypatch.setattr(remote, "remote_for", lambda root: server.client("alice"))
+    server.plugin_config[fx.key] = {"track": list(fx.track)}       # the server keeps a synced store's deploy branches
     return server
+
+
+def test_deps_json_lands_branches_in_the_deploy_branches_the_server_keeps(fx, synced, capsys):
+    synced.plugin_config[fx.key]["track"] = ["main"]            # the store's own .plugins.yaml says staging and main
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.merge("feat/a", "staging")
+    a = fx.item("Alpha", ["feat/a"])
+    sync.run_round(fx.root, synced.client("alice"))
+    sync.run_round(fx.root, synced.client("alice"))             # the first round creates the item, the next posts
+    capsys.readouterr()
+    run_cli(fx.root, ["deps", a, "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert [b["in"] for b in out["branches"]] == [{"main": False}] and out["waits_on"] == [] and out["hints"] == []
+    posted = {f["item_uid"]: f["data"] for f in synced.git_facts}
+    assert posted[store.resolve_item(fx.root, a)["uid"]]["branches"][0]["in"] == {"main": False}
+
+
+def test_deploy_branches_are_shown_and_set_in_a_local_only_store(fx, capsys, monkeypatch):
+    monkeypatch.chdir(fx.work)                                  # the repo here is the store's
+    run_cli(fx.root, ["plugin", "deploy-branches"])
+    assert capsys.readouterr().out == f"{fx.key}: deploy branches: staging, main\n"
+    run_cli(fx.root, ["plugin", "deploy-branches", "--remove", "staging", "--add", "release"])
+    assert capsys.readouterr().out == f"{fx.key}: deploy branches: main, release\n"
+    assert yamlio.read(fx.root / plugin_config.LOCAL_FILE) == {fx.key: {"track": ["main", "release"]}}
+    run_cli(fx.root, ["plugin", "deploy-branches", "--clear"])
+    assert capsys.readouterr().out == f"{fx.key}: no deploy branches\n"
+    assert yamlio.read(fx.root / plugin_config.LOCAL_FILE) == {}
+    for bad in (["no..good"], ["main", "--clear"]):
+        with pytest.raises(SystemExit):
+            run_cli(fx.root, ["plugin", "deploy-branches", *bad])
+    assert "Not a branch name: no..good" in capsys.readouterr().err
+
+
+def test_changing_the_deploy_branches_recomputes_with_no_tip_moving(fx, monkeypatch):
+    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.merge("feat/a", "staging")
+    a = fx.item("Alpha", ["feat/a"])
+    gitfacts.on_round(fx.root)
+    assert fx.facts(a)["branches"][0]["in"] == {"staging": True, "main": False}
+    gitfacts.on_round(fx.root)
+    run_cli(fx.root, ["plugin", "deploy-branches", "--repo", fx.key, "main"])
+    gitfacts.on_round(fx.root)
+    assert fx.facts(a)["branches"][0]["in"] == {"main": False}
+
+
+def test_deploy_branches_set_on_a_synced_store_go_to_the_server_and_its_git_facts(fx, synced, capsys):
+    fx.branch("feat/a")
+    fx.commit("feat/a", "a.txt", "a\n")
+    fx.merge("feat/a", "staging")
+    a = fx.item("Alpha", ["feat/a"])
+    run_cli(fx.root, ["plugin", "deploy-branches", "--repo", fx.key, "staging"])
+    assert capsys.readouterr().out == f"{fx.key}: deploy branches: staging\n"
+    assert synced.plugin_config[fx.key]["track"] == ["staging"]
+    assert yamlio.read(fx.root / plugin_config.LOCAL_FILE) == {fx.key: {"track": ["staging", "main"]}}
+    run_cli(fx.root, ["refresh", a])
+    assert fx.facts(a)["branches"][0]["in"] == {"staging": True}
+    synced.plugins_down = True
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "deploy-branches", "--repo", fx.key, "main"])
+    assert "The server didn't take it: fake offline" in capsys.readouterr().err
 
 
 def test_round_posts_facts_and_never_syncs_git_yaml(fx, synced):
@@ -1268,7 +1338,8 @@ def test_without_track_a_pr_based_on_staging_targets_staging_with_a_hint(tmp_pat
     assert fx.facts(a)["needed_by"] == []
     br = f["branches"][0]
     assert br["target"] == "staging" and "orphan" not in br
-    assert "based on staging" in br["hint"] and "track:" in br["hint"] and ".todo-plugins/plugins.yaml" in br["hint"]
+    assert br["hint"] == ("feat/b's PR is based on staging; if staging is long-lived, add it to the repo's deploy branches: "
+                          f"todo plugin deploy-branches --repo {fx.key} --add staging")
     approve(fx, b)
     run_cli(fx.root, ["stage", b])
     it = store.get_item(fx.root, b)

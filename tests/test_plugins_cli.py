@@ -395,7 +395,7 @@ def test_a_local_only_store_keeps_instances_in_its_plugins_file(fx, host, capsys
     run_cli(fx.root, ["plugin", "add", "p", "go", "--set", "to=review", "--on", "manual", "--name", "Go"])
     run_cli(fx.root, ["plugin", "set", "p/go", "--set", "n=3", "--disable"])
     data = yamlio.read(fx.root / ".plugins.yaml")
-    assert json.loads(json.dumps(data)) == {key: {"instances": {"p": [
+    assert json.loads(json.dumps(data)) == {key: {"track": ["staging", "main"], "instances": {"p": [
         {"id": "go", "name": "Go", "on": ["manual"], "settings": {"to": "review", "n": 3}, "enabled": False}]}}}
     run_cli(fx.root, ["plugin", "list"])
     assert "    go \"Go\"  off  · on: manual  · settings: to=review, n=3" in capsys.readouterr().out
@@ -407,7 +407,7 @@ def test_a_local_only_store_keeps_instances_in_its_plugins_file(fx, host, capsys
     assert call["storedInstances"]["p"][0]["settings"] == {"to": "review", "n": 3}
     assert call["event"] == {"type": "manual", "instance": "go"} and call["allowRepoCommands"] is True
     run_cli(fx.root, ["plugin", "rm", "p/go"])
-    assert yamlio.read(fx.root / ".plugins.yaml") == {}
+    assert yamlio.read(fx.root / ".plugins.yaml") == {key: {"track": ["staging", "main"]}}
 
 
 def test_a_synced_store_keeps_instances_on_the_server(fx, host, monkeypatch):
