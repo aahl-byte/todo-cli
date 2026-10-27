@@ -1347,7 +1347,7 @@ def _find_connection(root: Path | None, name: str, repo: str | None) -> tuple:
 def cmd_connection_test(root: Path, args) -> None:
     repo = checkout.repo_key(args.repo) if args.repo else None
     definition, owner = _find_connection(root, args.name, repo)
-    secrets = connections_mod.secrets_for(owner or "")
+    secrets = connections_mod.secrets_for(owner or "", {args.name: definition} if owner else None)
     secret = (secrets["repo"] if owner else secrets["host"]).get(args.name)
     ok, what = connections_mod.test(definition, secret)
     print(f"{args.name}: {'ok' if ok else 'failed'} — {what}")
@@ -1385,9 +1385,13 @@ def cmd_connection_auth(root: Path, args) -> None:
     secret = _read_secret(args.name)
     try:
         connections_mod.save_credential(connections_mod.cred_key(args.name, repo), secret)
+        bound = connections_mod.bind_credential(args.name, repo, _repo_declared(root, repo).get(args.name)) if repo else True
     except connections_mod.CredentialsError as e:
         die(str(e), 1)
     print(f"connection {args.name}: secret saved for {repo or 'this host'} (~/.todo/{connections_mod.CREDENTIALS_FILE})")
+    if not bound:
+        print(f"connection {args.name}: {repo}'s plugin config declares no {args.name} yet, so nothing gets this secret; "
+              "run this again once it does")
     if not args.server:
         return
     target = repo
@@ -1680,8 +1684,17 @@ def cmd_plugin_deploy_branches(root: Path, args) -> None:
         die("--clear takes no branches.", 2)
     if args.branches and (args.add or args.remove):
         die("Give the branches, or --add and --remove, not both.", 2)
-    now = plugin_config.synced(root, key, fresh=True)["track"] if sync.enabled(root) else plugin_config.deploy_branches(root, key)
-    if not (args.clear or args.branches or args.add or args.remove):
+    editing = bool(args.add or args.remove)
+    if not sync.enabled(root):
+        now = plugin_config.deploy_branches(root, key)
+    elif editing:
+        try:
+            now = plugin_config.synced(root, key, strict=True)["track"]       # an edit builds on the server's list as it is
+        except remote.RemoteError as e:
+            die(f"The server didn't answer, so its deploy branches can't be changed: {e}", 1)
+    else:
+        now = plugin_config.synced(root, key, fresh=True)["track"]
+    if not (args.clear or args.branches or editing):
         print(_deploy_line(key, now))
         return
     if args.clear:
@@ -1699,11 +1712,30 @@ def cmd_plugin_deploy_branches(root: Path, args) -> None:
     print(_deploy_line(key, stored))
 
 
+def _switch_problem(root: Path, name: str) -> str | None:
+    """Why a local-only store can't switch `name`, as the plugin host sees it; None when it can, or no host can say."""
+    if plugins_mod.host_command() is None:
+        return None
+    try:
+        always = {p["name"] for p in plugins_mod.describe(root, None)["plugins"]}
+        out = plugins_mod.describe(root, {"text": f"plugins:\n  {json.dumps(name)}: {{use: shipped}}\n", "code": {}})
+    except plugins_mod.HostError:
+        return None
+    if name in always:
+        return f"{name} is on for every repo; switch its instance off with `todo plugin set {name}/default --disable`."
+    err = next((e for e in out.get("errors") or [] if e.startswith(f"plugin {name}: ")), None)
+    return f"{err[len(f'plugin {name}: '):]}." if err else None
+
+
 def cmd_plugin_switch(root: Path, args) -> None:
     _require_root(root)
     _plugins_on()
     key = _repo_arg(root, args)
     on = args.plugincmd == "enable"
+    if not sync.enabled(root):
+        problem = _switch_problem(root, args.plugin)
+        if problem:
+            die(problem, 2)
     _config_change(lambda: plugin_config.set_shipped(root, key, args.plugin, on))
     print(f"plugin {args.plugin}: {'on' if on else 'off'} in {key}")
 

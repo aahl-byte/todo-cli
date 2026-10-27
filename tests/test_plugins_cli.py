@@ -548,9 +548,12 @@ def test_credentials_are_private_and_keyed_by_repo_or_host(on, monkeypatch, tmp_
     f = on / ".todo" / "credentials.json"
     assert stat.S_IMODE(f.stat().st_mode) == 0o600
     assert json.loads(f.read_text()) == {"*/github": "ghp_host", "acme/web/vercel": "vc_repo"}
-    assert connections.secrets_for("acme/web") == {"repo": {"vercel": "vc_repo"}, "host": {"github": "ghp_host"}}
-    assert connections.secrets_for("acme/other") == {"repo": {}, "host": {"github": "ghp_host"}}
-    assert "ghp_host" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "acme/web's plugin config declares no vercel yet, so nothing gets this secret" in out and "ghp_host" not in out
+    assert connections.secrets_for("acme/web", VERCEL) == {"repo": {}, "host": {"github": "ghp_host"}, "moved": ["vercel"]}
+    connections.bind_credential("vercel", "acme/web", VERCEL["vercel"])
+    assert connections.secrets_for("acme/web", VERCEL) == {"repo": {"vercel": "vc_repo"}, "host": {"github": "ghp_host"}, "moved": []}
+    assert connections.secrets_for("acme/other", VERCEL) == {"repo": {}, "host": {"github": "ghp_host"}, "moved": []}
 
 
 def test_auth_reads_the_secret_hidden_from_a_terminal(on, monkeypatch, tmp_path, capsys):
@@ -579,7 +582,7 @@ def test_auth_with_server_posts_a_repo_connection_s_secret(fx, synced, host, mon
     monkeypatch.setattr(sys, "stdin", io.StringIO("vc\n"))
     run_cli(fx.root, ["connection", "auth", "vercel", "--server"])
     assert synced.plugin_creds == [(key, "vercel", "vc")]
-    assert connections.load_credentials() == {f"{key}/vercel": "vc"}
+    assert connections.load_credentials() == {f"{key}/vercel": "vc", f"{key}/vercel@url": "https://api.vercel.com"}
 
 
 def test_connection_add_and_list(fx, host, capsys):
@@ -593,15 +596,22 @@ def test_connection_add_and_list(fx, host, capsys):
            "~/.todo/credentials.json" in out
 
 
-def test_the_payload_keeps_repo_and_host_secrets_apart(fx, host):
+def test_the_payload_keeps_repo_and_host_secrets_apart(fx, host, capsys):
+    hooks = {"hooks": {"http": {"url": "https://hooks.example/new", "auth": "bearer"}}}
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": ["push"], "settings": {}}], connections_={**VERCEL, **hooks})
     key = plugins_file(fx, "track: [staging, main]\n")
     connections.save_credential("*/github", "ghp_host")
     connections.save_credential(f"{key}/vercel", "vc")
+    connections.bind_credential("vercel", key, VERCEL["vercel"])
+    connections.save_credential(f"{key}/hooks", "given-for-the-old-url")
+    connections.bind_credential("hooks", key, {"http": {"url": "https://hooks.example/old"}})
     connections.save_credential("other/repo/vercel", "not-ours")
     a = item_with_branch(fx)
     refresh(fx.root, a)
     [call] = host.calls()
     assert call["secrets"] == {"repo": {"vercel": "vc"}, "host": {"github": "ghp_host"}}
+    assert (f"plugins: {key}'s hooks connection points elsewhere than where its secret here was given, so it gets none"
+            in capsys.readouterr().err)
     assert call["repoKey"] == key and call["hostConnections"]["github"]["http"]["url"] == "https://api.github.com"
     assert call["item"]["dir"] == str(fx.work) and call["item"]["branches"] == ["feat/a"]
     assert YAML(typ="safe").load(call["config"]["text"]) == {"track": ["staging", "main"]} and call["config"]["code"] == {}
@@ -693,6 +703,7 @@ def test_a_local_only_store_runs_a_code_plugin_from_the_file_beside_its_config(f
     assert [e["text"] for e in store.get_item(fx.root, a)["log"]] == [f"hello {a}"]
 
 
+@needs_node
 def test_enable_and_disable_switch_a_shipped_plugin_in_a_local_only_store(fx, capsys):
     key = plugins_file(fx, "track: [main]\n")
     run_cli(fx.root, ["plugin", "enable", "vercel-preview"])
@@ -704,6 +715,12 @@ def test_enable_and_disable_switch_a_shipped_plugin_in_a_local_only_store(fx, ca
     with pytest.raises(SystemExit):
         run_cli(fx.root, ["plugin", "enable", "rest"])
     assert f"{key} has a custom plugin named rest; rename it first" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "enable", "nope"])
+    assert "no plugin named nope ships with todo." in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "disable", "pr-link"])
+    assert "pr-link is on for every repo" in capsys.readouterr().err
 
 
 def test_enable_and_disable_go_to_the_server_on_a_synced_store(fx, synced, capsys):

@@ -8,7 +8,9 @@ one of the same name overrides the host's.
 
 Secrets live in ~/.todo/credentials.json (mode 0600), keyed
 `<owner/name>/<connection>` for a repo's connections and `*/<connection>` for
-the host's. A repo connection only ever gets its repo's secret.
+the host's. A repo connection only ever gets its repo's secret, and only while
+it points where the secret was given: `<owner/name>/<connection>@url` records
+that endpoint, since anyone who can edit the server's config can repoint it.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ CREDENTIALS_FILE = "credentials.json"
 CREDENTIALS_LOCK = ".credentials.lock"
 HOST = "*"
 GITHUB = "github"
+ENDPOINT = "@url"
 BUILT_IN = {GITHUB: {"http": {"url": "https://api.github.com", "auth": "bearer"}}}
 AUTHS = ("bearer", "basic")
 TEST_TIMEOUT = 10
@@ -157,12 +160,46 @@ def _github_fallback() -> str | None:
     return github_token()
 
 
-def secrets_for(repo: str) -> dict:
-    """`{repo, host}`: this host's secrets for `repo`'s connections and for its own, by connection name."""
+def endpoint(definition) -> str | None:
+    """Where a connection calls: an http or MCP URL, or an MCP command line."""
+    if not isinstance(definition, dict):
+        return None
+    for kind in ("http", "mcp"):
+        d = definition.get(kind)
+        if isinstance(d, dict):
+            if d.get("url"):
+                return str(d["url"])
+            if d.get("command"):
+                return " ".join([str(d["command"]), *map(str, d.get("args") or [])])
+    return None
+
+
+def bind_credential(name: str, repo: str, definition) -> bool:
+    """Record where the repo's connection pointed when its secret was given; False when it isn't declared."""
+    where = endpoint(definition)
+    if where is None:
+        return False
+    save_credential(cred_key(name, repo) + ENDPOINT, where)
+    return True
+
+
+def secrets_for(repo: str, declared: dict | None = None) -> dict:
+    """`{repo, host, moved}`: this host's secrets for `repo`'s connections and for its own, by connection name, and the
+    repo connections whose secret here was given for another endpoint than the one `declared` names, which get none."""
     creds = load_credentials()
     prefix = f"{repo}/"
-    out = {"repo": {k[len(prefix):]: v for k, v in creds.items() if repo and k.startswith(prefix)},
-           "host": {k[len(HOST) + 1:]: v for k, v in creds.items() if k.startswith(HOST + "/")}}
+    mine, moved = {}, []
+    for k, v in creds.items():
+        if not repo or not k.startswith(prefix) or k.endswith(ENDPOINT):
+            continue
+        name = k[len(prefix):]
+        if endpoint((declared or {}).get(name)) is None or creds.get(k + ENDPOINT) != endpoint(declared[name]):
+            if name in (declared or {}):
+                moved.append(name)
+            continue
+        mine[name] = v
+    out = {"repo": mine, "host": {k[len(HOST) + 1:]: v for k, v in creds.items() if k.startswith(HOST + "/") and not k.endswith(ENDPOINT)},
+           "moved": sorted(moved)}
     if GITHUB not in out["host"]:
         tok = _github_fallback()
         if tok:

@@ -579,6 +579,10 @@ def test_deploy_branches_set_on_a_synced_store_go_to_the_server_and_its_git_fact
     with pytest.raises(SystemExit):
         run_cli(fx.root, ["plugin", "deploy-branches", "--repo", fx.key, "main"])
     assert "The server didn't take it: fake offline" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "deploy-branches", "--repo", fx.key, "--add", "qa"])       # never on top of a cached list
+    assert "The server didn't answer, so its deploy branches can't be changed: fake offline" in capsys.readouterr().err
+    assert synced.plugin_config[fx.key]["track"] == ["staging"]
 
 
 def test_round_posts_facts_and_never_syncs_git_yaml(fx, synced):

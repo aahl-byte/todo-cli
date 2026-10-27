@@ -387,7 +387,8 @@ local-only store. Nothing is read from the repo itself.
   `TODO_PLUGIN_CONNECTIONS`). Host connections and their secrets go only to
   shipped plugins. A custom plugin gets the repo's connections, and `github`
   without the host's token.
-  `todo connection auth <name> [--repo owner/name] [--server]` stores a secret.
+  `todo connection auth <name> [--repo owner/name] [--server]` stores a secret;
+  a repo connection gets it only while it points where the secret was given.
 - **Where it runs:** each instance runs on one host. The server runs whatever
   it can reach and authorize; the rest run in the CLI of a developer with the
   repo checked out, after the command prints. A CLI never starts a command a

@@ -532,7 +532,11 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
                 rows = stored.setdefault(p["name"], [])
                 rows[:] = [r for r in rows if r.get("id") != i.get("id")]
                 rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
-    payload = {"hostConnections": connections.host_connections(), "secrets": connections.secrets_for(key),
+    secrets = connections.secrets_for(key, repo["described"].get("connections") or {})
+    for name in secrets.pop("moved"):
+        notice(f"plugins: {key}'s {name} connection points elsewhere than where its secret here was given, so it gets none; "
+               f"todo connection auth {name} --repo {key} gives it one")
+    payload = {"hostConnections": connections.host_connections(), "secrets": secrets,
                "storedInstances": stored, "grants": ctx.stored(key)["grants"],
                "item": item_json(it, key, repo["dir"], root / it["folder"] / it["id"]), "event": job.event, "repoKey": key,
                "dryRun": dry_run, "allowRepoCommands": not ctx.synced}

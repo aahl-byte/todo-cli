@@ -132,19 +132,22 @@ def updating_cache(root: Path):
         statelock.write_json(_cache(root), data)
 
 
-def synced(root: Path, key: str, client=None, project: str | None = None, fresh: bool = False) -> dict:
+def synced(root: Path, key: str, client=None, project: str | None = None, fresh: bool = False, strict: bool = False) -> dict:
     """The server's answer for the repo: cached for CACHE_EVERY seconds (unless `fresh`), its last good one while the
-    server fails, marked `stale` once that's older than STALE_AFTER."""
+    server fails, marked `stale` once that's older than STALE_AFTER. `strict` asks the server now and raises RemoteError
+    when it doesn't answer, for a change made on top of the answer."""
     got = gitfacts.read_json(_cache(root)).get(key) or {}
     failing = {**norm(got), "stale": time.time() - got.get("at", 0) > STALE_AFTER}
-    if time.time() - got.get("failed_at", 0) < RETRY_EVERY:
+    if not strict and time.time() - got.get("failed_at", 0) < RETRY_EVERY:
         return failing
-    if not fresh and time.time() - got.get("at", 0) < CACHE_EVERY:
+    if not (fresh or strict) and time.time() - got.get("at", 0) < CACHE_EVERY:
         return norm(got)
     if client is None and not sync.offline():
         client = remote.remote_for(root)
     fetch = getattr(client, "plugins", None)
     if fetch is None:
+        if strict:
+            raise RemoteError("this store's server can't be reached (offline)")
         return norm(got)
     try:
         answer = norm(fetch(project or (sync_config(root) or {}).get("project"), key))
@@ -152,6 +155,8 @@ def synced(root: Path, key: str, client=None, project: str | None = None, fresh:
         if e.status != 404:
             with updating_cache(root) as cache:
                 cache[key] = {**(cache.get(key) or {}), "failed_at": time.time()}
+            if strict:
+                raise
             return failing
         answer = norm({})
     with updating_cache(root) as cache:
