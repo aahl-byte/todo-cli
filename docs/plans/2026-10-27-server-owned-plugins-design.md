@@ -93,9 +93,9 @@ declares. A CLI gives its own secret for a repo connection only while that
 connection points where the secret was given: `todo connection auth` records
 the endpoint beside it.
 
-`host.ts` draws the line in `connectionsOf`: `shipped` decides, and nothing a
-person types into a config can make a custom plugin shipped, since a custom
-plugin can't take a shipped plugin's name.
+`host.ts` draws the line in `connectionsFor` and `connectionsOf`: `shipped`
+decides, and nothing a person types into a config can make a custom plugin
+shipped, since a custom plugin can't take a shipped plugin's name.
 
 The private-address rule is unchanged. `TODO_PLUGIN_ALLOW_HOSTS` opens a private
 host to the server's own connections with a bare `host[:port]`, and to one
