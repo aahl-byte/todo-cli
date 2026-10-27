@@ -31,8 +31,8 @@ export interface MovePlan {
   lines: string[];
   /** Why it can't be made now; empty when it can. */
   blockers: string[];
-  /** What the page sends back with the move, which is refused once it no longer matches. */
-  base: unknown;
+  /** A digest of what the move takes over, which the page sends back with it; the move is refused once it no longer matches. */
+  base: string;
 }
 
 /** A move that can't be made as asked; the API answers 400. */
