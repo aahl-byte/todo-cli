@@ -2,10 +2,15 @@
 // made on a stale page is refused, and the bridge's jobs move into the plugins
 // and back in one transaction each.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const jar = new Map<string, string>();
+vi.mock("next/headers", () => ({ cookies: async () => ({ get: (k: string) => (jar.has(k) ? { value: jar.get(k) } : undefined) }) }));
+vi.mock("next/cache", () => ({ revalidatePath: () => undefined }));
 import { GET as handoverGET, POST as handoverPOST } from "@/app/api/projects/[key]/plugins/handover/route";
 import { PUT as pluginsPUT } from "@/app/api/projects/[key]/plugins/route";
 import { PUT as configPUT } from "@/app/api/projects/[key]/plugins/config/route";
 import { saveJiraSettings } from "@/lib/jira/settings";
+import { saveActionsAction } from "@/app/settings-actions";
 import { linkedProjects } from "@/lib/jira/sync";
 import { heldPlugins } from "@/lib/plugins/exclusive";
 import { projectConnections, putInstances, repoPlugins, setShipped, storedGrants, storedInstances } from "@/lib/plugins/store";
@@ -286,6 +291,17 @@ describe("moving the General tab's Actions here", () => {
     const [conn] = await projectConnections(w.d, "p");
     expect([conn.name, conn.def, conn.held]).toEqual(["rest-hooks-example", { http: { url: "https://hooks.example", auth: "bearer" } }, true]);
     expect((await actions()).actions.map((a: { id: string }) => a.id)).toEqual(["rosm", "rosm-wip"]);
+  });
+
+  it("keeps a General tab loaded before the move from bringing a moved Action back", async () => {
+    await made("watchtower", "here");
+    jar.set("todo_token", w.tokens.alice);
+    const stale = await saveActionsAction("p", ACTIONS as never);
+    expect(stale.ok).toBe(false);
+    expect(stale.problems.map((p) => p.message)).toEqual([
+      "ROSM moved to Settings → Automation; move it back from there, or give this one another id.",
+      "ROSM - in Progress moved to Settings → Automation; move it back from there, or give this one another id."]);
+    expect((await actions()).actions.map((a: { id: string }) => a.id)).toEqual(["notify"]);
   });
 
   it("is refused once the Actions changed since the plan", async () => {
