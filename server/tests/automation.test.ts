@@ -115,7 +115,7 @@ describe("a repo nobody has set up", () => {
     });
     expect(row(rows, "vercel-preview").steps[0].setup).toBeFalsy();
     expect(row(rows, "vercel-preview").steps[1].connect).toBeUndefined();
-    expect(row(rows, "db-request").steps).toEqual([{ text: "Give todo db-request's address.", done: false }]);
+    expect(row(rows, "db-request").steps).toEqual([{ text: "Connect todo to db-request with an API token.", done: false }]);
     expect(JSON.stringify(rows)).not.toMatch(/TODO_|GITHUB_TOKEN|admin/i);
   });
 
