@@ -94,9 +94,8 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
       <GitFacts facts={data.git} base={ctx.readOnly?.base ?? `/p/${ctx.project}`} pluginEdges={data.pluginEdges} />
       {data.files?.length > 0 && <Files rows={data.files} jiraBase={ctx.jiraBase} />}
       {ctx.deployStep && <Checks rows={data.checks} ctx={ctx} />}
-      {ctx.actions.length > 0 && <Actions ctx={ctx} itemId={it.id} />}
-      {!ctx.readOnly && ((ctx.plugins?.length ?? 0) > 0 || (data.pluginNotices?.length ?? 0) > 0) && (
-        <Plugins ctx={ctx} itemId={it.id} notices={data.pluginNotices ?? []} />
+      {(ctx.actions.length > 0 || (!ctx.readOnly && ((ctx.plugins?.length ?? 0) > 0 || (data.pluginNotices?.length ?? 0) > 0))) && (
+        <Runs ctx={ctx} itemId={it.id} notices={data.pluginNotices ?? []} />
       )}
       <History rows={data.history} current={it.status} created={it.created} />
     </>
@@ -110,7 +109,7 @@ const SESSION_LABEL: Record<SessionStatus, string> = {
   busy: "working", idle: "idle", waiting: "waiting", stopped: "stopped", shell: "shell", unknown: "unreachable",
 };
 
-/** The Watchtower sessions this item's Actions started, kept fresh while the page is visible. */
+/** The Watchtower sessions this item's Actions and watchtower-session plugin started, kept fresh while the page is visible. */
 function useSessions(ctx: Ctx, kick: number): SessionState[] {
   const [sessions, setSessions] = useState<SessionState[]>([]);
   useEffect(() => {
@@ -139,10 +138,23 @@ function SessionLine({ s }: { s: SessionState }) {
   );
 }
 
-function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
-  const [busy, setBusy] = useState<string | null>(null);
+/** The Actions and plugin buttons, sharing one poll of their sessions, which a finished run refreshes. */
+function Runs({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: string[] }) {
   const [kick, setKick] = useState(0);
   const sessions = useSessions(ctx, kick);
+  const ran = () => setKick((k) => k + 1);
+  return (
+    <>
+      {ctx.actions.length > 0 && <Actions ctx={ctx} itemId={itemId} sessions={sessions} onRan={ran} />}
+      {!ctx.readOnly && ((ctx.plugins?.length ?? 0) > 0 || notices.length > 0) && (
+        <Plugins ctx={ctx} itemId={itemId} notices={notices} sessions={sessions} onRan={ran} />
+      )}
+    </>
+  );
+}
+
+function Actions({ ctx, itemId, sessions, onRan }: { ctx: Ctx; itemId: string; sessions: SessionState[]; onRan: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
   // Spins until the run is sent or has given up; only giving up is worth a toast.
   const run = async (id: string) => {
     setBusy(id);
@@ -152,7 +164,7 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
       r = await act.actionRun({ project: ctx.project, run: r.run });
     }
     setBusy(null);
-    setKick((k) => k + 1);
+    onRan();
     report(r);
   };
   return (
@@ -160,7 +172,7 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
       <div className="label">Actions</div>
       <div className="action-buttons">
         {ctx.actions.map((a) => {
-          const s = sessions.find((x) => x.actionId === a.id);
+          const s = sessions.find((x) => x.key === a.id);
           return (
             <div key={a.id} className="action-row">
               {a.runner === "server"
@@ -177,7 +189,7 @@ function Actions({ ctx, itemId }: { ctx: Ctx; itemId: string }) {
 }
 
 /** A button for each manual plugin instance, and a quiet line for each plugin whose last run here was skipped or failed. */
-function Plugins({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: string[] }) {
+function Plugins({ ctx, itemId, notices, sessions, onRan }: { ctx: Ctx; itemId: string; notices: string[]; sessions: SessionState[]; onRan: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   // Spins until the run is done; its outcome shows as a toast.
   const run = async (plugin: string, instance: string, label: string) => {
@@ -188,6 +200,7 @@ function Plugins({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: 
       r = await pluginRun({ project: ctx.project, event: r.event, label });
     }
     setBusy(null);
+    onRan();
     if (r.ok) notify(r.message ?? `${label}: done`);
     else report(r);
   };
@@ -197,6 +210,7 @@ function Plugins({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: 
       <div className="action-buttons">
         {(ctx.plugins ?? []).map((b) => {
           const id = `${b.plugin}/${b.instance}`;
+          const s = sessions.find((x) => x.key === id);
           return (
             <div key={id} className="action-row" data-plugin-button={id}>
               {b.server
@@ -204,6 +218,7 @@ function Plugins({ ctx, itemId, notices }: { ctx: Ctx; itemId: string; notices: 
                           onClick={() => void run(b.plugin, b.instance, b.label)}>{busy === id && <span className="spin" aria-label="running" />}{b.label}</button>
                 : <CopyButton className="btn" text={`todo plugin run ${itemId} ${id}`}
                               tip={`runs in a developer's CLI (${b.reason}): todo plugin run ${itemId} ${id} (click to copy)`}>{b.label} ⧉</CopyButton>}
+              {s && <SessionLine s={s} />}
             </div>
           );
         })}

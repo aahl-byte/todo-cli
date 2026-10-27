@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as listRoute } from "@/app/api/projects/[key]/actions/route";
 import { POST as runRoute } from "@/app/api/projects/[key]/actions/run/route";
 import { POST as checkoutRoute } from "@/app/api/projects/[key]/checkout/route";
@@ -10,6 +10,7 @@ import { cleanAction, fill, firesOn, itemVars, render, validateActions, type Act
 import { flushActions, MAX_ATTEMPTS, queueManualAction } from "@/lib/actions/runs";
 import { STATUSES } from "@/lib/model";
 import { item, set, world, type World } from "./helpers";
+import { publicDns } from "./plugin-github";
 
 let w: World;
 beforeEach(async () => {
@@ -269,13 +270,73 @@ describe("session states", () => {
     const { f, calls } = fakeFetch((c) => c.url.endsWith("/s1") ? { json: { id: "s1b", status: "busy", url: "http://wt/?session=s1b" } }
       : c.url.endsWith("/s2") ? { json: { id: "s2", status: "waiting", waitingFor: "permission prompt" } }
       : { status: 404, json: { error: "no such session" } });
-    const states = await itemSessions(w.d, "p", "I1", f);
+    const states = await itemSessions(w.d, "p", "I1", { fetch: f });
     expect(calls.map((c) => c.url)).not.toContain("http://wt/api/sessions/old");
     expect(states).toEqual([
-      { actionId: "agent", name: "agent", session: "s1b", url: "http://wt/?session=s1b", status: "busy", waitingFor: null },
-      { actionId: "review", name: "review", session: "s2", url: "http://wt/?session=s2", status: "waiting", waitingFor: "permission prompt" },
+      { key: "agent", name: "agent", session: "s1b", url: "http://wt/?session=s1b", status: "busy", waitingFor: null },
+      { key: "review", name: "review", session: "s2", url: "http://wt/?session=s2", status: "waiting", waitingFor: "permission prompt" },
     ]);
-    expect(await boardSessions(w.d, "p", f)).toEqual({ I1: { status: "busy", waitingFor: null } });
+    expect(await boardSessions(w.d, "p", { fetch: f })).toEqual({ I1: { status: "busy", waitingFor: null } });
+  });
+
+  describe("the watchtower-session plugin's", () => {
+    const ran = async (itemUid: string, instance: string, result: Record<string, unknown> = {}, dryRun = false) => {
+      await w.d.query(
+        `insert into plugin_runs (project, item_uid, repo, plugin, instance, event, result, applied, dry_run)
+         values ('p', $1, 'acme/web', 'watchtower-session', $2, '{"type":"manual"}', $3::jsonb, '[]', $4)`,
+        [itemUid, instance, JSON.stringify({ attached: [], wouldSend: [], log: [], ...result }), dryRun]);
+    };
+    const roster = { sessions: [
+      { id: "old", name: "todo: i1", state: "stopped", lastActivity: 1 },
+      { id: "live", name: "todo: i1", state: "active", lastActivity: 2 },
+      { id: "gone", name: "todo: i2", state: "stopped", lastActivity: 5 },
+      { id: "other", name: "todo: i3", state: "active", lastActivity: 9 },
+    ] };
+
+    beforeEach(async () => {
+      vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ watchtower: { http: { url: "https://wt.example/latest", auth: "bearer" } } }));
+      vi.stubEnv("TODO_PLUGIN_SECRET_WATCHTOWER", "wt-token");
+      for (const uid of ["I1", "I2", "I3", "I4"]) await w.one("alice", item(uid));
+      await w.d.query(
+        `insert into plugin_instances (project, repo, plugin, id, def, updated_by)
+         values ('p', 'acme/web', 'watchtower-session', 'agent', $1::jsonb, 'alice')`,
+        [JSON.stringify({ id: "agent", name: "Agent", settings: { link: "https://wt.link/latest/" } })]);
+    });
+
+    it("finds the item's own session through the repo's watchtower connection, live before stopped", async () => {
+      await ran("I1", "agent");
+      await ran("I2", "agent");
+      await ran("I3", "agent", { error: "watchtower: POST /api/sessions answered 500" });
+      await ran("I4", "agent", {}, true);
+      const { f, calls } = fakeFetch((c) => c.url.endsWith("/api/roster") ? { json: roster }
+        : c.url.endsWith("/api/sessions/live") ? { json: { id: "live", status: "waiting", waitingFor: "permission prompt" } }
+        : { status: 404, json: { error: "no such session" } });
+      const net = { fetch: f, lookup: publicDns };
+      expect(await itemSessions(w.d, "p", "I1", net)).toEqual([
+        { key: "watchtower-session/agent", name: "Agent", session: "live", url: "https://wt.link/latest/?session=live", status: "waiting",
+          waitingFor: "permission prompt" },
+      ]);
+      expect(await itemSessions(w.d, "p", "I2", net)).toEqual([
+        { key: "watchtower-session/agent", name: "Agent", session: "gone", url: "https://wt.link/latest/?session=gone", status: "stopped", waitingFor: null },
+      ]);
+      expect(await itemSessions(w.d, "p", "I3", net)).toEqual([]);
+      expect(await itemSessions(w.d, "p", "I4", net)).toEqual([]);
+      expect(calls.every((c) => c.url.startsWith("https://wt.example/latest/api/"))).toBe(true);
+      expect(await boardSessions(w.d, "p", net)).toEqual({ I1: { status: "waiting", waitingFor: "permission prompt" } });
+    });
+
+    it("sends the connection's credential, and shows the session as unreachable when Watchtower doesn't answer", async () => {
+      await ran("I1", "agent");
+      const auth: (string | null)[] = [];
+      const f = (async (_url: string, init: RequestInit = {}) => {
+        auth.push(new Headers(init.headers).get("authorization"));
+        return new Response("no", { status: 401 });
+      }) as unknown as typeof fetch;
+      expect(await itemSessions(w.d, "p", "I1", { fetch: f, lookup: publicDns })).toEqual([
+        { key: "watchtower-session/agent", name: "Agent", session: "", url: "https://wt.link/latest", status: "unknown", waitingFor: null },
+      ]);
+      expect(auth).toEqual(["Bearer wt-token"]);
+    });
   });
 });
 
