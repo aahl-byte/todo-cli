@@ -46,7 +46,7 @@ export interface Share {
   /** The commit through which A's work reached T(B); the hint lasts until B holds it. */
   landing?: string | null;
 }
-export interface Hint { id: string; item?: string; branch: string; via: string; files: string[] }
+export interface Hint { id: string; item?: string; branch: string; via: string; files: string[]; title?: string }
 export interface GitFacts {
   repo?: string; branches?: BranchFact[]; needs?: Edge[]; needed_by?: Edge[]; shares?: Share[]; conflicts?: Hint[]; overlaps?: Hint[];
   waits_on?: string[]; notice?: string; error?: string; conflicts_by?: string; at?: string;
@@ -886,7 +886,18 @@ export async function itemGitFacts(d: Db, project: string, itemUid: string, fetc
   const [row] = await d.query("select data, extract(epoch from now() - at) * 1000 as age from git_facts where project = $1 and item_uid = $2", [project, itemUid]);
   const repo = repoKey(it?.extra?.repo);
   if ((!row || Number(row.age) >= STALE_MS) && repo && (await githubToken(d, project, repo))) void scheduleRecompute(d, project, fetchImpl);
-  return { ...(row?.data ?? {}), hints: HINTS };
+  return { ...(await withTitles(d, project, row?.data ?? {})), hints: HINTS };
+}
+
+/** The other items' titles on each conflict and overlap, for showing them by name. */
+async function withTitles(d: Db, project: string, facts: GitFacts): Promise<GitFacts> {
+  const hints = [...(facts.conflicts ?? []), ...(facts.overlaps ?? [])];
+  const uids = [...new Set(hints.map((h) => h.item).filter((u): u is string => !!u))];
+  if (!uids.length) return facts;
+  const rows = await d.query("select uid, title from items where project = $1 and uid = any($2)", [project, uids]);
+  const title = new Map<string, string>(rows.map((r) => [String(r.uid), String(r.title)]));
+  const named = (hs?: Hint[]) => hs?.map((h) => (h.item && title.has(h.item) ? { ...h, title: title.get(h.item) } : h));
+  return { ...facts, conflicts: named(facts.conflicts), overlaps: named(facts.overlaps) };
 }
 
 /** Recompute every project whose items list branches in a repo todo has a GitHub token for, for a cron tick. */
