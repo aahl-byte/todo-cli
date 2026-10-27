@@ -32,10 +32,10 @@ export interface ServiceAddresses { github: string; jira: string | null; watchto
 /** Every known service, with the addresses this server knows filled in. */
 export function services(at: ServiceAddresses): Service[] {
   return [
-    { name: "github", label: "GitHub", url: at.github, placeholder: at.github, auth: "bearer", secret: "Token", fixed: true,
+    { name: "github", label: "GitHub", url: at.github, placeholder: at.github, auth: "bearer", secret: "GitHub access token", fixed: true,
       tokenUrl: "https://github.com/settings/personal-access-tokens/new",
       hint: "A fine-grained token with read access to the project's repos." },
-    { name: "vercel", label: "Vercel", url: "https://api.vercel.com", placeholder: "https://api.vercel.com", auth: "bearer", secret: "Token",
+    { name: "vercel", label: "Vercel", url: "https://api.vercel.com", placeholder: "https://api.vercel.com", auth: "bearer", secret: "Vercel API token",
       tokenUrl: "https://vercel.com/account/tokens", hint: "A token with access to the team the projects are in." },
     { name: "jira", label: "Jira", url: at.jira ?? "", placeholder: "https://your-site.atlassian.net", auth: "basic", user: "Email", pass: "API token",
       tokenUrl: "https://id.atlassian.com/manage-profile/security/api-tokens", hint: "The site URL, and the email and API token of the account that moves tickets." },

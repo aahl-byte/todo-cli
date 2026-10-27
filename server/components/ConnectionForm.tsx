@@ -50,14 +50,18 @@ export function ConnectionForm({ projectKey, name: fixedName, current, service, 
 }) {
   const router = useRouter();
   const own = current?.source === "page" ? current : null;
-  // A fixed service always authorizes its own way; anything else starts from what's there, else the service's usual.
-  const start = current && !service?.fixed ? { url: current.url ?? "", ...authKind(current.auth) }
+  // A fixed service keeps its address; a service that takes a token authorizes its own way; anything else starts from what's there.
+  const ownAuth = !service || service.auth === "none";
+  const start = current && !service?.fixed
+    ? { url: current.url ?? "", ...(ownAuth ? authKind(current.auth) : { kind: service!.auth, header: "" }) }
     : { url: current?.url ?? service?.url ?? "", kind: service?.auth ?? "none", header: "" };
   const [name, setName] = useState(fixedName ?? "");
   const [url, setUrl] = useState(start.url);
   const [kind, setKind] = useState<AuthKind>(start.kind);
   const [header, setHeader] = useState(start.header);
   const [secret, setSecret] = useState("");
+  // A known service authorizes its own way, so it asks only for the token; anything else picks how.
+  const [pickAuth, setPickAuth] = useState(!service || (service.auth === "none" && start.kind !== "none"));
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [allow, setAllow] = useState(false);
@@ -108,7 +112,7 @@ export function ConnectionForm({ projectKey, name: fixedName, current, service, 
       onDone(own.name);
     }
   });
-  const secretLabel = service?.secret ?? (kind === "header" ? `${header.trim() || "Header"} value` : "Token");
+  const secretLabel = service?.secret ?? (kind === "header" ? `${header.trim() || "Header"} value` : "API token");
   const stored = own?.held && !moved ? "stored · type to replace" : "never shown again";
   return (
     <form className="conn-form" data-connection-form={fixedName ?? "new"} onSubmit={(e) => { e.preventDefault(); if (!missing) submit(); }}>
@@ -127,15 +131,18 @@ export function ConnectionForm({ projectKey, name: fixedName, current, service, 
                  onChange={(e) => { setUrl(e.target.value); setRefused(null); setAllow(false); setPrivate(false); }} />
         </label>
       )}
-      {!fixed && (
+      {!fixed && service?.auth === "none" && !pickAuth && (
+        <button type="button" className="link-btn conn-needs-token" onClick={() => setPickAuth(true)}>{service.label} needs a token? ›</button>
+      )}
+      {!fixed && pickAuth && (
         <div className="conn-auth">
           <label className="field">
             <span className="field-label">Authorizes with</span>
             <select aria-label={`${label} auth`} value={kind} onChange={(e) => setKind(e.target.value as AuthKind)}>
               <option value="none">nothing</option>
-              <option value="bearer">a bearer token</option>
-              <option value="basic">a user and password</option>
-              <option value="header">a header</option>
+              <option value="bearer">an API token</option>
+              <option value="basic">a username and password</option>
+              <option value="header">an API key in a header</option>
             </select>
           </label>
           {kind === "header" && (
