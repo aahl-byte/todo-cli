@@ -201,9 +201,10 @@ class Remote:
         """Change the repo's plugin config: `track=[...]`, `enable=name` or `disable=name`."""
         return self.request("PUT", self._plugins_path(project, "/config"), {"repo": repo, **change})
 
-    def plugin_credential(self, project: str, repo: str, connection: str, secret: str) -> dict:
+    def plugin_credential(self, project: str, repo: str, connection: str, secret: str, endpoint: str | None) -> dict:
+        """Store a repo connection's secret, given for `endpoint`; the server answers 409 if the connection points elsewhere."""
         return self.request("POST", self._plugins_path(project, "/credentials"),
-                            {"repo": repo, "connection": connection, "secret": secret})
+                            {"repo": repo, "connection": connection, "secret": secret, "endpoint": endpoint})
 
     def run_action(self, project: str, item: str, action: str) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/actions/run"

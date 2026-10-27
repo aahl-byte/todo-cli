@@ -41,6 +41,8 @@ class FakeServer:
         self.git_facts_offline = False
         self.plugin_config = {}  # repo → {config, track, shipped, instances, grants}; None answers 404, like an older server
         self.plugin_creds = []   # (repo, connection, secret) per credential posted
+        self.cred_endpoints = []  # the endpoint each was posted for
+        self.creds_moved = False  # True: the server's config points the connection elsewhere
         self.plugin_gets = 0
         self.plugin_tombs = set()
         self.host_secrets = []
@@ -417,11 +419,14 @@ class FakeServer:
                     got["grants"][plugin] = list(grants)
                 return {"ok": True}
 
-            def plugin_credential(self, project, repo, connection, secret):
+            def plugin_credential(self, project, repo, connection, secret, endpoint=None):
+                from todo.remote import RemoteError
                 if server.creds_unkeyed:
-                    from todo.remote import RemoteError
                     raise RemoteError("no TODO_SECRET_KEY", 503)
+                if server.creds_moved:
+                    raise RemoteError(f"{connection} points at https://elsewhere now, not {endpoint}", 409)
                 server.plugin_creds.append((repo, connection, secret))
+                server.cred_endpoints.append(endpoint)
                 return {"ok": True}
 
             def changes(self, project, since, limit=500):

@@ -30,6 +30,20 @@ export class PluginInputError extends Error {
   }
 }
 
+/** The change was made against something that has changed since; the API answers 409. */
+export class PluginConflict extends Error {}
+
+/** Where a connection calls: its http or MCP URL, or an MCP command line. A credential is given for this. */
+export function endpointOf(def: unknown): string | null {
+  if (!isMap(def)) return null;
+  for (const kind of ["http", "mcp"]) {
+    const c = def[kind];
+    if (isMap(c) && typeof c.url === "string") return c.url;
+    if (isMap(c) && typeof c.command === "string") return [c.command, ...(Array.isArray(c.args) ? c.args : [])].join(" ");
+  }
+  return null;
+}
+
 // ── the config ────────────────────────────────────────────────────────────────
 export interface StoredCustom extends CustomPlugin { updated_by: string; updated_at: string }
 
@@ -117,8 +131,11 @@ export async function putConnection(d: Db, project: string, repo: string, name: 
   const conn = file.connections![name];
   if ("mcp" in conn && "command" in conn.mcp) throw new PluginInputError(`connection ${name}: give an MCP server's URL; the server never starts a command`);
   await d.tx(async (t) => {
-    const [row] = await t.query("select connections -> $3::text as def from plugin_configs where project = $1 and repo = $2", [project, repo, name]);
-    if (row?.def && canonical(row.def) !== canonical(conn)) await forget(t);
+    await t.query("insert into plugin_configs (project, repo, updated_by) values ($1, $2, $3) on conflict (project, repo) do nothing", [project, repo, handle]);
+    const [row] = await t.query("select connections -> $3::text as def from plugin_configs where project = $1 and repo = $2 for update",
+                                [project, repo, name]);
+    // A credential left from before the connection was declared, or given for another definition, isn't this one's.
+    if (!row?.def || canonical(row.def) !== canonical(conn)) await forget(t);
     await updateConfig(t, project, repo, handle, "connections = connections || jsonb_build_object($4::text, $5::jsonb)", [name, JSON.stringify(conn)]);
   });
 }
@@ -353,9 +370,10 @@ export function guardFor(repo: string, lookup?: AddressGuard["lookup"]): Address
 
 const credentialScope = (project: string, repo: string, connection: string) => [project, repo, connection];
 
-/** Store (or, with null, forget) the secret for a connection the repo's config declares. */
-export async function putCredential(d: Pick<Db, "query">, project: string, repo: string, connection: unknown, secret: unknown,
-                                    handle: string): Promise<void> {
+/** Store (or, with null, forget) the secret for a connection the repo's config declares, given for `endpoint`, where the person
+ * saw it point. Checked against the config in the same transaction that writes it, so a repoint can't slip between. */
+export async function putCredential(d: Db, project: string, repo: string, connection: unknown, secret: unknown, handle: string,
+                                    endpoint?: unknown): Promise<void> {
   if (typeof connection !== "string" || !NAME.test(connection) || INHERITED.includes(connection)) {
     throw new PluginInputError("connection must be a connection name");
   }
@@ -363,28 +381,43 @@ export async function putCredential(d: Pick<Db, "query">, project: string, repo:
     await d.query("delete from plugin_credentials where project = $1 and repo = $2 and connection = $3", [project, repo, connection]);
     return;
   }
-  if (!Object.hasOwn((await loadConfig(d, project, repo)).connections, connection)) {
-    throw new PluginInputError(`${repo}'s config declares no connection ${connection}; a credential is given for a declared one`);
-  }
-  const key = secretKey();
-  if (!key) throw new NoSecretKey();
-  if (typeof secret !== "string" || !secret) throw new PluginInputError("secret must be a non-empty string, or null to forget it");
-  await d.query(
-    `insert into plugin_credentials (project, repo, connection, secret_enc, updated_by, updated_at) values ($1, $2, $3, $4, $5, now())
-     on conflict (project, repo, connection) do update set secret_enc = excluded.secret_enc, updated_by = excluded.updated_by,
-       updated_at = excluded.updated_at`, [project, repo, connection, encryptSecret(secret, credentialScope(project, repo, connection), key), handle]);
+  await d.tx(async (t) => {
+    const [row] = await t.query("select connections -> $3::text as def from plugin_configs where project = $1 and repo = $2 for update",
+                                [project, repo, connection]);
+    if (!row?.def) throw new PluginInputError(`${repo}'s config declares no connection ${connection}; a credential is given for a declared one`);
+    if (typeof secret !== "string" || !secret) throw new PluginInputError("secret must be a non-empty string, or null to forget it");
+    if (typeof endpoint !== "string" || !endpoint) throw new PluginInputError("give endpoint: where the connection pointed when its credential was entered");
+    const now = endpointOf(row.def);
+    if (now !== endpoint) throw new PluginConflict(`${connection} points at ${now} now, not ${endpoint}; reload and enter the credential again`);
+    const key = secretKey();
+    if (!key) throw new NoSecretKey();
+    await t.query(
+      `insert into plugin_credentials (project, repo, connection, secret_enc, endpoint, updated_by, updated_at) values ($1, $2, $3, $4, $5, $6, now())
+       on conflict (project, repo, connection) do update set secret_enc = excluded.secret_enc, endpoint = excluded.endpoint,
+         updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+      [project, repo, connection, encryptSecret(secret, credentialScope(project, repo, connection), key), endpoint, handle]);
+  });
 }
 
-/** The secrets stored for the repo's connections that this server can read; none without TODO_SECRET_KEY. */
-export async function repoSecrets(d: Pick<Db, "query">, project: string, repo: string): Promise<Record<string, string>> {
+/** The credentials for the repo's connections that still point where each was given: those this server can read, and the
+ * names of those it can't (no TODO_SECRET_KEY, or a different one). */
+async function credentials(d: Pick<Db, "query">, project: string, repo: string): Promise<{ secrets: Record<string, string>; unreadable: string[] }> {
   const key = secretKey();
-  if (!key) return {};
-  const out: Record<string, string> = {};
-  for (const r of await d.query("select connection, secret_enc from plugin_credentials where project = $1 and repo = $2", [project, repo])) {
-    const plain = decryptSecret(r.secret_enc, credentialScope(project, repo, r.connection), key);
-    if (plain !== null) out[r.connection] = plain;
+  const { connections } = await loadConfig(d, project, repo);
+  const secrets: Record<string, string> = {};
+  const unreadable: string[] = [];
+  for (const r of await d.query("select connection, secret_enc, endpoint from plugin_credentials where project = $1 and repo = $2", [project, repo])) {
+    if (!Object.hasOwn(connections, r.connection) || r.endpoint !== endpointOf(connections[r.connection])) continue;
+    const plain = key ? decryptSecret(r.secret_enc, credentialScope(project, repo, r.connection), key) : null;
+    if (plain === null) unreadable.push(r.connection);
+    else secrets[r.connection] = plain;
   }
-  return out;
+  return { secrets, unreadable };
+}
+
+/** The secrets this server can read for the repo's connections, each only while its connection points where it was given. */
+export async function repoSecrets(d: Pick<Db, "query">, project: string, repo: string): Promise<Record<string, string>> {
+  return (await credentials(d, project, repo)).secrets;
 }
 
 // ── repos a project may use ───────────────────────────────────────────────────
@@ -470,9 +503,7 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
   const instances = await storedInstances(d, project, repo);
   const stored = await loadConfig(d, project, repo);
   const merged = merge(stored, instances);
-  const secrets = await repoSecrets(d, project, repo);
-  const unreadable = (await d.query("select connection from plugin_credentials where project = $1 and repo = $2", [project, repo]))
-    .map((x) => x.connection as string).filter((c) => !(c in secrets));
+  const { secrets, unreadable } = await credentials(d, project, repo);
   const usable = merge(stored, await storedInstances(d, project, repo, { secrets: true }));
   const given = { hostConnections: hostConnections(), secrets: { repo: secrets, host: hostSecrets() } };
   const connections = { shipped: connectionsFor(given, usable.file, true), custom: connectionsFor(given, usable.file) };

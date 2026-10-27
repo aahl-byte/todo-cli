@@ -1265,12 +1265,12 @@ def _plugins_on() -> None:
         die(f"Plugins are off on this host ({plugins_mod.OFF_ENV}=0).", 2)
 
 
-def _repo_declared(root: Path | None, key: str) -> dict:
+def _repo_declared(root: Path | None, key: str, fresh: bool = False) -> dict:
     """The connections a repo's plugin config declares."""
     if not key or root is None or not root.is_dir():
         return {}
     try:
-        described = plugins_mod.Context(root).repo(key)["described"]
+        described = plugins_mod.Context(root, fresh=fresh).repo(key)["described"]
     except plugins_mod.HostError:
         return {}
     return (described or {}).get("connections") or {}
@@ -1376,7 +1376,7 @@ def cmd_connection_auth(root: Path, args) -> None:
         repo = repo or _here_repo(root)
         if not repo:
             die("--server needs the repo: pass --repo owner/name.", 2)
-        if args.name not in _repo_declared(root, repo):
+        if args.name not in _repo_declared(root, repo, fresh=True):
             die(f"{repo}'s plugin config declares no connection {args.name}, so this would be a host-wide secret, "
                 "and those stay on this host. Declare the connection on Settings → Automation, or drop --server.", 2)
     elif repo is None and args.name not in connections_mod.host_connections():
@@ -1395,11 +1395,14 @@ def cmd_connection_auth(root: Path, args) -> None:
     if not args.server:
         return
     target = repo
+    endpoint = connections_mod.endpoint(_repo_declared(root, repo).get(args.name))
     try:
-        remote.remote_for(root).plugin_credential(cfg["project"], target, args.name, secret)
+        remote.remote_for(root).plugin_credential(cfg["project"], target, args.name, secret, endpoint)
     except remote.RemoteError as e:
         if e.status == 503:
             die("The server has no key to encrypt credentials with (TODO_SECRET_KEY); it kept nothing.", 1)
+        if e.status == 409:
+            die(f"The server didn't take it: {e}. Check where {args.name} points (todo connection list), then run this again.", 1)
         die(f"The server didn't take it: {e}", 1)
     print(f"connection {args.name}: secret sent to {cfg['url']} for {target}")
 

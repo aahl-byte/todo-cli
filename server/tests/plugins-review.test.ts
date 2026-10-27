@@ -474,13 +474,13 @@ describe("secrets", () => {
     await configured(w.d, SPEC);
     const credential = (b: unknown) => credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, b), params("p"));
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
-    await credential({ repo: "acme/web", connection: "hooks", secret: "abc" });
+    await credential({ repo: "acme/web", connection: "hooks", secret: "abc", endpoint: "https://hooks.example" });
     vi.stubEnv("TODO_SECRET_KEY", "");
     expect((await credential({ repo: "acme/web", connection: "hooks", secret: null })).status).toBe(200);
     expect(await w.d.query("select * from plugin_credentials")).toEqual([]);
     for (const bad of ["c2hvcnQ=", "zz".repeat(32), crypto.randomBytes(31).toString("base64"), `${crypto.randomBytes(32).toString("base64")}x`]) {
       vi.stubEnv("TODO_SECRET_KEY", bad);
-      const r = await credential({ repo: "acme/web", connection: "hooks", secret: "abc" });
+      const r = await credential({ repo: "acme/web", connection: "hooks", secret: "abc", endpoint: "https://hooks.example" });
       expect(r.status).toBe(503);
       expect((await r.json()).error).toMatch(/must be 32 bytes/);
     }
@@ -497,7 +497,7 @@ describe("secrets", () => {
       [p.name, p.instances[0]?.server_runs]));
     expect(await runsHere()).toEqual({ "pr-link": true, "use-hooks": false, "use-local": false, "use-lan": false, "use-github": true });
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
-    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k", endpoint: "https://hooks.example" }), params("p"));
     expect((await runsHere())["use-hooks"]).toBe(true);
     vi.stubEnv("GITHUB_TOKEN", "");
     expect(Object.values(await runsHere()).every((v) => v === false)).toBe(true);
@@ -598,7 +598,7 @@ describe("server_runs", () => {
     vi.stubGlobal("fetch", (await configured(w.d, { file })).impl);
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
-    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k", endpoint: "https://hooks.example" }), params("p"));
     expect((await shownRuns()).ping).toEqual([true]);
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     expect((await shownRuns()).ping).toEqual([false]);
@@ -630,7 +630,7 @@ describe("server_runs_reason", () => {
     vi.stubGlobal("fetch", (await configured(w.d, { file })).impl);
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
-    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k" }), params("p"));
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "k", endpoint: "https://hooks.example" }), params("p"));
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     expect(await reasons()).toEqual({
       "pr-link": null, ping: "credential for `hooks` doesn't decrypt",

@@ -9,7 +9,9 @@ import { POST as credentialsPOST } from "@/app/api/projects/[key]/plugins/creden
 import { deployBranches } from "@/lib/gitfacts";
 import { branchList, checkCustom, composeConfig } from "@/lib/plugins/config";
 import { readConfig } from "@/lib/plugins/host";
-import { loadConfig, storedInstances } from "@/lib/plugins/store";
+import { migrate } from "@/lib/db";
+import { encryptSecret, secretKey } from "@/lib/plugins/secrets";
+import { loadConfig, repoSecrets, storedInstances } from "@/lib/plugins/store";
 import { world, type World } from "./helpers";
 import { params, req } from "./plugin-github";
 
@@ -138,7 +140,8 @@ describe("the config API", () => {
 
   it("declares and drops connections, forgetting a dropped one's credential, and never takes a command", async () => {
     expect((await put({ connection: { name: "hooks", def: { http: { url: "https://hooks.example", auth: "bearer" } } } })).status).toBe(200);
-    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "s3" }), params("p"));
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice,
+      { repo: "acme/web", connection: "hooks", secret: "s3", endpoint: "https://hooks.example" }), params("p"));
     expect((await listed()).secrets).toEqual(["hooks"]);
     expect((await loadConfig(w.d, "p", "acme/web")).connections).toEqual({ hooks: { http: { url: "https://hooks.example", auth: "bearer" } } });
     expect(await (await put({ connection: { name: "local", def: { mcp: { command: "node", args: ["x.js"] } } } })).json())
@@ -152,10 +155,43 @@ describe("the config API", () => {
     expect((await listed()).secrets).toEqual([]);
   });
 
+  const credential = (body: Record<string, unknown>) =>
+    credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", ...body }), params("p"));
+  const legacy = (connection: string, secret: string) => w.d.query(
+    "insert into plugin_credentials (project, repo, connection, secret_enc, updated_by) values ('p', 'acme/web', $1, $2, 'alice')",
+    [connection, encryptSecret(secret, ["p", "acme/web", connection], secretKey()!)]);
+
+  it("hands a credential stored before its connection was declared to nobody, and the migration drops it", async () => {
+    await legacy("hooks", "LEGACY");
+    await put({ connection: { name: "hooks", def: { http: { url: "https://evil.example", auth: "bearer" } } } });
+    expect(await repoSecrets(w.d, "p", "acme/web")).toEqual({});
+    await legacy("other", "LEGACY");
+    await migrate(w.d);
+    expect((await w.d.query("select connection from plugin_credentials")).map((r) => r.connection)).toEqual([]);
+  });
+
+  it("hands a credential out only while its connection points where it was given", async () => {
+    await put({ connection: { name: "hooks", def: { http: { url: "https://hooks.example", auth: "bearer" } } } });
+    expect((await credential({ connection: "hooks", secret: "s3", endpoint: "https://hooks.example" })).status).toBe(200);
+    expect(await repoSecrets(w.d, "p", "acme/web")).toEqual({ hooks: "s3" });
+    await w.d.query(`update plugin_configs set connections = '{"hooks": {"http": {"url": "https://evil.example", "auth": "bearer"}}}'::jsonb`);
+    expect(await repoSecrets(w.d, "p", "acme/web")).toEqual({});
+    expect((await listed()).secrets).toEqual([]);
+  });
+
+  it("refuses a credential for an endpoint the connection no longer points at, or for no endpoint at all", async () => {
+    await put({ connection: { name: "hooks", def: { http: { url: "https://hooks.example", auth: "bearer" } } } });
+    const stale = await credential({ connection: "hooks", secret: "s3", endpoint: "https://old.example" });
+    expect([stale.status, (await stale.json()).error]).toEqual([409,
+      "hooks points at https://hooks.example now, not https://old.example; reload and enter the credential again"]);
+    expect((await credential({ connection: "hooks", secret: "s3" })).status).toBe(400);
+    expect(await w.d.query("select * from plugin_credentials")).toEqual([]);
+  });
+
   it("forgets a connection's credential when its endpoint changes, and refuses the server's own names", async () => {
     const hooks = (url: string) => put({ connection: { name: "hooks", def: { http: { url, auth: "bearer" } } } });
     await hooks("https://hooks.example");
-    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "s3" }), params("p"));
+    await credential({ connection: "hooks", secret: "s3", endpoint: "https://hooks.example" });
     await hooks("https://hooks.example");
     expect((await listed()).secrets).toEqual(["hooks"]);
     await hooks("https://elsewhere.example");

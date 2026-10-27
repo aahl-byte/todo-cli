@@ -561,7 +561,8 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet, removable =
   const notice = connectionNotice(shipped, c);
   if (!notice && !removable) return null;
   const post = (value: string | null) => start(async () => {
-    const err = await send(projectKey, "/credentials", "POST", { repo, connection: c.name, secret: value });
+    // The endpoint shown here: the server refuses the secret if the connection has been pointed elsewhere since.
+    const err = await send(projectKey, "/credentials", "POST", { repo, connection: c.name, secret: value, endpoint: c.url });
     setError(err);
     if (!err) {
       setOpen(false);

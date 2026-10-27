@@ -581,8 +581,19 @@ def test_auth_with_server_posts_a_repo_connection_s_secret(fx, synced, host, mon
     key = gitfacts.store_repo(fx.root)[0]
     monkeypatch.setattr(sys, "stdin", io.StringIO("vc\n"))
     run_cli(fx.root, ["connection", "auth", "vercel", "--server"])
-    assert synced.plugin_creds == [(key, "vercel", "vc")]
+    assert synced.plugin_creds == [(key, "vercel", "vc")] and synced.cred_endpoints == ["https://api.vercel.com"]
     assert connections.load_credentials() == {f"{key}/vercel": "vc", f"{key}/vercel@url": "https://api.vercel.com"}
+
+
+def test_auth_with_server_says_when_the_server_s_connection_points_elsewhere(fx, synced, host, monkeypatch, capsys):
+    host.describe([], connections_=VERCEL)
+    synced.creds_moved = True
+    monkeypatch.setattr(sys, "stdin", io.StringIO("vc\n"))
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["connection", "auth", "vercel", "--server"])
+    err = capsys.readouterr().err
+    assert "vercel points at https://elsewhere now, not https://api.vercel.com" in err and "run this again" in err
+    assert synced.plugin_creds == []
 
 
 def test_connection_add_and_list(fx, host, capsys):

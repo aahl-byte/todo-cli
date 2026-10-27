@@ -443,13 +443,14 @@ describe("the plugins API", () => {
       "plugins:", "  ping:", "    connections: [hooks]", "    on: [push]",
       "    steps: [{http: {method: POST, path: '/ping', body: {item: '{{item.id}}'}}}]", "    attach: [{log: pinged}]",
     ].join("\n"), other: (url) => (url.startsWith("https://hooks.example") ? Response.json({ echoed: "s3cret-value" }) : undefined) });
-    const off = await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" });
+    const off = await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value", endpoint: "https://hooks.example" });
     expect(off.status).toBe(503);
     expect((await off.json()).error).toMatch(/TODO_SECRET_KEY/);
 
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
-    expect(await (await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" })).json()).toEqual({ ok: true });
+    expect(await (await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value", endpoint: "https://hooks.example" })).json())
+      .toEqual({ ok: true });
     vi.stubGlobal("fetch", gh.impl);
     await onBranch("I1", ["feat/x"]);
     await run(gh.impl);

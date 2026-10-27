@@ -532,6 +532,13 @@ create table if not exists plugin_credentials (
   updated_at timestamptz not null default now(),
   primary key (project, repo, connection)
 );
+-- endpoint: where the connection pointed when the credential was given. It is
+-- handed out only while the connection still points there, and only for a
+-- connection the repo's config declares; any other row is dropped.
+alter table plugin_credentials add column if not exists endpoint text;
+delete from plugin_credentials c
+ where c.endpoint is null
+    or not exists (select 1 from plugin_configs p where p.project = c.project and p.repo = c.repo and p.connections ? c.connection);
 
 -- The plugin outbox: one row per event on an item, queued with what caused it
 -- and delivered after the request or by the tick. only_plugins narrows an
