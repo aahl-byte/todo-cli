@@ -10,13 +10,14 @@ import { GET as pluginsGET, PUT as pluginsPUT } from "@/app/api/projects/[key]/p
 import { POST as credentialsPOST } from "@/app/api/projects/[key]/plugins/credentials/route";
 import { GET as reposGET, PUT as reposPUT } from "@/app/api/projects/[key]/plugins/repos/route";
 import { POST as webhookPOST } from "@/app/api/github/webhook/route";
-import { OWNERS_UNSET, recordCheckout, repoKey } from "@/lib/checkouts";
+import { recordCheckout, repoKey } from "@/lib/checkouts";
 import { migrate } from "@/lib/db";
 import { listDocs } from "@/lib/docs";
 import { itemGitFacts, resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
 import { queuePluginEvent } from "@/lib/plugins/queue";
 import { flushPluginRuns, itemsOnBranch, LEASE_MS, pluginTick, pluginUid, requestKey, withItemLock } from "@/lib/plugins/server";
 import { SHIPPED } from "@/lib/plugins/shipped";
+import { putProjectConnection } from "@/lib/plugins/store";
 import { child, item, world, type World } from "./helpers";
 import { API, configured, fakeGitHub, params, PR, publicDns, req, type Configured } from "./plugin-github";
 
@@ -505,28 +506,36 @@ describe("secrets", () => {
 });
 
 describe("owners the server reads", () => {
-  it("allows no repo while TODO_PLUGIN_OWNERS is unset, and says so on the rail", async () => {
+  it("connects no checkout and lends the server's token to no repo while TODO_PLUGIN_OWNERS is unset; a repo added here is the project's", async () => {
     vi.stubEnv("TODO_PLUGIN_OWNERS", "");
     const gh = fakeGitHub({});
     vi.stubGlobal("fetch", gh.impl);
     await onBranch(["feat/x"]);
     expect(await events()).toEqual([]);
-    expect((await itemGitFacts(w.d, "p", "I1", gh.impl)).blocked).toBe(OWNERS_UNSET);
-    expect((await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).status).toBe(404);
+    expect((await itemGitFacts(w.d, "p", "I1", gh.impl)).blocked).toBeUndefined();
+    expect((await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"))).status).toBe(200);
+    await recordCheckout(w.d, "bob", "p", "/tmp/fake", "git@github.com:acme/cli.git");
+    expect((await pluginsGET(req("/api/projects/p/plugins?repo=acme/cli", "GET", w.tokens.bob), params("p"))).status).toBe(404);
+    await tick(gh.impl);
     expect(gh.sent).toEqual([]);
   });
 
-  it("refuses a repo outside the owners, even with a checkout or a listing", async () => {
+  it("connects a checkout only of the owners' repos, uses any repo added here, and reads one outside the owners only with the project's token", async () => {
     vi.stubEnv("TODO_PLUGIN_OWNERS", "Acme, beta_corp");
     const gh = fakeGitHub({});
     vi.stubGlobal("fetch", gh.impl);
     await recordCheckout(w.d, "bob", "p", "/tmp/fake", "git@github.com:mallory/x.git");
+    expect(await queuePluginEvent(w.d, "p", "I1", "mallory/x", { type: "refresh" }, "bob")).toBeNull();
+    expect((await pluginsGET(req("/api/projects/p/plugins?repo=mallory/x", "GET", w.tokens.bob), params("p"))).status).toBe(404);
     await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'mallory/y', 'bob')");
-    for (const repo of ["mallory/x", "mallory/y"]) {
-      expect(await queuePluginEvent(w.d, "p", "I1", repo, { type: "refresh" }, "bob")).toBeNull();
-      expect((await pluginsGET(req(`/api/projects/p/plugins?repo=${repo}`, "GET", w.tokens.bob), params("p"))).status).toBe(404);
-    }
+    await onBranch(["feat/x"], {}, "mallory/y");
+    expect((await pluginsGET(req("/api/projects/p/plugins?repo=mallory/y", "GET", w.tokens.bob), params("p"))).status).toBe(200);
+    expect(await queuePluginEvent(w.d, "p", "I1", "mallory/y", { type: "refresh" }, "bob")).toBeNull();
+    await tick(gh.impl);
     expect(gh.sent).toEqual([]);
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await putProjectConnection(w.d, "p", { name: "github", secret: "page-token", base: null }, "bob");
+    expect(await queuePluginEvent(w.d, "p", "I1", "mallory/y", { type: "refresh" }, "bob")).not.toBeNull();
     await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'beta_corp/app', 'bob')");
     expect((await pluginsGET(req("/api/projects/p/plugins?repo=Beta_Corp/app", "GET", w.tokens.bob), params("p"))).status).toBe(200);
   });
@@ -637,7 +646,7 @@ describe("server_runs_reason", () => {
       wt: "connection `watchtower` is refused by the private-address rule", needs: "setting path is not set",
     });
     vi.stubEnv("GITHUB_TOKEN", "");
-    expect((await reasons())["pr-link"]).toBe("GITHUB_TOKEN isn't set on the server");
+    expect((await reasons())["pr-link"]).toBe("todo has no GitHub token that reads this repo; give one on Settings → Automation");
   });
 });
 

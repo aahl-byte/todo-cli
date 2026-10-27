@@ -47,7 +47,7 @@ describe("template and connection settings", () => {
   it("finds the settings a plugin's connections list names, and makes each a choice of connection", () => {
     expect(connectionKeysOf(["{{settings.connection}}", "github", "{{ settings.other }}"])).toEqual(["connection", "other"]);
     const [f] = fieldsOf({ connection: S({ label: "Connection" }) }, ["connection"]);
-    expect([f.control, f.connection, f.note]).toEqual(["select", true, "The connection it calls: this repo's, and for a plugin that ships with todo, the server's too."]);
+    expect([f.control, f.connection, f.note]).toEqual(["select", true, "The connection it calls: this repo's, and for a plugin that ships with todo, the project's too, or a new one."]);
   });
 
   it("offers a custom plugin's instance the repo's connections and github, and a shipped one's the server's too", () => {

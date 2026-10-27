@@ -7,15 +7,23 @@ import {
   removeInstance,
   attachedSummary, type Field, type InstanceDraft, type PluginDraft, type SecretDraft, type TriggerDraft, type Value,
 } from "@/lib/plugin-form";
+import type { ReactNode } from "react";
+import { useState } from "react";
 import type { DashPlugin, DashRepo, RunRow } from "@/lib/plugin-views";
 import type { Attachment, Call, PluginEvent } from "@/lib/plugins/types";
 import { Stamp } from "./ui";
+
+/** The form that adds one of the project's connections in place, calling `onSaved` with its name. */
+export type NewConnection = (onSaved: (name: string) => void, onClose: () => void) => ReactNode;
+
+// No connection name starts with "+", so this never stands for one.
+const NEW = "+new";
 
 const TRIGGER_LABEL: Record<TriggerDraft["kind"], string> = {
   status: "status move", push: "push", pr: "pull request", deployment: "deployment", manual: "manual button",
 };
 
-export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onChange, serverRuns, available }: {
+export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onChange, serverRuns, available, newConnection, extra }: {
   plugin: DashPlugin; draft: PluginDraft; x: InstanceDraft; index: number; statuses: readonly string[];
   /** Order decides which instance fires: the plugin is first-match and has several. */
   ordered: boolean;
@@ -24,8 +32,13 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
   available: DashRepo["available"];
   /** Whether this server runs the saved instance; null until it's saved. */
   serverRuns: { runs: boolean; reason: string | null } | null;
+  /** Offers to add a connection where a setting picks one; absent where only the repo's may be picked. */
+  newConnection?: NewConnection;
+  /** More of the instance's settings form, given its settings and a way to change them. */
+  extra?: (settings: InstanceDraft["settings"], set: (patch: InstanceDraft["settings"]) => void) => ReactNode;
 }) {
   const edit = (patch: Partial<InstanceDraft>) => onChange(editInstance(draft, x.key, patch));
+  const [adding, setAdding] = useState<string | null>(null);
   // A connection setting offers what this instance may use: a custom plugin gets the repo's connections only.
   const choices = connectionChoices(available, plugin.shipped);
   const fields = fieldsOf(plugin.settings, connectionKeysOf(plugin.connections)).filter((f) => f.scope === "instance")
@@ -71,8 +84,16 @@ export function InstanceCard({ plugin, draft, x, index, ordered, statuses, onCha
       {fields.length > 0 && (
         <div className="setting-fields">
           {fields.map((f) => (
-            <SettingInput key={f.key} field={f} value={x.settings[f.key]} onChange={(v) => edit({ settings: { ...x.settings, [f.key]: v } })} />
+            <SettingInput key={f.key} field={f.connection && newConnection ? { ...f, extra: { value: NEW, label: "+ New connection…" } } : f}
+                          value={x.settings[f.key]}
+                          onChange={(v) => (v === NEW ? setAdding(f.key) : edit({ settings: { ...x.settings, [f.key]: v } }))} />
           ))}
+          {extra?.(x.settings, (patch) => edit({ settings: { ...x.settings, ...patch } }))}
+          {adding && newConnection && (
+            <div className="auto-panel new-connection" data-setting-for={adding}>
+              {newConnection((name) => edit({ settings: { ...x.settings, [adding]: name } }), () => setAdding(null))}
+            </div>
+          )}
         </div>
       )}
       {serverRuns && (
@@ -132,7 +153,10 @@ function Triggers({ plugin, x, statuses, edit }: { plugin: DashPlugin; x: Instan
 const isSecret = (v: Value | undefined): v is SecretDraft => !!v && typeof v === "object";
 
 /** One setting's input, by its type. */
-export function SettingInput({ field, value, onChange }: { field: Field; value: Value | undefined; onChange: (v: Value) => void }) {
+export function SettingInput({ field, value, onChange }: {
+  /** `extra`: one more choice after a select's options, such as adding one. */
+  field: Field & { extra?: { value: string; label: string } }; value: Value | undefined; onChange: (v: Value) => void;
+}) {
   const text = typeof value === "string" ? value : "";
   let input;
   switch (field.control) {
@@ -155,6 +179,7 @@ export function SettingInput({ field, value, onChange }: { field: Field; value: 
           <option value="">{field.placeholder ?? "—"}</option>
           {text && !options.includes(text) && <option value={text}>{text} (not an option)</option>}
           {options.map((o) => <option key={o}>{o}</option>)}
+          {field.extra && <option value={field.extra.value}>{field.extra.label}</option>}
         </select>
       );
       break;

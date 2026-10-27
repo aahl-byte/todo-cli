@@ -12,7 +12,8 @@ export async function GET(req: Request, ctx: Ctx) {
   return json(await loadConfig(a.d, a.key, a.repo));
 }
 
-/** Change one repo's plugin config: `{repo, track?, base?, enable?, disable?, connection?: {name, def}}`, def null to drop it;
+/** Change one repo's plugin config: `{repo, track?, base?, enable?, disable?, connection?: {name, def, base?}}`, def null to drop it, and
+ * the connection's base where the person saw it point (null for a new one), refused with a 409 once it points elsewhere;
  * `base` is the deploy-branch list a change of `track` was made on, refused with a 409 once it's not the list any more. */
 export async function PUT(req: Request, ctx: Ctx) {
   const body = await req.clone().json().catch(() => null);
@@ -25,7 +26,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (body.track !== undefined) await putTrack(a.d, a.key, a.repo, body.track, a.user.handle, body.base);
     if (body.enable !== undefined) await setShipped(a.d, a.key, a.repo, body.enable, true, a.user.handle);
     if (body.disable !== undefined) await setShipped(a.d, a.key, a.repo, body.disable, false, a.user.handle);
-    if (body.connection !== undefined) await putConnection(a.d, a.key, a.repo, body.connection?.name, body.connection.def, a.user.handle);
+    if (body.connection !== undefined) await putConnection(a.d, a.key, a.repo, body.connection?.name, body.connection.def, a.user.handle, body.connection.base);
   } catch (e) {
     if (e instanceof PluginInputError) return json({ error: e.message, errors: e.errors }, 400);
     if (e instanceof PluginConflict) return json({ error: e.message }, 409);

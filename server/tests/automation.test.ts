@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { automationRows, lastRun, pickRepo, repoChoices, splitBranches, suggestBranches, type AutomationRow, type RowContext } from "@/lib/automation";
-import type { BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, RepoEntry, RunRow } from "@/lib/plugin-views";
+import type { BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry, RunRow } from "@/lib/plugin-views";
+import { services } from "@/lib/services";
 
 const entry = (repo: string, over: Partial<RepoEntry> = {}): RepoEntry => ({
   repo, listed: null, checkout: false, items: 1, folded: false, refusal: null, addable: false, ...over,
@@ -16,7 +17,7 @@ const plugin = (name: string, over: Partial<DashPlugin> = {}): DashPlugin => ({
 });
 
 const conn = (name: string, over: Partial<DashConnection> = {}): DashConnection => ({
-  name, origin: "repo", kind: "http", url: "https://x.example", needsSecret: true, command: false, held: false, usedBy: [], ...over,
+  name, origin: "repo", kind: "http", url: "https://x.example", auth: "bearer", needsSecret: true, command: false, held: false, usedBy: [], ...over,
 });
 
 const prLink = plugin("pr-link", { always: true, connections: ["github"] });
@@ -25,7 +26,7 @@ const repo = (over: Partial<DashRepo> = {}): DashRepo => ({
   ...entry("acme/web"),
   track: [], branches: { names: ["main", "feat/x", "staging"], default: "main", visible: true }, plugins: [prLink], offered: [], custom: [],
   connections: [conn("github", { origin: "host", held: true, usedBy: ["pr-link"] })],
-  available: { repo: [], host: ["github"] }, errors: [], updated: null, ...over,
+  available: { repo: [], host: ["github"] }, github: "server", errors: [], updated: null, ...over,
 });
 
 const custom = (name: string, over: Partial<DashCustom> = {}): DashCustom => ({
@@ -38,7 +39,16 @@ const bridge = (over: { jira?: Partial<BridgeFacts["jira"]>; actions?: BridgeFac
   jira: { triggers: 0, writes: true, readOnly: false, polled: null, linked: 0, ...over.jira }, actions: over.actions ?? [],
 });
 
-const ctx = (over: Partial<RowContext> = {}): RowContext => ({ project: "web", bridge: bridge(), host: [{ name: "github", auth: true, held: true }], ...over });
+const host = (name: string, over: Partial<HostConnection> = {}): HostConnection => ({
+  name, source: "server", kind: "http", url: `https://${name}.example`, auth: "bearer", held: false, unreadable: false, refused: false, privateOk: null,
+  version: null, updated: null, ...over,
+});
+
+const SERVICES = services({ github: "https://api.github.com", jira: null, watchtower: "http://127.0.0.1:10010/latest" });
+
+const ctx = (over: Partial<RowContext> = {}): RowContext => ({
+  project: "web", bridge: bridge(), host: [host("github", { held: true })], services: SERVICES, ...over,
+});
 
 const run = (over: Partial<RunRow> = {}): RunRow => ({
   id: 1, at: "2026-10-26T10:00:00.000Z", item: { id: "fix-login", title: "Fix login" }, event: { type: "push", branch: "feat/x" } as RunRow["event"],
@@ -90,34 +100,57 @@ describe("a repo nobody has set up", () => {
 
   it("asks for the deploy branches here, and gives each shipped plugin a switch, with nothing for anyone to commit", () => {
     expect(row(rows, "track")).toMatchObject({ branches: true, steps: [
-      { who: "here", text: "Name the branches work deploys from, such as staging and main.", done: false, setup: true }] });
+      { text: "Name the branches work deploys from, such as staging and main.", done: false, setup: true }] });
     expect(row(rows, "vercel-preview").toggle).toEqual({ plugin: "vercel-preview", on: false });
     expect(row(rows, "pr-link").toggle).toBeUndefined();
-    expect(rows.flatMap((r) => r.steps).map((s) => s.who).every((w) => w === "here" || w === "admin")).toBe(true);
   });
 
-  it("lists the steps that follow switching one on: settings here once it's on, and what the server's admin connects", () => {
+  it("lists the steps that follow switching one on, every one taken on this page", () => {
     expect(row(rows, "vercel-preview")).toMatchObject({
       offers: "Items would link the newest ready Vercel preview of each of their branches.",
       steps: [
-        { who: "here", text: "Enter the Vercel project and team, once it's switched on.", done: false },
-        { who: "admin", text: "Connect the server to Vercel: its address and a token.", code: "TODO_PLUGIN_CONNECTIONS\nTODO_PLUGIN_SECRET_VERCEL", done: false },
+        { text: "Enter the Vercel project and team, once it's switched on.", done: false },
+        { text: "Connect todo to Vercel with a token.", done: false },
       ],
     });
     expect(row(rows, "vercel-preview").steps[0].setup).toBeFalsy();
+    expect(row(rows, "vercel-preview").steps[1].connect).toBeUndefined();
+    expect(row(rows, "db-request").steps).toEqual([{ text: "Give todo db-request's address.", done: false }]);
+    expect(JSON.stringify(rows)).not.toMatch(/TODO_|GITHUB_TOKEN|admin/i);
   });
 
-  it("marks the server's side done when it already holds the connection and its token", () => {
-    const held = automationRows(repo({ offered: [offer("vercel-preview", ["vercel"])] }), ctx({ host: [{ name: "vercel", auth: true, held: true }] }));
-    expect(row(held, "vercel-preview").steps[1]).toEqual({ who: "admin", text: "Server has a Vercel token.", done: true });
-    const noToken = automationRows(repo({ offered: [offer("vercel-preview", ["vercel"])] }), ctx({ host: [{ name: "vercel", auth: true, held: false }] }));
-    expect(row(noToken, "vercel-preview").steps[1]).toEqual({ who: "admin", text: "Give the server a Vercel token.", code: "TODO_PLUGIN_SECRET_VERCEL", done: false });
+  it("marks the connection done when the project or the server holds its token", () => {
+    const held = automationRows(repo({ offered: [offer("vercel-preview", ["vercel"])] }), ctx({ host: [host("vercel", { held: true })] }));
+    expect(row(held, "vercel-preview").steps[1]).toEqual({ text: "Connected to Vercel through the server's connection.", done: true });
+    const own = automationRows(repo({ offered: [offer("vercel-preview", ["vercel"])] }), ctx({ host: [host("vercel", { held: true, source: "page" })] }));
+    expect(row(own, "vercel-preview").steps[1]).toEqual({ text: "Connected to Vercel.", done: true });
+    const noToken = automationRows(repo({ offered: [offer("vercel-preview", ["vercel"])] }), ctx({ host: [host("vercel")] }));
+    expect(row(noToken, "vercel-preview").steps[1]).toEqual({ text: "Enter Vercel's token.", done: false });
   });
 
-  it("asks the admin to let the server see a repo GitHub doesn't show it, which git facts need", () => {
+  it("asks for a GitHub token that can see a repo GitHub doesn't show, which git facts need, in the row", () => {
     const hidden = automationRows(repo({ branches: { names: [], default: null, visible: false } }), ctx());
-    expect(row(hidden, "track").steps.map((s) => [s.who, s.code])).toEqual([["admin", "GITHUB_TOKEN"], ["here", undefined]]);
-    expect(row(hidden, "track").steps[0].text).toBe("Let the server's GitHub token read acme/web, so it can see the repo's branches, commits and pull requests.");
+    expect(row(hidden, "track").steps).toEqual([
+      { text: "The server's GitHub token can't see acme/web: give the project a token that can read its branches, commits and pull requests.",
+        done: false, connect: "github" },
+      { text: "Name the branches work deploys from, such as staging and main.", done: false, setup: true }]);
+    const own = automationRows(repo({ github: "page", branches: { names: [], default: null, visible: false } }), ctx());
+    expect(row(own, "track").steps[0].text).toMatch(/^This project's GitHub token can't see acme\/web/);
+  });
+});
+
+describe("a repo todo has no GitHub token for", () => {
+  const p = plugin("watchtower-session", { connections: ["watchtower"],
+    instances: [inst({ server_runs: false, server_runs_reason: "todo has no GitHub token that reads this repo" })] });
+  const rows = automationRows(repo({ github: null, plugins: [prLink, p],
+    connections: [conn("watchtower", { origin: "missing", kind: null, usedBy: ["watchtower-session"] })] }), ctx({ host: [] }));
+  const ask = { text: "Give todo a GitHub token that can read acme/web, so it can see the repo's branches, commits and pull requests.", done: false, connect: "github" };
+
+  it("asks for one first, in each row that needs it, since nothing runs without it", () => {
+    expect(row(rows, "track").steps[0]).toEqual(ask);
+    expect(row(rows, "pr-link")).toMatchObject({ state: "setup", steps: [ask] });
+    expect(row(rows, "watchtower-session")).toMatchObject({ state: "setup", steps: [ask, { text: "Give todo Watchtower's address.", done: false, connect: "watchtower" }] });
+    expect(row(rows, "watchtower-session").notes.some((n) => n.warn)).toBe(false);
   });
 });
 
@@ -131,7 +164,7 @@ describe("deploy branches", () => {
 
   it("need setup while GitHub doesn't show the server the repo", () => {
     const rows = automationRows(repo({ track: ["main"], branches: { names: [], default: null, visible: false } }), ctx());
-    expect(row(rows, "track")).toMatchObject({ state: "setup", steps: [{ who: "admin", code: "GITHUB_TOKEN" }] });
+    expect(row(rows, "track")).toMatchObject({ state: "setup", steps: [{ connect: "github", done: false }] });
   });
 
   it("are typed with commas or spaces, and suggested from the remote's default and deploy-like branches", () => {
@@ -192,12 +225,44 @@ describe("a plugin switched on that needs setup", () => {
     const p = plugin("vercel-preview", { connections: ["vercel"], instances: [],
       settings: { project: { label: "Vercel project id", type: "text" }, team: { label: "Vercel team id", type: "text" } } });
     const r = row(automationRows(repo({ plugins: [prLink, p], connections: [conn("vercel", { origin: "host", usedBy: ["vercel-preview"] })] }),
-      ctx({ host: [{ name: "vercel", auth: true, held: false }] })), "vercel-preview");
+      ctx({ host: [host("vercel")] })), "vercel-preview");
     expect(r.state).toBe("setup");
     expect(r.steps).toEqual([
-      { who: "here", text: "Enter the Vercel project and team.", done: false, setup: true },
-      { who: "admin", text: "Give the server a Vercel token.", code: "TODO_PLUGIN_SECRET_VERCEL", done: false },
+      { text: "Enter the Vercel project and team.", done: false, setup: true },
+      { text: "Enter Vercel's token.", done: false, connect: "vercel" },
     ]);
+  });
+
+  it("asks for the token in the row when nothing connects todo to the service yet, the address filled in", () => {
+    const p = plugin("vercel-preview", { connections: ["vercel"], instances: [inst({ settings: { project: "prj", team: "tm" } })],
+      settings: { project: { label: "Vercel project id", type: "text" }, team: { label: "Vercel team id", type: "text" } } });
+    const r = row(automationRows(repo({ plugins: [prLink, p], connections: [conn("vercel", { origin: "missing", kind: null, url: null, usedBy: ["vercel-preview"] })] }),
+      ctx()), "vercel-preview");
+    expect(r.state).toBe("setup");
+    expect(r.steps).toEqual([{ text: "Enter the Vercel project and team.", done: true }, { text: "Connect todo to Vercel with a token.", done: false, connect: "vercel" }]);
+    expect(SERVICES.find((s) => s.name === "vercel")).toMatchObject({ url: "https://api.vercel.com", auth: "bearer", tokenUrl: "https://vercel.com/account/tokens" });
+    const jira = automationRows(repo({ plugins: [prLink, plugin("jira-issue", { connections: ["jira"] })],
+      connections: [conn("jira", { origin: "missing", usedBy: ["jira-issue"] })] }), ctx());
+    expect(row(jira, "jira-issue").steps).toEqual([{ text: "Connect todo to Jira with an email and API token.", done: false, connect: "jira" }]);
+  });
+
+  it("asks in the row to allow a connection the private-address rule refuses, or to enter a credential that doesn't decrypt again", () => {
+    const p = plugin("watchtower-session", { connections: ["watchtower"] });
+    const at = (over: Partial<HostConnection>) => row(automationRows(repo({ plugins: [prLink, p],
+      connections: [conn("watchtower", { origin: "host", needsSecret: false, usedBy: ["watchtower-session"] })] }),
+      ctx({ host: [host("watchtower", { url: "http://127.0.0.1:10010/latest", auth: null, ...over })] })), "watchtower-session");
+    expect(at({ refused: true }).steps).toEqual([{ text: "Allow todo to call Watchtower at http://127.0.0.1:10010/latest, which is on your private network.",
+                                                   done: false, connect: "watchtower" }]);
+    expect(at({ unreadable: true }).steps[0]).toMatchObject({ text: "Enter the Watchtower credential again: the stored one doesn't decrypt on this server.", connect: "watchtower" });
+    expect(at({ source: "page" })).toMatchObject({ state: "on", steps: [{ text: "Connected to Watchtower.", done: true, connect: "watchtower" }] });
+  });
+
+  it("adds in the row a connection a web-request button names that nothing declares", () => {
+    const rest = plugin("rest", { connections: ["{{settings.connection}}"], on: ["manual"], instances: [inst({ id: "hook", settings: { connection: "hooks" } })],
+      settings: { connection: { label: "Connection", type: "text" } } });
+    const r = row(automationRows(repo({ plugins: [prLink, rest], connections: [conn("hooks", { origin: "missing", kind: null, usedBy: ["rest"] })] }), ctx()), "rest");
+    expect(r.steps).toEqual([{ text: "Set the button's connection and request.", done: true },
+                             { text: "Add the hooks connection: where it is and how it authorizes.", done: false, connect: "hooks" }]);
   });
 
   it("names the required settings an instance left empty", () => {
@@ -205,36 +270,36 @@ describe("a plugin switched on that needs setup", () => {
       settings: { url: { label: "Notes URL", type: "text" }, title: { label: "Title", type: "text", default: "Notes" } } });
     const r = row(automationRows(repo({ plugins: [prLink, p] }), ctx()), "notes");
     expect(r).toMatchObject({ state: "setup", title: "Links the item to its notes page", plugins: ["notes"] });
-    expect(r.steps).toEqual([{ who: "here", text: "Fill in Notes URL.", done: false, setup: true }]);
+    expect(r.steps).toEqual([{ text: "Fill in Notes URL.", done: false, setup: true }]);
   });
 
   it("asks for a repo connection's credential here, and shows it done once stored", () => {
     const p = plugin("ping", { shipped: false, connections: ["hooks"], instances: [inst({ server_runs: false, server_runs_reason: "`hooks` not authorized here" })] });
     const missing = row(automationRows(repo({ plugins: [prLink, p], connections: [conn("hooks", { usedBy: ["ping"] })] }), ctx()), "ping");
-    expect(missing).toMatchObject({ state: "setup", title: "ping", steps: [{ who: "here", text: "Enter the hooks credential.", done: false, setup: true }] });
+    expect(missing).toMatchObject({ state: "setup", title: "ping", steps: [{ text: "Enter the hooks credential.", done: false, setup: true }] });
     expect(missing.notes).toEqual([{ text: "A custom plugin of this repo; its YAML gives no description." }]);
     const held = row(automationRows(repo({ plugins: [prLink, plugin("ping", { shipped: false, connections: ["hooks"] })],
       connections: [conn("hooks", { usedBy: ["ping"], held: true })] }), ctx()), "ping");
-    expect(held).toMatchObject({ state: "on", steps: [{ who: "here", text: "hooks credential stored.", done: true }] });
+    expect(held).toMatchObject({ state: "on", steps: [{ text: "hooks credential stored.", done: true }] });
   });
 
   it("tells a custom plugin to declare a connection here, the server's own being for shipped plugins only", () => {
     const p = plugin("ping", { shipped: false, connections: ["hooks"], instances: [inst({ server_runs: false, server_runs_reason: "x" })] });
     const r = row(automationRows(repo({ plugins: [p], custom: [custom("ping")], connections: [conn("hooks", { origin: "missing", usedBy: ["ping"] })] }), ctx()), "ping");
-    expect(r.steps).toEqual([{ who: "here", text: "Add a connection named hooks under Connections.", done: false }]);
+    expect(r.steps).toEqual([{ text: "Add a connection named hooks under Connections.", done: false }]);
     expect(r.custom?.name).toBe("ping");
     expect(r.toggle).toBeUndefined();
     const wt = plugin("wt", { shipped: false, connections: ["watchtower"], instances: [inst({ server_runs: false, server_runs_reason: "x" })] });
     const onHost = row(automationRows(repo({ plugins: [wt], connections: [conn("watchtower", { origin: "host", usedBy: ["wt"] })] }),
-      ctx({ host: [{ name: "watchtower", auth: false, held: false }] })), "wt");
-    expect(onHost.steps).toEqual([{ who: "here", text: "Add a connection named watchtower under Connections: only plugins that ship with todo use the server's.", done: false }]);
+      ctx({ host: [host("watchtower", { auth: null })] })), "wt");
+    expect(onHost.steps).toEqual([{ text: "Add a connection named watchtower under Connections: only plugins that ship with todo use the project's own.", done: false }]);
   });
 
   it("shows a custom plugin whose YAML doesn't load, so it can be fixed", () => {
     const rows = automationRows(repo({ custom: [custom("broken", { errors: ['unknown key "wat"'] })] }), ctx());
     expect(row(rows, "broken")).toMatchObject({ state: "setup", custom: { name: "broken" }, plugin: null,
       notes: [{ text: "Its YAML has problems, so it doesn't run: unknown key \"wat\".", warn: true }],
-      steps: [{ who: "here", text: "Fix its YAML.", done: false, setup: true }] });
+      steps: [{ text: "Fix its YAML.", done: false, setup: true }] });
   });
 
   it("says why the server can't run it when no step explains it", () => {
@@ -250,7 +315,7 @@ describe("a plugin switched on that needs setup", () => {
     const r = row(automationRows(repo({ plugins: [prLink, p] }), ctx()), "watchtower-session");
     expect(r.state).toBe("off");
     expect(r.offers).toContain("Claude session");
-    expect(r.steps[0]).toEqual({ who: "here", text: "Switch it on: it's switched off here.", done: false, setup: true });
+    expect(r.steps[0]).toEqual({ text: "Switch it on: it's switched off here.", done: false, setup: true });
   });
 });
 
@@ -284,10 +349,10 @@ describe("work the Jira bridge or Actions do today", () => {
     const jt = plugin("jira-transition", { connections: ["jira"], instances: [inst({ id: "qa", settings: { to: "QA" } })],
       settings: { to: { label: "Jira status", type: "text" } } });
     const r = row(automationRows(repo({ plugins: [prLink, jt], connections: [conn("jira", { origin: "host", needsSecret: true, held: true, usedBy: ["jira-transition"] })] }),
-      ctx({ ...busy, host: [{ name: "jira", auth: true, held: true }] })), "jira-transition");
+      ctx({ ...busy, host: [host("jira", { auth: "basic", held: true, source: "page" })] })), "jira-transition");
     expect(r.state).toBe("on");
     expect(r.notes).toEqual([{ text: "The Jira bridge also moves tickets with 15 triggers, so both would send.",
                                link: { label: "General → Jira", href: "/p/web/settings#jira" } }]);
-    expect(r.steps.map((s) => [s.who, s.done])).toEqual([["here", true], ["admin", true]]);
+    expect(r.steps.map((s) => [s.text, s.done])).toEqual([["Pick the Jira status for each move.", true], ["Connected to Jira.", true]]);
   });
 });

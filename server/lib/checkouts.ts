@@ -13,42 +13,40 @@ export function repoKey(raw: string | null | undefined): string {
   return REPO_KEY.test(key) ? key : "";
 }
 
-/** The GitHub owners this server reads repos of, from TODO_PLUGIN_OWNERS; none when it's unset. */
+/** The GitHub owners whose repos the server's own GITHUB_TOKEN reads, and whose repos a member's checkout brings into a project
+ * on its own, from TODO_PLUGIN_OWNERS; none when it's unset. */
 export const pluginOwners = () => (process.env.TODO_PLUGIN_OWNERS ?? "").split(",").map((o) => o.trim().toLowerCase()).filter(Boolean);
 
 const ownerAllowed = (repo: string) => pluginOwners().includes(repo.split("/")[0]);
 
-/** Whether a project may use a repo: its owner is in TODO_PLUGIN_OWNERS, and a member's CLI reported a checkout of
- * it or it's listed in the project's plugin repos. */
+/** Whether a project may use a repo: someone added it on Settings → Automation, or its owner is in TODO_PLUGIN_OWNERS and a
+ * member's CLI reported a checkout of it. */
 export async function repoAllowed(d: Pick<Db, "query">, project: string, repo: string): Promise<boolean> {
-  if (!repo || repoKey(repo) !== repo || !ownerAllowed(repo)) return false;
-  const [row] = await d.query(
-    `select 1 from project_plugin_repos where project = $1 and repo = $2
-      union all select 1 from checkouts where project = $1 and repo = $2 limit 1`, [project, repo]);
-  return !!row;
+  if (!repo || repoKey(repo) !== repo) return false;
+  const [listed] = await d.query("select 1 from project_plugin_repos where project = $1 and repo = $2", [project, repo]);
+  if (listed) return true;
+  if (!ownerAllowed(repo)) return false;
+  const [checkout] = await d.query("select 1 from checkouts where project = $1 and repo = $2 limit 1", [project, repo]);
+  return !!checkout;
 }
 
 /** The projects allowed to use a repo. */
 export async function projectsAllowed(d: Pick<Db, "query">, repo: string): Promise<string[]> {
-  if (!ownerAllowed(repo)) return [];
-  const rows = await d.query("select project from project_plugin_repos where repo = $1 union select project from checkouts where repo = $1", [repo]);
+  const rows = ownerAllowed(repo)
+    ? await d.query("select project from project_plugin_repos where repo = $1 union select project from checkouts where repo = $1", [repo])
+    : await d.query("select project from project_plugin_repos where repo = $1", [repo]);
   return rows.map((r) => r.project as string).sort();
 }
-
-export const OWNERS_UNSET = "Git facts and plugins are off on this server: TODO_PLUGIN_OWNERS, the GitHub owners whose repos it reads, isn't set.";
 
 /** Why an item's repo gets no GitHub reads or plugin runs, or null when the project may use it. */
 export async function repoRefusal(d: Pick<Db, "query">, project: string, raw: unknown): Promise<string | null> {
   if (raw === undefined || raw === null || raw === "") return null;
   const repo = repoKey(String(raw));
   if (!repo) return `${String(raw)} isn't a GitHub owner/name, so todo doesn't read it from GitHub or run its plugins.`;
-  if (!pluginOwners().length) return OWNERS_UNSET;
-  if (!ownerAllowed(repo)) {
-    return `${repo.split("/")[0]} isn't one of the GitHub owners this server reads (TODO_PLUGIN_OWNERS), so todo doesn't read ${repo} from GitHub or run its plugins.`;
-  }
   if (await repoAllowed(d, project, repo)) return null;
   return `${repo} isn't one of this project's repos, so todo doesn't read it from GitHub or run its plugins. `
-    + "It becomes one when a teammate's CLI reports a checkout of it, or when it's added under Settings → Automation.";
+    + (ownerAllowed(repo) ? "It becomes one when a teammate's CLI reports a checkout of it, or when it's added under Settings → Automation."
+      : "It becomes one when it's added under Settings → Automation.");
 }
 
 export async function recordCheckout(d: Db, handle: string, project: string, dir: string, repo: string): Promise<void> {

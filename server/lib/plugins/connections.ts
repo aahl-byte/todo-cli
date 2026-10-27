@@ -27,6 +27,8 @@ export interface AddressGuard {
   allow: string[];
   /** For the repo's own connections. */
   repoAllow?: string[];
+  /** For one host connection each, by name: the host:port someone let it reach. */
+  named?: Record<string, string>;
   /** Stands in for DNS, for tests. */
   lookup?: (host: string) => Promise<Resolved[]>;
 }
@@ -126,19 +128,26 @@ export function blockedAddress(address: string): boolean {
 
 const systemLookup = async (host: string): Promise<Resolved[]> => dnsLookup(host, { all: true, verbatim: true });
 
-/** Whether the allow list for the connection's origin names the URL's host or host:port. */
-function waived(url: URL, guard: AddressGuard, origin: ConnectionOrigin): boolean {
+/** A URL's host:port, the port its scheme implies when it names none. */
+export function hostPort(url: URL): string {
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  return `${host}:${url.port || (url.protocol === "https:" ? "443" : "80")}`;
+}
+
+/** Whether the allow list for the connection's origin names the URL's host or host:port, or, for a host connection, whether it is
+ * the one connection someone let reach that host:port. */
+function waived(url: URL, guard: AddressGuard, origin: ConnectionOrigin, name?: string): boolean {
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (origin === "host" && name !== undefined && Object.hasOwn(guard.named ?? {}, name) && guard.named![name] === hostPort(url)) return true;
   const list = origin === "host" ? guard.allow : guard.repoAllow ?? [];
   const allowed = list.map((a) => a.trim().toLowerCase().replace(/^\[(.*)\](:\d+)?$/, "$1$2"));
-  return allowed.includes(host) || allowed.includes(`${host}:${port}`);
+  return allowed.includes(host) || allowed.includes(hostPort(url));
 }
 
 /** The address to connect to for `url`: resolved, and checked unless the allow list for the connection's origin names it. */
 async function checkedAddress(name: string, url: URL, guard: AddressGuard, origin: ConnectionOrigin = "repo"): Promise<Resolved> {
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const open = waived(url, guard, origin);
+  const open = waived(url, guard, origin, name);
   let found: Resolved[];
   try {
     found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
@@ -151,14 +160,33 @@ async function checkedAddress(name: string, url: URL, guard: AddressGuard, origi
   return found[0];
 }
 
-/** Whether the guard lets a connection to `url` through, without connecting. */
-export async function addressAllowed(url: string, guard: AddressGuard, origin: ConnectionOrigin = "repo"): Promise<boolean> {
+/** Whether the guard lets connection `name` to `url` through, without connecting. */
+export async function addressAllowed(url: string, guard: AddressGuard, origin: ConnectionOrigin = "repo", name?: string): Promise<boolean> {
   try {
-    if (waived(new URL(url), guard, origin)) return true;
-    await checkedAddress("check", new URL(url), guard, origin);
+    if (waived(new URL(url), guard, origin, name)) return true;
+    await checkedAddress(name ?? "check", new URL(url), guard, origin);
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Whether a host connection to `url` would be refused for its private address: true when it resolves to one the guard doesn't
+ * open, null when it doesn't resolve here. */
+export async function privateAddress(url: string, guard: AddressGuard): Promise<boolean | null> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (waived(u, guard, "host")) return false;
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  try {
+    const found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
+    return found.length ? found.some((a) => blockedAddress(a.address)) : null;
+  } catch {
+    return null;
   }
 }
 

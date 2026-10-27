@@ -1,6 +1,8 @@
 // Live pull-request status for PR links, read from GitHub's API and cached
-// briefly in memory. GITHUB_TOKEN is optional: public repos work without it,
-// private ones need it, and unresolved review threads (GraphQL only) need it.
+// briefly in memory. A token is optional: public repos work without it, private
+// ones need it, and unresolved review threads (GraphQL only) need it. Callers
+// pass the project's (github-token.ts); it defaults to the server's GITHUB_TOKEN.
+import crypto from "node:crypto";
 
 export type Fetch = typeof fetch;
 export type PrState = "draft" | "open" | "merged" | "closed";
@@ -46,8 +48,8 @@ function headers(token: string | undefined): Record<string, string> {
            ...(token ? { authorization: `Bearer ${token}` } : {}) };
 }
 
-async function get(path: string, fetchImpl: Fetch): Promise<any> {
-  const res = await fetchImpl(githubApi() + path, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(process.env.GITHUB_TOKEN) });
+async function get(path: string, fetchImpl: Fetch, token: string | undefined): Promise<any> {
+  const res = await fetchImpl(githubApi() + path, { signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(token) });
   if (!res.ok) throw new Error(`GitHub GET ${path}: ${res.status}`);
   return res.json();
 }
@@ -57,8 +59,7 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
 }`;
 
 /** Unresolved review threads on a PR. GitHub's GraphQL API needs a token, so with none this is null. */
-async function unresolvedThreads({ owner, repo, number }: PrRef, fetchImpl: Fetch): Promise<number | null> {
-  const token = process.env.GITHUB_TOKEN;
+async function unresolvedThreads({ owner, repo, number }: PrRef, fetchImpl: Fetch, token: string | undefined): Promise<number | null> {
   if (!token) return null;
   const res = await fetchImpl(`${githubApi()}/graphql`, {
     method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS), headers: headers(token),
@@ -71,23 +72,23 @@ async function unresolvedThreads({ owner, repo, number }: PrRef, fetchImpl: Fetc
   return threads.filter((t: { isResolved: boolean }) => !t.isResolved).length;
 }
 
-async function checksFor(base: string, sha: string, fetchImpl: Fetch): Promise<ChecksState | null> {
+async function checksFor(base: string, sha: string, fetchImpl: Fetch, token: string | undefined): Promise<ChecksState | null> {
   const [runs, combined] = await Promise.all([
-    get(`${base}/commits/${sha}/check-runs?per_page=100`, fetchImpl),
-    get(`${base}/commits/${sha}/status`, fetchImpl),
+    get(`${base}/commits/${sha}/check-runs?per_page=100`, fetchImpl, token),
+    get(`${base}/commits/${sha}/status`, fetchImpl, token),
   ]);
   return checksState(runs.check_runs ?? [], combined.statuses ?? []);
 }
 
 /** The status, and whether any part of it failed to load. */
-async function fetchStatus({ owner, repo, number }: PrRef, fetchImpl: Fetch): Promise<{ status: PrStatus; partial: boolean }> {
+async function fetchStatus({ owner, repo, number }: PrRef, fetchImpl: Fetch, token: string | undefined): Promise<{ status: PrStatus; partial: boolean }> {
   const base = `/repos/${owner}/${repo}`;
-  const pr = await get(`${base}/pulls/${number}`, fetchImpl);
+  const pr = await get(`${base}/pulls/${number}`, fetchImpl, token);
   const state = prState(pr);
   const finished = state === "merged" || state === "closed";
   const [checks, unresolved] = await Promise.allSettled([
-    finished ? Promise.resolve(null) : checksFor(base, pr.head.sha, fetchImpl),
-    unresolvedThreads({ owner, repo, number }, fetchImpl),
+    finished ? Promise.resolve(null) : checksFor(base, pr.head.sha, fetchImpl, token),
+    unresolvedThreads({ owner, repo, number }, fetchImpl, token),
   ]);
   return {
     status: { state, checks: checks.status === "fulfilled" ? checks.value : null,
@@ -96,13 +97,17 @@ async function fetchStatus({ owner, repo, number }: PrRef, fetchImpl: Fetch): Pr
   };
 }
 
-/** A PR's status, or null when GitHub can't tell us; failed lookups, checks included, retry after a short pause. */
-export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch): Promise<PrStatus | null> {
-  const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
+const tokenKey = (token: string | undefined) => (token ? crypto.createHash("sha256").update(token).digest("hex").slice(0, 16) : "");
+
+/** A PR's status, or null when GitHub can't tell us; failed lookups, checks included, retry after a short pause. Each token's
+ * answers are cached apart, since what a token sees is its own. */
+export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch, token: string | null | undefined = process.env.GITHUB_TOKEN): Promise<PrStatus | null> {
+  const auth = token || undefined;
+  const key = `${tokenKey(auth)}:${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < hit.ttl) return hit.value;
   const entry = { at: Date.now(), ttl: FRESH_MS, value: Promise.resolve<PrStatus | null>(null) };
-  entry.value = fetchStatus(ref, fetchImpl).then(
+  entry.value = fetchStatus(ref, fetchImpl, auth).then(
     ({ status, partial }) => {
       if (partial) entry.ttl = FAILED_MS;
       return status;
@@ -115,11 +120,11 @@ export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch): Promise<PrStatus
   return entry.value;
 }
 
-/** Statuses for every link pointing at a GitHub PR, keyed by the link's uid. */
-export async function linkPrStatuses(links: Record<string, any>[], fetchImpl?: Fetch): Promise<Record<string, PrStatus>> {
+/** Statuses for every link pointing at a GitHub PR, keyed by the link's uid, read with `token` (the server's by default). */
+export async function linkPrStatuses(links: Record<string, any>[], fetchImpl?: Fetch, token?: string | null): Promise<Record<string, PrStatus>> {
   const found = await Promise.all(links.map(async (l) => {
     const ref = parsePrUrl(l.meta?.url);
-    return [l.uid, ref && (await prStatus(ref, fetchImpl))] as const;
+    return [l.uid, ref && (await prStatus(ref, fetchImpl, token === undefined ? process.env.GITHUB_TOKEN : token))] as const;
   }));
   return Object.fromEntries(found.filter((f): f is readonly [string, PrStatus] => !!f[1]));
 }

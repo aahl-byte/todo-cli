@@ -11,6 +11,7 @@ import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs"
 import { docType, putObject } from "../files";
 import { scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
+import { anyGithubToken, githubToken } from "../github-token";
 import { itemBranches, nowIso } from "../model";
 import { jiraReadOnly } from "../jira/config";
 import { hashUid, ulid } from "../ulid";
@@ -18,9 +19,7 @@ import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } f
 import { fillString } from "./template";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
-import {
-  guardFor, hostConnections, hostSecrets, loadConfig, merge, message, repoSecrets, storedGrants, storedInstances, type PluginInfo,
-} from "./store";
+import { guardFor, hostSet, loadConfig, merge, message, repoSecrets, storedGrants, storedInstances, type PluginInfo } from "./store";
 import { parseDuration } from "./triggers";
 import { DEFAULT_DEADLINE_MS, POST_REQUEST, type Attachment, type InstanceDef, type PluginEvent, type PluginItem } from "./types";
 
@@ -323,10 +322,11 @@ async function recordRun(t: Pick<Db, "query">, row: Row, run: EventRun, outcome:
         where r.n_instance > $5 and (r.n_item > 1 or not (${STILL_OPEN})))`, [row.project, row.repo, run.plugin, run.instance.id, RUNS_KEPT]);
 }
 
-/** The server's guard: no private addresses, except the hosts TODO_PLUGIN_ALLOW_HOSTS opens to this repo's runs. */
-function hostDeps(deps: RunnerDeps, repo: string): HostDeps {
+/** The server's guard: no private addresses, except the hosts TODO_PLUGIN_ALLOW_HOSTS opens to this repo's runs, and those the
+ * project allowed for one of its own connections. */
+function hostDeps(deps: RunnerDeps, repo: string, named: Record<string, string>): HostDeps {
   const { guard, ...rest } = deps.host ?? {};
-  return { fetch: deps.fetch, ...rest, guard: guardFor(repo, guard?.lookup) };
+  return { fetch: deps.fetch, ...rest, guard: guardFor(repo, guard?.lookup, named) };
 }
 
 async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
@@ -337,7 +337,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
   const stored = await storedInstances(d, row.project, row.repo, { secrets: true });
   const grants = await storedGrants(d, row.project, row.repo);
   const merged = merge(await loadConfig(d, row.project, row.repo), stored);
-  const connections = hostConnections();
+  const host = await hostSet(d, row.project, row.repo);
   const done = new Set<string>(row.finished ?? []);
   let edges = false;
   let retry = false;
@@ -347,12 +347,12 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
   };
   const out = await runEvent({
     config: merged.config,
-    hostConnections: connections,
-    secrets: { repo: await repoSecrets(d, row.project, row.repo), host: hostSecrets(connections) },
+    hostConnections: host.connections,
+    secrets: { repo: await repoSecrets(d, row.project, row.repo), host: host.secrets },
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
     allowRepoCommands: false, dryRunConnections: jiraReadOnly() ? ["jira"] : undefined,
-  }, hostDeps(deps, row.repo), {
+  }, hostDeps(deps, row.repo, host.privateOk), {
     before: async (plugin, instance) => {
       if (done.has(instanceKey(plugin, instance))) return false;
       await holds("update plugin_events set claimed_at = now() where id = $1 and lease = $2 returning id", [row.id, row.lease]);
@@ -390,7 +390,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
 
 /** Deliver up to `limit` due events: each leased, retried with backoff when the failure may pass, given up after MAX_ATTEMPTS. */
 export async function flushPluginRuns(d: Db, deps: RunnerDeps = {}, limit = FLUSH_EVENTS): Promise<{ ran: number; failed: number }> {
-  if (!pluginsEnabled()) return { ran: 0, failed: 0 };
+  if (!(await anyGithubToken(d))) return { ran: 0, failed: 0 };
   const lease = `${LEASE_MS} milliseconds`;
   await d.query(
     `update plugin_events set claimed_at = null, lease = null, done_at = now(), error = coalesce(error, 'the process stopped during the last attempt')
@@ -534,7 +534,7 @@ export async function readCapped(req: Request, max = MAX_HOOK_BYTES): Promise<st
 // ── the tick ──────────────────────────────────────────────────────────────────
 type OpenItem = ItemRef & { repo: string };
 
-/** Items that still run plugins for their branches, in repos their projects may use. */
+/** Items that still run plugins for their branches, in repos their projects may use and have a GitHub token for. */
 async function openItems(d: Db): Promise<OpenItem[]> {
   const rows = await d.query("select project, uid, status, extra from items where extra ? 'repo' and status not in ('done', 'deployed', 'cancelled')");
   const allowed = new Map<string, boolean>();
@@ -543,7 +543,7 @@ async function openItems(d: Db): Promise<OpenItem[]> {
     const repo = repoKey(r.extra?.repo);
     if (!repo || finished(r)) continue;
     const k = `${r.project}\x1f${repo}`;
-    if (!allowed.has(k)) allowed.set(k, await repoAllowed(d, r.project, repo));
+    if (!allowed.has(k)) allowed.set(k, (await repoAllowed(d, r.project, repo)) && (await pluginsEnabled(d, r.project, repo)));
     if (allowed.get(k)) out.push({ project: r.project, uid: r.uid, status: r.status, extra: r.extra, repo });
   }
   return out;
@@ -552,10 +552,9 @@ async function openItems(d: Db): Promise<OpenItem[]> {
 interface Page { etag: string | null; tips: Record<string, string> }
 
 /** Every branch's tip, each page asked with its own ETag, so an unchanged first page never hides a later one that moved. */
-async function branchPages(repo: string, before: Page[], f: Fetch): Promise<Page[]> {
-  const token = process.env.GITHUB_TOKEN;
+async function branchPages(repo: string, before: Page[], f: Fetch, token: string): Promise<Page[]> {
   const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28",
-                    ...(token ? { authorization: `Bearer ${token}` } : {}) };
+                    authorization: `Bearer ${token}` };
   const pages: Page[] = [];
   for (let page = 1; ; page++) {
     const known = before[page - 1];
@@ -574,6 +573,15 @@ async function branchPages(repo: string, before: Page[], f: Fetch): Promise<Page
   }
 }
 
+/** The token a repo is polled with: the first of its projects' (by key) that reads it. */
+async function pollToken(d: Db, repo: string, items: OpenItem[]): Promise<string | null> {
+  for (const project of [...new Set(items.filter((it) => it.repo === repo).map((it) => it.project))].sort()) {
+    const auth = await githubToken(d, project, repo);
+    if (auth) return auth.token;
+  }
+  return null;
+}
+
 /** Poll repos with open items and no recent push webhook; a moved tip queues a push for its items. */
 async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: number; queued: number }> {
   const repos = [...new Set(items.map((it) => it.repo))].sort();
@@ -582,9 +590,11 @@ async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: 
   for (const repo of repos) {
     const [state] = await d.query("select * from repo_polls where repo = $1", [repo]);
     if (state?.hook_at && Date.now() - new Date(state.hook_at).getTime() < HOOK_FRESH_MINUTES * 60_000) continue;
+    const token = await pollToken(d, repo, items);
+    if (!token) continue;
     let pages: Page[];
     try {
-      pages = await branchPages(repo, state?.pages ?? [], f);
+      pages = await branchPages(repo, state?.pages ?? [], f, token);
     } catch (e) {
       console.error(`plugins: polling ${repo}: ${message(e)}`);
       continue;
@@ -642,7 +652,7 @@ export interface TickResult { ran: number; failed: number; polled: number; pushe
 
 /** The cron tick: poll repos without webhooks, queue due every: floors, and deliver what's due. */
 export async function pluginTick(d: Db, deps: RunnerDeps = {}): Promise<TickResult> {
-  if (!pluginsEnabled()) return { ran: 0, failed: 0, polled: 0, pushes: 0, refreshes: 0 };
+  if (!(await anyGithubToken(d))) return { ran: 0, failed: 0, polled: 0, pushes: 0, refreshes: 0 };
   const f = deps.fetch ?? fetch;
   const items = await openItems(d);
   const { polled, queued: pushes } = await pollRepos(d, items, f);

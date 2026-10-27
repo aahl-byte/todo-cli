@@ -750,17 +750,10 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .auto-line.last { color: var(--text); }
 .auto-steps { margin-top: 8px; font-size: 12px; }
 .auto-steps ol { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
-.auto-steps li { display: grid; grid-template-columns: 1.8em 7.5em minmax(0, 1fr); align-items: baseline; line-height: 1.5; }
+.auto-steps li { display: grid; grid-template-columns: 1.8em minmax(0, 1fr); align-items: baseline; line-height: 1.5; }
 .auto-steps .step-mark { color: var(--faint); }
 .auto-steps li.done { color: var(--faint); }
 .auto-steps li.done .step-mark { color: var(--cyan); }
-.auto-steps .who { font: 600 9px var(--disp); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
-.auto-steps li.done .who { color: var(--faint); }
-.step-env { margin-top: 3px; }
-.auto-steps code.env { display: inline-block; margin-right: 4px; overflow-wrap: anywhere; }
-.step-code { display: flex; gap: 8px; align-items: flex-start; margin-top: 5px; min-width: 0; }
-.step-code pre { margin: 0; padding: 6px 10px; min-width: 0; overflow-x: auto; background: var(--ink); border: 1px solid var(--line); border-radius: 5px;
-  font: 12px/1.5 var(--mono); color: var(--md-strong); }
 .auto-actions { display: flex; gap: 16px; margin-top: 8px; }
 .auto-panel { display: grid; gap: 8px; margin-top: 10px; padding: 10px 12px; background: var(--tray); border: 1px solid var(--line); border-radius: 7px; }
 .auto-panel.plugin-card { border-top: 1px solid var(--line); padding: 10px 12px; }
@@ -783,13 +776,23 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .add-connection { flex-wrap: wrap; }
 .add-connection input { font: 12px var(--mono); }
 .conn-url { font-size: 11px; overflow-wrap: anywhere; }
+.conn-form { display: grid; gap: 8px; min-width: 0; }
+.conn-form .field { flex-wrap: wrap; }
+.conn-form input:not([type=checkbox]), .conn-form select { font: 12px var(--mono); }
+.conn-form .hint { margin: 0; }
+.conn-form .hint a { color: var(--cyan); }
+.conn-address input { width: 26em; max-width: 100%; }
+.conn-auth, .conn-secret { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.conn-form .private-ok { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--amber); }
+.conn-form .private-ok input { accent-color: var(--amber); margin: 0; }
+.project-connections .host-conn .grow { min-width: 12em; }
+.edit-connection .hint { flex-basis: 100%; }
 @media (max-width: 600px) {
   .auto-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .auto-head { flex-wrap: wrap; gap: 2px 12px; }
   .add-connection input, .add-connection select { flex: 1 1 100%; }
   .auto-plugins { text-align: left; }
-  .auto-steps li { grid-template-columns: 1.8em minmax(0, 1fr); }
-  .auto-steps li .step-body { grid-column: 2; }
+  .conn-address input { width: auto; flex: 1 1 100%; }
 }
 .plugin-meta { margin: 0; font-size: 11px; }
 .plugin-card > .conn-row { padding: 0; }
@@ -841,3 +844,5 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .wait-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
 .wait-list .mono { font: 11px var(--mono); }
 .instance-card .switch { margin-right: 6px; }
+.vercel-pick { justify-self: start; flex-wrap: wrap; }
+.vercel-pick select { font: 12px var(--mono); }

@@ -1,6 +1,6 @@
 // Git facts: where each item's branches landed, which in-flight branches depend
-// on others, and which overlap. The server computes them through GitHub's API
-// (GITHUB_TOKEN) and stores them per item in git_facts, keeping the conflicts
+// on others, and which overlap. The server computes them through GitHub's API,
+// with the token that reads each repo (see github-token.ts), and stores them per item in git_facts, keeping the conflicts
 // a CLI reports, since those need a checkout. Facts are never set by hand.
 // Each branch's unlanded commits come from one compare against its effective
 // target, less the commits of the long-lived branches (the default and tracked
@@ -8,9 +8,11 @@
 // intersecting those sets in memory. A failure
 // never reads as "no edge": the stored facts stay, marked unknown.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
+import crypto from "node:crypto";
 import { db as appDb, type Db, type Row } from "./db";
-import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
+import { repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { githubApi } from "./github";
+import { anyGithubToken, githubToken, pageGithubToken, serverGithubToken } from "./github-token";
 import { later } from "./http";
 import { itemBranches } from "./model";
 
@@ -99,13 +101,8 @@ async function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
   return v;
 }
 
-/** A GitHub API GET with GITHUB_TOKEN; NotFound on a 404. */
-export async function githubGet(path: string, f: Fetch): Promise<any> {
-  return get(path, f);
-}
-
-async function get(path: string, f: Fetch): Promise<any> {
-  const token = process.env.GITHUB_TOKEN;
+/** A GitHub API GET with `token`; NotFound on a 404. */
+async function get(path: string, f: Fetch, token: string | null): Promise<any> {
   const res = await f(githubApi() + path, {
     signal: AbortSignal.timeout(TIMEOUT_MS),
     headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(token ? { authorization: `Bearer ${token}` } : {}) },
@@ -118,29 +115,32 @@ async function get(path: string, f: Fetch): Promise<any> {
 export const orNull = <T>(p: Promise<T>): Promise<T | null> => p.catch((e) => { if (e instanceof NotFound) return null; throw e; });
 
 /** A repo's branches as GitHub lists them, the default first, for picking deploy branches. `visible` is false when GitHub says the
- * repo isn't there for this server's token, null when it wasn't asked or didn't answer. */
+ * repo isn't there for the token that reads it, null when there's no token or it didn't answer. */
 export interface RemoteBranches { names: string[]; default: string | null; visible: boolean | null }
 
 const BRANCH_LIST_MS = 5 * 60_000;
 const branchLists = new Map<string, { at: number; value: RemoteBranches }>();
 
-/** The repo's branches: GitHub's first page of them, else the tips the tick last polled; kept a few minutes. */
-export async function remoteBranches(d: Pick<Db, "query">, repo: string, f: Fetch = fetch): Promise<RemoteBranches> {
-  const hit = branchLists.get(repo);
+/** The repo's branches as the project's token sees them: GitHub's first page of them, else the tips the tick last polled; kept a
+ * few minutes for each token. */
+export async function remoteBranches(d: Pick<Db, "query">, project: string, repo: string, f: Fetch = fetch): Promise<RemoteBranches> {
+  const auth = await githubToken(d, project, repo);
+  const at = `${repo}\x1f${auth ? crypto.createHash("sha256").update(auth.token).digest("hex") : ""}`;
+  const hit = branchLists.get(at);
   if (hit && Date.now() - hit.at < BRANCH_LIST_MS) return hit.value;
   const [poll] = await d.query("select tips from repo_polls where repo = $1", [repo]);
   let value: RemoteBranches = { names: Object.keys(poll?.tips ?? {}).sort(), default: null, visible: null };
-  if (process.env.GITHUB_TOKEN) {
+  if (auth) {
     try {
-      const def = String((await get(`/repos/${repo}`, f)).default_branch ?? "") || null;
-      const rows = (await get(`/repos/${repo}/branches?per_page=${PAGE}`, f)) as { name: string }[];
+      const def = String((await get(`/repos/${repo}`, f, auth.token)).default_branch ?? "") || null;
+      const rows = (await get(`/repos/${repo}/branches?per_page=${PAGE}`, f, auth.token)) as { name: string }[];
       const names = rows.map((r) => r.name).sort();
       value = { names: def ? [def, ...names.filter((n) => n !== def)] : names, default: def, visible: true };
     } catch (e) {
       if (e instanceof NotFound) value = { ...value, visible: false };
     }
   }
-  branchLists.set(repo, { at: Date.now(), value });
+  branchLists.set(at, { at: Date.now(), value });
   return value;
 }
 
@@ -158,31 +158,31 @@ function prFact(pr: any): PrFact {
 
 class GitHubRepo {
   readonly key: string;
-  constructor(readonly owner: string, readonly name: string, private f: Fetch) { this.key = `${owner}/${name}`.toLowerCase(); }
+  constructor(readonly owner: string, readonly name: string, private f: Fetch, private token: string) { this.key = `${owner}/${name}`.toLowerCase(); }
   private get base() { return `/repos/${this.owner}/${this.name}`; }
 
   async defaultBranch(): Promise<string> {
-    return (await get(this.base, this.f)).default_branch ?? "main";
+    return (await get(this.base, this.f, this.token)).default_branch ?? "main";
   }
   /** Every branch's tip. */
   async tips(): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
     for (let page = 1; ; page++) {
-      const rows = await get(`${this.base}/branches?per_page=${PAGE}&page=${page}`, this.f);
+      const rows = await get(`${this.base}/branches?per_page=${PAGE}&page=${page}`, this.f, this.token);
       for (const r of rows) out[r.name] = r.commit.sha;
       if (rows.length < PAGE) return out;
     }
   }
   /** The PRs most recently closed into `base`, by head branch, from one call. */
   async closedInto(base: string): Promise<Map<string, PrFact[]>> {
-    const rows = await get(`${this.base}/pulls?state=closed&base=${encodeURIComponent(base)}&sort=updated&direction=desc&per_page=${PAGE}`, this.f);
+    const rows = await get(`${this.base}/pulls?state=closed&base=${encodeURIComponent(base)}&sort=updated&direction=desc&per_page=${PAGE}`, this.f, this.token);
     const out = new Map<string, PrFact[]>();
     for (const r of rows as any[]) out.set(r.head?.ref, [...(out.get(r.head?.ref) ?? []), prFact(r)]);
     return out;
   }
   /** (current PR, every merged PR plus the open one): the current one is the open PR, else the newest. */
   async prs(branch: string): Promise<[PrFact | null, PrFact[]]> {
-    const rows = await get(`${this.base}/pulls?head=${encodeURIComponent(`${this.owner}:${branch}`)}&state=all&per_page=${PAGE}`, this.f);
+    const rows = await get(`${this.base}/pulls?head=${encodeURIComponent(`${this.owner}:${branch}`)}&state=all&per_page=${PAGE}`, this.f, this.token);
     const prs = (rows as any[]).map(prFact);
     return [prs.find((p) => OPEN_PR.includes(p.state)) ?? prs[0] ?? null,
             prs.filter((p) => p.state === "merged" || OPEN_PR.includes(p.state))];
@@ -193,7 +193,7 @@ class GitHubRepo {
       const shas: string[] = [];
       let files: string[] = [];
       for (let page = 1; ; page++) {
-        const c = await orNull(get(`${this.base}/compare/${tip}...${head}?per_page=${PAGE}&page=${page}`, this.f));
+        const c = await orNull(get(`${this.base}/compare/${tip}...${head}?per_page=${PAGE}&page=${page}`, this.f, this.token));
         if (!c) return null;
         const total = c.total_commits ?? c.ahead_by ?? 0;
         if (total > UNLANDED_CAP) return null;
@@ -206,7 +206,7 @@ class GitHubRepo {
   /** The files head changes since its merge base with tip; null for an unknown commit. */
   changed(tip: string, head: string): Promise<string[] | null> {
     return cached(`files:${this.key}:${tip}:${head}`, async () => {
-      const c = await orNull(get(`${this.base}/compare/${tip}...${head}?per_page=1`, this.f));
+      const c = await orNull(get(`${this.base}/compare/${tip}...${head}?per_page=1`, this.f, this.token));
       return c ? [...new Set<string>((c.files ?? []).map((x: any) => String(x.filename)))].sort() : null;
     });
   }
@@ -214,7 +214,7 @@ class GitHubRepo {
   contains(tip: string, sha: string): Promise<boolean | null> {
     if (tip.startsWith(sha) || sha.startsWith(tip)) return Promise.resolve(true);
     return cached(`anc:${this.key}:${sha}:${tip}`, async () => {
-      const c = await orNull(get(`${this.base}/compare/${sha}...${tip}`, this.f));
+      const c = await orNull(get(`${this.base}/compare/${sha}...${tip}`, this.f, this.token));
       return c ? c.status === "ahead" || c.status === "identical" : null;
     });
   }
@@ -227,6 +227,8 @@ type Facts = Required<Pick<GitFacts, "repo" | "branches" | "needs" | "needed_by"
  * branches in `covered`, which moved; an open PR with another base is refetched when `refetchOpen`. */
 interface Ctx {
   gh: GitHubRepo; tips: Record<string, string>; def: string; track: string[]; fixed: Set<string>;
+  /** The project's own GitHub token, which reads a PR a dependency names in another repo. */
+  own: string | null;
   closed: Map<string, PrFact[]>; covered: Set<string>; refetchOpen?: boolean;
 }
 type Key = string;
@@ -567,7 +569,7 @@ async function noteEdges(c: Ctx, it: ItemRow, notes: Row[], items: ItemRow[], al
       if (dep) branches = facts.get(dep.uid)!.branches.filter((b) => b.name === name);
       else if (c.tips[name]) branches = [{ name, head: c.tips[name], landed: c.tips[name] }];
     } else if (/^https?:\/\//.test(needs)) {
-      Object.assign(e, await prEdge(needs, n.meta?.in ? target : null, f));
+      Object.assign(e, await prEdge(needs, n.meta?.in ? target : null, f, c.own));
       out.push({ dep: null, depBranch: null, e });
       continue;
     }
@@ -588,21 +590,23 @@ async function noteState(c: Ctx, dep: ItemRow | null, branches: BranchFact[], ti
 }
 
 /** A dependency on a PR by URL, in any repo: landed once merged, and once its merge commit is in `into` when that's named.
- * Unknown when GitHub can't answer, and for an owner this server doesn't read. */
-async function prEdge(url: string, into: string | null, f: Fetch): Promise<Partial<Edge>> {
+ * Unknown when GitHub can't answer, and when todo has no token that reads the PR's repo: the project's own, or the server's for
+ * an owner it reads. */
+async function prEdge(url: string, into: string | null, f: Fetch, own: string | null): Promise<Partial<Edge>> {
   const m = url.match(/^https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#]|$)/i);
   if (!m) return { state: "waiting" };
   const [, owner, name, number] = m;
-  if (!pluginOwners().includes(owner.toLowerCase())) {
-    return { state: "unknown", reason: `${owner} isn't one of the GitHub owners this server reads (TODO_PLUGIN_OWNERS)` };
+  const token = own ?? serverGithubToken(`${owner}/${name}`.toLowerCase());
+  if (!token) {
+    return { state: "unknown", reason: `todo has no GitHub token that reads ${owner}/${name}; give the project one on Settings → Automation` };
   }
-  const raw = await get(`/repos/${owner}/${name}/pulls/${number}`, f).catch(() => null);
+  const raw = await get(`/repos/${owner}/${name}/pulls/${number}`, f, token).catch(() => null);
   if (!raw?.number) return { state: "unknown", reason: "GitHub didn't answer for the PR" };
   const pr = prFact(raw);
   if (pr.state === "closed") return { state: "stale", pr };
   if (pr.state !== "merged") return { state: "waiting", pr };
   if (!into || !pr.merge_commit) return { state: "landed", pr };
-  const c = await get(`/repos/${owner}/${name}/compare/${pr.merge_commit}...${encodeURIComponent(into)}`, f).catch(() => null);
+  const c = await get(`/repos/${owner}/${name}/compare/${pr.merge_commit}...${encodeURIComponent(into)}`, f, token).catch(() => null);
   if (!c?.status) return { state: "unknown", reason: `couldn't check PR #${pr.number} against ${into}`, pr };
   return { state: c.status === "ahead" || c.status === "identical" ? "landed" : "waiting", pr };
 }
@@ -720,6 +724,7 @@ function failed(old: GitFacts, why: string): GitFacts {
 /** Recompute every item's facts in the project from GitHub, keeping the CLI's conflicts; with `only`, just that repo's.
  * A repo the project may not use is never read. */
 export async function computeProject(d: Db, project: string, fetchImpl: Fetch = fetch, only?: string): Promise<void> {
+  const own = await pageGithubToken(d, project);
   const everything = await d.query<ItemRow>("select uid, id, status, extra from items where project = $1 order by created, id", [project]);
   const all = everything.filter((it) => !it.extra?.archived);
   const stored = new Map<string, GitFacts>((await d.query("select item_uid, data from git_facts where project = $1", [project]))
@@ -734,8 +739,10 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
     if (only !== undefined && key !== only) continue;
     if (!(await repoAllowed(d, project, key))) continue;
     if (!items.some((it) => itemBranches(it.extra).length || stored.has(it.uid) || notes.some((n) => n.item_uid === it.uid))) continue;
+    const auth = await githubToken(d, project, key);
+    if (!auth) continue;
     const [owner, name] = key.split("/");
-    const gh = new GitHubRepo(owner, name, fetchImpl);
+    const gh = new GitHubRepo(owner, name, fetchImpl, auth.token);
     let facts: Map<string, Facts>;
     try {
       const [def, tips] = await Promise.all([gh.defaultBranch(), gh.tips()]);
@@ -752,7 +759,7 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
         if (repoKey(it.extra?.repo) !== key || (it.status !== "cancelled" && !it.extra?.archived)) continue;
         for (const b of itemBranches(it.extra)) if (!fixed.has(b)) others.set(b, it);
       }
-      facts = await computeRepo({ gh, tips, def, track, fixed, closed, covered: new Set(moved), refetchOpen: moved.length > 0 },
+      facts = await computeRepo({ gh, tips, def, track, fixed, closed, covered: new Set(moved), refetchOpen: moved.length > 0, own },
                                 items, all, stored, notes, others, fetchImpl);
       signatures.set(`${project}\x1f${key}`, sig);
       trackedTips.set(`${project}\x1f${key}`, Object.fromEntries(track.map((t) => [t, tips[t]])));
@@ -818,16 +825,19 @@ export function validFacts(data: unknown): data is GitFacts {
 
 export class BadFacts extends Error {}
 
-/** Store facts a CLI computed, for the project's own items. With GITHUB_TOKEN the server
- * computes the rest itself and keeps only the CLI's conflicts; without, it keeps them whole. */
+/** Store facts a CLI computed, for the project's own items. Where todo has a GitHub token for the item's repo the server
+ * computes the rest itself and keeps only the CLI's conflicts; elsewhere it keeps them whole. */
 export async function recordFacts(d: Db, project: string, handle: string, facts: unknown[]): Promise<{ stored: number; skipped: string[] }> {
   if (!facts.every((f) => isObj(f) && typeof f.item_uid === "string" && validFacts(f.data))) throw new BadFacts("malformed git facts");
-  const own = !!process.env.GITHUB_TOKEN;
   const skipped: string[] = [];
   let stored = 0;
+  let computed = false;
   for (const { item_uid, data } of facts as { item_uid: string; data: GitFacts }[]) {
-    const [hit] = await d.query("select 1 from items where project = $1 and uid = $2", [project, item_uid]);
+    const [hit] = await d.query("select extra from items where project = $1 and uid = $2", [project, item_uid]);
     if (!hit) { skipped.push(item_uid); continue; }
+    const repo = repoKey(hit.extra?.repo);
+    const own = !!repo && !!(await githubToken(d, project, repo));
+    computed ||= own;
     if (own) {
       const prev = await storedFacts(d, project, item_uid);
       const [row] = await d.query("select 1 from git_facts where project = $1 and item_uid = $2", [project, item_uid]);
@@ -839,7 +849,7 @@ export async function recordFacts(d: Db, project: string, handle: string, facts:
     }
     stored += 1;
   }
-  if (own && stored) scheduleRecompute(d, project);
+  if (computed) scheduleRecompute(d, project);
   return { stored, skipped };
 }
 
@@ -872,16 +882,25 @@ export async function itemGitFacts(d: Db, project: string, itemUid: string, fetc
   const blocked = await repoRefusal(d, project, it?.extra?.repo);
   if (blocked) return { hints: HINTS, blocked };
   const [row] = await d.query("select data, extract(epoch from now() - at) * 1000 as age from git_facts where project = $1 and item_uid = $2", [project, itemUid]);
-  if (process.env.GITHUB_TOKEN && (!row || Number(row.age) >= STALE_MS)) void scheduleRecompute(d, project, fetchImpl);
+  const repo = repoKey(it?.extra?.repo);
+  if ((!row || Number(row.age) >= STALE_MS) && repo && (await githubToken(d, project, repo))) void scheduleRecompute(d, project, fetchImpl);
   return { ...(row?.data ?? {}), hints: HINTS };
 }
 
-/** Recompute every project whose items list branches, for a cron tick. */
+/** Recompute every project whose items list branches in a repo todo has a GitHub token for, for a cron tick. */
 export async function recomputeAll(d: Db, fetchImpl: Fetch = fetch): Promise<string[]> {
-  if (!process.env.GITHUB_TOKEN) return [];
-  const rows = await d.query("select distinct project from items where jsonb_array_length(coalesce(extra->'branches', '[]'::jsonb)) > 0");
-  for (const r of rows) await scheduleRecompute(d, r.project, fetchImpl);
-  return rows.map((r) => r.project);
+  if (!(await anyGithubToken(d))) return [];
+  const rows = await d.query(
+    `select project, extra->>'repo' as repo from items where jsonb_array_length(coalesce(extra->'branches', '[]'::jsonb)) > 0
+      group by 1, 2 order by 1, 2`);
+  const due: string[] = [];
+  for (const r of rows) {
+    const repo = repoKey(r.repo);
+    if (due.includes(r.project) || !repo || !(await githubToken(d, r.project, repo))) continue;
+    due.push(r.project);
+  }
+  for (const project of due) await scheduleRecompute(d, project, fetchImpl);
+  return due;
 }
 
 export function describeEdge(e: Edge): string {

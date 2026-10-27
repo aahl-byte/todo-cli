@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { filesEnabled } from "@/lib/files";
 import { itemGitFacts } from "@/lib/gitfacts";
 import { linkPrStatuses } from "@/lib/github";
+import { prToken } from "@/lib/github-token";
 import { isPinned } from "@/lib/pins";
 import { itemButtons, itemNotices } from "@/lib/plugin-views";
 import { requireUser } from "@/lib/session";
@@ -29,7 +30,7 @@ export default async function ItemPage({ params }: { params: Promise<{ key: stri
     actions: (await projectActions(d, key)).map(({ id, name, runner }) => ({ id, name, runner })),
   };
   const [prs, git, plugins, pluginNotices, waits] = await Promise.all([
-    linkPrStatuses(data.links), itemGitFacts(d, key, data.item.uid).catch(() => ({})),
+    linkPrStatuses(data.links, undefined, await prToken(d, key)), itemGitFacts(d, key, data.item.uid).catch(() => ({})),
     itemButtons(d, key, data.item).catch(() => []), itemNotices(d, key, data.item.uid), itemWaits(d, key, data.item.uid),
   ]);
   return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs, git, pluginNotices, waits }))} ctx={{ ...ctx, plugins }} />;

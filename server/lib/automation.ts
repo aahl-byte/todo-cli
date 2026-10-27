@@ -3,22 +3,20 @@
 // elsewhere today), with the evidence or the steps that go with it. Pure, so the
 // page and the tests share it.
 import { fieldsOf } from "./plugin-form";
-import { secretVar } from "./plugin-summary";
 import type { BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry, RunRow } from "./plugin-views";
 import type { Attachment } from "./plugins/types";
+import { serviceLabel, type Service } from "./services";
 
 export type RowState = "on" | "setup" | "elsewhere" | "off";
-/** Who takes a step: a person on this page, or the server's admin. */
-export type Who = "here" | "admin";
 
+/** One thing to do on this page before a row is on, or one already done. */
 export interface Step {
-  who: Who;
   text: string;
-  /** The environment variables to set. */
-  code?: string;
   done: boolean;
   /** Taken in this row's settings, which open from the step. */
   setup?: boolean;
+  /** Taken in the form for this connection, which opens from the step in the row. */
+  connect?: string;
 }
 
 export interface Note { text: string; warn?: boolean; link?: { label: string; href: string } }
@@ -54,7 +52,7 @@ export interface AutomationRow {
   branches?: boolean;
 }
 
-export interface RowContext { project: string; bridge: BridgeFacts; host: HostConnection[] }
+export interface RowContext { project: string; bridge: BridgeFacts; host: HostConnection[]; services: Service[] }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /** The verb that agrees with a count: "1 trigger moves", "2 triggers move". */
@@ -144,8 +142,6 @@ const SHIPPED_COPY: Record<string, Copy> = {
 const ORDER = ["track", ...Object.keys(SHIPPED_COPY)];
 const STATE_ORDER: Record<RowState, number> = { on: 0, setup: 1, elsewhere: 3, off: 4 };
 
-const SERVICE: Record<string, string> = { github: "GitHub", jira: "Jira", vercel: "Vercel", watchtower: "Watchtower" };
-const service = (c: string) => SERVICE[c] ?? c;
 
 const settingsHref = (project: string, part: "jira" | "actions") => `/p/${project}/settings#${part}`;
 
@@ -188,35 +184,54 @@ function doneElsewhere(plugin: string, ctx: RowContext): Duplicate | null {
 }
 
 // ── steps ─────────────────────────────────────────────────────────────────────
-/** A server that can't see the repo on GitHub can't read its branches, commits or pull requests. */
-function readableStep(repo: DashRepo): Step[] {
+/** What todo still needs to read the repo on GitHub, which git facts and every plugin run need: a token, or one that can see it. */
+function githubSteps(repo: DashRepo): Step[] {
+  const connect = "github";
+  if (repo.github === null) {
+    return [{ text: `Give todo a GitHub token that can read ${repo.repo}, so it can see the repo's branches, commits and pull requests.`, done: false, connect }];
+  }
   if (repo.branches.visible !== false) return [];
-  return [{ who: "admin", text: `Let the server's GitHub token read ${repo.repo}, so it can see the repo's branches, commits and pull requests.`,
-            code: "GITHUB_TOKEN", done: false }];
+  const whose = repo.github === "page" ? "This project's GitHub token" : "The server's GitHub token";
+  return [{ text: `${whose} can't see ${repo.repo}: give the project a token that can read its branches, commits and pull requests.`, done: false, connect }];
+}
+
+/** How a service authorizes, in words: "a token", "an email and API token". */
+function credentialWords(s: Service | undefined): string {
+  if (s?.auth === "basic") return `${s.user ? `an ${s.user.toLowerCase()}` : "a user"} and ${s.pass ?? "password"}`;
+  return s?.secret ? `a ${s.secret.toLowerCase()}` : "a token";
+}
+
+/** What one of the project's or the server's connections still needs before a shipped plugin can call it, and what it has. */
+function hostSteps(name: string, h: HostConnection | undefined, services: Service[], canSetUp: boolean): Step[] {
+  const label = serviceLabel(services, name);
+  const s = services.find((x) => x.name === name);
+  const connect = canSetUp ? { connect: name } : {};
+  if (!h) {
+    const text = s?.auth === "none" ? `Give todo ${label}'s address.` : s ? `Connect todo to ${label} with ${credentialWords(s)}.`
+      : `Add the ${name} connection: where it is and how it authorizes.`;
+    return [{ text, done: false, ...connect }];
+  }
+  if (h.refused) return [{ text: `Allow todo to call ${label} at ${h.url}, which is on your private network.`, done: false, ...connect }];
+  if (h.unreadable) return [{ text: `Enter the ${label} credential again: the stored one doesn't decrypt on this server.`, done: false, ...connect }];
+  if (h.auth && !h.held) return [{ text: `Enter ${label}'s ${s?.auth === "basic" ? `${s.user?.toLowerCase() ?? "user"} and ${s.pass ?? "password"}` : "token"}.`, done: false, ...connect }];
+  return [{ text: h.source === "page" ? `Connected to ${label}.` : `Connected to ${label} through the server's connection.`, done: true, ...connect }];
 }
 
 /** What a connection still needs before the server can call it, and what it already has. */
-function connectionSteps(name: string, conn: DashConnection | undefined, shipped: boolean, host: HostConnection[], canSetUp: boolean): Step[] {
+function connectionSteps(name: string, conn: DashConnection | undefined, shipped: boolean, ctx: RowContext, canSetUp: boolean): Step[] {
   if (name === "github") return [];
-  const label = service(name);
   if (conn?.origin === "repo") {
-    if (conn.command) return [{ who: "here", text: `Point ${name} at a URL under Connections: the server never starts a command.`, done: false }];
+    if (conn.command) return [{ text: `Point ${name} at a URL under Connections: the server never starts a command.`, done: false }];
     if (!conn.needsSecret) return [];
-    return [conn.held ? { who: "here", text: `${label} credential stored.`, done: true }
-                      : { who: "here", text: `Enter the ${label} credential.`, done: false, setup: canSetUp }];
+    return [conn.held ? { text: `${name} credential stored.`, done: true }
+                      : { text: `Enter the ${name} credential.`, done: false, setup: canSetUp }];
   }
-  const h = host.find((c) => c.name === name);
+  const h = ctx.host.find((c) => c.name === name);
   if (!shipped) {
-    return [{ who: "here", text: h ? `Add a connection named ${name} under Connections: only plugins that ship with todo use the server's.`
-                                   : `Add a connection named ${name} under Connections.`, done: false }];
+    return [{ text: h ? `Add a connection named ${name} under Connections: only plugins that ship with todo use the project's own.`
+                      : `Add a connection named ${name} under Connections.`, done: false }];
   }
-  if (!h) {
-    return [{ who: "admin", text: `Connect the server to ${label}: its address and a token.`,
-              code: `TODO_PLUGIN_CONNECTIONS\n${secretVar(name)}`, done: false }];
-  }
-  if (!h.auth) return [{ who: "admin", text: `Server connected to ${label}.`, done: true }];
-  return [h.held ? { who: "admin", text: `Server has a ${label} token.`, done: true }
-                 : { who: "admin", text: `Give the server a ${label} token.`, code: secretVar(name), done: false }];
+  return hostSteps(name, h, ctx.services, canSetUp);
 }
 
 const staticConnections = (names: string[]) => names.filter((c) => !c.includes("{{"));
@@ -235,14 +250,14 @@ function instanceSteps(p: DashPlugin, copy: Copy | undefined): Step[] {
   const required = fieldsOf(p.settings).filter((f) => f.required).map((f) => f.label);
   const here = copy?.here ?? (required.length ? `fill in ${listed(required)}` : "add one");
   const enabled = p.instances.filter((i) => i.enabled !== false);
-  if (!p.instances.length) return [{ who: "here", text: `${sentence(here)}.`, done: false, setup: true }];
-  if (!enabled.length) return [{ who: "here", text: "Switch it on: it's switched off here.", done: false, setup: true }];
+  if (!p.instances.length) return [{ text: `${sentence(here)}.`, done: false, setup: true }];
+  if (!enabled.length) return [{ text: "Switch it on: it's switched off here.", done: false, setup: true }];
   if (!required.length) return [];
   const ready = enabled.find((i) => !missingSettings(p, i).length);
-  if (ready) return [{ who: "here", text: `${sentence(here)}.`, done: true }];
+  if (ready) return [{ text: `${sentence(here)}.`, done: true }];
   const missing = missingSettings(p, enabled[0]);
   const text = copy?.here ? `${sentence(copy.here)}: ${listed(missing)} ${verb(missing.length, "is", "are")} empty.` : `Fill in ${listed(missing)}.`;
-  return [{ who: "here", text, done: false, setup: true }];
+  return [{ text, done: false, setup: true }];
 }
 
 // ── evidence ──────────────────────────────────────────────────────────────────
@@ -278,7 +293,7 @@ export function lastRun(p: DashPlugin): LastRun | null {
 function trackRow(repo: DashRepo): AutomationRow {
   const base = { key: "track", plugins: ["deploy branches"], plugin: null, branches: true };
   if (repo.track.length) {
-    const steps = readableStep(repo);
+    const steps = githubSteps(repo);
     return {
       ...base, title: `Show where work has landed (${repo.track.join(", ")})`, state: steps.length ? "setup" : "on", steps,
       notes: [{ text: "Items show which of these deploy branches hold their work, and dependencies are checked against them." }],
@@ -289,7 +304,7 @@ function trackRow(repo: DashRepo): AutomationRow {
     offers: "Items would show which deploy branches hold their work, like \"in staging ✓ · in main ✗\", "
       + "and dependencies would be checked against those branches.",
     notes: [],
-    steps: [...readableStep(repo), { who: "here", text: "Name the branches work deploys from, such as staging and main.", done: false, setup: true }],
+    steps: [...githubSteps(repo), { text: "Name the branches work deploys from, such as staging and main.", done: false, setup: true }],
   };
 }
 
@@ -302,9 +317,9 @@ function offeredRow(repo: DashRepo, name: string, description: string | null, co
     return { key: name, title, plugins: [name], state: "elsewhere", notes: [{ text: elsewhere.text, link: elsewhere.link }], steps: [], plugin: null, toggle };
   }
   const steps: Step[] = [];
-  if (copy?.here) steps.push({ who: "here", text: `${sentence(copy.here)}, once it's switched on.`, done: false });
+  if (copy?.here) steps.push({ text: `${sentence(copy.here)}, once it's switched on.`, done: false });
   for (const c of staticConnections(connections)) {
-    steps.push(...connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx.host, false));
+    steps.push(...connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx, false));
   }
   return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null, toggle };
 }
@@ -313,9 +328,11 @@ function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRo
   const copy = p.shipped ? SHIPPED_COPY[p.name] : undefined;
   const title = copy?.title ?? p.description?.replace(/\.$/, "") ?? p.name;
   const enabled = p.instances.filter((i) => i.enabled !== false);
-  const steps: Step[] = [...instanceSteps(p, copy)];
+  // Nothing runs for a repo todo can't read on GitHub, so that comes first.
+  const github = repo.github === null ? githubSteps(repo) : [];
+  const steps: Step[] = [...github, ...instanceSteps(p, copy)];
   for (const c of repo.connections.filter((x) => x.usedBy.includes(p.name))) {
-    steps.push(...connectionSteps(c.name, c, p.shipped, ctx.host, true));
+    steps.push(...connectionSteps(c.name, c, p.shipped, ctx, true));
   }
   const notes: Note[] = [];
   if (!p.shipped && !p.description) notes.push({ text: "A custom plugin of this repo; its YAML gives no description." });
@@ -331,7 +348,7 @@ function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRo
   }
   const open = steps.some((s) => !s.done);
   const stuck = enabled.length > 0 && enabled.every((i) => !i.server_runs);
-  if (!open && stuck) notes.unshift({ text: `The server can't run it yet: ${enabled[0].server_runs_reason}.`, warn: true });
+  if (!open && stuck && !github.length) notes.unshift({ text: `The server can't run it yet: ${enabled[0].server_runs_reason}.`, warn: true });
   if (open || stuck) return { ...base, state: "setup", steps, last: lastRun(p) };
   if (enabled.every((i) => i.dry_run)) notes.unshift({ text: "In test mode: it shows what it would do without doing it." });
   return { ...base, state: "on", steps, last: lastRun(p) };
@@ -342,7 +359,7 @@ function brokenRow(c: DashCustom): AutomationRow {
   return {
     key: c.name, title: c.name, plugins: [c.name], state: "setup", plugin: null, custom: c,
     notes: [{ text: `Its YAML has problems, so it doesn't run: ${c.errors.join("; ")}.`, warn: true }],
-    steps: [{ who: "here", text: "Fix its YAML.", done: false, setup: true }],
+    steps: [{ text: "Fix its YAML.", done: false, setup: true }],
   };
 }
 
@@ -366,4 +383,3 @@ export function automationRows(repo: DashRepo, ctx: RowContext): AutomationRow[]
     .map(({ r }) => r);
 }
 
-export const WHO: Record<Who, string> = { here: "Here", admin: "Server admin" };
