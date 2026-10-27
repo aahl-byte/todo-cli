@@ -283,8 +283,8 @@ todo jira unlink safari CNS-456
 
 The keys live in the item's `jira:` list, which syncs like any other field. An
 item can hold several keys, and one key can sit on items in several projects.
-On a server whose project polls Jira (see
-[server/README.md](server/README.md#jira-bridge)), each newly linked ticket's
+On a server whose project polls Jira, through the bridge or the `jira-issue`
+plugin (see [server/README.md](server/README.md#jira-bridge)), each newly linked ticket's
 summary and description are appended once to the item's request, as a
 `## CNS-123 · <summary>` block between `---` separators, and the ticket's
 comments arrive as comment notes. The append follows the request-version rules:
@@ -381,7 +381,13 @@ local-only store. Nothing is read from the repo itself.
 - **Instances:** each configured use of a plugin is an instance, with its own
   triggers (status moves, push, pr, deployment, manual), settings and dry-run
   switch. Edit them under the server's Settings → Automation, or with
-  `todo plugin add|set|rm`.
+  `todo plugin add|set|rm`. There `jira-transition` reads as the Jira
+  bridge's trigger table, one trigger per instance and the first that fits a
+  move winning, and `watchtower-session` and `rest` read as Actions, one
+  button per instance.
+- **Moving over:** a row whose job the Jira bridge or an Action does today
+  offers to move it into its plugin, and back, in one step that leaves only
+  one of them doing it.
 - **Connections** are the endpoints plugins call. A repo's config declares its
   own; the host declares host-wide ones. On the server those are the project's
   own, set on Settings → Automation with their tokens (the server's
