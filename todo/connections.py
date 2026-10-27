@@ -3,8 +3,9 @@
 Host-wide connections live in ~/.todo/connections.yaml as
 `{connections: {<name>: {http: {url, auth}} | {mcp: {url} | {command, args}}}}`;
 `github` is built in. A repo's plugin config declares its own (on the server's
-Settings → Automation, or in `.TODO/.plugins.yaml` on a local-only store), and
-one of the same name overrides the host's.
+Settings → Automation, or in `.TODO/.plugins.yaml` on a local-only store). Of a
+name both declare, a shipped plugin keeps the host's connection and a custom
+plugin gets the repo's.
 
 Secrets live in ~/.todo/credentials.json (mode 0600), keyed
 `<owner/name>/<connection>` for a repo's connections and `*/<connection>` for

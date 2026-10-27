@@ -27,12 +27,16 @@ On the server these live in two tables, keyed by project and repo:
 | table | holds |
 |---|---|
 | `plugin_configs` | `track` (deploy branches), `shipped`, `connections`, who changed it and when |
-| `plugin_custom` | one row per custom plugin: `name`, `manifest` (YAML text), `code` |
+| `plugin_custom` | one row per custom plugin: `name`, `manifest` (YAML text), `code`, `version` |
 
 Instances, grants and connection credentials keep their own tables
 (`plugin_instances`, `plugin_grants`, `plugin_credentials`), with secrets
-encrypted under `TODO_SECRET_KEY`. Two projects that use the same repo keep
-separate configs.
+encrypted under `TODO_SECRET_KEY`. A credential also records the endpoint it
+was given for. Two projects that use the same repo keep separate configs.
+
+The migration starts every repo's config empty. It drops each credential
+without an endpoint or for a connection no config declares, and each instance
+or grant of a plugin that neither ships with todo nor is a custom plugin.
 
 **What the host runs.** `composeConfig` turns the stored parts into one YAML
 map, the shape `load.ts` has always checked:
@@ -61,15 +65,30 @@ and a CLI doesn't for a server's config (below).
 
 **Writes.** `PUT /api/projects/<key>/plugins/config` takes `track`, `enable`,
 `disable` or `connection: {name, def}` (`def: null` drops the connection and
-its credential). A credential belongs to the endpoint it was given for, so
-changing a connection's definition forgets it too. A repo's connection can't
-take the name of one of the server's own (`github`, or any in
-`TODO_PLUGIN_CONNECTIONS`). `PUT`, `POST` (check only) and `DELETE` on
-`/api/projects/<key>/plugins/custom` add, check and remove a custom plugin;
-renaming one moves its instances and grants with it, secret settings
-encrypted again for the new name. Switching a shipped plugin
-off keeps its instances, so switching it back on restores them. Setting deploy
+its credential). Declaring or changing a connection forgets any credential
+stored under its name. A repo's connection can't take the name of one of the
+server's own (`github`, or any in `TODO_PLUGIN_CONNECTIONS`).
+`POST /api/projects/<key>/plugins/credentials` takes the endpoint the person
+saw beside the secret. A credential is handed out only while its connection
+points there.
+
+`PUT`, `POST` (check only) and `DELETE` on `/api/projects/<key>/plugins/custom`
+add, check and remove a custom plugin. Renaming one moves its instances and
+grants with it, secret settings encrypted again for the new name. A name new
+to the repo starts with nothing stored under it. Switching a shipped plugin off
+keeps its instances, so switching it back on restores them. Setting deploy
 branches recomputes the repo's git facts.
+
+**Concurrent edits** answer 409 rather than overwrite:
+
+- A deploy-branch change sends `base`, the list it was made on.
+- A custom plugin edit sends `base`, the version it began from.
+- A credential checks its endpoint against the config in the same transaction
+  that stores it.
+- Instances check their custom plugin still exists in the transaction that
+  stores them.
+
+The page says what changed and offers a reload.
 
 ## The trust rule
 

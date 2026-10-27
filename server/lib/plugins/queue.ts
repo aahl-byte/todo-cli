@@ -10,7 +10,7 @@ export const FINISHED = ["done", "deployed", "cancelled"];
 
 export const finished = (it: Record<string, any>) => FINISHED.includes(it.status) || !!it.extra?.archived;
 
-/** The server runs plugins only with GITHUB_TOKEN, through which it reads each repo's plugin file. */
+/** The server runs plugins only with GITHUB_TOKEN, through which it reads each repo's branches and pull requests. */
 export const pluginsEnabled = () => !!process.env.GITHUB_TOKEN;
 
 /** Queue an event for an item in one of the project's repos; the row id, or null when nothing was queued.

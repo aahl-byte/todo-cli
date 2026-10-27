@@ -262,11 +262,10 @@ function instanceErrors(inst: unknown): string[] {
 }
 
 /** The valid parts of a parsed plugin config, and a line for every part dropped. */
-export interface Checked { file: PluginsFile; errors: string[]; /** Plugins that lost any instance at load. */ droppedInstances: string[] }
+export interface Checked { file: PluginsFile; errors: string[] }
 
 export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
-  if (!isMap(raw)) return { file: {}, errors: ["the plugin config must be a map"], droppedInstances: [] };
-  const droppedInstances = new Set<string>();
+  if (!isMap(raw)) return { file: {}, errors: ["the plugin config must be a map"] };
   const errors = unknownKeys(raw, FILE_KEYS);
   const file: PluginsFile = {};
   if ("track" in raw) {
@@ -291,10 +290,7 @@ export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
     else (file.plugins ??= {})[n] = p as never;
   }
   for (const [n, list] of Object.entries(instances)) {
-    const fail = (e: string) => {
-      errors.push(`instances.${n}: ${e}`);
-      droppedInstances.add(n);
-    };
+    const fail = (e: string) => errors.push(`instances.${n}: ${e}`);
     if (n in plugins && !file.plugins?.[n]) fail("dropped with its plugin");
     else if (!(n in plugins) && !opts.extraPlugins?.includes(n)) fail("no plugin by that name");
     else if (!Array.isArray(list)) fail("must be a list");
@@ -310,7 +306,7 @@ export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
       });
     }
   }
-  return { file, errors, droppedInstances: [...droppedInstances] };
+  return { file, errors };
 }
 
 /** Every problem in a parsed plugin config. */
@@ -324,7 +320,7 @@ export function parsePlugins(text: string, opts: LoadOptions = {}): Checked {
   try {
     raw = parse(text) ?? {};
   } catch (e) {
-    return { file: {}, errors: [`the plugin config isn't YAML: ${(e as Error).message}`], droppedInstances: [] };
+    return { file: {}, errors: [`the plugin config isn't YAML: ${(e as Error).message}`] };
   }
   return checkFile(raw, opts);
 }

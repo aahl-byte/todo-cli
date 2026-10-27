@@ -71,12 +71,6 @@ export async function loadConfig(d: Pick<Db, "query">, project: string, repo: st
   };
 }
 
-/** The repo's deploy branches in the project. */
-export async function deployBranches(d: Pick<Db, "query">, project: string, repo: string): Promise<string[]> {
-  const [row] = await d.query("select track from plugin_configs where project = $1 and repo = $2", [project, repo]);
-  return row?.track ?? [];
-}
-
 async function updateConfig(d: Pick<Db, "query">, project: string, repo: string, handle: string, set: string, args: unknown[]): Promise<void> {
   await d.query(`insert into plugin_configs (project, repo, updated_by) values ($1, $2, $3) on conflict (project, repo) do nothing`,
                 [project, repo, handle]);
