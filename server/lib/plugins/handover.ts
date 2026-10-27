@@ -4,6 +4,7 @@
 // plugins for as the old code stops doing it, so the two never both act. A
 // move's plan says in words what it will do; the page shows it, then sends the
 // plan's base back, and the move is refused once that has changed.
+import crypto from "node:crypto";
 import type { Db } from "../db";
 import { STATUSES } from "../model";
 import { ruleInstances, rulesOf } from "../jira/plugin-rules";
@@ -16,6 +17,8 @@ import { hostSet, putGrants, putInstances, putProjectConnection, setShipped, sto
 import { storedActions, type ActionDef } from "../actions/model";
 import type { AddressGuard } from "./connections";
 import { POST_REQUEST, type InstanceDef } from "./types";
+import { allInstances } from "./host";
+import { SHIPPED } from "./shipped";
 
 export const MOVES = ["jira-triggers", "jira-polling", "watchtower", "rest"] as const;
 export type Move = (typeof MOVES)[number];
@@ -40,6 +43,21 @@ const listed = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -
 
 const canonical = (v: unknown): string => JSON.stringify(v, (_, x) =>
   (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+/** What a move takes over, as the page carries it back: a digest, so no credential an Action holds reaches the page. */
+const digest = (v: unknown) => crypto.createHash("sha256").update(canonical(v)).digest("hex");
+
+/** Mark the project's queued plugin events as done for these instances, so a status move from before the move doesn't fire them
+ * on top of what the old code already did for it. */
+async function skipQueued(t: Pick<Db, "query">, project: string, plugin: string, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  await t.query("update plugin_events set finished = coalesce(finished, '{}') || $2::text[] where project = $1 and done_at is null",
+                [project, ids.map((id) => `${plugin}/${id}`)]);
+}
+
+/** Close the bridge's transitions still waiting to send: the plugin now moves those tickets, or the triggers changed hands. */
+const closeOutbox = (t: Pick<Db, "query">, project: string) => t.query(
+  `update jira_outbox set done_at = now(), result = '{"superseded":true}'::jsonb
+    where project = $1 and action = 'transition' and done_at is null and claimed_at is null`, [project]);
 
 /** The repos a move covers: those the project's items name that it may run plugins for, and the one the page shows. */
 async function reposFor(d: Pick<Db, "query">, project: string, repo: string, notes: string[]): Promise<string[]> {
@@ -86,15 +104,16 @@ async function triggersHere(d: Pick<Db, "query">, project: string, repo: string)
     if (rules.never.length) lines.push(`Never move Jira to ${listed(rules.never)} comes too.`);
     lines.push(rules.writes ? "Send to Jira stays on: from now on jira-transition moves the tickets." : "Send to Jira stays off: jira-transition records the moves it would make, as the bridge did.");
   }
+  const there: Record<string, InstanceDef[]> = {};
   for (const r of repos) {
-    const had = (await shownInstances(d, project, r, JIRA_TRANSITION)).length;
-    if (had) lines.push(`They replace the ${plural(had, "trigger")} jira-transition has in ${r}.`);
+    there[r] = await shownInstances(d, project, r, JIRA_TRANSITION);
+    if (there[r].length) lines.push(`They replace the ${plural(there[r].length, "trigger")} jira-transition has in ${r}.`);
   }
   const [waiting] = await d.query(
     "select count(*)::int as n from jira_outbox where project = $1 and action = 'transition' and done_at is null and claimed_at is null", [project]);
   if (waiting.n) lines.push(`${plural(waiting.n, "move")} the bridge hasn't sent yet ${waiting.n === 1 ? "is" : "are"} dropped.`);
   lines.push(...reach(notes, "their tickets stop moving"));
-  return { move: "jira-triggers", direction: "here", lines, blockers, base: { triggers: rules.triggers, never: rules.never, writes: rules.writes } };
+  return { move: "jira-triggers", direction: "here", lines, blockers, base: digest({ rules, there }) };
 }
 
 async function triggersBack(d: Pick<Db, "query">, project: string, repo: string): Promise<MovePlan> {
@@ -112,7 +131,7 @@ async function triggersBack(d: Pick<Db, "query">, project: string, repo: string)
   ];
   if (had) lines.push(`They replace the bridge's ${plural(had, "trigger")}.`);
   if (on.length) lines.push(`jira-transition is switched off in ${listed(on)}; its triggers stay, for a later move.`);
-  return { move: "jira-triggers", direction: "back", lines, blockers, base: { instances, on } };
+  return { move: "jira-triggers", direction: "back", lines, blockers, base: digest({ instances, on, had }) };
 }
 
 // ── Jira → todo: the bridge's polling and jira-issue ─────────────────────────
@@ -134,13 +153,13 @@ async function pollingHere(d: Pick<Db, "query">, project: string, repo: string):
     "Comments the bridge already brought in stay, and don't come in again.",
     ...reach(notes, "their tickets stop coming in"),
   ];
-  return { move: "jira-polling", direction: "here", lines, blockers, base: { polls: state.polls } };
+  return { move: "jira-polling", direction: "here", lines, blockers, base: digest({ polls: state.polls, repos }) };
 }
 
 async function pollingBack(d: Pick<Db, "query">, project: string): Promise<MovePlan> {
   const on = await reposOn(d, project, JIRA_ISSUE);
   const lines = [`The Jira bridge polls this project's linked tickets again${on.length ? `, and jira-issue is switched off in ${listed(on)}` : ""}.`];
-  return { move: "jira-polling", direction: "back", lines, blockers: [], base: { on } };
+  return { move: "jira-polling", direction: "back", lines, blockers: [], base: digest({ on }) };
 }
 
 // ── the General tab's Actions and watchtower-session or rest ─────────────────
@@ -149,7 +168,12 @@ const PLUGIN = { watchtower: WATCHTOWER, rest: REST } as const;
 type ActionMove = keyof typeof KIND;
 
 /** An Action moved into a plugin, kept as it was so it can move back. */
-interface Moved { action: ActionDef; plugin: string; repos: string[]; by: string; at: string }
+interface Moved {
+  action: ActionDef; plugin: string; repos: string[];
+  /** The repos where the plugin was already on, which it stays on in when the Actions move back. */
+  wasOn?: string[];
+  by: string; at: string;
+}
 
 const movedOf = (raw: unknown): Moved[] => (Array.isArray(raw) ? raw.filter((m) => m?.action?.id && typeof m.plugin === "string") : []);
 const quoted = (names: string[]) => listed(names.map((n) => `"${n}"`));
@@ -178,13 +202,17 @@ async function actionsHere(d: Db, project: string, move: ActionMove, repo: strin
     const url = "http" in def ? def.http.url : "";
     lines.push(`Adds this project's ${name} connection at ${url}${plan.secrets[name] ? `, with ${plan.secrets[name]}` : ""}.`);
   }
-  for (const entry of plan.allowHosts) lines.push(`Lets todo call ${entry}, a private address, as the Action did.`);
+  const adds = Object.values(plan.connections).map((def) => ("http" in def ? hostOf(def.http.url) : null));
+  for (const entry of plan.allowHosts) {
+    lines.push(adds.includes(entry) ? `Lets todo call ${entry}, a private address, as the Action did.`
+      : `${entry} is a private address this project's connection hasn't been allowed to call: allow it on its line below, or the button fails.`);
+  }
   for (const [name, what] of Object.entries(plan.secrets)) {
     if (!plan.connections[name]) lines.push(`Give ${name} ${what} on its line below; the button fails until then.`);
   }
   lines.push(...[...new Set(plan.notes)].filter((x) => !/no plugin runs for them|may not run plugins for/.test(x)).map((x) => `${x.charAt(0).toUpperCase()}${x.slice(1)}.`));
   lines.push(...reach(notes, "they get no button"));
-  return { move, direction: "here", lines, blockers, base: { actions } };
+  return { move, direction: "here", lines, blockers, base: digest({ actions, repos, connections: plan.connections, allowHosts: plan.allowHosts }) };
 }
 
 async function actionsBack(d: Pick<Db, "query">, project: string, move: ActionMove): Promise<MovePlan> {
@@ -200,7 +228,17 @@ async function actionsBack(d: Pick<Db, "query">, project: string, move: ActionMo
     `${plural(moved.length, "Action")} ${moved.length === 1 ? "goes" : "go"} back to the General tab as ${moved.length === 1 ? "it was" : "they were"} before the move: ${quoted(moved.map((m) => m.action.name || m.action.id))}.`,
     `Their ${plugin} buttons are removed from ${listed(repos)}, with any change made to them here; ${plugin} is switched off where no other button is left.`,
   ] : [];
-  return { move, direction: "back", lines, blockers, base: { moved } };
+  return { move, direction: "back", lines, blockers, base: digest({ moved }) };
+}
+
+/** A connection URL's host:port, as the private-address allowances name it. */
+function hostOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return `${u.hostname.replace(/^\[|\]$/g, "")}:${u.port || (u.protocol === "https:" ? "443" : "80")}`;
+  } catch {
+    return null;
+  }
 }
 
 async function moveActionsHere(t: Db, project: string, move: ActionMove, repo: string, by: string, lookup?: AddressGuard["lookup"]): Promise<void> {
@@ -213,21 +251,24 @@ async function moveActionsHere(t: Db, project: string, move: ActionMove, repo: s
   for (const [name, def] of Object.entries(plan.connections)) {
     const from = actions.find((a) => (plan.instances[plugin] ?? []).some((i) => i.id === actionInstanceId(a) && i.settings?.connection === name));
     const secret = from ? credentialSecret(from) : null;
-    const http = "http" in def ? def.http : null;
-    const entry = http ? new URL(http.url) : null;
-    const privateOk = !!entry && plan.allowHosts.includes(`${entry.hostname.replace(/^\[|\]$/g, "")}:${entry.port || (entry.protocol === "https:" ? "443" : "80")}`);
+    const entry = "http" in def ? hostOf(def.http.url) : null;
+    const privateOk = !!entry && plan.allowHosts.includes(entry);
     await putProjectConnection(t, project, { name, def, base: null, ...(secret ? { secret } : {}), ...(privateOk ? { allowPrivate: true } : {}) }, by,
                                { lookup });
   }
   // The Actions were live, so their buttons are too.
   const ported = (plan.instances[plugin] ?? []).map(({ dry_run: _dry, ...i }) => i);
+  const wasOn = await reposOn(t, project, plugin);
   for (const r of repos) {
+    const stored = (await storedInstances(t, project, r, { secrets: true }))[plugin] ?? [];
+    // A plugin that needs no settings runs a default instance while none is stored, which the ported ones mustn't displace.
+    const before = wasOn.includes(r) ? allInstances(SHIPPED[plugin].def, stored) : stored;
     await setShipped(t, project, r, plugin, true, by);
-    const kept = ((await storedInstances(t, project, r, { secrets: true }))[plugin] ?? []).filter((i) => !ported.some((x) => x.id === i.id));
-    await putInstances(t, project, r, plugin, [...kept, ...ported], by);
+    await putInstances(t, project, r, plugin, [...before.filter((i) => !ported.some((x) => x.id === i.id)), ...ported], by);
   }
+  await skipQueued(t, project, plugin, ported.map((i) => i.id));
   const at = new Date().toISOString();
-  const moved = [...movedOf(p.actions_moved), ...actions.map((action) => ({ action, plugin, repos, by, at }))];
+  const moved = [...movedOf(p.actions_moved), ...actions.map((action) => ({ action, plugin, repos, wasOn, by, at }))];
   await t.query("update projects set actions = $2::jsonb, actions_moved = $3::jsonb, actions_by = $4, actions_at = now() where key = $1",
                 [project, JSON.stringify(all.filter((a) => a.kind !== KIND[move])), JSON.stringify(moved), by]);
 }
@@ -238,10 +279,11 @@ async function moveActionsBack(t: Db, project: string, move: ActionMove, by: str
   const all = movedOf(p.actions_moved);
   const back = all.filter((m) => m.plugin === plugin);
   const ids = new Set(back.map((m) => actionInstanceId(m.action)));
+  const wasOn = new Set(back.flatMap((m) => m.wasOn ?? []));
   for (const r of [...new Set(back.flatMap((m) => m.repos))]) {
     await t.query("delete from plugin_instances where project = $1 and repo = $2 and plugin = $3 and id = any($4)", [project, r, plugin, [...ids]]);
     const [left] = await t.query("select 1 from plugin_instances where project = $1 and repo = $2 and plugin = $3 limit 1", [project, r, plugin]);
-    if (!left) await setShipped(t, project, r, plugin, false, by);
+    if (!left && !wasOn.has(r)) await setShipped(t, project, r, plugin, false, by);
   }
   await t.query("update projects set actions = $2::jsonb, actions_moved = $3::jsonb, actions_by = $4, actions_at = now() where key = $1",
                 [project, JSON.stringify([...storedActions(p.actions), ...back.map((m) => m.action)]), JSON.stringify(all.filter((m) => m.plugin !== plugin)), by]);
@@ -261,7 +303,7 @@ export async function makeMove(d: Db, project: string, move: Move, direction: Di
   await d.tx(async (t) => {
     await lockProject(t, project);
     const plan = await planMove(t, project, move, direction, repo, opts);
-    if (canonical(plan.base) !== canonical(base)) throw new PluginConflict("what this move takes over changed since this page loaded; reload to see it as it is");
+    if (plan.base !== base) throw new PluginConflict("what this move takes over changed since this page loaded; reload to see it as it is");
     if (plan.blockers.length) throw new MoveRefused(plan.blockers.join(" "));
     if (move === "watchtower" || move === "rest") {
       if (direction === "here") await moveActionsHere(t, project, move, repo, by, opts.lookup);
@@ -280,19 +322,19 @@ async function moveTriggersHere(t: Db, project: string, repo: string, by: string
   const rules = outboundRules(p.jira_outbound)!;
   await t.query("update projects set jira_outbound = $2::jsonb, jira_settings_by = $3, jira_settings_at = now() where key = $1",
                 [project, JSON.stringify({ writes: false, never: [], triggers: [] }), by]);
-  await t.query(
-    `update jira_outbox set done_at = now(), result = '{"superseded":true}'::jsonb
-      where project = $1 and action = 'transition' and done_at is null and claimed_at is null`, [project]);
+  await closeOutbox(t, project);
   const instances = ruleInstances({ writes: rules.writes, never: rules.never, triggers: rules.triggers });
   for (const r of await reposFor(t, project, repo, [])) {
     await setShipped(t, project, r, JIRA_TRANSITION, true, by);
     await putInstances(t, project, r, JIRA_TRANSITION, instances, by);
   }
+  await skipQueued(t, project, JIRA_TRANSITION, instances.map((i) => i.id));
 }
 
 async function moveTriggersBack(t: Db, project: string, repo: string, by: string): Promise<void> {
   const { rules } = rulesOf(await shownInstances(t, project, repo, JIRA_TRANSITION));
   for (const r of await reposOn(t, project, JIRA_TRANSITION)) await setShipped(t, project, r, JIRA_TRANSITION, false, by);
+  await closeOutbox(t, project);
   await t.query("update projects set jira_outbound = $2::jsonb, jira_settings_by = $3, jira_settings_at = now() where key = $1",
                 [project, JSON.stringify(rules), by]);
 }

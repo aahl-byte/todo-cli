@@ -428,11 +428,14 @@ function SetupPanel({ projectKey, repo, plugin, statuses, conns }: {
   );
 }
 
-/** Why jira-transition can't send here, or null when it can. */
-function jiraSendLock(repo: DashRepo, conns: Conns): string | null {
-  const own = repo.connections.find((c) => c.name === "jira")?.origin === "repo";
-  if (conns.jiraReadOnly && !own) return "Locked off: this server is read-only (JIRA_READ_ONLY).";
-  if (conns.bridge.jira.writes && conns.bridge.jira.triggers) return "Locked off: the Jira bridge sends this project's moves. Move its triggers here first.";
+/** Why jira-transition can't send here, or null when it can; `bridge` when it's because the Jira bridge sends. */
+function jiraSendLock(repo: DashRepo, conns: Conns): { text: string; bridge: boolean } | null {
+  // A shipped plugin calls the project's or the server's jira over the repo's own, so only a repo's alone escapes JIRA_READ_ONLY.
+  const own = repo.connections.find((c) => c.name === "jira")?.origin === "repo" && !conns.host.some((h) => h.name === "jira");
+  if (conns.jiraReadOnly && !own) return { text: "Locked off: this server is read-only (JIRA_READ_ONLY).", bridge: false };
+  if (conns.bridge.jira.writes && conns.bridge.jira.triggers) {
+    return { text: "Locked off: the Jira bridge sends this project's moves. Move its triggers here first.", bridge: true };
+  }
   return null;
 }
 

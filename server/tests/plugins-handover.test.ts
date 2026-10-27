@@ -84,6 +84,10 @@ describe("the Jira bridge and jira-transition", () => {
     expect((await live.json()).error).toMatch(/^the Jira bridge moves this project's tickets, so jira-transition can't send too \(in acme\/web\)/);
     expect((await put({ plugin: "jira-transition", instances: [qa({ dry_run: true })] })).status).toBe(200);
     expect(await heldPlugins(w.d, "p")).toHaveProperty("jira-transition");
+    // The server answers for a held plugin, so no CLI runs it live beside the bridge.
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "");
+    const listed = (await repoPlugins(w.d, "p", "acme/web")).plugins.find((p) => p.name === "jira-transition")!.instances;
+    expect(listed.map((i) => i.server_runs)).toEqual([true]);
   });
 
   it("leaves other plugins' saves alone in a project where both already send", async () => {
@@ -115,7 +119,7 @@ describe("moving the bridge's triggers here", () => {
   it("says what it will do: how many, where, sending, and the items no plugin reaches", async () => {
     await bridge({});
     expect(await plan("jira-triggers", "here")).toEqual({
-      move: "jira-triggers", direction: "here", blockers: [], base: { triggers: TRIGGERS, never: ["UAT"], writes: true },
+      move: "jira-triggers", direction: "here", blockers: [], base: expect.stringMatching(/^[0-9a-f]{64}$/),
       lines: [
         "3 triggers move here, in order, for acme/api and acme/web; the Jira bridge stops moving tickets.",
         "Never move Jira to UAT comes too.",
@@ -139,6 +143,23 @@ describe("moving the bridge's triggers here", () => {
     }
     expect((await w.d.query("select result from jira_outbox"))[0].result).toEqual({ superseded: true });
     expect(await heldPlugins(w.d, "p")).toEqual({});
+  });
+
+  it("leaves a status move queued before the move to the bridge, which already sent it", async () => {
+    await bridge({});
+    await w.d.query(`insert into plugin_events (project, item_uid, repo, event, by)
+                     values ('p', 'I1', 'acme/web', '{"type":"status","from":"review","to":"ready-for-qa"}', 'alice')`);
+    await move("jira-triggers", "here", (await plan("jira-triggers", "here")).base);
+    const [e] = await w.d.query("select finished from plugin_events");
+    expect(e.finished).toEqual(expect.arrayContaining(["jira-transition/jira-review-ready-for-qa", "jira-transition/jira-ready-to-deploy-deployed"]));
+  });
+
+  it("is refused once jira-transition's own triggers changed since the plan", async () => {
+    await bridge({});
+    const { base } = await plan("jira-triggers", "here");
+    await setShipped(w.d, "p", "acme/web", "jira-transition", true, "alice");
+    await putInstances(w.d, "p", "acme/web", "jira-transition", [qa({ dry_run: true })], "bob");
+    expect((await move("jira-triggers", "here", base)).status).toBe(409);
   });
 
   it("keeps the plugin in test mode when the bridge only recorded", async () => {
@@ -185,8 +206,10 @@ describe("moving the triggers back to the bridge", () => {
       "Send to Jira stays on there.",
       "jira-transition is switched off in acme/api and acme/web; its triggers stay, for a later move.",
     ]);
+    await w.d.query("insert into jira_outbox (project, item_uid, action, payload) values ('p', 'I1', 'transition', '{\"key\":\"SR-1\",\"status\":\"Old\"}')");
     expect((await move("jira-triggers", "back", back.base)).status).toBe(200);
     expect((await outbound()).jira_outbound).toEqual({ writes: true, never: ["UAT"], triggers: TRIGGERS });
+    expect((await w.d.query("select result from jira_outbox"))[0].result).toEqual({ superseded: true });
     expect([await shipped("acme/web"), await shipped("acme/api")]).toEqual([[], []]);
     expect((await storedInstances(w.d, "p", "acme/web"))["jira-transition"]).toHaveLength(3);
   });
@@ -308,6 +331,28 @@ describe("moving the General tab's Actions here", () => {
     const { base } = await planned("watchtower", "here");
     await w.d.query("update projects set actions = $1::jsonb where key = 'p'", [JSON.stringify(ACTIONS.slice(1))]);
     await expect(makeMove(w.d, "p", "watchtower", "here", "acme/web", base, "alice", { lookup: publicDns })).rejects.toThrow(/changed since this page loaded/);
+  });
+
+  it("keeps the default button a repo already had, and leaves the plugin on there when the Actions move back", async () => {
+    await setShipped(w.d, "p", "acme/api", "watchtower-session", true, "alice");
+    await made("watchtower", "here");
+    expect((await storedInstances(w.d, "p", "acme/api"))["watchtower-session"].map((i) => i.id)).toEqual(["default", "action-rosm", "action-rosm-wip"]);
+    await made("watchtower", "back");
+    expect((await storedInstances(w.d, "p", "acme/api"))["watchtower-session"].map((i) => i.id)).toEqual(["default"]);
+    expect([await shipped("acme/api"), await shipped("acme/web")]).toEqual([["watchtower-session"], []]);
+  });
+
+  it("marks a status move queued before the move as done for the new buttons, since the Action already fired for it", async () => {
+    await w.d.query(`insert into plugin_events (project, item_uid, repo, event, by)
+                     values ('p', 'I1', 'acme/web', '{"type":"status","from":"todo","to":"in-progress"}', 'alice')`);
+    await made("watchtower", "here");
+    const [e] = await w.d.query("select finished from plugin_events");
+    expect(e.finished).toEqual(["watchtower-session/action-rosm", "watchtower-session/action-rosm-wip"]);
+  });
+
+  it("never sends a REST Action's credential to the page in the plan", async () => {
+    const plan = await planned("rest", "here");
+    expect(JSON.stringify(plan)).not.toContain("s3cret");
   });
 
   it("moves back: the Actions return as they were, their buttons go, and the plugin is switched off where none is left", async () => {

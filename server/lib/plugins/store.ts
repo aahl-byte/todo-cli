@@ -15,7 +15,7 @@ import { checkFile, parsePlugins } from "./load";
 import { decryptSecret, encryptSecret, NoSecretKey, projectSecretScope, secretKey } from "./secrets";
 import { ALWAYS_ON, isShipped, SHIPPED } from "./shipped";
 import { PluginConflict, PluginInputError } from "./errors";
-import { lockProject, settleJira } from "./exclusive";
+import { heldPlugins, lockProject, settleJira } from "./exclusive";
 import {
   POST_REQUEST, type ConnectionDef, type InstanceDef, type PluginConfig, type PluginDef, type PluginsFile, type ResolvedConnection,
   type RunResult, type Trigger,
@@ -828,6 +828,8 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
   const given = { hostConnections: host.connections, secrets: { repo: secrets, host: host.secrets } };
   const connections = { shipped: connectionsFor(given, usable.file, true), custom: connectionsFor(given, usable.file) };
   const guard = guardFor(repo, lookup, host.privateOk);
+  // The server holds these in test mode while the Jira bridge does their job; it answers for them, so no CLI runs them live.
+  const held = await heldPlugins(d, project);
   const plugins = [];
   for (const p of merged.plugins) {
     const r = usable.resolved.find((x) => x.name === p.name)!;
@@ -835,8 +837,9 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
     const shown = [];
     for (const i of p.instances) {
       const inst = real.instances.find((x) => x.id === i.id) ?? i;
-      const why = await serverRefusal(r, inst, connections[r.shipped ? "shipped" : "custom"], guard, { repo: unreadable, host: host.unreadable },
-                                      host.github !== null);
+      const why = r.shipped && held[p.name] ? null
+        : await serverRefusal(r, inst, connections[r.shipped ? "shipped" : "custom"], guard, { repo: unreadable, host: host.unreadable },
+                              host.github !== null);
       shown.push({ ...masked(i, secretKeysOf(p.settings)), server_runs: why === null, server_runs_reason: why });
     }
     plugins.push({ ...p, instances: shown });

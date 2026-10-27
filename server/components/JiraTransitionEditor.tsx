@@ -37,8 +37,9 @@ const SAVED_SHOWN_MS = 15_000;
 
 export function JiraTransitionEditor({ projectKey, repo, plugin, statuses, sendLock }: {
   projectKey: string; repo: string; plugin: DashPlugin; statuses: readonly string[];
-  /** Why sending is locked off, or null when it can be switched. */
-  sendLock: string | null;
+  /** Why sending is locked off, or null when it can be switched; `bridge` when the Jira bridge sends, which a save keeps every trigger in
+   * test mode for. */
+  sendLock: { text: string; bridge: boolean } | null;
 }) {
   const router = useRouter();
   const seen = useMemo(() => plugin.instances.map(asStored), [plugin.instances]);
@@ -63,7 +64,7 @@ export function JiraTransitionEditor({ projectKey, repo, plugin, statuses, sendL
   const save = () => start(async () => {
     const res = await fetch(withBase(`/api/projects/${encodeURIComponent(projectKey)}/plugins`), {
       method: "PUT", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repo, plugin: plugin.name, instances: ruleInstances(rules), base: seen }),
+      body: JSON.stringify({ repo, plugin: plugin.name, instances: ruleInstances(sendLock?.bridge ? { ...rules, writes: false } : rules), base: seen }),
     }).catch(() => null);
     if (res?.ok) {
       setSaved({ ok: true, message: "Saved." });
@@ -81,7 +82,7 @@ export function JiraTransitionEditor({ projectKey, repo, plugin, statuses, sendL
     <fieldset className="jira-settings plugin-jira" data-plugin-editor="jira-transition" disabled={pending || refreshing}>
       {jira && !jira.statuses && <p className="hot">Jira couldn&apos;t be reached, so its statuses aren&apos;t listed: {jira.error}.</p>}
       <JiraTriggers value={rules} onChange={(v) => { setRules(v); setDirty(true); setSaved(null); justSaved.delete(repo); }} statuses={statuses}
-                    jiraStatuses={jira?.statuses ?? null} sendLock={sendLock} ordered any kept={keptText}
+                    jiraStatuses={jira?.statuses ?? null} sendLock={sendLock?.text ?? null} ordered any kept={keptText}
                     blank={() => ({ from: "", to: "", jira: "" })} />
       <Problems problems={problems} />
       <div className="save-row">
