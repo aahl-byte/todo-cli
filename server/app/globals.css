@@ -711,6 +711,8 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .git-clash > summary { list-style: none; cursor: pointer; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .git-clash > summary::-webkit-details-marker { display: none; }
 .git-clash-item { font-size: 12px; min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.35; }
+.git-clash-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.git-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--s-todo)); transform: translateY(-1px); cursor: help; }
 .git-clash-sub { display: flex; font-size: 10px; min-width: 0; white-space: nowrap; }
 .git-conflicts { color: var(--danger); }
 .git-clash-sub::before { content: "▸"; margin-right: 4px; }
