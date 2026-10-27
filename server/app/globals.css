@@ -830,6 +830,13 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .instance-card .rule-row .grow { flex: 1; }
 .automation .rule-row input[type=checkbox] { min-width: 0; }
 .instance-card .order { display: inline-flex; gap: 2px; align-items: center; }
+.plugin-jira { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 6px; }
+.plugin-jira .rule-row .order { display: inline-flex; gap: 2px; align-items: center; }
+.plugin-jira .rule-row .order .x:disabled { opacity: .25; }
+.plugin-jira .order-n { min-width: 1.6em; text-align: right; }
+.plugin-jira .rule-row.kept .grow { flex: 1 1 16em; }
+.handover-lines { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12px; color: var(--text); }
+
 .instance-card .order .x { opacity: 1; }
 .instance-card .order .x:disabled { opacity: .25; }
 .triggers { display: grid; gap: 4px; }

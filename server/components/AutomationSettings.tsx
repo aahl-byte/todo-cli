@@ -20,9 +20,11 @@ import {
 } from "@/lib/plugin-form";
 import { checkCustom } from "@/lib/plugins/config";
 import { configurable, connectionNotice } from "@/lib/plugin-summary";
-import type { AutomationPage, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry } from "@/lib/plugin-views";
+import type { AutomationPage, BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry } from "@/lib/plugin-views";
 import { authKind, authOf, serviceLabel, type AuthKind, type Service } from "@/lib/services";
 import { ConnectionForm, connectionReady, connectionState } from "./ConnectionForm";
+import { Handover } from "./Handover";
+import { JiraTransitionEditor } from "./JiraTransitionEditor";
 import { InstanceCard, RunLog, SettingInput, type NewConnection } from "./PluginInstance";
 import { notify } from "./Toaster";
 import { VercelPick } from "./VercelPick";
@@ -59,12 +61,12 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 const STATE_LABEL: Record<RowState, string> = { on: "On", setup: "Needs setup", elsewhere: "Elsewhere", off: "Off" };
 
-/** What the page knows of the project's connections, which a row's steps and forms read. */
-interface Conns { host: HostConnection[]; services: Service[]; secretProblem: string | null }
+/** What the page knows of the project's connections, which a row's steps and forms read, and what the old code still does. */
+interface Conns { host: HostConnection[]; services: Service[]; secretProblem: string | null; bridge: BridgeFacts; jiraReadOnly: boolean }
 
 export function AutomationSettings({ projectKey, page, statuses }: { projectKey: string; page: AutomationPage; statuses: readonly string[] }) {
   const repo = page.selected;
-  const conns: Conns = { host: page.host, services: page.services, secretProblem: page.secretProblem };
+  const conns: Conns = { host: page.host, services: page.services, secretProblem: page.secretProblem, bridge: page.bridge, jiraReadOnly: page.jiraReadOnly };
   const rows = repo ? automationRows(repo, { project: projectKey, bridge: page.bridge, host: page.host, services: page.services }) : [];
   return (
     <div className="automation">
@@ -206,7 +208,7 @@ function RepoNotes({ repo }: { repo: DashRepo }) {
 
 // ── one row ───────────────────────────────────────────────────────────────────
 /** A row's settings, a custom plugin's editor, its history, or the form for a connection one of its steps asks for. */
-type Panel = "setup" | "edit" | "history" | `connect:${string}`;
+type Panel = "setup" | "edit" | "history" | "move:here" | "move:back" | `connect:${string}`;
 /** Panels a person opened, kept open across the refresh a save causes. */
 const opened = new Map<string, Panel>();
 
@@ -229,7 +231,7 @@ function Row({ projectKey, repo, row, statuses, conns, shipped }: {
   const p = row.plugin;
   const settings = row.branches || (!!p && hasSettings(p, repo));
   const history = !!p && p.instances.length > 0;
-  const showSteps = row.state === "setup" || row.state === "off";
+  const showSteps = row.state === "setup" || row.state === "off" || (row.state === "elsewhere" && row.steps.some((s) => !s.done));
   // A step that opens the settings stands in for the row's own link; a broken custom plugin's opens its editor.
   const stepPanel: Panel | null = settings ? "setup" : row.custom ? "edit" : null;
   const stepOpens = showSteps && !!stepPanel && row.steps.some((s) => s.setup && !s.done);
@@ -250,10 +252,15 @@ function Row({ projectKey, repo, row, statuses, conns, shipped }: {
           </p>
         ))}
         {showSteps && row.steps.length > 0 && (
-          <Steps steps={row.steps} lead={row.state === "setup" ? "To finish:" : "To turn on:"} onSetup={stepPanel ? () => setPanel(stepPanel) : null}
-                 open={panel} onConnect={(name) => toggle(`connect:${name}`)} />
+          <Steps steps={row.steps} lead={row.state === "setup" ? "To finish:" : row.state === "elsewhere" ? "Before moving it here:" : "To turn on:"}
+                 onSetup={stepPanel ? () => setPanel(stepPanel) : null} open={panel} onConnect={(name) => toggle(`connect:${name}`)} />
         )}
-        {((settings && !stepOpens) || (row.custom && !(stepOpens && stepPanel === "edit")) || history) && (
+        {row.handover?.here && (
+          <p className="auto-line">
+            <button type="button" className="link-btn move-here" aria-expanded={panel === "move:here"} onClick={() => toggle("move:here")}>{row.handover.here} ›</button>
+          </p>
+        )}
+        {((settings && !stepOpens) || (row.custom && !(stepOpens && stepPanel === "edit")) || history || row.handover?.back) && (
           <div className="auto-actions">
             {settings && !stepOpens && (
               <button type="button" className="link-btn" aria-expanded={panel === "setup"} onClick={() => toggle("setup")}>
@@ -264,7 +271,14 @@ function Row({ projectKey, repo, row, statuses, conns, shipped }: {
               <button type="button" className="link-btn" aria-expanded={panel === "edit"} onClick={() => toggle("edit")}>Edit YAML ›</button>
             )}
             {history && <button type="button" className="link-btn" aria-expanded={panel === "history"} onClick={() => toggle("history")}>History ›</button>}
+            {row.handover?.back && (
+              <button type="button" className="link-btn quiet move-back" aria-expanded={panel === "move:back"} onClick={() => toggle("move:back")}>{row.handover.back} ›</button>
+            )}
           </div>
+        )}
+        {row.handover && (panel === "move:here" || panel === "move:back") && (
+          <Handover projectKey={projectKey} repo={repo.repo} move={row.handover.move} direction={panel === "move:here" ? "here" : "back"}
+                    label={(panel === "move:here" ? row.handover.here : row.handover.back) ?? ""} onClose={() => setPanel(null)} />
         )}
         {panel?.startsWith("connect:") && (
           <div className="auto-panel connect-panel">
@@ -396,12 +410,23 @@ function SetupPanel({ projectKey, repo, plugin, statuses, conns }: {
         ? <HostLine key={c.name} projectKey={projectKey} name={c.name} conns={conns} />
         : <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={plugin.shipped} secretProblem={conns.secretProblem} />))}
       {plugin.capabilities.includes("post-request") && <Grant projectKey={projectKey} repo={repo.repo} plugin={plugin} />}
-      {configurable(plugin) && (
+      {plugin.shipped && plugin.name === "jira-transition" ? (
+        <JiraTransitionEditor key={JSON.stringify(plugin.instances)} projectKey={projectKey} repo={repo.repo} plugin={plugin} statuses={statuses}
+                              sendLock={jiraSendLock(repo, conns)} />
+      ) : configurable(plugin) && (
         <Configure key={`${JSON.stringify(plugin.instances)}:${JSON.stringify(plugin.grant)}`} projectKey={projectKey} repo={repo} plugin={plugin}
                    statuses={statuses} conns={conns} />
       )}
     </div>
   );
+}
+
+/** Why jira-transition can't send here, or null when it can. */
+function jiraSendLock(repo: DashRepo, conns: Conns): string | null {
+  const own = repo.connections.find((c) => c.name === "jira")?.origin === "repo";
+  if (conns.jiraReadOnly && !own) return "Locked off: this server is read-only (JIRA_READ_ONLY).";
+  if (conns.bridge.jira.writes && conns.bridge.jira.triggers) return "Locked off: the Jira bridge sends this project's moves. Move its triggers here first.";
+  return null;
 }
 
 /** One of the project's connections in a line, with its form a click away. */
@@ -848,6 +873,11 @@ function Configure({ projectKey, repo, plugin, statuses, conns }: {
   );
 }
 
+/** What granting post-request lets a plugin do, in its terms. */
+const GRANT_WORDS: Record<string, string> = {
+  "jira-issue": "Add a newly linked ticket's summary and description to the item's request",
+};
+
 function Grant({ projectKey, repo, plugin }: { projectKey: string; repo: string; plugin: DashPlugin }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -862,7 +892,7 @@ function Grant({ projectKey, repo, plugin }: { projectKey: string; repo: string;
   return (
     <label className="switch grant">
       <input type="checkbox" checked={granted} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
-      Let it add a new version of the item&apos;s request
+      {GRANT_WORDS[plugin.name] ?? "Let it add a new version of the item's request"}
       <span className="hint">{plugin.grant && granted ? <>Allowed by {plugin.grant.by}, <Stamp ts={plugin.grant.at} /></> : "Not allowed, so what it would add is dropped."}</span>
       {error && <span className="hot">Not saved: {error}. Try again.</span>}
     </label>

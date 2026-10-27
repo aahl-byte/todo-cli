@@ -139,6 +139,8 @@ export interface BridgeFacts {
     readOnly: boolean;
     /** When the bridge last mirrored the project's linked issues, or null when it never has. */
     polled: string | null;
+    /** It still polls them: it has, and jira-issue hasn't taken that over. */
+    polls: boolean;
     /** Jira issues the project's items link. */
     linked: number;
   };
@@ -177,6 +179,8 @@ export interface AutomationPage {
   secretProblem: string | null;
   /** Every plugin that ships with todo, which a custom plugin can't be named after. */
   shipped: string[];
+  /** JIRA_READ_ONLY: nothing is written to Jira through the project's or the server's jira connection. */
+  jiraReadOnly: boolean;
 }
 
 const iso = (v: unknown) => new Date(v as string).toISOString();
@@ -323,13 +327,14 @@ export async function pluginsPage(d: Pick<Db, "query">, project: string, f: Fetc
 
 /** The Jira bridge's triggers and polling, and the project's Actions. */
 export async function bridgeFacts(d: Pick<Db, "query">, project: string): Promise<BridgeFacts> {
-  const [p] = await d.query("select jira_outbound, jira_synced_at, actions from projects where key = $1", [project]);
+  const [p] = await d.query("select jira_outbound, jira_synced_at, jira_poll, actions from projects where key = $1", [project]);
   const [linked] = await d.query("select count(distinct jira_key)::int as n from jira_links where project = $1 and source = 'field'", [project]);
   const rules = outboundRules(p?.jira_outbound);
   const actions = storedActions(p?.actions);
   return {
     jira: { triggers: rules?.triggers.length ?? 0, writes: !!rules?.writes, readOnly: jiraReadOnly(),
-            polled: p?.jira_synced_at ? iso(p.jira_synced_at) : null, linked: Number(linked?.n ?? 0) },
+            polled: p?.jira_synced_at ? iso(p.jira_synced_at) : null, polls: !!p?.jira_synced_at && p?.jira_poll !== false,
+            linked: Number(linked?.n ?? 0) },
     actions: actions.map((a) => ({ name: a.name || a.id, kind: a.kind })),
   };
 }
@@ -373,7 +378,7 @@ export async function automationPage(d: Pick<Db, "query">, project: string, want
     repos, selected: entry ? { ...entry, ...(await dashRepo(d, project, entry.repo, f)) } : null,
     bridge: await bridgeFacts(d, project), host: await hostConnectionsOf(d, project, set),
     services: services({ github: githubApi(), jira: process.env.JIRA_BASE_URL?.replace(/\/+$/, "") || null, watchtower: apiBase(WATCHTOWER_URL) }),
-    secretProblem: secretKeyProblem(), shipped: Object.keys(SHIPPED).sort(),
+    secretProblem: secretKeyProblem(), shipped: Object.keys(SHIPPED).sort(), jiraReadOnly: jiraReadOnly(),
   };
 }
 

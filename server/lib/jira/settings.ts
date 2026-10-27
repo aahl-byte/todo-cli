@@ -43,7 +43,7 @@ export async function jiraStatusesOf(jiraProjects: string[], fetchImpl?: Fetch):
 }
 
 /** The Jira projects a project's items link, or null when there's no such project. */
-export async function linkedJiraProjects(db: Db, key: string): Promise<string[] | null> {
+export async function linkedJiraProjects(db: Pick<Db, "query">, key: string): Promise<string[] | null> {
   const [p] = await db.query("select 1 from projects where key = $1", [key]);
   if (!p) return null;
   const linked = await db.query(

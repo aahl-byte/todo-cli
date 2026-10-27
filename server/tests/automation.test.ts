@@ -36,7 +36,7 @@ const custom = (name: string, over: Partial<DashCustom> = {}): DashCustom => ({
 const offer = (name: string, connections: string[] = []) => ({ name, description: `${name} does things.`, connections });
 
 const bridge = (over: { jira?: Partial<BridgeFacts["jira"]>; actions?: BridgeFacts["actions"] } = {}): BridgeFacts => ({
-  jira: { triggers: 0, writes: true, readOnly: false, polled: null, linked: 0, ...over.jira }, actions: over.actions ?? [],
+  jira: { triggers: 0, writes: true, readOnly: false, polled: null, polls: !!over.jira?.polled, linked: 0, ...over.jira }, actions: over.actions ?? [],
 });
 
 const host = (name: string, over: Partial<HostConnection> = {}): HostConnection => ({
@@ -333,8 +333,25 @@ describe("work the Jira bridge or Actions do today", () => {
     expect(row(rows, "jira-issue").notes[0].text).toBe("The Jira bridge does this today, for 12 linked tickets.");
     expect(row(rows, "rest").notes[0]).toEqual({ text: "1 Action on the General tab does this today: \"Notify deploy\".",
                                                  link: { label: "General → Actions", href: "/p/web/settings#actions" } });
-    expect(row(rows, "jira-transition").steps).toEqual([]);
+    expect(row(rows, "jira-transition").steps).toEqual([{ text: "Connect todo to Jira with an email and API token.", done: false, connect: "jira" }]);
     expect(row(rows, "jira-transition").toggle).toEqual({ plugin: "jira-transition", on: false });
+  });
+
+  it("offers to move the bridge's triggers and polling here, without the switch the bridge's polling refuses", () => {
+    expect(row(rows, "jira-transition").handover).toEqual({ move: "jira-triggers", here: "Move these triggers here" });
+    expect(row(rows, "jira-issue").handover).toEqual({ move: "jira-polling", here: "Move polling here" });
+    expect(row(rows, "jira-issue").toggle).toBeUndefined();
+    expect(row(rows, "rest").handover).toBeUndefined();
+  });
+
+  it("offers the way back once the plugin does the job", () => {
+    const jt = plugin("jira-transition", { connections: ["jira"], instances: [inst({ id: "qa", settings: { to: "QA" } })] });
+    const ji = plugin("jira-issue", { connections: ["jira"] });
+    const moved = automationRows(repo({ plugins: [prLink, jt, ji] }),
+      ctx({ bridge: bridge({ jira: { polled: "2026-10-26T09:00:00.000Z", polls: false } }) }));
+    expect(row(moved, "jira-transition").handover).toEqual({ move: "jira-triggers", back: "Move these triggers back to the Jira bridge" });
+    expect(row(moved, "jira-issue").handover).toEqual({ move: "jira-polling", back: "Move polling back to the Jira bridge" });
+    expect(row(moved, "jira-issue").notes).toEqual([]);
   });
 
   it("says when the bridge only records what it would send", () => {
@@ -351,8 +368,8 @@ describe("work the Jira bridge or Actions do today", () => {
     const r = row(automationRows(repo({ plugins: [prLink, jt], connections: [conn("jira", { origin: "host", needsSecret: true, held: true, usedBy: ["jira-transition"] })] }),
       ctx({ ...busy, host: [host("jira", { auth: "basic", held: true, source: "page" })] })), "jira-transition");
     expect(r.state).toBe("on");
-    expect(r.notes).toEqual([{ text: "The Jira bridge also moves tickets with 15 triggers, so both would send.",
-                               link: { label: "General → Jira", href: "/p/web/settings#jira" } }]);
+    expect(r.notes).toEqual([{ text: "The Jira bridge also moves tickets with 15 triggers, so this only records what it would do until they move here.",
+                               link: { label: "General → Jira", href: "/p/web/settings#jira" }, warn: true }]);
     expect(r.steps.map((s) => [s.text, s.done])).toEqual([["Pick the Jira status for each move.", true], ["Connected to Jira.", true]]);
   });
 });
