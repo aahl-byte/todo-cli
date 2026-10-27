@@ -6,6 +6,7 @@ import type { Db } from "../db";
 import { checkoutDir, repoAllowed, repoKey } from "../checkouts";
 import { storedActions, type ActionDef } from "../actions/model";
 import { outboundRules } from "../jira/rules";
+import { ruleInstances } from "../jira/plugin-rules";
 import { jiraConfig } from "../jira/config";
 import { apiBase } from "../watchtower";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -217,14 +218,7 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
 
   const rules = outboundRules(p.jira_outbound);
   if (rules?.triggers.length) {
-    const ids = new Set<string>();
-    plan.instances[JIRA_TRANSITION] = rules.triggers.map((t) => {
-      let id = `jira-${slug(t.from)}-${slug(t.to)}`;
-      while (ids.has(id)) id += "-x";
-      ids.add(id);
-      return { id, name: `${t.from} → ${t.to}: Jira ${t.jira}`, on: [{ status: { from: t.from, to: t.to } }],
-               settings: { to: t.jira, never: rules.never } };
-    });
+    plan.instances[JIRA_TRANSITION] = ruleInstances({ writes: true, never: rules.never, triggers: rules.triggers });
     if (!rules.writes) plan.notes.push("Jira writes are off for this project: keep its jira-transition instances in dry-run at the cutover");
   }
   const [linked] = await d.query("select count(*)::int as n from jira_links where project = $1 and source = 'field'", [project]);
