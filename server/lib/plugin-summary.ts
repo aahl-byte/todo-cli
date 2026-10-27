@@ -2,6 +2,7 @@
 // get a settings form, and what a person sets for each connection. Pure, so the
 // page and the tests share it.
 import type { DashConnection, DashPlugin } from "./plugin-views";
+import type { InstanceDef } from "./plugins/types";
 
 const DEFAULT_ID = "default";
 
@@ -30,3 +31,9 @@ export function connectionNotice(shipped: boolean, c: DashConnection): { text: s
   return c.held ? { text: "Credential stored.", hot: false, form: "credential" }
     : { text: "No credential on this server. Set one so the server can call it.", hot: true, form: "credential" };
 }
+
+/** An instance as the server stored it, without what the page adds: what a save sends as the instances it was made on. */
+export const asStored = (i: DashPlugin["instances"][number]): InstanceDef => {
+  const { server_runs: _runs, server_runs_reason: _why, ...rest } = i;
+  return rest;
+};

@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type ReactNode } from "react";
 import { saveActionsAction } from "@/app/settings-actions";
 import { ANY_STATUS, cleanAction, DEFAULT_PROMPT, METHODS, TEMPLATE_GROUPS, validateActions, type ActionDef } from "@/lib/actions/model";
 import type { Problem } from "@/lib/jira/rules";
@@ -20,7 +20,11 @@ const draft = (a: ActionDef): Draft => ({ ...a, headerText: headerText(a.headers
 const blank = (n: number): Draft => draft(cleanAction({ id: `action-${n}`, name: "", kind: "rest", runner: "server", method: "POST", url: "", auto: [] }));
 const stored = (d: Draft): ActionDef => cleanAction({ ...d, headers: parseHeaders(d.headerText) });
 
-export function ActionsSettingsForm({ projectKey, actions, statuses }: { projectKey: string; actions: ActionDef[]; statuses: readonly string[] }) {
+export function ActionsSettingsForm({ projectKey, actions, statuses, moved = [] }: {
+  projectKey: string; actions: ActionDef[]; statuses: readonly string[];
+  /** Actions moved into plugins on Settings → Automation, by name. */
+  moved?: string[];
+}) {
   const [list, setList] = useState<Draft[]>(actions.map(draft));
   const [saved, setSaved] = useState<{ ok: boolean; problems: Problem[] } | null>(null);
   const [pending, start] = useTransition();
@@ -36,6 +40,11 @@ export function ActionsSettingsForm({ projectKey, actions, statuses }: { project
         An Action calls a URL for an item, by hand from the item page or <code>todo action</code>, or on its own when an item makes
         one of its status moves. Its fields take templates filled from the item.
       </p>
+      {moved.length > 0 && (
+        <p className="hint">
+          Moved to Settings → Automation, where plugins run them: {moved.map((n) => `"${n}"`).join(", ")}. They move back from there.
+        </p>
+      )}
       <TemplateReference />
       {list.map((a, i) => (
         <section className="action-card" key={i} data-action={a.id}>
@@ -130,15 +139,16 @@ export function ActionsSettingsForm({ projectKey, actions, statuses }: { project
   );
 }
 
-function TemplateReference() {
+/** The template names a form's fields take, grouped, each a click to copy. */
+export function TemplateReference({ groups = TEMPLATE_GROUPS, hint }: { groups?: typeof TEMPLATE_GROUPS; hint?: ReactNode } = {}) {
   return (
     <details className="template-ref">
       <summary><span className="chev">›</span> Template data</summary>
       <p className="hint">
-        Write <code>{"{{name}}"}</code>; add <code>| json</code> for a quoted JSON string or <code>| url</code> to encode it for a URL.
-        Click a name to copy it.
+        {hint ?? <>Write <code>{"{{name}}"}</code>; add <code>| json</code> for a quoted JSON string or <code>| url</code> to encode it for a URL.
+        Click a name to copy it.</>}
       </p>
-      {TEMPLATE_GROUPS.map((g) => (
+      {groups.map((g) => (
         <div key={g.label} className="ref-group">
           <div className="label sub">{g.label}</div>
           <dl>

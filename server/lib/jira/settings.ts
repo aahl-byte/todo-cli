@@ -4,6 +4,7 @@ import { STATUSES } from "../model";
 import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
 import { outboundRules, validateRules, type OutboundRules, type Problem } from "./rules";
+import { JIRA_TRANSITION, liveRepos, lockProject } from "../plugins/exclusive";
 
 export interface JiraSettings {
   /** The Jira projects whose statuses the rules pick from. */
@@ -42,7 +43,7 @@ export async function jiraStatusesOf(jiraProjects: string[], fetchImpl?: Fetch):
 }
 
 /** The Jira projects a project's items link, or null when there's no such project. */
-export async function linkedJiraProjects(db: Db, key: string): Promise<string[] | null> {
+export async function linkedJiraProjects(db: Pick<Db, "query">, key: string): Promise<string[] | null> {
   const [p] = await db.query("select 1 from projects where key = $1", [key]);
   if (!p) return null;
   const linked = await db.query(
@@ -84,8 +85,16 @@ export async function saveJiraSettings(db: Db, key: string, by: string, outbound
   };
   const problems = validateRules(clean, STATUSES, jiraStatusList);
   if (problems.some((p) => p.level === "error")) return problems;
-  await db.query(
-    "update projects set jira_outbound = $2::jsonb, jira_settings_by = $3, jira_settings_at = now() where key = $1",
-    [key, JSON.stringify(clean), by]);
-  return problems;
+  return db.tx(async (t) => {
+    await lockProject(t, key);
+    const live = clean.writes && clean.triggers.length ? await liveRepos(t, key, JIRA_TRANSITION) : [];
+    if (live.length) {
+      return [{ level: "error" as const, message: `jira-transition moves this project's tickets in ${live.join(", ")}, so the bridge can't send too. `
+        + "Move its triggers back here from Settings → Automation, or keep sending off." }];
+    }
+    await t.query(
+      "update projects set jira_outbound = $2::jsonb, jira_settings_by = $3, jira_settings_at = now() where key = $1",
+      [key, JSON.stringify(clean), by]);
+    return problems;
+  });
 }

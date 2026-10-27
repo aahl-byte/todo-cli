@@ -121,7 +121,28 @@ DATABASE_URL=... JIRA_BASE_URL=... JIRA_EMAIL=... JIRA_API_TOKEN=... npm run jir
 `jira:sync -- --all` runs one pass over every project and exits non-zero if any
 failed. `jira:sync -- <project>` polls one project, `--every SECONDS` keeps
 polling, and `--create-users` makes a user for each Jira person it meets.
-Polling always runs with `JIRA_READ_ONLY=1`.
+Polling always runs with `JIRA_READ_ONLY=1`. It skips a project whose polling
+has moved to the `jira-issue` plugin.
+
+**Move to the Jira plugins** on Settings → Automation, once Jira is connected
+there. The bridge and the plugins never both act on a project:
+
+- **Triggers:** "Move these triggers here" copies the bridge's triggers, in
+  order, and its never list into `jira-transition` instances in every repo
+  the project runs plugins for, switches the plugin on and the bridge's
+  triggers off, and keeps sending on or off as the bridge had it. The plugin
+  can't send while the bridge does, the bridge can't send while the plugin
+  does, and a `jira-transition` run is held in test mode while the bridge
+  sends. "Move these triggers back" gives the bridge one repo's triggers and
+  switches the plugin off; a trigger with `*`, which the bridge can't hold,
+  has to go first.
+- **Polling:** "Move polling here" switches `jira-issue` on, grants it the
+  request block, and stops the bridge polling the project. `jira-issue` can't
+  mirror a project the bridge polls; a comment either one already brought in
+  isn't brought in again by the other.
+
+`JIRA_READ_ONLY=1` holds back every Jira write through the project's or the
+server's `jira` connection too.
 
 **Link people:** `npm run user:jira -- <handle> <accountId>` for an existing user
 (their token is kept), or `user:add -- <handle> --jira <accountId>` when creating
@@ -164,7 +185,14 @@ Automation, or `GITHUB_TOKEN` for a repo of `TODO_PLUGIN_OWNERS`.
   `Authorization: Bearer $CRON_SECRET`. The daily entries in `vercel.json` suit
   Hobby; on Pro set them to `*/5 * * * *`. Off Vercel, a systemd timer can
   `curl` both.
-- **Port Actions and Jira triggers** to plugin instances:
+- **Move Actions and Jira jobs here** on Settings → Automation: each row whose
+  job an Action or the Jira bridge does offers to move it, says what will
+  happen first, and offers the way back. A moved Action leaves the General tab
+  in the same transaction its instances are stored in, so no item gets both
+  buttons; the connection and credential it called are added as the
+  project's. Moving it back restores the Action as it was and removes its
+  instances.
+- **Port Actions and Jira triggers** from the command line instead:
   `npx tsx scripts/plugins-port.ts <project> [--repo owner/name]` prints the
   instances, and the connections, tokens and private addresses to set up on
   Settings → Automation; `--write` switches

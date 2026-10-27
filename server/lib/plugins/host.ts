@@ -149,8 +149,11 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
   const repoCode = !!plugin.code && !input.shipped;
   const deadline = Date.now() + (input.limits?.deadlineMs ?? (repoCode ? REPO_CODE_DEADLINE_MS : DEFAULT_DEADLINE_MS));
   const readOnly = (plugin.connections ?? []).find((n) => input.dryRunConnections?.includes(n) && connectionsOf(input)[n]?.origin === "host");
-  const dryRun = input.dryRun || !!instance.dry_run || !!readOnly;
-  if (readOnly && !input.dryRun && !instance.dry_run) {
+  const dryRun = input.dryRun || !!instance.dry_run || !!readOnly || !!input.held;
+  if (input.held && !input.dryRun && !instance.dry_run) {
+    result.dryRun = true;
+    addLog(result, input.held);
+  } else if (readOnly && !input.dryRun && !instance.dry_run) {
     result.dryRun = true;
     addLog(result, `${readOnly} is read-only on this host, so every write is held back`);
   }
@@ -205,6 +208,8 @@ export interface EventInput {
   limits?: Limits;
   /** Host connections this host never writes through, e.g. jira under JIRA_READ_ONLY. */
   dryRunConnections?: string[];
+  /** Plugins whose runs this host holds in test mode, each with why. */
+  held?: Record<string, string>;
 }
 
 export interface EventRun { plugin: string; instance: InstanceDef; result: RunResult }
@@ -298,13 +303,14 @@ export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: Ev
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
     for (const instance of pickInstances(def, instancesFor(def, input.storedInstances?.[name] ?? []), input.event)) {
       if (hooks.before && !(await hooks.before(name, instance))) continue;
+      const held = shipped ? input.held?.[name] : undefined;
       const result = await runInstance({
         plugin: def, name, code, instance, item: input.item, event: input.event, connections: connections[shipped ? "shipped" : "custom"],
         dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
-        repoKey: input.repoKey, track: file.track ?? [], dryRunConnections: input.dryRunConnections,
+        repoKey: input.repoKey, track: file.track ?? [], dryRunConnections: input.dryRunConnections, held,
       }, deps);
-      results.push({ plugin: name, instance, result });
+      results.push({ plugin: name, instance: held ? { ...instance, dry_run: true } : instance, result });
       await hooks.after?.(results[results.length - 1]);
     }
   }

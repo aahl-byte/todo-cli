@@ -46,6 +46,12 @@ export async function commented(db: Db, link: { project: string; item_uid: strin
   const opId = `jira:comment:${scope}:${comment.id}`;
   const updated = comment.updated ? new Date(comment.updated).toISOString() : null;
   const [note] = await db.query("select meta, text from notes where project = $1 and uid = $2", [link.project, uid]);
+  if (!note) {
+    // Brought in by jira-issue while it mirrored the ticket in the bridge's place.
+    const [plugin] = await db.query("select 1 from notes where project = $1 and item_uid = $2 and kind = 'comment' and meta->>'plugin_key' = $3",
+                                    [link.project, link.item_uid, `comment:${issueKey}:${comment.id}`]);
+    if (plugin) return { handled: false, reason: "mirrored by jira-issue" };
+  }
   const actor = await bridgeActor(db, comment.updateAuthor ?? comment.author);
   if (note) {
     // An edit in Jira: newer than the copy we hold, and actually different.

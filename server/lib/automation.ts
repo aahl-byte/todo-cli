@@ -50,6 +50,16 @@ export interface AutomationRow {
   custom?: DashCustom;
   /** The row's settings are the deploy-branches field. */
   branches?: boolean;
+  /** A move between the old code that does this job and the plugin, with the button for each way it can go now. */
+  handover?: Handover;
+}
+
+export interface Handover {
+  move: "jira-triggers" | "jira-polling" | "watchtower" | "rest";
+  /** Offered while the old code does the job. */
+  here?: string;
+  /** Offered while the plugin does it. */
+  back?: string;
 }
 
 export interface RowContext { project: string; bridge: BridgeFacts; host: HostConnection[]; services: Service[] }
@@ -120,12 +130,12 @@ const SHIPPED_COPY: Record<string, Copy> = {
     offers: "Items that link a Jira ticket would show its status, comments and images.",
   },
   "watchtower-session": {
-    title: "Add a button that hands the item to a Claude session",
-    offers: "Items would get a button that sends the item to its Claude session in Watchtower, starting one if needed.",
+    title: "Start or resume a Claude session in Watchtower",
+    offers: "Items would get a Watchtower button that hands the item to its Claude session there: sent to the live one, its last one resumed, or a new one started.",
   },
   rest: {
-    title: "Add a button that sends a web request",
-    offers: "Items would get a button that sends a request you define, filled in from the item.",
+    title: "Send a web request to any URL",
+    offers: "Items would get a button that sends a request you define to any URL, filled in from the item.",
     here: "set the button's connection and request",
   },
   "vercel-preview": {
@@ -157,15 +167,16 @@ function doneElsewhere(plugin: string, ctx: RowContext): Duplicate | null {
     const sending = jira.writes && !jira.readOnly ? "" : "; sending is off there, so it records the moves it would make";
     return {
       text: `${n} in the Jira bridge ${verb(jira.triggers, "moves", "move")} tickets today${sending}.`,
-      also: `The Jira bridge also moves tickets with ${n}, so both would send.`,
+      also: jira.writes ? `The Jira bridge also moves tickets with ${n}, so this only records what it would do until they move here.`
+        : `The Jira bridge also has ${n}, which only record the moves they'd make.`,
       link: { label: "General → Jira", href: settingsHref(ctx.project, "jira") },
     };
   }
-  if (plugin === "jira-issue" && jira.polled) {
+  if (plugin === "jira-issue" && jira.polls) {
     const n = plural(jira.linked, "linked ticket");
     return {
       text: jira.linked ? `The Jira bridge does this today, for ${n}.` : "The Jira bridge does this today, once an item links a ticket.",
-      also: `The Jira bridge also mirrors ${n}, so comments would come in twice.`,
+      also: `The Jira bridge also mirrors ${n}, so this attaches nothing until its polling moves here.`,
       link: { label: "General → Jira", href: settingsHref(ctx.project, "jira") },
     };
   }
@@ -180,6 +191,29 @@ function doneElsewhere(plugin: string, ctx: RowContext): Duplicate | null {
     };
   }
   return null;
+}
+
+/** The move between the old code and this plugin that fits now: here while the old code does the job, back while the plugin does. */
+function handoverOf(plugin: string, ctx: RowContext, on: DashPlugin | null): Handover | undefined {
+  const { jira } = ctx.bridge;
+  if (plugin === "jira-transition") {
+    const back = !!on && on.instances.length > 0;
+    if (!jira.triggers && !back) return undefined;
+    return { move: "jira-triggers", ...(jira.triggers ? { here: "Move these triggers here" } : {}),
+             ...(back ? { back: "Move these triggers back to the Jira bridge" } : {}) };
+  }
+  if (plugin === "jira-issue") {
+    if (jira.polls) return { move: "jira-polling", here: "Move polling here" };
+    if (on && jira.polled) return { move: "jira-polling", back: "Move polling back to the Jira bridge" };
+  }
+  const kind = plugin === "rest" ? "rest" : plugin === "watchtower-session" ? "watchtower" : null;
+  if (kind) {
+    const here = ctx.bridge.actions.some((a) => a.kind === kind);
+    const back = ctx.bridge.moved.some((m) => m.plugin === plugin);
+    if (!here && !back) return undefined;
+    return { move: kind, ...(here ? { here: "Move these Actions here" } : {}), ...(back ? { back: "Move these Actions back to the General tab" } : {}) };
+  }
+  return undefined;
 }
 
 // ── steps ─────────────────────────────────────────────────────────────────────
@@ -313,15 +347,22 @@ function offeredRow(repo: DashRepo, name: string, description: string | null, co
   const title = copy?.title ?? description ?? name;
   const toggle = { plugin: name, on: false };
   const elsewhere = doneElsewhere(name, ctx);
+  const handover = handoverOf(name, ctx, null);
   if (elsewhere) {
-    return { key: name, title, plugins: [name], state: "elsewhere", notes: [{ text: elsewhere.text, link: elsewhere.link }], steps: [], plugin: null, toggle };
+    // Moving the job here needs the connections it calls first, so nothing goes undone in between.
+    const steps = handover?.move.startsWith("jira") ? staticConnections(connections).flatMap((c) => connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx, true)) : [];
+    // Switching jira-issue on is refused while the bridge polls: the move is the way.
+    const switchable = !(name === "jira-issue" && ctx.bridge.jira.polls);
+    return { key: name, title, plugins: [name], state: "elsewhere", notes: [{ text: elsewhere.text, link: elsewhere.link }], steps, plugin: null,
+             ...(switchable ? { toggle } : {}), ...(handover ? { handover } : {}) };
   }
   const steps: Step[] = [];
   if (copy?.here) steps.push({ text: `${sentence(copy.here)}, once it's switched on.`, done: false });
   for (const c of staticConnections(connections)) {
     steps.push(...connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx, false));
   }
-  return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null, toggle };
+  return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null, toggle,
+           ...(handover ? { handover } : {}) };
 }
 
 function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRow {
@@ -337,9 +378,10 @@ function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRo
   const notes: Note[] = [];
   if (!p.shipped && !p.description) notes.push({ text: "A custom plugin of this repo; its YAML gives no description." });
   const elsewhere = p.shipped ? doneElsewhere(p.name, ctx) : null;
-  if (elsewhere) notes.push({ text: elsewhere.also, link: elsewhere.link });
+  if (elsewhere) notes.push({ text: elsewhere.also, link: elsewhere.link, warn: true });
+  const handover = p.shipped ? handoverOf(p.name, ctx, p) : undefined;
   const base = {
-    key: p.name, title, plugins: [p.name], notes, plugin: p,
+    key: p.name, title, plugins: [p.name], notes, plugin: p, ...(handover ? { handover } : {}),
     ...(p.shipped && !p.always ? { toggle: { plugin: p.name, on: true } } : {}),
     ...(p.shipped ? {} : { custom: repo.custom.find((c) => c.name === p.name) }),
   };

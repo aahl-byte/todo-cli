@@ -2,9 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ActionsSettingsForm } from "@/components/ActionsSettingsForm";
 import { JiraSettingsForm } from "@/components/JiraSettingsForm";
-import { projectActions, recentRuns } from "@/lib/actions/runs";
+import { movedActions, projectActions, recentRuns } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { dryRuns, loadJiraSettings } from "@/lib/jira/settings";
+import { JIRA_TRANSITION, liveRepos } from "@/lib/plugins/exclusive";
 import { STATUSES } from "@/lib/model";
 import { requireUser } from "@/lib/session";
 import { SettingsTabs } from "@/components/SettingsTabs";
@@ -20,7 +21,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
   const actions = (
     <>
       <div className="label section" id="actions">Actions</div>
-      <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} />
+      <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} moved={await movedActions(d, key)} />
       <div className="label section">Recent runs</div>
       <RecentRuns runs={await recentRuns(d, key)} projectKey={key} />
     </>
@@ -40,7 +41,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
         {!s.jiraStatuses && s.jiraProjects.length > 0 && <span className="hot">Jira couldn't be reached, so its statuses aren't listed.</span>}
       </p>
       <JiraSettingsForm projectKey={key} outbound={s.outbound} statuses={STATUSES}
-                        jiraStatuses={s.jiraStatuses} serverReadOnly={s.serverReadOnly} />
+                        jiraStatuses={s.jiraStatuses} serverReadOnly={s.serverReadOnly} movedTo={await liveRepos(d, key, JIRA_TRANSITION)} />
       <div className="label section">Would send</div>
       {!runs.length ? <p className="empty">Nothing yet. Moves a trigger would make show here while writes are off.</p> : (
         <div className="dry-runs">

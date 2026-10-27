@@ -42,8 +42,9 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   if (!jiraReadOnly()) throw new Error("Polling Jira needs JIRA_READ_ONLY=1: writing back while polling isn't supported.");
   const cfg = jiraConfig();
   if (!cfg) throw new Error("Jira is not configured: set JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN.");
-  const [p] = await db.query("select jira_synced_at from projects where key = $1", [projectKey]);
+  const [p] = await db.query("select jira_synced_at, jira_poll from projects where key = $1", [projectKey]);
   if (!p) throw new Error(`No project ${projectKey}.`);
+  if (p.jira_poll === false) return { comments: 0, users: 0, files: 0, backfilled: 0 };
   const jira = new JiraClient(cfg, opts.fetchImpl);
   const startedAt = new Date();
   const since = p.jira_synced_at ? new Date(p.jira_synced_at) : null;
@@ -59,7 +60,7 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   return out;
 }
 
-/** Every project, for a poll that covers them all. */
+/** Every project the bridge polls, for a poll that covers them all: those whose linked tickets jira-issue mirrors are left out. */
 export async function linkedProjects(db: Db): Promise<string[]> {
-  return (await db.query("select key from projects order by key")).map((r) => r.key);
+  return (await db.query("select key from projects where jira_poll order by key")).map((r) => r.key);
 }

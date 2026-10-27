@@ -14,6 +14,8 @@ import { allInstances, bindConnections, connectionsFor, pluginsFor, wouldSkip, t
 import { checkFile, parsePlugins } from "./load";
 import { decryptSecret, encryptSecret, NoSecretKey, projectSecretScope, secretKey } from "./secrets";
 import { ALWAYS_ON, isShipped, SHIPPED } from "./shipped";
+import { PluginConflict, PluginInputError } from "./errors";
+import { heldPlugins, lockProject, settleJira } from "./exclusive";
 import {
   POST_REQUEST, type ConnectionDef, type InstanceDef, type PluginConfig, type PluginDef, type PluginsFile, type ResolvedConnection,
   type RunResult, type Trigger,
@@ -26,14 +28,7 @@ export const SECRET_SET = { set: true } as const;
 const isMap = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export class PluginInputError extends Error {
-  constructor(msg: string, readonly errors: string[] = [msg]) {
-    super(msg);
-  }
-}
-
-/** The change was made against something that has changed since; the API answers 409. */
-export class PluginConflict extends Error {}
+export { PluginConflict, PluginInputError };
 const UNIQUE_VIOLATION = "23505";
 
 /** Where a connection calls: its http or MCP URL, or an MCP command line. A credential is given for this. */
@@ -104,11 +99,15 @@ export async function putTrack(d: Db, project: string, repo: string, raw: unknow
 }
 
 /** Switch a shipped plugin on or off for the repo; its stored instances stay either way. */
-export async function setShipped(d: Pick<Db, "query">, project: string, repo: string, name: unknown, on: boolean, handle: string): Promise<void> {
+export async function setShipped(d: Pick<Db, "query" | "tx">, project: string, repo: string, name: unknown, on: boolean, handle: string): Promise<void> {
   if (typeof name !== "string" || !isShipped(name)) throw new PluginInputError(`no plugin named ${String(name)} ships with todo`);
   if (ALWAYS_ON.includes(name)) throw new PluginInputError(`${name} is on for every repo; switch its instance off in its settings instead`);
-  await updateConfig(d, project, repo, handle,
-    on ? "shipped = case when $4 = any(shipped) then shipped else array_append(shipped, $4) end" : "shipped = array_remove(shipped, $4)", [name]);
+  await d.tx(async (t) => {
+    await lockProject(t, project);
+    await updateConfig(t, project, repo, handle,
+      on ? "shipped = case when $4 = any(shipped) then shipped else array_append(shipped, $4) end" : "shipped = array_remove(shipped, $4)", [name]);
+    if (on) await settleJira(t, project, name);
+  });
 }
 
 /** JSON with every map's keys sorted, so two spellings of one definition compare equal. */
@@ -351,9 +350,25 @@ function splitSecrets(inst: InstanceDef, keys: string[], before: Record<string, 
   return { def: { ...inst, settings }, secrets };
 }
 
-/** Replace one plugin's stored instances in a repo, keeping secret settings encrypted apart. */
-export async function putInstances(d: Db, project: string, repo: string, plugin: string, instances: unknown, handle: string): Promise<void> {
+/** The instances as the page shows them: secrets masked, and the default a plugin that needs no settings runs with when none are stored. */
+async function shownInstances(d: Pick<Db, "query">, project: string, repo: string, plugin: string, def: PluginDef): Promise<InstanceDef[]> {
+  const stored = (await storedInstances(d, project, repo))[plugin] ?? [];
+  return allInstances(def, stored.map((i) => masked(i, secretKeysOf(def.settings))));
+}
+
+/** What a page sends as the instances it saw: the stored fields of each, without what the page adds. */
+const asStored = (list: unknown[]) => list.map((i) => {
+  if (!isMap(i)) return i;
+  const { server_runs: _runs, server_runs_reason: _why, ...rest } = i;
+  return rest;
+});
+
+/** Replace one plugin's stored instances in a repo, keeping secret settings encrypted apart. With `base`, the instances the page
+ * showed, it's refused once they've been changed since. */
+export async function putInstances(d: Db, project: string, repo: string, plugin: string, instances: unknown, handle: string,
+                                   opts: { base?: unknown } = {}): Promise<void> {
   if (!Array.isArray(instances)) throw new PluginInputError("instances must be a list");
+  if (opts.base !== undefined && !Array.isArray(opts.base)) throw new PluginInputError("base is the instances as the page showed them");
   const { file, errors } = checkFile({ instances: { [plugin]: instances } }, { extraPlugins: [plugin] });
   if (errors.length) throw new PluginInputError(errors.join("; "));
   const info = merge(await loadConfig(d, project, repo), {}).plugins.find((p) => p.name === plugin);
@@ -368,6 +383,16 @@ export async function putInstances(d: Db, project: string, repo: string, plugin:
   const key = secretKey();
   if (list.some((x) => Object.keys(x.secrets).length) && !key) throw new NoSecretKey();
   await d.tx(async (t) => {
+    await lockProject(t, project);
+    if (Array.isArray(opts.base)) {
+      const def = merge(await loadConfig(t, project, repo), {}).resolved.find((r) => r.name === plugin)?.def;
+      const now = def ? await shownInstances(t, project, repo, plugin, def) : [];
+      if (canonical(now) !== canonical(asStored(opts.base))) {
+        const [by] = await t.query("select updated_by from plugin_instances where project = $1 and repo = $2 and plugin = $3 order by updated_at desc limit 1",
+                                   [project, repo, plugin]);
+        throw new PluginConflict(`${plugin}'s settings were changed${by ? ` by ${by.updated_by}` : ""} since this page loaded; reload to see them`);
+      }
+    }
     // A rename or removal between the check above and this write would strand what it stores under the old name.
     if (!isShipped(plugin)) {
       const [still] = await t.query("select 1 from plugin_custom where project = $1 and repo = $2 and name = $3 for update", [project, repo, plugin]);
@@ -382,6 +407,7 @@ export async function putInstances(d: Db, project: string, repo: string, plugin:
         [project, repo, plugin, def.id, JSON.stringify(def), i, handle, names,
          names.length ? encryptSecret(JSON.stringify(secrets), settingsScope(project, repo, plugin, def.id), key!) : null]);
     }
+    await settleJira(t, project, plugin);
   });
 }
 
@@ -802,6 +828,8 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
   const given = { hostConnections: host.connections, secrets: { repo: secrets, host: host.secrets } };
   const connections = { shipped: connectionsFor(given, usable.file, true), custom: connectionsFor(given, usable.file) };
   const guard = guardFor(repo, lookup, host.privateOk);
+  // The server holds these in test mode while the Jira bridge does their job; it answers for them, so no CLI runs them live.
+  const held = await heldPlugins(d, project);
   const plugins = [];
   for (const p of merged.plugins) {
     const r = usable.resolved.find((x) => x.name === p.name)!;
@@ -809,8 +837,9 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
     const shown = [];
     for (const i of p.instances) {
       const inst = real.instances.find((x) => x.id === i.id) ?? i;
-      const why = await serverRefusal(r, inst, connections[r.shipped ? "shipped" : "custom"], guard, { repo: unreadable, host: host.unreadable },
-                                      host.github !== null);
+      const why = r.shipped && held[p.name] ? null
+        : await serverRefusal(r, inst, connections[r.shipped ? "shipped" : "custom"], guard, { repo: unreadable, host: host.unreadable },
+                              host.github !== null);
       shown.push({ ...masked(i, secretKeysOf(p.settings)), server_runs: why === null, server_runs_reason: why });
     }
     plugins.push({ ...p, instances: shown });

@@ -15,6 +15,7 @@ import { queuePluginEvent } from "@/lib/plugins/queue";
 import { NoSecretKey } from "@/lib/plugins/secrets";
 import { flushPluginRuns, pluginTick } from "@/lib/plugins/server";
 import { vercelChoices } from "@/lib/plugins/vercel";
+import { jiraChoices } from "@/lib/plugins/jira-statuses";
 import {
   guardFor, hostSet, PluginConflict, PluginInputError, PrivateAddress, projectConnections, putConnection, putProjectConnection, repoPlugins,
 } from "@/lib/plugins/store";
@@ -348,6 +349,27 @@ describe("vercel-preview's team and project", () => {
       teams: [{ id: "team_a", name: "Acme" }, { id: "team_b", name: "beta" }], projects: [{ id: "prj_1", name: "api" }, { id: "prj_2", name: "web" }], error: null });
     expect(seen.map((s) => [s.url, s.auth])).toEqual([["https://api.vercel.com/v2/teams?limit=100", "Bearer vc-token"],
                                                     ["https://api.vercel.com/v9/projects?limit=100&teamId=team_a", "Bearer vc-token"]]);
+  });
+});
+
+describe("jira-transition's Jira statuses", () => {
+  it("are listed through the project's jira connection: the linked Jira projects', else the site's, else why not", async () => {
+    const seen: { url: string; auth?: string }[] = [];
+    const f = (async (url: unknown, init?: RequestInit) => {
+      seen.push({ url: String(url), auth: (init?.headers as Record<string, string>)?.authorization });
+      if (String(url).endsWith("/rest/api/3/status")) return Response.json([{ name: "Open" }, { name: "Done" }]);
+      if (String(url).includes("/project/SR/statuses")) return Response.json([{ statuses: [{ name: "QA" }, { name: "Open" }] }, { statuses: [{ name: "Done" }] }]);
+      return new Response("nope", { status: 500 });
+    }) as Fetch;
+    expect(await jiraChoices(w.d, "p", "acme/web", { fetch: f, lookup: publicDns })).toEqual({ statuses: null, error: "todo isn't connected to Jira yet" });
+    await put({ name: "jira", def: { http: { url: "https://acme.atlassian.net", auth: "basic" } }, secret: "me@acme.test:tok", base: null });
+    expect(await jiraChoices(w.d, "p", "acme/web", { fetch: f, lookup: publicDns })).toEqual({ statuses: ["Done", "Open"], error: null });
+    await w.one("alice", item("J1", { extra: { jira: ["SR-1"] } }));
+    expect(await jiraChoices(w.d, "p", "acme/web", { fetch: f, lookup: publicDns })).toEqual({ statuses: ["Done", "Open", "QA"], error: null });
+    expect(seen.map((s) => s.url)).toEqual(["https://acme.atlassian.net/rest/api/3/status", "https://acme.atlassian.net/rest/api/3/project/SR/statuses"]);
+    expect(seen[0].auth).toBe(`Basic ${Buffer.from("me@acme.test:tok").toString("base64")}`);
+    await w.one("alice", item("J2", { extra: { jira: ["XX-1"] } }));
+    expect((await jiraChoices(w.d, "p", "acme/web", { fetch: f, lookup: publicDns })).statuses).toBeNull();
   });
 });
 
