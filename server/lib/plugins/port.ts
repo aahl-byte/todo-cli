@@ -106,6 +106,16 @@ function statusTriggers(a: ActionDef): Trigger[] {
   return a.auto.map((r) => ({ status: { from: r.from, to: r.to } }));
 }
 
+/** The secret a rest Action's credential header holds, as its connection takes it: a token, or user:password for basic. */
+export function credentialSecret(a: ActionDef): string | null {
+  const c = credentialOf(a);
+  if (!c) return null;
+  const value = a.headers![c.header];
+  if (c.auth === "bearer") return value.replace(/^bearer\s+/i, "");
+  if (c.auth === "basic") return Buffer.from(value.replace(/^basic\s+/i, ""), "base64").toString("utf8");
+  return value;
+}
+
 /** The credential an Action's headers carry, as a connection's auth and the secret for it; the first one only. */
 function credentialOf(a: ActionDef): { header: string; auth: HttpAuth; what: string } | null {
   for (const [name, value] of Object.entries(a.headers ?? {})) {
@@ -202,7 +212,11 @@ async function refused(url: string, lookup: AddressGuard["lookup"], notes: strin
   }
 }
 
-export async function planPort(d: Db, project: string, opts: { repos?: string[]; lookup?: AddressGuard["lookup"] } = {}): Promise<PortPlan> {
+export async function planPort(d: Db, project: string, opts: {
+  repos?: string[]; lookup?: AddressGuard["lookup"];
+  /** The kinds of Action to port, and whether the Jira bridge's jobs come too; everything by default. */
+  kinds?: ActionDef["kind"][]; jira?: boolean;
+} = {}): Promise<PortPlan> {
   const [p] = await d.query("select actions, jira_outbound from projects where key = $1", [project]);
   if (!p) throw new Error(`no project ${project}`);
   const plan: PortPlan = { project, repos: [], instances: {}, grants: {}, connections: {}, secrets: {}, allowHosts: [], notes: [] };
@@ -210,19 +224,19 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
   const own = await checkoutDir(d, project, "", "");
   const places: Places = { project, dir: own.dir, repo: own.repo };
 
-  for (const a of storedActions(p.actions)) {
+  for (const a of storedActions(p.actions).filter((x) => !opts.kinds || opts.kinds.includes(x.kind))) {
     if (a.runner === "cli") plan.notes.push(`action ${a.id} ran in the CLI; its instance runs on the server whenever the server can`);
     const inst = a.kind === "watchtower" ? watchtowerInstance(a, places, plan) : restInstance(a, places, plan);
     (plan.instances[a.kind === "watchtower" ? WATCHTOWER : REST] ??= []).push(inst);
   }
 
-  const rules = outboundRules(p.jira_outbound);
+  const rules = opts.jira === false ? null : outboundRules(p.jira_outbound);
   if (rules?.triggers.length) {
     plan.instances[JIRA_TRANSITION] = ruleInstances({ writes: true, never: rules.never, triggers: rules.triggers });
     if (!rules.writes) plan.notes.push("Jira writes are off for this project: keep its jira-transition instances in dry-run at the cutover");
   }
   const [linked] = await d.query("select count(*)::int as n from jira_links where project = $1 and source = 'field'", [project]);
-  if (rules || linked.n > 0) {
+  if (opts.jira !== false && (rules || linked.n > 0)) {
     plan.instances[JIRA_ISSUE] = [{ id: "default", name: "Jira issues" }];
     plan.grants[JIRA_ISSUE] = [POST_REQUEST];
   }

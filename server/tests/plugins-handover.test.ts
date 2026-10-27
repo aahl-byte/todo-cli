@@ -8,7 +8,11 @@ import { PUT as configPUT } from "@/app/api/projects/[key]/plugins/config/route"
 import { saveJiraSettings } from "@/lib/jira/settings";
 import { linkedProjects } from "@/lib/jira/sync";
 import { heldPlugins } from "@/lib/plugins/exclusive";
-import { putInstances, repoPlugins, setShipped, storedGrants, storedInstances } from "@/lib/plugins/store";
+import { projectConnections, putInstances, repoPlugins, setShipped, storedGrants, storedInstances } from "@/lib/plugins/store";
+import { itemButtons } from "@/lib/plugin-views";
+import { makeMove, planMove } from "@/lib/plugins/handover";
+import { publicDns } from "./plugin-github";
+import crypto from "node:crypto";
 import { item, world, type World } from "./helpers";
 import { params, req } from "./plugin-github";
 
@@ -212,5 +216,89 @@ describe("the bridge's polling and jira-issue", () => {
     expect((await move("jira-polling", "back", (await plan("jira-polling", "back")).base)).status).toBe(200);
     expect((await outbound()).jira_poll).toBe(true);
     expect([await shipped("acme/web"), await shipped("acme/api")]).toEqual([[], []]);
+  });
+});
+
+const ACTIONS = [
+  { id: "rosm", name: "ROSM", kind: "watchtower", runner: "server", auto: [], base: "https://wt.example", dir: "/src/rosm", prompt: "/todo {{item.id}}" },
+  { id: "rosm-wip", name: "ROSM - in Progress", kind: "watchtower", runner: "server", auto: [{ from: "*", to: "in-progress" }], base: "https://wt.example",
+    dir: "{{item.dir}}", prompt: "/todo {{item.id}} go", resume: true, resumePrompt: "/todo {{item.id}}" },
+  { id: "notify", name: "Notify", kind: "rest", runner: "server", auto: [], method: "POST", url: "https://hooks.example/n/{{item.id}}",
+    headers: { Authorization: "Bearer s3cret" }, body: '{"id": {{item.id|json}}}' },
+];
+
+describe("moving the General tab's Actions here", () => {
+  beforeEach(async () => {
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await w.d.query("update projects set actions = $1::jsonb where key = 'p'", [JSON.stringify(ACTIONS)]);
+  });
+  const actions = async () => (await w.d.query("select actions, actions_moved from projects where key = 'p'"))[0];
+  const planned = (move: "watchtower" | "rest", direction: "here" | "back") => planMove(w.d, "p", move, direction, "acme/web", { lookup: publicDns });
+  const made = async (move: "watchtower" | "rest", direction: "here" | "back") =>
+    makeMove(w.d, "p", move, direction, "acme/web", (await planned(move, direction)).base, "alice", { lookup: publicDns });
+
+  it("says what moves, where, and the connection it adds", async () => {
+    const plan = await planned("watchtower", "here");
+    expect(plan.blockers).toEqual([]);
+    expect(plan.lines).toEqual([
+      '2 Actions move here as watchtower-session buttons for acme/api and acme/web: "ROSM" and "ROSM - in Progress".',
+      "They leave the General tab, so items never show both buttons or fire both.",
+      "1 of them fires on its status moves here too.",
+      "Adds this project's watchtower connection at https://wt.example.",
+      "1 item(s) name no GitHub repo: they get no button.",
+    ]);
+  });
+
+  it("turns the Watchtower Actions into live buttons in every repo, in one move, so items never get both", async () => {
+    await made("watchtower", "here");
+    const { actions: left, actions_moved: moved } = await actions();
+    expect(left.map((a: { id: string }) => a.id)).toEqual(["notify"]);
+    expect(moved.map((m: { action: { id: string }; plugin: string; repos: string[] }) => [m.action.id, m.plugin, m.repos]))
+      .toEqual([["rosm", "watchtower-session", ["acme/api", "acme/web"]], ["rosm-wip", "watchtower-session", ["acme/api", "acme/web"]]]);
+    for (const repo of ["acme/web", "acme/api"]) {
+      expect(await shipped(repo)).toEqual(["watchtower-session"]);
+      expect((await storedInstances(w.d, "p", repo))["watchtower-session"].map((i) => [i.id, i.on, i.dry_run])).toEqual([
+        ["action-rosm", ["manual"], undefined], ["action-rosm-wip", ["manual", { status: { from: "*", to: "in-progress" } }], undefined]]);
+    }
+    expect((await projectConnections(w.d, "p")).map((c) => [c.name, c.def])).toEqual([["watchtower", { http: { url: "https://wt.example" } }]]);
+    const [i1] = await w.d.query("select * from items where uid = 'I1'");
+    expect((await itemButtons(w.d, "p", i1)).map((b) => b.label)).toEqual(["ROSM", "ROSM - in Progress"]);
+    await w.d.exec("delete from plugin_events; delete from action_runs");
+    await w.one({ handle: "alice", unconditional: true }, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { status: "in-progress" } });
+    expect(await w.d.query("select 1 from action_runs")).toEqual([]);
+    expect((await w.d.query("select event from plugin_events")).map((e) => e.event)).toContainEqual({ type: "status", from: "todo", to: "in-progress" });
+  });
+
+  it("moves a REST Action's credential into the connection it adds, out of the button's headers", async () => {
+    await made("rest", "here");
+    const [inst] = (await storedInstances(w.d, "p", "acme/web"))["rest"];
+    expect(inst).toMatchObject({ id: "action-notify", name: "Notify", settings: { connection: "rest-hooks-example", method: "POST", path: "/n/{{item.id}}" } });
+    expect(inst.settings).not.toHaveProperty("headers");
+    const [conn] = await projectConnections(w.d, "p");
+    expect([conn.name, conn.def, conn.held]).toEqual(["rest-hooks-example", { http: { url: "https://hooks.example", auth: "bearer" } }, true]);
+    expect((await actions()).actions.map((a: { id: string }) => a.id)).toEqual(["rosm", "rosm-wip"]);
+  });
+
+  it("is refused once the Actions changed since the plan", async () => {
+    const { base } = await planned("watchtower", "here");
+    await w.d.query("update projects set actions = $1::jsonb where key = 'p'", [JSON.stringify(ACTIONS.slice(1))]);
+    await expect(makeMove(w.d, "p", "watchtower", "here", "acme/web", base, "alice", { lookup: publicDns })).rejects.toThrow(/changed since this page loaded/);
+  });
+
+  it("moves back: the Actions return as they were, their buttons go, and the plugin is switched off where none is left", async () => {
+    await setShipped(w.d, "p", "acme/web", "watchtower-session", true, "alice");
+    await putInstances(w.d, "p", "acme/web", "watchtower-session", [{ id: "mine", name: "Mine", settings: {} }], "alice");
+    await made("watchtower", "here");
+    const back = await planned("watchtower", "back");
+    expect(back.lines).toEqual([
+      '2 Actions go back to the General tab as they were before the move: "ROSM" and "ROSM - in Progress".',
+      "Their watchtower-session buttons are removed from acme/api and acme/web, with any change made to them here; watchtower-session is switched off where no other button is left.",
+    ]);
+    await made("watchtower", "back");
+    const { actions: all, actions_moved: moved } = await actions();
+    expect(all.map((a: { id: string }) => a.id)).toEqual(["notify", "rosm", "rosm-wip"]);
+    expect(moved).toEqual([]);
+    expect((await storedInstances(w.d, "p", "acme/web"))["watchtower-session"].map((i) => i.id)).toEqual(["mine"]);
+    expect([await shipped("acme/web"), await shipped("acme/api")]).toEqual([["watchtower-session"], []]);
   });
 });
