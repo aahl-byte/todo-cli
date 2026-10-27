@@ -21,7 +21,8 @@ describe("the connection form", () => {
   it("starts a service nothing connects yet at its usual address and auth, with a link to make its token", () => {
     const out = form("vercel", null);
     expect(out).toContain('aria-label="Vercel address" placeholder="https://api.vercel.com" value="https://api.vercel.com"');
-    expect(out).toMatch(/<option value="bearer" selected="">a bearer token<\/option>/);
+    expect(out).not.toContain("Authorizes with");
+    expect(out).toContain("Vercel API token");
     expect(out).toContain('aria-label="Vercel token"');
     expect(out).toContain('href="https://vercel.com/account/tokens"');
     expect(out).not.toMatch(/TODO_|GITHUB_TOKEN|admin/i);
@@ -38,8 +39,20 @@ describe("the connection form", () => {
     expect(github).toContain("https://github.com/settings/personal-access-tokens/new");
   });
 
-  it("asks for a name for a new connection, and says plainly when tokens can't be saved", () => {
-    expect(form(null, null)).toContain('aria-label="connection name"');
+  it("asks a new connection for its name and how it authorizes, and a service with no token whether it needs one", () => {
+    const custom = form(null, null);
+    expect(custom).toContain('aria-label="connection name"');
+    expect(custom).toContain('<option value="bearer">an API token</option>');
+    const watchtower = form("watchtower", null);
+    expect(watchtower).not.toContain("Authorizes with");
+    expect(watchtower).toContain("Watchtower needs a token? ›");
+  });
+
+  it("keeps a service's own auth even when its stored connection says otherwise", () => {
+    expect(form("vercel", host("vercel", { auth: null, held: false }))).toContain("Vercel API token");
+  });
+
+  it("says plainly when tokens can't be saved", () => {
     const off = form("vercel", null, "TODO_SECRET_KEY isn't set on the server, so it can't store secrets");
     expect(off).toContain("Tokens can&#x27;t be saved here: TODO_SECRET_KEY isn&#x27;t set on the server, so it can&#x27;t store secrets.");
     expect(off).toMatch(/aria-label="Vercel token"[^>]*disabled=""/);
