@@ -110,7 +110,7 @@ describe("a repo nobody has set up", () => {
       offers: "Items would link the newest ready Vercel preview of each of their branches.",
       steps: [
         { text: "Enter the Vercel project and team, once it's switched on.", done: false },
-        { text: "Connect todo to Vercel with a token.", done: false },
+        { text: "Connect todo to Vercel with an API token.", done: false },
       ],
     });
     expect(row(rows, "vercel-preview").steps[0].setup).toBeFalsy();
@@ -239,7 +239,7 @@ describe("a plugin switched on that needs setup", () => {
     const r = row(automationRows(repo({ plugins: [prLink, p], connections: [conn("vercel", { origin: "missing", kind: null, url: null, usedBy: ["vercel-preview"] })] }),
       ctx()), "vercel-preview");
     expect(r.state).toBe("setup");
-    expect(r.steps).toEqual([{ text: "Enter the Vercel project and team.", done: true }, { text: "Connect todo to Vercel with a token.", done: false, connect: "vercel" }]);
+    expect(r.steps).toEqual([{ text: "Enter the Vercel project and team.", done: true }, { text: "Connect todo to Vercel with an API token.", done: false, connect: "vercel" }]);
     expect(SERVICES.find((s) => s.name === "vercel")).toMatchObject({ url: "https://api.vercel.com", auth: "bearer", tokenUrl: "https://vercel.com/account/tokens" });
     const jira = automationRows(repo({ plugins: [prLink, plugin("jira-issue", { connections: ["jira"] })],
       connections: [conn("jira", { origin: "missing", usedBy: ["jira-issue"] })] }), ctx());
