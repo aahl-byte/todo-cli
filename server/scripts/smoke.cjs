@@ -6,6 +6,7 @@
 // browsers treat localhost as secure, which hides cookie problems on plain-http hosts.
 const { chromium } = require("playwright");
 const fs = require("fs");
+const http = require("http");
 const os = require("os");
 
 const tokens = process.env.TOKENS ? JSON.parse(fs.readFileSync(process.env.TOKENS, "utf8")) : { pat: "pat-test", dev: "dev-test", qa: "qa-test" };
@@ -19,6 +20,15 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     try { const r = await fetch(base + "/login"); if (r.ok) break; } catch {}
     await new Promise((r) => setTimeout(r, 500));
   }
+  // A Jira site on this machine for the page's jira connection: it lists statuses and answers nothing else.
+  const jiraStatuses = ["Open", "In Progress", "In QA", "Ready to deploy", "Done"].map((name) => ({ name }));
+  const fakeJira = http.createServer((req, res) => {
+    const body = req.url.startsWith("/rest/api/3/project/") ? [{ statuses: jiraStatuses }] : req.url.startsWith("/rest/api/3/status") ? jiraStatuses : null;
+    res.writeHead(body ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify(body ?? { errorMessages: ["not here"] }));
+  });
+  await new Promise((r) => fakeJira.listen(0, "127.0.0.1", r));
+  const jiraUrl = `http://127.0.0.1:${fakeJira.address().port}`;
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
@@ -522,6 +532,18 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await card(plugin).locator(".save-row button.primary", { hasText: "Save" }).click();
     await card(plugin).locator("fieldset.plugin-edit:not([disabled]) .save-row .hint", { hasText: "Saved." }).waitFor();
   };
+  const saveEditor = async (plugin) => {
+    const editor = card(plugin).locator(`[data-plugin-editor="${plugin}"]`);
+    await editor.locator(".save-row button.primary", { hasText: "Save" }).click();
+    await card(plugin).locator(`[data-plugin-editor="${plugin}"]:not([disabled]) .save-row .hint`, { hasText: "Saved." }).waitFor();
+  };
+  const moveOver = async (key, button, lines, repo = "acme/web") => {
+    const row = autoRow(key, repo);
+    await row.locator("button.link-btn", { hasText: `${button} ›` }).click();
+    const panel = row.locator(".handover");
+    for (const l of lines) await panel.locator("li", { hasText: l }).waitFor();
+    return panel;
+  };
   const rowState = (key, repo) => autoRow(key, repo).getAttribute("data-state");
   const automation = (repo) => base + "/p/web/settings/automation" + (repo ? "?repo=" + encodeURIComponent(repo) : "");
   /** Every step on the page is taken there: none names a server setting or a server admin. */
@@ -717,7 +739,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await autoRow("pr-link").locator(".last", { hasText: "linked PR #41 · Per-project API tokens on per-project-api-tokens" }).waitFor();
     const jt = autoRow("jira-transition");
     if (await rowState("jira-transition") !== "setup") throw new Error("jira-transition is " + await rowState("jira-transition"));
-    await jt.locator(".auto-line", { hasText: "The Jira bridge also moves tickets with 3 triggers, so both would send." }).waitFor();
+    await jt.locator(".auto-line", { hasText: "The Jira bridge also has 3 triggers, which only record the moves they'd make." }).waitFor();
     if (!(await jt.locator("input[aria-label='jira-transition on']").isChecked())) throw new Error("jira-transition's switch is off");
     await jt.locator("li[data-connect=jira]", { hasText: "Connect todo to Jira with an email and API token." }).waitFor();
     await noServerSteps();
@@ -782,28 +804,31 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if ((await page.content()).includes("s3cret")) throw new Error("the secret came back to the page");
   });
 
-  await step("automation: rest offers each instance the repo's connections and the server's, and says its settings are templates", async () => {
+  await step("automation: the web-request row lays its buttons out like an Action, offering the repo's connections and the server's, with template data", async () => {
     await page.goto(automation("acme/web"));
+    await autoRow("rest").locator(".auto-title", { hasText: "Send a web request to any URL" }).waitFor();
     await configure("rest");
-    const rest = card("rest");
-    await rest.locator(".plugin-meta", { hasText: "calls the connection each instance names" }).waitFor();
-    const hook = rest.locator('.instance-card[data-instance="hook"]');
-    const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
-    const choices = await offered(hook);
-    if (!choices.includes("github") || !choices.includes("hooks") || !choices.includes("+ New connection…")) throw new Error("an instance offered " + choices.join(", "));
-    const note = await hook.locator(".setting[data-setting=path] .hint").textContent();
-    if (!note.startsWith("A template")) throw new Error("no template hint: " + note);
+    const rest = card("rest").locator("[data-plugin-editor=rest]");
+    await rest.locator(".hint", { hasText: "sends a web request to any URL" }).waitFor();
+    const hook = rest.locator('.action-card[data-card="hook"]');
+    const choices = await hook.locator("select[aria-label=connection] option").allTextContents();
+    if (!choices.includes("github") || !choices.includes("hooks") || !choices.includes("+ New connection…")) throw new Error("a button offered " + choices.join(", "));
+    if (await hook.locator("input[aria-label=path]").inputValue() !== "/notify/{{item.id}}") throw new Error("the path isn't shown");
+    await rest.locator(".template-ref > summary").click();
+    await rest.locator(".template-ref dt", { hasText: "{{event.from}}" }).waitFor();
+    await hook.locator("select[aria-label=method]").selectOption("GET");
+    if (await hook.locator("textarea[aria-label=body]").count()) throw new Error("a GET has a body");
     await page.screenshot({ path: out + "/automation-rest.png", fullPage: true });
     await page.reload();
   });
 
   await step("automation: a web-request button is pointed at a brand-new endpoint entirely on the page", async () => {
     await configure("rest");
-    const rest = card("rest");
-    await rest.locator("button.add:has-text('instance')").click();
-    const fresh = rest.locator('.instance-card[data-instance="instance"]');
-    await fresh.locator("input[aria-label=name]").fill("Ping smoke");
-    await fresh.locator(".setting[data-setting=connection] select").selectOption({ label: "+ New connection…" });
+    const rest = card("rest").locator("[data-plugin-editor=rest]");
+    await rest.locator("button.add", { hasText: "button" }).click();
+    const fresh = rest.locator('.action-card[data-card="new"]');
+    await fresh.locator("input[aria-label='button name']").fill("Ping smoke");
+    await fresh.locator("select[aria-label=connection]").selectOption({ label: "+ New connection…" });
     const form = fresh.locator(".new-connection form.conn-form");
     await form.locator("input[aria-label='connection name']").fill("smoke-api");
     await form.locator("input[aria-label='smoke-api address']").fill("https://api.smoke-test.example");
@@ -811,9 +836,12 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await form.locator("input[aria-label='smoke-api token']").fill("smoke-api-secret");
     await form.locator("button.primary", { hasText: "Save" }).click();
     await form.waitFor({ state: "detached" });
-    if (await fresh.locator(".setting[data-setting=connection] select").inputValue() !== "smoke-api") throw new Error("the new connection isn't picked");
-    await fresh.locator(".setting[data-setting=path] input").fill("/ping/{{item.id}}");
-    await savePlugin("rest");
+    if (await fresh.locator("select[aria-label=connection]").inputValue() !== "smoke-api") throw new Error("the new connection isn't picked");
+    await fresh.locator("input[aria-label=path]").fill("/ping/{{item.id}}");
+    await fresh.locator("button.add", { hasText: "status move" }).click();
+    await fresh.locator(".rule-table select[aria-label='to status']").selectOption("review");
+    await saveEditor("rest");
+    await card("rest").locator('.action-card[data-card="ping-smoke"] input[aria-label=path]').waitFor();
     await page.locator(".project-connections .host-conn[data-connection=smoke-api]", { hasText: "https://api.smoke-test.example" }).waitFor();
     if ((await page.content()).includes("smoke-api-secret")) throw new Error("the secret came back to the page");
     await noServerSteps();
@@ -867,19 +895,145 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (JSON.stringify(await order()) !== '["go"]') throw new Error("left " + JSON.stringify(await order()));
   });
 
-  await step("automation: setting up a first-match plugin starts with an instance to fill in, and orders several", async () => {
+  await step("automation: Jira is set up in jira-transition's row with its site, email and API token, at a private address once allowed", async () => {
+    await page.goto(automation("acme/web"));
     const jt = autoRow("jira-transition");
-    await jt.locator("li:not([data-connect]) button", { hasText: "Set up ›" }).click();
-    const order = () => card("jira-transition").locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
-    await card("jira-transition").locator(".instance-card").first().waitFor();
-    if (JSON.stringify(await order()) !== '["instance"]') throw new Error("starts with " + JSON.stringify(await order()));
-    if (await card("jira-transition").locator(".order").count()) throw new Error("order arrows with one instance");
-    if (await card("jira-transition").locator(".save-row button.primary").isDisabled()) throw new Error("the new instance can't be saved");
-    await card("jira-transition").locator("button.add:has-text('instance')").click();
-    if (JSON.stringify(await order()) !== '["instance","instance-2"]') throw new Error("order " + JSON.stringify(await order()));
-    await card("jira-transition").locator("button[aria-label='move instance-2 up']").click();
-    if (JSON.stringify(await order()) !== '["instance-2","instance"]') throw new Error("order after move " + JSON.stringify(await order()));
-    await page.reload();
+    await jt.locator("li[data-connect=jira] button", { hasText: "Set up ›" }).click();
+    const form = jt.locator("form.conn-form[data-connection-form=jira]");
+    await form.locator("input[aria-label='Jira address']").fill(jiraUrl);
+    await form.locator("input[aria-label='Jira email']").fill("smoke@acme.test");
+    await form.locator("input[aria-label='Jira api token']").fill("smoke-jira-token");
+    await form.locator("button.primary", { hasText: "Save" }).click();
+    await form.locator(".private-ok input").check();
+    await form.locator("button.primary", { hasText: "Save" }).click();
+    await jt.locator("li.done[data-connect=jira]", { hasText: "Connected to Jira." }).waitFor();
+    if ((await page.content()).includes("smoke-jira-token")) throw new Error("the token came back to the page");
+    const polling = await moveOver("jira-issue", "Move polling here", ["the Jira bridge stops polling this project",
+      "It adds a newly linked ticket's summary and description to the item's request"]);
+    if (await polling.locator("button.primary").isDisabled()) throw new Error("jira-issue's move is blocked: " + await polling.locator(".hot").allTextContents());
+    await polling.locator("button", { hasText: "Cancel" }).click();
+    await noServerSteps();
+  });
+
+  await step("automation: the Jira bridge's triggers move here once the page says what will happen", async () => {
+    const panel = await moveOver("jira-transition", "Move these triggers here", ["3 triggers move here, in order, for", "the Jira bridge stops moving tickets",
+                                                                                "Send to Jira stays off"]);
+    await page.screenshot({ path: out + "/automation-jira-move.png", fullPage: true });
+    await panel.locator("button.primary", { hasText: "Move these triggers here" }).click();
+    await panel.waitFor({ state: "detached" });
+    await autoRow("jira-transition").locator("button.link-btn", { hasText: "Move these triggers back to the Jira bridge ›" }).waitFor();
+    if (await autoRow("jira-transition").locator("button.move-here").count()) throw new Error("still offers to move the triggers here");
+  });
+
+  await step("automation: jira-transition's triggers are edited with Jira's own statuses, in order, tried, and saved", async () => {
+    await configure("jira-transition");
+    const ed = card("jira-transition").locator("[data-plugin-editor=jira-transition]");
+    const rows = ed.locator(".rule-table .rule-row");
+    if (await rows.count() !== 3) throw new Error(`${await rows.count()} triggers`);
+    await rows.nth(0).locator("select[aria-label='Jira status'] option", { hasText: "In Progress" }).waitFor({ state: "attached" });
+    if (await ed.locator("input[type=checkbox]").first().isChecked()) throw new Error("Send to Jira is on after a move from a bridge that only recorded");
+    await rows.nth(0).locator("select[aria-label='Jira status']").selectOption("In Progress");
+    await ed.locator("button.add", { hasText: "trigger" }).click();
+    await rows.nth(3).locator("select[aria-label='from todo status']").selectOption("*");
+    await rows.nth(3).locator("select[aria-label='to todo status']").selectOption("deployed");
+    await rows.nth(3).locator("select[aria-label='Jira status']").selectOption("Done");
+    await ed.locator("button[aria-label='move trigger 4 up']").click();
+    await ed.locator(".problems .warning", { hasText: "The trigger ready-to-deploy → deployed never runs: * → deployed above it matches first." }).waitFor();
+    await ed.locator("select[aria-label='test from']").selectOption("in-qa");
+    await ed.locator("select[aria-label='test to']").selectOption("deployed");
+    await ed.locator(".tester .result", { hasText: "moves Jira to Done." }).waitFor();
+    await page.screenshot({ path: out + "/automation-jira-editor.png", fullPage: true });
+    await saveEditor("jira-transition");
+    const saved = card("jira-transition").locator("[data-plugin-editor=jira-transition] .rule-table .rule-row");
+    const order = await saved.evaluateAll((els) => els.map((e) => e.dataset.trigger));
+    if (JSON.stringify(order) !== '["review>ready-for-qa","qa-approved>ready-to-deploy","*>deployed","ready-to-deploy>deployed"]') throw new Error("saved " + JSON.stringify(order));
+    if (await saved.nth(0).locator("select[aria-label='Jira status']").inputValue() !== "In Progress") throw new Error("the picked Jira status didn't stay");
+  });
+
+  await step("automation: jira-transition's triggers move back to the Jira bridge, once none needs what the bridge can't do", async () => {
+    let panel = await moveOver("jira-transition", "Move these triggers back to the Jira bridge", []);
+    await panel.locator(".hot", { hasText: "The trigger * → deployed can't go back: the Jira bridge needs both statuses." }).waitFor();
+    if (!(await panel.locator("button.primary").isDisabled())) throw new Error("the way back is open with a * trigger");
+    await panel.locator("button", { hasText: "Cancel" }).click();
+    const ed = card("jira-transition").locator("[data-plugin-editor=jira-transition]");
+    await ed.locator(".rule-table .rule-row[data-trigger='*>deployed'] button[aria-label='remove trigger']").click();
+    await saveEditor("jira-transition");
+    panel = await moveOver("jira-transition", "Move these triggers back to the Jira bridge", ["3 triggers from acme/web go back to the Jira bridge",
+                                                                                              "jira-transition is switched off in"]);
+    await panel.locator("button.primary", { hasText: "Move these triggers back to the Jira bridge" }).click();
+    await page.locator(".auto-rows[data-repo='acme/web'] .auto-row[data-row='jira-transition'][data-state=elsewhere]").waitFor();
+    await page.goto(base + "/p/web/settings");
+    const general = page.locator(".jira-settings .rule-table .rule-row");
+    if (await general.count() !== 3) throw new Error(`the bridge has ${await general.count()} triggers`);
+    if (await general.nth(0).locator("input[aria-label='Jira status'], select[aria-label='Jira status']").inputValue() !== "In Progress") throw new Error("the edit didn't go back");
+  });
+
+  await step("automation: the Watchtower Action moves here as a Watchtower button once the page says what will happen", async () => {
+    await page.goto(automation("acme/web"));
+    const wt = autoRow("watchtower-session");
+    await wt.locator(".auto-title", { hasText: "Start or resume a Claude session in Watchtower" }).waitFor();
+    const panel = await moveOver("watchtower-session", "Move these Actions here", ['1 Action moves here as watchtower-session buttons', '"Start agent"',
+      "It leaves the General tab, so items never show both buttons or fire both.", "Adds this project's watchtower connection at http://watchtower.example:10011"]);
+    await panel.locator("button.primary", { hasText: "Move these Actions here" }).click();
+    await panel.waitFor({ state: "detached" });
+    await page.locator(".project-connections .host-conn[data-connection=watchtower]", { hasText: "http://watchtower.example:10011" }).waitFor();
+    await page.goto(base + "/p/web/settings");
+    await page.locator(".actions-settings .hint", { hasText: 'Moved to Settings → Automation, where plugins run them: "Start agent"' }).waitFor();
+    if (await page.locator('.action-card[data-action="start-agent"]').count()) throw new Error("the Action is still on the General tab");
+  });
+
+  await step("automation: a Watchtower button is edited like an Action: name, folder, model, resume prompts, the moves it fires on, and order", async () => {
+    await page.goto(automation("acme/web"));
+    await configure("watchtower-session");
+    const ed = card("watchtower-session").locator("[data-plugin-editor=watchtower-session]");
+    await ed.locator(".hint", { hasText: "The Watchtower plugin: each button hands the item to its Claude session in Watchtower" }).waitFor();
+    const agent = ed.locator('.action-card[data-card="action-start-agent"]');
+    if (await agent.locator("input[aria-label='button name']").inputValue() !== "Start agent") throw new Error("the name isn't shown");
+    if (await agent.locator("input[aria-label=folder]").inputValue() !== "/src/web") throw new Error("the folder isn't shown");
+    await agent.locator("select[aria-label=model]").selectOption("haiku");
+    await agent.locator("label.check", { hasText: "resume the item's last session instead of starting a new one" }).locator("input").check();
+    await agent.locator("textarea[aria-label='resume prompt']").fill("/todo {{item.id}} again");
+    await agent.locator(".hint", { hasText: "else resumes its last stopped one with its history" }).waitFor();
+    await agent.locator("button.add", { hasText: "status move" }).click();
+    await agent.locator(".rule-table select[aria-label='to status']").selectOption("in-progress");
+    await ed.locator("button.add", { hasText: "button" }).click();
+    const fresh = ed.locator('.action-card[data-card="new"]');
+    await fresh.locator("input[aria-label='button name']").fill("Smoke session");
+    if (await fresh.locator("input[aria-label=folder]").getAttribute("placeholder") !== "{{item.dir}}") throw new Error("the folder doesn't default to the item's");
+    await fresh.locator("button[aria-label='move Smoke session up']").click();
+    await page.screenshot({ path: out + "/automation-watchtower.png", fullPage: true });
+    await saveEditor("watchtower-session");
+    const cards = await card("watchtower-session").locator(".action-card").evaluateAll((els) => els.map((e) => e.dataset.card));
+    if (JSON.stringify(cards) !== '["smoke-session","action-start-agent"]') throw new Error("saved " + JSON.stringify(cards));
+    const kept = card("watchtower-session").locator('.action-card[data-card="action-start-agent"]');
+    if (await kept.locator("select[aria-label=model]").inputValue() !== "haiku") throw new Error("the model didn't stay");
+    if (await kept.locator("textarea[aria-label='resume prompt']").inputValue() !== "/todo {{item.id}} again") throw new Error("the resume prompt didn't stay");
+  });
+
+  await step("item: a moved Action is one button, the plugin's", async () => {
+    await page.goto(item("plugin-playground"));
+    const buttons = page.locator(".wide-only .action-buttons button", { hasText: "Start agent" });
+    await buttons.first().waitFor();
+    if (await buttons.count() !== 1) throw new Error(`${await buttons.count()} Start agent buttons`);
+    await page.locator(".wide-only [data-plugin-button='watchtower-session/action-start-agent']").waitFor();
+  });
+
+  await step("automation: the REST Action moves here as a web-request button, and both move back to the General tab", async () => {
+    await page.goto(automation("acme/web"));
+    let panel = await moveOver("rest", "Move these Actions here", ['1 Action moves here as rest buttons', '"Notify deploy"']);
+    await panel.locator("button.primary", { hasText: "Move these Actions here" }).click();
+    await panel.waitFor({ state: "detached" });
+    await configure("rest");
+    const notify = card("rest").locator('.action-card[data-card="action-notify-deploy"]');
+    if (await notify.locator("input[aria-label=path]").inputValue() !== "/deploys") throw new Error("the path isn't the Action's");
+    for (const [key, n] of [["rest", "1 Action goes back"], ["watchtower-session", "1 Action goes back"]]) {
+      panel = await moveOver(key, "Move these Actions back to the General tab", [n]);
+      await panel.locator("button.primary", { hasText: "Move these Actions back to the General tab" }).click();
+      await panel.waitFor({ state: "detached" });
+    }
+    await page.goto(base + "/p/web/settings");
+    for (const id of ["start-agent", "notify-deploy"]) await page.locator(`.action-card[data-action="${id}"]`).waitFor();
+    await page.goto(automation("acme/web"));
   });
 
   await step("automation: a connection's credential is set and cleared, never shown, and turns the row on", async () => {
@@ -970,6 +1124,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   });
 
   await browser.close();
+  fakeJira.close();
   console.log("errors:", JSON.stringify(errors));
   process.exit(errors.length ? 1 : 0);
 })();

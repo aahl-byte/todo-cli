@@ -40,6 +40,10 @@ const HEAD: Record<CardPlugin, ReactNode> = {
   ),
 };
 
+/** When each repo's plugin was last saved, so the editor the refreshed data remounts still says so. */
+const justSaved = new Map<string, number>();
+const SAVED_SHOWN_MS = 15_000;
+
 export function ActionPluginEditor({ projectKey, repo, plugin, statuses, newConnection }: {
   projectKey: string; repo: DashRepo; plugin: DashPlugin & { name: CardPlugin }; statuses: readonly string[]; newConnection: NewConnection;
 }) {
@@ -48,11 +52,14 @@ export function ActionPluginEditor({ projectKey, repo, plugin, statuses, newConn
   const seen = useMemo(() => plugin.instances.map(asStored), [plugin.instances]);
   const [cards, setCards] = useState<ActionCard[]>(() => cardsOf(kind, seen));
   const [dirty, setDirty] = useState(false);
-  const [saved, setSaved] = useState<{ ok: boolean; message: string; stale?: boolean } | null>(null);
+  const id = `${repo.repo}/${kind}`;
+  const [saved, setSaved] = useState<{ ok: boolean; message: string; stale?: boolean } | null>(
+    () => (Date.now() - (justSaved.get(id) ?? 0) < SAVED_SHOWN_MS ? { ok: true, message: "Saved." } : null));
   const [pending, start] = useTransition();
+  // Between a save and the refreshed data the editor is locked, since the new data remounts it.
   const [refreshing, setRefreshing] = useState(false);
   const out = useMemo(() => instancesOf(kind, cards), [kind, cards]);
-  const change = (next: ActionCard[]) => { setCards(next); setDirty(true); setSaved(null); };
+  const change = (next: ActionCard[]) => { setCards(next); setDirty(true); setSaved(null); justSaved.delete(id); };
   const edit = (i: number, patch: Partial<ActionCard>) => change(cards.map((c, j) => (j === i ? { ...c, ...patch } : c)));
   const swap = (i: number, j: number) => {
     const list = [...cards];
@@ -67,6 +74,7 @@ export function ActionPluginEditor({ projectKey, repo, plugin, statuses, newConn
       setSaved({ ok: true, message: "Saved." });
       setDirty(false);
       setRefreshing(true);
+      justSaved.set(id, Date.now());
       router.refresh();
       return;
     }
