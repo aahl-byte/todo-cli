@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as factsPOST } from "@/app/api/projects/[key]/git-facts/route";
 import { describe as describeResults } from "@/lib/action-helpers";
-import { computeProject, itemGitFacts, recomputing, resetGitFactsCache, storedFacts, trackList, type Fetch } from "@/lib/gitfacts";
+import { parse } from "yaml";
+import { computeProject as computeFrom, itemGitFacts as factsFor, recomputing, resetGitFactsCache, storedFacts, type Fetch } from "@/lib/gitfacts";
 import { recordCheckout } from "@/lib/checkouts";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -14,9 +15,20 @@ beforeEach(async () => {
   vi.stubEnv("GITHUB_TOKEN", "t");
   vi.stubEnv("TODO_PLUGIN_OWNERS", "acme");
   await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
+  await setTrack(TRACK);
 });
 
-const b64 = (s: string) => Buffer.from(s).toString("base64");
+/** Store the deploy branches a `track: [...]` line names, as Settings → Automation would; undefined for none. */
+async function setTrack(text: string | undefined) {
+  const track = ((text === undefined ? null : parse(text)) as { track?: string[] } | null)?.track ?? [];
+  await w.d.query(`insert into plugin_configs (project, repo, track, updated_by) values ('p', 'acme/web', $1, 'alice')
+                   on conflict (project, repo) do update set track = excluded.track`, [track]);
+}
+/** A fake made from a spec that names its track stores those deploy branches before the compute it serves. */
+const tracked = async (f?: Fetch) => { if (f && "track" in f) await setTrack((f as Fetch & { track?: string }).track); };
+const computeProject = async (d: World["d"], project: string, f: Fetch, only?: string) => { await tracked(f); return computeFrom(d, project, f, only); };
+const itemGitFacts = async (d: World["d"], project: string, uid: string, f?: Fetch) => { await tracked(f); return factsFor(d, project, uid, f); };
+
 const sha = (c: string) => c.repeat(40).slice(0, 40);
 const n = (s: string) => s.slice(0, 12);
 const [S, M, A, A2, B, C, Q] = ["s", "m", "a", "e", "b", "c", "f"].map(sha);
@@ -47,9 +59,6 @@ function fakeGitHub(spec: Spec) {
     if (path.startsWith("/repos/acme/web/branches?")) {
       return Response.json(path.endsWith("page=1") ? Object.entries(spec.tips).map(([name, s]) => ({ name, commit: { sha: s } })) : []);
     }
-    if (path === "/repos/acme/web/contents/.todo-plugins/plugins.yaml?ref=main") {
-      return spec.track === undefined ? new Response("", { status: 404 }) : Response.json({ content: b64(spec.track) });
-    }
     const closedInto = path.match(/\/pulls\?state=closed&base=([^&]+)&/);
     if (closedInto) {
       const base = decodeURIComponent(closedInto[1]);
@@ -73,6 +82,7 @@ function fakeGitHub(spec: Spec) {
     }
     return new Response("", { status: 404 });
   }) as Fetch;
+  if ("track" in spec) Object.assign(impl, { track: spec.track });
   return { impl, calls };
 }
 
@@ -91,16 +101,6 @@ const stackedSpec = (extra: Partial<Spec> = {}): Spec => ({
   u: { ...u(S, A, [A], ["a.txt"]), ...u(S, B, [A, B], ["a.txt", "b.txt"]) }, ...extra,
 });
 const facts = (uid: string) => storedFacts(w.d, "p", uid);
-
-describe("trackList", () => {
-  it("reads flow and block lists, indented or not, and nothing else", () => {
-    expect(trackList("track: [staging, main]\n")).toEqual(["staging", "main"]);
-    expect(trackList("plugins: {}\ntrack:\n  - staging\n  - 'main'\nother: 1\n")).toEqual(["staging", "main"]);
-    expect(trackList("track:\n- staging\n- main\n")).toEqual(["staging", "main"]);
-    expect(trackList("track: [staging,\n  main]\nplugins: {}\n")).toEqual(["staging", "main"]);
-    expect(trackList("plugins: {}\n")).toEqual([]);
-  });
-});
 
 describe("computeProject", () => {
   it("finds that a stacked branch needs the one it was cut from", async () => {
@@ -437,7 +437,7 @@ describe("a PR based on a branch nothing tracks", () => {
     expect((await facts("A")).needed_by).toEqual([]);
     expect(b.branches![0]).toMatchObject({ name: "feat/b", target: "staging" });
     expect(b.branches![0].orphan).toBeUndefined();
-    expect(b.branches![0].hint).toBe("feat/b's PR is based on staging; if staging is long-lived, add it under track: in .todo-plugins/plugins.yaml");
+    expect(b.branches![0].hint).toBe("feat/b's PR is based on staging; if staging is long-lived, add it to the repo's deploy branches on Settings → Automation");
     const [r] = await w.d.query("select versions from items where uid = 'B'");
     expect((await w.one("alice", set("item", "B", "B", { status: "ready-to-deploy" }, { status: r.versions.status }))).status).toBe("applied");
   });

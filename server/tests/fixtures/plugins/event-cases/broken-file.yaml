@@ -1,5 +1,5 @@
-about: a plugins file that fails to load is reported, and the shipped plugins still run
-repo_text: "plugins: {bad: {until: x, attach: [{log: x}]}}"
+about: a config that fails to load is reported, and the shipped plugins still run
+config_text: "plugins: {bad: {until: x, attach: [{log: x}]}}"
 hostConnections:
   github: {http: {url: "http://fake-github"}}
 event: {type: pr, branch: feat/login}

@@ -1,7 +1,8 @@
 """Git facts: where each item's branches landed, which in-flight branches
 depend on others, and which conflict or overlap. They come from the repo's
 local checkout (and each branch's PRs on GitHub), live in the item folder as
-`git.yaml`, and are never set by hand. See
+`git.yaml`, and are never set by hand. A repo's deploy branches come from its
+plugin config (see plugin_config). See
 docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
 
 Each branch's unlanded commits U(X) are those in X but in neither T(X) nor a
@@ -34,7 +35,6 @@ from .util import now, to_str
 FACTS_FILE = "git.yaml"
 TIPS_FILE = "git-tips.json"
 CACHE_FILE = "git-cache.json"
-PLUGINS_FILE = ".todo-plugins/plugins.yaml"
 POLL_EVERY = 30                 # seconds between ls-remote calls for one repo, so a command's two rounds share one
 LOCAL_EVERY = 300               # a local-only store recomputes at most this often, at the end of a command
 UNLANDED_CAP = 2000             # past this many unlanded commits a branch's relations are unknown
@@ -47,7 +47,8 @@ OPEN_PR = ("open", "draft")
 HINT = "whichever merges second merges the other in"
 SHARES_HINT = ("can't tell which builds on which; base the dependent PR on the other branch, "
                "or merge one into the other")
-UNTRACKED_HINT = "{branch}'s PR is based on {base}; if {base} is long-lived, add it under track: in " + PLUGINS_FILE
+UNTRACKED_HINT = ("{branch}'s PR is based on {base}; if {base} is long-lived, add it to the repo's deploy branches: "
+                  "todo plugin deploy-branches --repo {repo} --add {base}")
 API = "https://api.github.com"
 SHOWN_COMMITS = 3
 SHA_KEY = 12                    # cached commit sets keep this many hex digits per commit
@@ -89,8 +90,9 @@ class Repo:
     """One repo's local checkout. Results computed from complete data are
     cached by the commits they compare."""
 
-    def __init__(self, key: str, dir_: Path, cache: dict):
+    def __init__(self, key: str, dir_: Path, cache: dict, deploy: list | None = None):
         self.key, self.dir, self.cache = key, dir_, cache
+        self.deploy = list(deploy or [])     # the deploy branches the repo's plugin config names
         self.tips: dict = {}
         self.default = "main"
         self.used: dict = {}
@@ -151,25 +153,8 @@ class Repo:
         return True
 
     def track(self) -> list:
-        """The `track:` list from the plugins file on the default branch; [] without one."""
-        tip = self.tips.get(self.default)
-        if not tip:
-            return []
-
-        def run():
-            r = _git(self.dir, "show", f"{tip}:{PLUGINS_FILE}")
-            if r is None:
-                return None
-            if r.returncode != 0:
-                return []
-            try:
-                from ruamel.yaml import YAML
-                doc = YAML(typ="safe").load(r.stdout)
-            except Exception:  # noqa: BLE001 — a malformed file tracks nothing
-                return []
-            raw = doc.get("track") if isinstance(doc, dict) else None
-            return [to_str(t) for t in raw if to_str(t)] if isinstance(raw, list) else []
-        return self._cached("track", tip, run) or []
+        """The repo's deploy branches."""
+        return self.deploy
 
     def _cached(self, kind: str, key: str, compute):
         bucket = self.cache.setdefault(kind, {})
@@ -459,9 +444,9 @@ def _targets(repo: Repo, facts: dict, owners: dict, track: list, others: dict) -
     """T(B) per branch: follow an open PR's base through branches open items
     own, to the first branch none owns. That branch is T(B) when it's tracked,
     the default, or any other branch on the remote; an untracked one is an
-    orphan beside a `track:` list and a hint without one. A base a cancelled
+    orphan beside deploy branches and a hint without them. A base a cancelled
     or archived item lists, or one gone from the remote, ends the chain as an
-    orphan. With no open PR, T(B) is the first tracked branch on the remote,
+    orphan. With no open PR, T(B) is the first deploy branch on the remote,
     else the default branch."""
     by_name = {b["name"]: b for i, fx in facts.items() for b in fx["branches"] if owners.get(b["name"]) == i}
     fallback = next((t for t in track if t in repo.tips), None) or repo.default
@@ -483,7 +468,7 @@ def _targets(repo: Repo, facts: dict, owners: dict, track: list, others: dict) -
                     if untracked:
                         target = base
                     if untracked and not track:
-                        b["hint"] = UNTRACKED_HINT.format(branch=b["name"], base=base)
+                        b["hint"] = UNTRACKED_HINT.format(branch=b["name"], base=base, repo=repo.key)
                     else:
                         b["orphan"] = base
                     break
@@ -1092,6 +1077,7 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
     changed when given a server. Each repo's ls-remote answer goes into `seen`
     as `{tips, default, dir}`.
     Returns the ids of changed items."""
+    from . import plugin_config  # imported here, since it imports this module
     all_items = [it for it in store.list_todos(root) if not is_archived(root, it)]
     groups = _groups(root, all_items)
     tips_file, cache_file = state_file(root, TIPS_FILE), state_file(root, CACHE_FILE)
@@ -1113,7 +1099,7 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
         d = repo_dir(root, key)
         if d is None:
             continue
-        repo = Repo(key, d, cache)
+        repo = Repo(key, d, cache, plugin_config.deploy_branches(root, key, remote))
         tips = repo.ls_remote()
         if tips is None:
             continue
@@ -1125,7 +1111,8 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
             moved.add("HEAD")
         done.add(key)
         repo.tips = tips
-        if not (force or touched or moved & _relevant(root, group, repo) or saved.get("incomplete")):
+        retracked = saved.get("track", []) != repo.track()     # the deploy branches changed in the config
+        if not (force or touched or retracked or moved & _relevant(root, group, repo) or saved.get("incomplete")):
             state[key] = {**saved, "at": time.time(), "tips": tips, "default": repo.default}
             continue
         failure = None
@@ -1145,6 +1132,7 @@ def on_round(root: Path, remote=None, project: str | None = None, *, force: bool
             for kind, bucket in repo.used.items():
                 used.setdefault(kind, {}).update(bucket)
         state[key] = {"at": time.time(), "default": repo.default, "tips": old_tips if incomplete else tips,
+                      **({"track": repo.track()} if repo.track() else {}),
                       **({"incomplete": True} if incomplete else {}), **({"lost": sorted(repo.lost)} if repo.lost else {})}
         stamp = now()
         for it in group:

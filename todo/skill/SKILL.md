@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.15.2
+version: 0.16.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -202,8 +202,11 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   its PRs are merged to staging and every migration and env var is a
   deployment check; `stage` moves it to `ready-to-deploy`.
 - **Dependencies between branches come from git.** `todo get` shows a `git:`
-  block per branch: its PR, which tracked branches it landed in, what it needs,
-  what needs it, and conflicts and overlaps with other open work. `todo stage`
+  block per branch: its PR, which deploy branches it landed in, what it needs,
+  what needs it, and conflicts and overlaps with other open work. A repo's
+  deploy branches are set on the server's Settings → Automation, or with
+  `todo plugin deploy-branches staging main`; set them only when a person asks
+  or a hint says a long-lived base is missing from them. `todo stage`
   and `todo deploy` refuse while the item waits on an unresolved dependency;
   `todo deps <q>` names each one with its evidence. Resolve it by landing the
   dependency, or by merging it in (never rebase). `--force` goes past it and is
@@ -331,7 +334,9 @@ todo doc add <query> <file> [--name N]   # copy a file into the item's docs ("-"
 todo doc rm|path <query> <name>  # delete a doc, or print its path to edit in place
 todo docs <query>                # list an item's docs
 todo plugins <query>             # what each plugin attached, skipped or failed on an item
-todo plugin list|test|run ...    # a repo's plugins; test: dry-run against an item; run: a manual one
+todo plugin list|test|run ...    # a repo's plugins; test: dry-run against an item (--draft FILE: a draft's YAML); run: a manual one
+todo plugin enable|disable <p>   # switch a shipped plugin on or off for a repo
+todo plugin deploy-branches [<b>...]   # show or set a repo's deploy branches (--add, --remove, --clear)
 todo connection list|add|auth|test ...   # endpoints plugins call, and this host's secrets for them
 todo phase <query> <N> ["<title>"]       # name a phase; no title clears it
 todo relate|unrelate <query> <other>     # related work, shown on both items

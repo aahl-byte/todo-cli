@@ -1,5 +1,5 @@
-// Reading a repo's .todo-plugins/plugins.yaml and checking every plugin in it,
-// so a bad template or an unknown key is reported before anything runs.
+// Reading a repo's plugin config and checking every plugin in it, so a bad
+// template or an unknown key is reported before anything runs.
 import { parse } from "yaml";
 import { ATTACH_FIELDS } from "./attachments";
 import { exprError } from "./expr";
@@ -201,7 +201,7 @@ export function pluginErrors(name: string, def: unknown, opts: LoadOptions = {})
   if ("when" in def) errors.push(...exprProblems(def.when, "when"));
   if ("gave_up" in def) errors.push(...(typeof def.gave_up === "string" ? templateErrors(def.gave_up) : ["gave_up is a template string"]));
   if ("code" in def) {
-    if (typeof def.code !== "string" || !CODE_FILE.test(def.code)) errors.push("code names a .js file in .todo-plugins/");
+    if (typeof def.code !== "string" || !CODE_FILE.test(def.code)) errors.push("code names the plugin's .js file, e.g. run.js");
     if (YAML_BODY.some((k) => k in def)) errors.push("a code plugin has no per, steps or attach");
   } else {
     if ("per" in def && def.per !== "branch" && def.per !== "jira") errors.push("per is branch or jira");
@@ -261,12 +261,11 @@ function instanceErrors(inst: unknown): string[] {
   return errors;
 }
 
-/** The valid parts of a parsed plugins file, and a line for every part dropped. */
-export interface Checked { file: PluginsFile; errors: string[]; /** Plugins that lost any instance at load. */ droppedInstances: string[] }
+/** The valid parts of a parsed plugin config, and a line for every part dropped. */
+export interface Checked { file: PluginsFile; errors: string[] }
 
 export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
-  if (!isMap(raw)) return { file: {}, errors: ["plugins.yaml must be a map"], droppedInstances: [] };
-  const droppedInstances = new Set<string>();
+  if (!isMap(raw)) return { file: {}, errors: ["the plugin config must be a map"] };
   const errors = unknownKeys(raw, FILE_KEYS);
   const file: PluginsFile = {};
   if ("track" in raw) {
@@ -291,10 +290,7 @@ export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
     else (file.plugins ??= {})[n] = p as never;
   }
   for (const [n, list] of Object.entries(instances)) {
-    const fail = (e: string) => {
-      errors.push(`instances.${n}: ${e}`);
-      droppedInstances.add(n);
-    };
+    const fail = (e: string) => errors.push(`instances.${n}: ${e}`);
     if (n in plugins && !file.plugins?.[n]) fail("dropped with its plugin");
     else if (!(n in plugins) && !opts.extraPlugins?.includes(n)) fail("no plugin by that name");
     else if (!Array.isArray(list)) fail("must be a list");
@@ -310,26 +306,26 @@ export function checkFile(raw: unknown, opts: LoadOptions = {}): Checked {
       });
     }
   }
-  return { file, errors, droppedInstances: [...droppedInstances] };
+  return { file, errors };
 }
 
-/** Every problem in a parsed plugins file. */
+/** Every problem in a parsed plugin config. */
 export function fileErrors(raw: unknown, opts: LoadOptions = {}): string[] {
   return checkFile(raw, opts).errors;
 }
 
-/** Parse a plugins.yaml, keeping what's valid; only text that isn't YAML loses everything. */
+/** Parse a plugin config, keeping what's valid; only text that isn't YAML loses everything. */
 export function parsePlugins(text: string, opts: LoadOptions = {}): Checked {
   let raw: unknown;
   try {
     raw = parse(text) ?? {};
   } catch (e) {
-    return { file: {}, errors: [`plugins.yaml isn't YAML: ${(e as Error).message}`], droppedInstances: [] };
+    return { file: {}, errors: [`the plugin config isn't YAML: ${(e as Error).message}`] };
   }
   return checkFile(raw, opts);
 }
 
-/** Parse and check a plugins.yaml; throws PluginsFileError listing every problem. */
+/** Parse and check a plugin config; throws PluginsFileError listing every problem. */
 export function loadPlugins(text: string, opts: LoadOptions = {}): PluginsFile {
   const { file, errors } = parsePlugins(text, opts);
   if (errors.length) throw new PluginsFileError(errors);

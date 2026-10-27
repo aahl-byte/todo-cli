@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { describeRepo } from "@/lib/plugins/describe";
+import { describeConfig } from "@/lib/plugins/describe";
 import { runEvent, runInstance, type EventInput, type EventResult } from "@/lib/plugins/host";
 import { loadPlugins } from "@/lib/plugins/load";
 import { SHIPPED } from "@/lib/plugins/shipped";
@@ -107,7 +107,7 @@ describe.each(HOSTS)("plugin conformance (%s)", (_, host) => {
 
 describe("bundled plugin host", () => {
   it("exits 2 on input it can't read", async () => {
-    for (const stdin of ["", "not json", "[]", '{"plugin": {}}', '{"mode": "event"}', '{"mode": "event", "item": {}, "event": {}, "repo": "x"}', '{"mode": "nope"}']) {
+    for (const stdin of ["", "not json", "[]", '{"plugin": {}}', '{"mode": "event"}', '{"mode": "event", "item": {}, "event": {}, "config": "x"}', '{"mode": "nope"}']) {
       const { code, stderr } = await bundled(stdin);
       expect(code).toBe(2);
       expect(stderr).toMatch(/^plugin host: /);
@@ -126,11 +126,11 @@ describe("bundled plugin host", () => {
 
 interface EventCase {
   about: string;
-  /** A file in fixtures/plugins/repos, or the file's text inline. */
-  repo?: string;
-  repo_text?: string;
-  /** The repo's code files: name in .todo-plugins/ → fixture file. */
-  files?: Record<string, string>;
+  /** A file in fixtures/plugins/configs, or the config's text inline. */
+  config?: string;
+  config_text?: string;
+  /** Each code plugin's module: plugin name → fixture file. */
+  code?: Record<string, string>;
   hostConnections?: Record<string, ConnectionDef>;
   secrets?: { repo?: Record<string, string>; host?: Record<string, string> };
   storedInstances?: Record<string, InstanceDef[]>;
@@ -139,7 +139,7 @@ interface EventCase {
   item?: Record<string, unknown>;
   dryRun?: boolean;
   allowRepoCommands?: boolean;
-  /** Recorded answers per connection; http://fake-<name> in the repo file and host connections points at that fake. */
+  /** Recorded answers per connection; http://fake-<name> in the config and host connections points at that fake. */
   responses?: Record<string, Recorded[]>;
   expect: { errors: string[]; track: string[]; results: { plugin: string; instance: string; result: RunResult }[] };
 }
@@ -158,7 +158,7 @@ const EVENT_HOSTS: [string, (input: EventInput) => Promise<EventResult>][] = [
 
 describe.each(EVENT_HOSTS)("runEvent conformance (%s)", (_, host) => {
   it.each(EVENT_CASES)("%s", async (_name, c) => {
-    let text = c.repo ? readFileSync(path.join(DIR, "repos", c.repo), "utf8") : c.repo_text;
+    let text = c.config ? readFileSync(path.join(DIR, "configs", c.config), "utf8") : c.config_text;
     let hostConnections = JSON.stringify(c.hostConnections ?? {});
     for (const [conn, responses] of Object.entries(c.responses ?? {})) {
       const fake = await fakeServer(responses);
@@ -166,9 +166,9 @@ describe.each(EVENT_HOSTS)("runEvent conformance (%s)", (_, host) => {
       text = text?.replaceAll(`http://fake-${conn}`, fake.url);
       hostConnections = hostConnections.replaceAll(`http://fake-${conn}`, fake.url);
     }
-    const files = Object.fromEntries(Object.entries(c.files ?? {}).map(([name, f]) => [name, readFileSync(path.join(DIR, f), "utf8")]));
+    const code = Object.fromEntries(Object.entries(c.code ?? {}).map(([name, f]) => [name, readFileSync(path.join(DIR, f), "utf8")]));
     const out = await host({
-      repo: text === undefined ? undefined : { text, files }, hostConnections: JSON.parse(hostConnections), secrets: c.secrets,
+      config: text === undefined ? undefined : { text, code }, hostConnections: JSON.parse(hostConnections), secrets: c.secrets,
       storedInstances: c.storedInstances, grants: c.grants, item: { ...ITEM, ...c.item }, event: c.event, dryRun: c.dryRun,
       allowRepoCommands: c.allowRepoCommands,
     });
@@ -178,24 +178,25 @@ describe.each(EVENT_HOSTS)("runEvent conformance (%s)", (_, host) => {
 });
 
 describe("the bundle's describe mode", () => {
-  it("answers what a repo's plugin file declares", async () => {
+  it("answers what a repo's plugin config declares", async () => {
     const text = "plugins:\n  mine: {on: [manual], attach: [{log: hi}]}\n";
-    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "describe", repo: { text } }));
+    const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "describe", config: { text } }));
     expect(code, stderr).toBe(0);
-    expect(JSON.parse(stdout)).toEqual(describeRepo({ text, files: {} }));
+    expect(JSON.parse(stdout)).toEqual(describeConfig({ text, code: {} }));
     expect(JSON.parse(stdout).plugins.map((p: { name: string }) => p.name)).toEqual(["pr-link", "mine"]);
   });
 
-  it("refuses a repo that isn't {text, files}", async () => {
-    const { code, stderr } = await bundled(JSON.stringify({ mode: "describe", repo: 1 }));
-    expect([code, stderr.trim()]).toEqual([2, "plugin host: repo must be {text, files}"]);
+  it("refuses a config that isn't {text, code}", async () => {
+    const { code, stderr } = await bundled(JSON.stringify({ mode: "describe", config: 1 }));
+    expect([code, stderr.trim()]).toEqual([2, "plugin host: config must be {text, code}"]);
   });
 });
 
 describe("the bundle's events mode", () => {
   it("runs each event input in order in one process", async () => {
-    const repo = { text: "plugins:\n  mine: {on: [manual], attach: [{log: \"{{event.instance}}\"}]}\ninstances:\n  mine: [{id: a, name: A}, {id: b, name: B}]\n" };
-    const one = (instance: string) => ({ repo, item: ITEM, event: { type: "manual", instance } });
+    const config = { text: "plugins:\n  mine: {on: [manual], attach: [{log: \"{{event.instance}}\"}]}\n" };
+    const storedInstances = { mine: [{ id: "a", name: "A" }, { id: "b", name: "B" }] };
+    const one = (instance: string) => ({ config, storedInstances, item: ITEM, event: { type: "manual", instance } });
     const { code, stdout, stderr } = await bundled(JSON.stringify({ mode: "events", runs: [one("b"), one("a")] }));
     expect(code, stderr).toBe(0);
     const out = JSON.parse(stdout) as { runs: EventResult[] };

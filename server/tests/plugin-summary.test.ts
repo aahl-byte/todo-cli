@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { configurable, connectionNotice, enableLine, TRACK_EXAMPLE } from "@/lib/plugin-summary";
+import { configurable, connectionNotice } from "@/lib/plugin-summary";
 
 const inst = (over: Record<string, unknown> = {}) => ({
-  id: "default", name: "default", server_runs: true, server_runs_reason: null, from_repo: false, ...over,
+  id: "default", name: "default", server_runs: true, server_runs_reason: null, ...over,
 });
 const plugin = (over: Record<string, unknown> = {}) => ({ settings: {}, exclusive: false, on: ["push", "pr"], instances: [inst()], ...over }) as never;
 
@@ -20,16 +20,9 @@ describe("which plugins get a Configure form", () => {
   });
 
   it("gives one to a single instance someone changed, so it can be changed back", () => {
-    for (const over of [{ enabled: false }, { dry_run: true }, { on: ["push"] }, { id: "mine" }, { from_repo: true }]) {
+    for (const over of [{ enabled: false }, { dry_run: true }, { on: ["push"] }, { id: "mine" }]) {
       expect(configurable(plugin({ instances: [inst(over)] })), JSON.stringify(over)).toBe(true);
     }
-  });
-});
-
-describe("the lines a person adds to the plugins file", () => {
-  it("turns a shipped plugin on and names deploy branches", () => {
-    expect(enableLine("vercel-preview")).toBe("vercel-preview: {use: shipped}");
-    expect(TRACK_EXAMPLE).toBe("track: [staging, main]");
   });
 });
 
@@ -48,15 +41,16 @@ describe("which connections a plugin shows", () => {
     expect(connectionNotice(true, conn({ origin: "host", name: "github" })))
       .toEqual({ text: "The server has no secret for it. Its admin sets GITHUB_TOKEN.", hot: true, form: false });
     expect(connectionNotice(true, conn({ origin: "missing", name: "jira", kind: null })))
-      .toEqual({ text: "Declared nowhere. A developer adds it under connections: in the plugins file, or the server's admin adds it to TODO_PLUGIN_CONNECTIONS.",
+      .toEqual({ text: "Declared nowhere. Add it under Connections below, or the server's admin adds it to TODO_PLUGIN_CONNECTIONS.",
                  hot: true, form: false });
   });
 
-  it("tells a repo plugin to declare its own connection, since the server's go only to shipped plugins", () => {
+  it("tells a custom plugin to declare its own connection, since the server's go only to shipped plugins, github aside", () => {
     expect(connectionNotice(false, conn({ origin: "missing", kind: null })))
-      .toEqual({ text: "Declared nowhere. A developer adds it under connections: in the plugins file.", hot: true, form: false });
-    expect(connectionNotice(false, conn({ origin: "host", held: true, name: "github" })))
-      .toEqual({ text: "Only plugins that ship with todo get this server's connections. A developer declares it under connections: in the plugins file.", hot: true, form: false });
+      .toEqual({ text: "Declared nowhere. Add it under Connections below.", hot: true, form: false });
+    expect(connectionNotice(false, conn({ origin: "host", held: true, name: "watchtower" })))
+      .toEqual({ text: "Only plugins that ship with todo get this server's connections. Add one of this repo's own under Connections below.", hot: true, form: false });
+    expect(connectionNotice(false, conn({ origin: "host", held: true, name: "github" }))).toBeNull();
   });
 
   it("hides what needs nothing: a server connection with its secret, one with no secret, a local command", () => {

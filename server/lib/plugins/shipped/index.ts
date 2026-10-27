@@ -25,3 +25,6 @@ function load(): Record<string, ShippedPlugin> {
 }
 
 export const SHIPPED: Record<string, ShippedPlugin> = load();
+
+/** Whether a plugin of this name ships with todo; names every object inherits, such as toString, don't. */
+export const isShipped = (name: string) => Object.hasOwn(SHIPPED, name);

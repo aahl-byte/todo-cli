@@ -39,8 +39,10 @@ class FakeServer:
         self.doc_tombs = {}      # deleted doc uid → its last sha256
         self.git_facts = []
         self.git_facts_offline = False
-        self.plugin_config = {}  # repo → {instances, grants}; None answers 404, like an older server
+        self.plugin_config = {}  # repo → {config, track, shipped, instances, grants}; None answers 404, like an older server
         self.plugin_creds = []   # (repo, connection, secret) per credential posted
+        self.cred_endpoints = []  # the endpoint each was posted for
+        self.creds_moved = False  # True: the server's config points the connection elsewhere
         self.plugin_gets = 0
         self.plugin_tombs = set()
         self.host_secrets = []
@@ -391,7 +393,25 @@ class FakeServer:
                         "grants": copy.deepcopy(got.get("grants") or {}),
                         "plugins": copy.deepcopy(got.get("plugins") or []),
                         "secrets": [c for r, c, _ in server.plugin_creds if r == repo],
-                        "host_secrets": list(server.host_secrets), "runs": {}}
+                        "host_secrets": list(server.host_secrets), "runs": {},
+                        "config": copy.deepcopy(got.get("config") or {"text": "{}\n", "code": {}}),
+                        "track": list(got.get("track") or [])}
+
+            def put_plugin_config(self, project, repo, track=None, enable=None, disable=None, base=None):
+                from todo.remote import RemoteError
+                if server.offline or server.plugins_down:
+                    raise RemoteError("fake offline")
+                got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
+                if base is not None and list(got.get("track") or []) != list(base):
+                    raise RemoteError("the deploy branches changed since this page loaded", 409)
+                if track is not None:
+                    got["track"] = list(track)
+                shipped = got.setdefault("shipped", [])
+                if enable is not None and enable not in shipped:
+                    shipped.append(enable)
+                if disable is not None and disable in shipped:
+                    shipped.remove(disable)
+                return {"ok": True, "config": {"track": list(got.get("track") or []), "shipped": list(shipped)}}
 
             def put_plugins(self, project, repo, plugin, instances=None, grants=None):
                 got = server.plugin_config.setdefault(repo, {"instances": {}, "grants": {}})
@@ -401,11 +421,14 @@ class FakeServer:
                     got["grants"][plugin] = list(grants)
                 return {"ok": True}
 
-            def plugin_credential(self, project, repo, connection, secret):
+            def plugin_credential(self, project, repo, connection, secret, endpoint=None):
+                from todo.remote import RemoteError
                 if server.creds_unkeyed:
-                    from todo.remote import RemoteError
                     raise RemoteError("no TODO_SECRET_KEY", 503)
+                if server.creds_moved:
+                    raise RemoteError(f"{connection} points at https://elsewhere now, not {endpoint}", 409)
                 server.plugin_creds.append((repo, connection, secret))
+                server.cred_endpoints.append(endpoint)
                 return {"ok": True}
 
             def changes(self, project, since, limit=500):

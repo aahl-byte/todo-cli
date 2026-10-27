@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { item, world, type World } from "./helpers";
-import { fakeGitHub, params, req } from "./plugin-github";
+import { configured, fakeGitHub, params, req } from "./plugin-github";
 
 const jar = new Map<string, string>();
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: (k: string) => (jar.has(k) ? { value: jar.get(k) } : undefined) }) }));
@@ -12,6 +12,7 @@ const { GET: pluginsGET, PUT: pluginsPUT } = await import("@/app/api/projects/[k
 const { automationPage, itemButtons, itemNotices, pluginsPage } = await import("@/lib/plugin-views");
 const { draftPlugin, editInstance, savedInstances } = await import("@/lib/plugin-form");
 const { putGrants } = await import("@/lib/plugins/store");
+const { resetGitFactsCache } = await import("@/lib/gitfacts");
 
 const FILE = [
   "connections:",
@@ -40,7 +41,8 @@ beforeEach(async () => {
   vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
   vi.stubEnv("TODO_PLUGIN_CONNECTIONS", "");
   vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
-  vi.stubGlobal("fetch", fakeGitHub({ file: FILE }).impl);
+  resetGitFactsCache();
+  vi.stubGlobal("fetch", (await configured(w.d, { file: FILE, tips: { main: "m1", staging: "s1", "feat/x": "x1" } })).impl);
   jar.clear();
   jar.set("todo_token", w.tokens.alice);
   await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/web', 'alice')");
@@ -48,25 +50,28 @@ beforeEach(async () => {
 });
 
 describe("the plugins settings page", () => {
-  it("lists each repo's plugins with their instances, declared ones, connections and load errors", async () => {
+  it("lists each repo's plugins with their instances, connections, and a custom plugin's load errors beside it", async () => {
     const page = await pluginsPage(w.d, "p");
     expect(page.ownersSet).toBe(true);
     expect(page.repos.map((r) => [r.repo, r.listed?.by, r.checkout, r.refusal])).toEqual([["acme/web", "alice", false, null]]);
     const [repo] = page.repos;
     expect(repo.plugins.map((p) => [p.name, p.shipped, p.always])).toEqual([["pr-link", true, true], ["note", false, false], ["ping", false, false]]);
     const note = repo.plugins.find((p) => p.name === "note")!;
-    expect(note).toMatchObject({ on: ["manual"], declared: { go: { id: "go", name: "Go", button: "Say hi" } }, exclusive: false });
-    expect(note.instances[0]).toMatchObject({ id: "go", server_runs: true });
-    expect(repo.errors.join("\n")).toContain("plugin broken");
+    expect(note).toMatchObject({ on: ["manual"], exclusive: false });
+    expect(note.instances[0]).toMatchObject({ id: "go", button: "Say hi", server_runs: true });
+    expect(repo.custom.map((c) => [c.name, c.errors])).toEqual([["broken", ['on[0]: unknown trigger "nope"']], ["note", []], ["ping", []]]);
+    expect(repo.errors).toEqual([]);
     expect(repo.connections.map((c) => [c.name, c.origin, c.needsSecret, c.held, c.usedBy])).toEqual([
       ["github", "host", true, true, ["pr-link"]], ["hooks", "repo", true, false, ["ping"]]]);
   });
 
-  it("names the plugins file it read from the default branch, the repo's deploy branches and what the file's plugins do", async () => {
-    vi.stubGlobal("fetch", fakeGitHub({ file: `track: [staging, main]\n${FILE.replace("  note:\n", "  note:\n    description: Says hi.\n")}` }).impl);
+  it("names the repo's deploy branches, the remote's branches to pick them from, and what each plugin does", async () => {
+    vi.stubGlobal("fetch", (await configured(w.d, { file: `track: [staging, main]\n${FILE.replace("  note:\n", "  note:\n    description: Says hi.\n")}`,
+                                                   tips: { main: "m1", staging: "s1", "feat/x": "x1" } })).impl);
     const [repo] = (await pluginsPage(w.d, "p")).repos;
-    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: true, pluginsKey: true, commit: "s1" });
     expect(repo.track).toEqual(["staging", "main"]);
+    expect(repo.branches).toEqual({ names: ["main", "feat/x", "staging"], default: "main", visible: true });
+    expect(repo.updated).toMatchObject({ by: "test" });
     expect(repo.plugins.map((p) => [p.name, p.description])).toEqual([
       ["pr-link", "Links each of the item's branches to its pull requests on GitHub."], ["note", "Says hi."], ["ping", null]]);
     expect(repo.offered.map((o) => o.name)).toEqual(["db-request", "jira-issue", "jira-transition", "rest", "vercel-preview", "watchtower-session"]);
@@ -74,11 +79,13 @@ describe("the plugins settings page", () => {
       name: "vercel-preview", description: "Links each of the item's branches to its newest ready Vercel preview.", connections: ["vercel"] });
   });
 
-  it("says a repo has no plugins file, so no deploy branches, and offers every shipped plugin it doesn't run", async () => {
+  it("gives a repo nobody has set up no deploy branches, and offers every shipped plugin it doesn't run", async () => {
     vi.stubGlobal("fetch", fakeGitHub({}).impl);
+    for (const table of ["plugin_configs", "plugin_custom", "plugin_instances"]) await w.d.query(`delete from ${table}`);
     const [repo] = (await pluginsPage(w.d, "p")).repos;
-    expect(repo.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: "main", exists: false, pluginsKey: false, commit: "s1" });
     expect(repo.track).toEqual([]);
+    expect(repo.updated).toBeNull();
+    expect(repo.custom).toEqual([]);
     expect(repo.plugins.map((p) => p.name)).toEqual(["pr-link"]);
     expect(repo.offered.map((o) => o.name)).toContain("rest");
     expect(repo.errors).toEqual([]);
@@ -88,7 +95,7 @@ describe("the plugins settings page", () => {
     vi.stubGlobal("fetch", fakeGitHub({}).impl);
     await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('p', 'acme/gone', 'alice')");
     const gone = (await pluginsPage(w.d, "p")).repos.find((r) => r.repo === "acme/gone")!;
-    expect(gone.source).toEqual({ path: ".todo-plugins/plugins.yaml", branch: null, exists: false, pluginsKey: false, commit: null });
+    expect(gone.branches).toEqual({ names: [], default: null, visible: false });
   });
 
   it("says why a repo gets no plugins", async () => {
@@ -112,7 +119,7 @@ describe("the plugins settings page", () => {
     const load = async () => (await pluginsPage(w.d, "p")).repos[0].plugins.find((p) => p.name === "note")!;
     const note = await load();
     expect(note.instances.map((i) => [i.id, i.settings ?? {}])).toEqual([["go", { key: { set: true } }], ["two", {}]]);
-    let draft = draftPlugin(note, note.instances, note.declared);
+    let draft = draftPlugin(note, note.instances);
     draft = editInstance(draft, draft.instances[1].key, { settings: { greeting: "hello", key: { state: "unset" } }, dryRun: true });
     const saved = savedInstances(note, draft);
     expect(saved.errors).toEqual([]);
@@ -121,7 +128,7 @@ describe("the plugins settings page", () => {
     expect((await put(saved.instances)).status).toBe(200);
     const again = await load();
     expect(again.instances.map((i) => [i.id, i.button ?? null, i.dry_run ?? false, i.settings])).toEqual([
-      ["go", "Say hi", false, { key: { set: true } }], ["two", null, true, { greeting: "hello" }]]);
+      ["go", null, false, { key: { set: true } }], ["two", null, true, { greeting: "hello" }]]);
     const [secret] = await w.d.query("select secrets_enc from plugin_instances where id = 'go'");
     expect(secret.secrets_enc).toBeTruthy();
   });
@@ -137,16 +144,15 @@ describe("the plugins settings page", () => {
 });
 
 describe("connections an instance names", () => {
-  it("lists the names each rest instance uses as used, offers the repo's and the server's, and says why a repo-declared one gets no server connection", async () => {
+  it("lists the names each rest instance uses as used, offers the repo's and the server's, and runs a stored one through the server's", async () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://93.184.216.34" } } }));
-    vi.stubGlobal("fetch", fakeGitHub({ file: `${FILE}\n  rest: [{id: r, name: R, settings: {connection: jira, path: /a}}]\n`
-      .replace("plugins:\n", "plugins:\n  rest: {use: shipped}\n") }).impl);
+    vi.stubGlobal("fetch", (await configured(w.d, { file: `${FILE}\n  rest: [{id: r, name: R, settings: {connection: jira, path: /a}}]\n`
+      .replace("plugins:\n", "plugins:\n  rest: {use: shipped}\n") })).impl);
     const [repo] = (await pluginsPage(w.d, "p")).repos;
     expect(repo.available).toEqual({ repo: ["hooks"], host: ["github", "jira"] });
     expect(repo.connections.map((c) => [c.name, c.usedBy])).toEqual([["github", ["pr-link"]], ["hooks", ["ping"]], ["jira", ["rest"]]]);
     const rest = repo.plugins.find((p) => p.name === "rest")!;
-    expect(rest.instances[0]).toMatchObject({ id: "r", from_repo: true, server_runs: false,
-      server_runs_reason: expect.stringContaining("declared in the repo's plugins file") });
+    expect(rest.instances[0]).toMatchObject({ id: "r", server_runs: true, server_runs_reason: null });
   });
 });
 
@@ -230,7 +236,7 @@ describe("the item page", () => {
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "note",
       instances: [{ id: "go", name: "Go", dry_run: true }, { id: "need", name: "Need", on: ["manual"], settings: { greeting: "" } }] }), params("p"));
     const r = await act.runPlugin({ project: "p", itemUid: "I1", plugin: "note", instance: "go" });
-    expect(r).toMatchObject({ ok: true, done: true, message: "Say hi: test mode: would send 0 calls, attached nothing" });
+    expect(r).toMatchObject({ ok: true, done: true, message: "Go: test mode: would send 0 calls, attached nothing" });
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "");
     await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "ping",
       instances: [{ id: "p1", name: "P1", on: ["manual"] }] }), params("p"));
@@ -251,9 +257,13 @@ describe("the item page", () => {
   });
 });
 
-describe("GET /plugins stays as it was", () => {
-  it("still answers the CLI", async () => {
+describe("GET /plugins", () => {
+  it("answers the CLI with the config it runs and the deploy branches its git facts use", async () => {
     const res = await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.alice), params("p"));
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.track).toEqual([]);
+    expect(body.config.text).toContain("hooks:");
+    expect(Object.keys(body.instances)).toEqual(["note"]);
   });
 });

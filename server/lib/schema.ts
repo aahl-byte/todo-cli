@@ -422,16 +422,36 @@ create table if not exists git_facts (
 -- Open items by branch, for routing a GitHub event to the items it concerns.
 create index if not exists items_branches on items using gin ((extra->'branches'));
 
--- A repo's .todo-plugins/ files as of its default branch's head, read through
--- GitHub. stale marks a head that moved, so the next run reads it again.
-create table if not exists plugin_defs (
-  repo           text primary key,
-  sha            text,
-  default_branch text,
-  files          jsonb not null default '{}'::jsonb,
-  stale          boolean not null default false,
-  fetched_at     timestamptz not null default now()
+-- Each repo's plugin config in a project, set on Settings → Automation: its
+-- deploy branches, the shipped plugins switched on, and the connections its
+-- custom plugins call.
+create table if not exists plugin_configs (
+  project     text not null,
+  repo        text not null,
+  track       text[] not null default '{}',
+  shipped     text[] not null default '{}',
+  connections jsonb not null default '{}'::jsonb,
+  updated_by  text not null,
+  updated_at  timestamptz not null default now(),
+  primary key (project, repo)
 );
+
+-- A repo's custom plugins: each one's manifest, as YAML, and the code its
+-- code: key names.
+create table if not exists plugin_custom (
+  project    text not null,
+  repo       text not null,
+  name       text not null,
+  manifest   text not null,
+  code       text,
+  updated_by text not null,
+  updated_at timestamptz not null default now(),
+  primary key (project, repo, name)
+);
+-- version: counts its saves, so an edit made on an older one is refused.
+alter table plugin_custom add column if not exists version integer not null default 1;
+
+drop table if exists plugin_defs;
 
 -- An item written with a single legacy branch also lists it in branches, so
 -- lookups by branch need only the branches index.
@@ -477,7 +497,7 @@ create table if not exists github_deliveries (
   at timestamptz not null default now()
 );
 
--- Plugin instances the server keeps per project and repo, over the repo file's own.
+-- Plugin instances the server keeps per project and repo.
 create table if not exists plugin_instances (
   project    text not null,
   repo       text not null,
@@ -514,6 +534,13 @@ create table if not exists plugin_credentials (
   updated_at timestamptz not null default now(),
   primary key (project, repo, connection)
 );
+-- endpoint: where the connection pointed when the credential was given. It is
+-- handed out only while the connection still points there, and only for a
+-- connection the repo's config declares; any other row is dropped.
+alter table plugin_credentials add column if not exists endpoint text;
+delete from plugin_credentials c
+ where c.endpoint is null
+    or not exists (select 1 from plugin_configs p where p.project = c.project and p.repo = c.repo and p.connections ? c.connection);
 
 -- The plugin outbox: one row per event on an item, queued with what caused it
 -- and delivered after the request or by the tick. only_plugins narrows an

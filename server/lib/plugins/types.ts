@@ -1,4 +1,4 @@
-// The plugin host's vocabulary: what a repo's plugins.yaml declares, what a run
+// The plugin host's vocabulary: what a repo's plugin config declares, what a run
 // is given, and what it returns. Shared by the server and the CLI's bundle.
 
 export type Attachment =
@@ -54,7 +54,7 @@ export type ConnectionDef =
   | { http: { url: string; auth?: HttpAuth } }
   | { mcp: { url: string } | { command: string; args?: string[] } };
 
-/** Where a connection was declared: the repo's plugins.yaml, or the host itself. */
+/** Where a connection was declared: the repo's plugin config, or the host itself. */
 export type ConnectionOrigin = "repo" | "host";
 
 /** A connection as a host hands it to a run: its endpoint plus this host's secret for it. Without an origin it counts as the repo's. */
@@ -139,6 +139,15 @@ export interface InstanceDef {
   settings?: Record<string, unknown>;
 }
 
+/** A repo's plugin config as the host reads it. */
+export interface PluginConfig {
+  /** The config as one YAML map: track, connections and plugins, each shipped plugin switched on as `{use: shipped}`. */
+  text: string;
+  /** Each code plugin's module, by plugin name. */
+  code?: Record<string, string>;
+}
+
+/** A repo's plugin config as one map: its deploy branches, its connections, and its plugins (a shipped one as {use: shipped}). */
 export interface PluginsFile {
   track?: string[];
   connections?: Record<string, ConnectionDef>;
@@ -198,16 +207,14 @@ export interface RunInput {
   limits?: Limits;
   /** Capabilities a person granted this plugin, e.g. post-request. */
   grants?: string[];
-  /** Let a repo-declared MCP connection start a local command. */
+  /** Let an MCP connection the repo's config declares start a local command. */
   allowRepoCommands?: boolean;
-  /** The plugin ships with todo, so it may declare capabilities; otherwise it's checked as a repo plugin. */
+  /** The plugin ships with todo, so it may declare capabilities and use the host's connections; otherwise it's a custom plugin. */
   shipped?: boolean;
-  /** The repo the plugin came from, e.g. owner/name, for its share of code-run slots. */
+  /** The repo the plugin runs for, e.g. owner/name, for its share of code-run slots. */
   repoKey?: string;
-  /** The branches the repo's plugins file tracks, as {{track}}. */
+  /** The repo's deploy branches, as {{track}}. */
   track?: string[];
-  /** The repo's plugins file declares this instance, alone or under a stored override, so it gets none of the host's connections. */
-  repoInstance?: boolean;
   /** Host connections this host never writes through: a run that uses one is held back as in dry-run. */
   dryRunConnections?: string[];
 }

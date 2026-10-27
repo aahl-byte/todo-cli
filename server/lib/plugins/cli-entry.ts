@@ -3,11 +3,11 @@
 // "mode": "event" it is an event for runEvent and the output its EventResult;
 // with "mode": "events" it is {runs: [event inputs]} and the output {runs: [their
 // EventResults]}, in order, from one process; with "mode": "describe" it is a
-// repo's plugin file and the output what it declares.
+// repo's plugin config and the output what it declares.
 // A failed run still exits 0; unreadable input exits 2.
 // This process is the sandbox's isolation, so code plugins run in it directly.
 import { hostFailure } from "./sandbox.mjs";
-import { describeRepo, type Described } from "./describe";
+import { describeConfig, type Described } from "./describe";
 import { runEvent, runInstance, type EventInput, type EventResult } from "./host";
 import type { RunInput, RunResult } from "./types";
 
@@ -21,7 +21,7 @@ async function readStdin(): Promise<string> {
 }
 
 type Parsed = { mode: "instance"; input: RunInput } | { mode: "event"; input: EventInput }
-  | { mode: "events"; input: EventInput[] } | { mode: "describe"; input: Pick<EventInput, "repo"> };
+  | { mode: "events"; input: EventInput[] } | { mode: "describe"; input: Pick<EventInput, "config"> };
 
 const EVENT_MAPS = ["hostConnections", "secrets", "storedInstances", "grants", "limits"];
 
@@ -50,16 +50,16 @@ export function parseInput(text: string): Parsed | string {
 
 function parseFields(mode: unknown, rest: Record<string, unknown>): Parsed | string {
   if (mode === "event" || mode === "describe") {
-    const repo = rest.repo;
-    if (repo !== undefined && !(isMap(repo) && typeof repo.text === "string" && (repo.files === undefined || isMap(repo.files)))) {
-      return "repo must be {text, files}";
+    const config = rest.config;
+    if (config !== undefined && !(isMap(config) && typeof config.text === "string" && (config.code === undefined || isMap(config.code)))) {
+      return "config must be {text, code}";
     }
-    const withFiles = repo && { files: {}, ...repo } as EventInput["repo"];
-    if (mode === "describe") return { mode, input: { repo: withFiles } };
+    const withCode = config && { code: {}, ...config } as EventInput["config"];
+    if (mode === "describe") return { mode, input: { config: withCode } };
     for (const k of ["item", "event"]) if (!isMap(rest[k])) return `input needs ${k} as an object`;
     for (const k of EVENT_MAPS) if (rest[k] !== undefined && !isMap(rest[k])) return `${k} must be an object`;
     if (rest.repoKey !== undefined && typeof rest.repoKey !== "string") return "repoKey must be a string";
-    return { mode, input: { ...rest, repo: withFiles, dryRun: rest.dryRun === true } as EventInput };
+    return { mode, input: { ...rest, config: withCode, dryRun: rest.dryRun === true } as EventInput };
   }
   if (mode !== "instance") return `unknown mode ${JSON.stringify(mode)}`;
   for (const k of ["plugin", "instance", "item", "event"]) if (!isMap(rest[k])) return `input needs ${k} as an object`;
@@ -73,7 +73,7 @@ const failure = (e: unknown) => `the plugin host failed: ${hostFailure(e)}`;
 const failed = (e: unknown): Answer => {
   const error = failure(e);
   if (mode === "events") return { runs: [], errors: [error] };
-  if (mode === "describe") return { plugins: [], instances: {}, dropped: [], connections: {}, errors: [error], track: [] };
+  if (mode === "describe") return { plugins: [], connections: {}, errors: [error], track: [] };
   return mode === "event" ? { results: [], errors: [error], track: [] } : { attached: [], wouldSend: [], log: [], error };
 };
 
@@ -95,7 +95,7 @@ async function main() {
   }
   mode = parsed.mode;
   const deps = { isolation: "inline" as const };
-  if (parsed.mode === "describe") return answer(describeRepo(parsed.input.repo));
+  if (parsed.mode === "describe") return answer(describeConfig(parsed.input.config));
   if (parsed.mode === "events") {
     const runs: EventResult[] = [];
     for (const input of parsed.input) {

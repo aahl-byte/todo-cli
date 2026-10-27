@@ -3,18 +3,18 @@
 // elsewhere today), with the evidence or the steps that go with it. Pure, so the
 // page and the tests share it.
 import { fieldsOf } from "./plugin-form";
-import { enableLine, PLUGINS_FILE, secretVar, TRACK_EXAMPLE } from "./plugin-summary";
-import type { BridgeFacts, DashConnection, DashPlugin, DashRepo, HostConnection, RepoEntry, RunRow } from "./plugin-views";
+import { secretVar } from "./plugin-summary";
+import type { BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry, RunRow } from "./plugin-views";
 import type { Attachment } from "./plugins/types";
 
 export type RowState = "on" | "setup" | "elsewhere" | "off";
-/** Who takes a step: a developer committing to the repo, a person on this page, or the server's admin. */
-export type Who = "repo" | "here" | "admin";
+/** Who takes a step: a person on this page, or the server's admin. */
+export type Who = "here" | "admin";
 
 export interface Step {
   who: Who;
   text: string;
-  /** YAML to commit, or the environment variables to set. */
+  /** The environment variables to set. */
   code?: string;
   done: boolean;
   /** Taken in this row's settings, which open from the step. */
@@ -46,6 +46,12 @@ export interface AutomationRow {
   steps: Step[];
   /** The plugin whose settings and history open from the row. */
   plugin: DashPlugin | null;
+  /** A shipped plugin's switch, on while the repo runs it; absent where there's none to flip. */
+  toggle?: { plugin: string; on: boolean };
+  /** The custom plugin the row's editor opens. */
+  custom?: DashCustom;
+  /** The row's settings are the deploy-branches field. */
+  branches?: boolean;
 }
 
 export interface RowContext { project: string; bridge: BridgeFacts; host: HostConnection[] }
@@ -74,6 +80,26 @@ export function pickRepo(repos: RepoEntry[], wanted: string | null): string | nu
   if (wanted && readable.some((r) => r.repo === wanted)) return wanted;
   return readable[0]?.repo ?? null;
 }
+
+// ── deploy branches ───────────────────────────────────────────────────────────
+/** The branches a field holds: separated by commas or spaces, once each. */
+export const splitBranches = (text: string) => [...new Set(text.split(/[\s,]+/).map((b) => b.trim()).filter(Boolean))];
+
+const DEPLOY_LIKE = /^(main|master|staging|stage|production|prod|develop|dev|qa|uat|release([/-].+)?)$/i;
+const SUGGESTED = 6;
+
+/** The remote's branches worth offering as deploy branches: the default and the ones named like a deploy target, less those chosen. */
+export function suggestBranches(branches: DashRepo["branches"], chosen: string[]): string[] {
+  const named = branches.names.filter((n) => n === branches.default || DEPLOY_LIKE.test(n));
+  return named.filter((n) => !chosen.includes(n)).slice(0, SUGGESTED);
+}
+
+/** What a new custom plugin's editor starts with: a manual button that logs a line, to change into the real thing. */
+export const CUSTOM_STARTER = `description: Says what it does, in one line.
+on: [manual]
+attach:
+  - log: "{{item.id}}: ran"
+`;
 
 // ── what each shipped plugin does, in words ──────────────────────────────────
 interface Copy {
@@ -114,7 +140,7 @@ const SHIPPED_COPY: Record<string, Copy> = {
     offers: "Items would link each db-request submission for their branches, and wait on its migrations pull request.",
   },
 };
-/** Rows in this order within a state; a shipped plugin missing here, and the repo's own, follow. */
+/** Rows in this order within a state; a shipped plugin missing here, and the repo's custom ones, follow. */
 const ORDER = ["track", ...Object.keys(SHIPPED_COPY)];
 const STATE_ORDER: Record<RowState, number> = { on: 0, setup: 1, elsewhere: 3, off: 4 };
 
@@ -162,25 +188,11 @@ function doneElsewhere(plugin: string, ctx: RowContext): Duplicate | null {
 }
 
 // ── steps ─────────────────────────────────────────────────────────────────────
-const branchOf = (repo: DashRepo) => repo.source?.branch ?? "the default branch";
-
-/** A server that can't see the repo on GitHub can't read the line a developer commits. */
+/** A server that can't see the repo on GitHub can't read its branches, commits or pull requests. */
 function readableStep(repo: DashRepo): Step[] {
-  if (repo.source?.branch) return [];
-  return [{ who: "admin", text: `Let the server's GitHub token read ${repo.repo}, so it can see the repo's plugins file.`, code: "GITHUB_TOKEN", done: false }];
-}
-
-function turnOnStep(repo: DashRepo, name: string, done: boolean): Step {
-  if (done) return { who: "repo", text: "Turned on.", done: true };
-  const line = enableLine(name);
-  const under = repo.source?.exists && repo.source.pluginsKey;
-  return {
-    who: "repo",
-    text: under ? `A developer adds this line under plugins: in ${PLUGINS_FILE} on ${branchOf(repo)} and commits it.`
-      : `A developer commits this to ${PLUGINS_FILE} on ${branchOf(repo)}.`,
-    code: under ? `  ${line}` : `plugins:\n  ${line}`,
-    done: false,
-  };
+  if (repo.branches.visible !== false) return [];
+  return [{ who: "admin", text: `Let the server's GitHub token read ${repo.repo}, so it can see the repo's branches, commits and pull requests.`,
+            code: "GITHUB_TOKEN", done: false }];
 }
 
 /** What a connection still needs before the server can call it, and what it already has. */
@@ -188,14 +200,17 @@ function connectionSteps(name: string, conn: DashConnection | undefined, shipped
   if (name === "github") return [];
   const label = service(name);
   if (conn?.origin === "repo") {
-    if (conn.command) return [{ who: "repo", text: `Point ${name} at a URL: the server never starts a command.`, done: false }];
+    if (conn.command) return [{ who: "here", text: `Point ${name} at a URL under Connections: the server never starts a command.`, done: false }];
     if (!conn.needsSecret) return [];
     return [conn.held ? { who: "here", text: `${label} credential stored.`, done: true }
                       : { who: "here", text: `Enter the ${label} credential.`, done: false, setup: canSetUp }];
   }
   const h = host.find((c) => c.name === name);
-  if (!h || !shipped) {
-    if (!shipped) return [{ who: "repo", text: `A developer declares ${name} under connections: in ${PLUGINS_FILE}.`, done: false }];
+  if (!shipped) {
+    return [{ who: "here", text: h ? `Add a connection named ${name} under Connections: only plugins that ship with todo use the server's.`
+                                   : `Add a connection named ${name} under Connections.`, done: false }];
+  }
+  if (!h) {
     return [{ who: "admin", text: `Connect the server to ${label}: its address and a token.`,
               code: `TODO_PLUGIN_CONNECTIONS\n${secretVar(name)}`, done: false }];
   }
@@ -261,10 +276,11 @@ export function lastRun(p: DashPlugin): LastRun | null {
 
 // ── rows ──────────────────────────────────────────────────────────────────────
 function trackRow(repo: DashRepo): AutomationRow {
-  const base = { key: "track", plugins: ["deploy branches"], plugin: null };
+  const base = { key: "track", plugins: ["deploy branches"], plugin: null, branches: true };
   if (repo.track.length) {
+    const steps = readableStep(repo);
     return {
-      ...base, title: `Show where work has landed (${repo.track.join(", ")})`, state: "on", steps: [],
+      ...base, title: `Show where work has landed (${repo.track.join(", ")})`, state: steps.length ? "setup" : "on", steps,
       notes: [{ text: "Items show which of these deploy branches hold their work, and dependencies are checked against them." }],
     };
   }
@@ -273,41 +289,43 @@ function trackRow(repo: DashRepo): AutomationRow {
     offers: "Items would show which deploy branches hold their work, like \"in staging ✓ · in main ✗\", "
       + "and dependencies would be checked against those branches.",
     notes: [],
-    steps: [...readableStep(repo), {
-      who: "repo", text: `A developer commits this line to ${PLUGINS_FILE} on ${branchOf(repo)}, naming your deploy branches.`,
-      code: TRACK_EXAMPLE, done: false,
-    }],
+    steps: [...readableStep(repo), { who: "here", text: "Name the branches work deploys from, such as staging and main.", done: false, setup: true }],
   };
 }
 
 function offeredRow(repo: DashRepo, name: string, description: string | null, connections: string[], ctx: RowContext): AutomationRow {
   const copy = SHIPPED_COPY[name];
   const title = copy?.title ?? description ?? name;
+  const toggle = { plugin: name, on: false };
   const elsewhere = doneElsewhere(name, ctx);
-  if (elsewhere) return { key: name, title, plugins: [name], state: "elsewhere", notes: [{ text: elsewhere.text, link: elsewhere.link }], steps: [], plugin: null };
-  const steps: Step[] = [...readableStep(repo), turnOnStep(repo, name, false)];
-  if (copy?.here) steps.push({ who: "here", text: `${sentence(copy.here)}, once it's turned on in the repo.`, done: false });
+  if (elsewhere) {
+    return { key: name, title, plugins: [name], state: "elsewhere", notes: [{ text: elsewhere.text, link: elsewhere.link }], steps: [], plugin: null, toggle };
+  }
+  const steps: Step[] = [];
+  if (copy?.here) steps.push({ who: "here", text: `${sentence(copy.here)}, once it's switched on.`, done: false });
   for (const c of staticConnections(connections)) {
     steps.push(...connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx.host, false));
   }
-  return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null };
+  return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null, toggle };
 }
 
 function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRow {
   const copy = p.shipped ? SHIPPED_COPY[p.name] : undefined;
   const title = copy?.title ?? p.description?.replace(/\.$/, "") ?? p.name;
   const enabled = p.instances.filter((i) => i.enabled !== false);
-  const steps: Step[] = [];
-  if (p.shipped && !p.always) steps.push(turnOnStep(repo, p.name, true));
-  steps.push(...instanceSteps(p, copy));
+  const steps: Step[] = [...instanceSteps(p, copy)];
   for (const c of repo.connections.filter((x) => x.usedBy.includes(p.name))) {
     steps.push(...connectionSteps(c.name, c, p.shipped, ctx.host, true));
   }
   const notes: Note[] = [];
-  if (!p.shipped && !p.description) notes.push({ text: "This repo's own plugin; its plugins file gives no description." });
+  if (!p.shipped && !p.description) notes.push({ text: "A custom plugin of this repo; its YAML gives no description." });
   const elsewhere = p.shipped ? doneElsewhere(p.name, ctx) : null;
   if (elsewhere) notes.push({ text: elsewhere.also, link: elsewhere.link });
-  const base = { key: p.name, title, plugins: [p.name], notes, plugin: p };
+  const base = {
+    key: p.name, title, plugins: [p.name], notes, plugin: p,
+    ...(p.shipped && !p.always ? { toggle: { plugin: p.name, on: true } } : {}),
+    ...(p.shipped ? {} : { custom: repo.custom.find((c) => c.name === p.name) }),
+  };
   if (p.instances.length && !enabled.length) {
     return { ...base, state: "off", offers: copy?.offers ?? undefined, steps };
   }
@@ -317,6 +335,15 @@ function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRo
   if (open || stuck) return { ...base, state: "setup", steps, last: lastRun(p) };
   if (enabled.every((i) => i.dry_run)) notes.unshift({ text: "In test mode: it shows what it would do without doing it." });
   return { ...base, state: "on", steps, last: lastRun(p) };
+}
+
+/** A custom plugin whose stored YAML doesn't load, so it runs nowhere until it's fixed. */
+function brokenRow(c: DashCustom): AutomationRow {
+  return {
+    key: c.name, title: c.name, plugins: [c.name], state: "setup", plugin: null, custom: c,
+    notes: [{ text: `Its YAML has problems, so it doesn't run: ${c.errors.join("; ")}.`, warn: true }],
+    steps: [{ who: "here", text: "Fix its YAML.", done: false, setup: true }],
+  };
 }
 
 const rank = (r: AutomationRow) => {
@@ -331,6 +358,7 @@ export function automationRows(repo: DashRepo, ctx: RowContext): AutomationRow[]
   const rows = [
     trackRow(repo),
     ...repo.plugins.map((p) => pluginRow(repo, p, ctx)),
+    ...repo.custom.filter((c) => !repo.plugins.some((p) => p.name === c.name)).map(brokenRow),
     ...repo.offered.map((o) => offeredRow(repo, o.name, o.description, o.connections, ctx)),
   ];
   return rows.map((r, i) => ({ r, i }))
@@ -338,4 +366,4 @@ export function automationRows(repo: DashRepo, ctx: RowContext): AutomationRow[]
     .map(({ r }) => r);
 }
 
-export const WHO: Record<Who, string> = { repo: "In the repo", here: "Here", admin: "Server admin" };
+export const WHO: Record<Who, string> = { here: "Here", admin: "Server admin" };

@@ -1,4 +1,4 @@
-about: a repo without a plugins file still gets pr-link, over the host's github connection
+about: a repo with no config still gets pr-link, over the host's github connection
 hostConnections:
   github: {http: {url: "http://fake-github", auth: bearer}}
 secrets: {host: {github: ghp_test}}

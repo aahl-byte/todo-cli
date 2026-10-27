@@ -18,13 +18,13 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `CRON_SECRET` | the Jira retry cron (`/api/jira/flush`) |
    | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | the Jira bridge |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
-   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses). Also turns on git facts and repo plugins, which read each repo's `.todo-plugins/` through it; only plugins shipped with todo receive it |
+   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses). Also turns on git facts and plugins, which read branches, commits and pull requests through it; only plugins shipped with todo receive it, and a custom plugin's `github` goes without it |
    | `GITHUB_WEBHOOK_SECRET` | optional; GitHub webhooks (`push`, `pull_request`, `deployment_status`) at `/api/github/webhook` |
    | `GITHUB_API_URL` | optional; GitHub's REST base, for GitHub Enterprise |
    | `TODO_SECRET_KEY` | optional; 32 bytes (`openssl rand -base64 32`) that encrypt plugin connection credentials and secret settings |
-   | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; host-wide plugin connections as a JSON map, and their secrets. Only shipped plugins use them, through their default instance or instances stored on the server, never an instance a repo's `plugins.yaml` declares |
+   | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; host-wide plugin connections as a JSON map, and their secrets. Only shipped plugins use them, never a repo's custom plugins, and a repo's config can't take their names |
    | `TODO_PLUGIN_OWNERS` | comma-separated GitHub owners whose repos the server reads for git facts and plugins; unset, both are off. A project uses a repo of these owners once a member's CLI reports a checkout of it or it's listed under Settings → Automation |
-   | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated hosts plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses. `host[:port]` opens one to the server's own connections, which shipped plugins use; `owner/name=host[:port]` opens it to that repo's connections only, e.g. `acme/web=leaf-rain:10011`. Shipped watchtower-session reaches Watchtower on the tailnet through a bare entry such as `127.0.0.1:10010` |
+   | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated hosts plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses. `host[:port]` opens one to the server's own connections, which shipped plugins use; `owner/name=host[:port]` opens it to the connections that repo's config declares, e.g. `acme/web=leaf-rain:10011`. Shipped watchtower-session reaches Watchtower on the tailnet through a bare entry such as `127.0.0.1:10010` |
    | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
 
    `GITHUB_TOKEN` is the real limit on what the server can read: give it a
@@ -134,6 +134,15 @@ daily, which Hobby plans allow; on Pro, set it to `*/5 * * * *`.
 
 Both need `GITHUB_TOKEN` and `TODO_PLUGIN_OWNERS` (see the table above).
 
+- **Set each repo up** on the project's Settings → Automation: its deploy
+  branches, the shipped plugins switched on, custom plugins (YAML, with an
+  optional sandboxed JavaScript `code:`) and the connections they call, and
+  each plugin's instances. The server stores all of it per project and repo
+  (`plugin_configs`, `plugin_custom`, `plugin_instances`) and reads nothing of
+  the repo but its branches, commits and pull requests. The CLI gets the same
+  config through `GET /api/projects/<key>/plugins?repo=owner/name`. Design:
+  `docs/plans/2026-10-27-server-owned-plugins-design.md`.
+
 - **Hear GitHub:** add a webhook on each repo (or the organization) to
   `<server>/api/github/webhook`, content type JSON, secret
   `GITHUB_WEBHOOK_SECRET`, with the `push`, `pull_request` and
@@ -146,10 +155,10 @@ Both need `GITHUB_TOKEN` and `TODO_PLUGIN_OWNERS` (see the table above).
   `curl` both.
 - **Port Actions and Jira triggers** to plugin instances:
   `npx tsx scripts/plugins-port.ts <project> [--repo owner/name]` prints the
-  instances, the connections and env entries they need, and the `use: shipped`
-  lines each repo's plugins file needs; `--write` stores them. Every ported
-  instance is stored in dry-run, so nothing sends twice while Actions and the
-  Jira bridge still run.
+  instances and the connections and env entries they need; `--write` switches
+  their plugins on in each repo and stores them. Every ported instance is
+  stored in dry-run, so nothing sends twice while Actions and the Jira bridge
+  still run.
 - **Check parity before the cutover:**
   `npx tsx scripts/plugins-parity.ts <project> [--since 7d]` replays recent
   status moves through Actions, the Jira outbox and the ported instances, all

@@ -1,13 +1,14 @@
-"""Repo plugins, run on this host: the bundled plugin host (`plugin_host.mjs`,
-under Node) runs a repo's `.todo-plugins/` for an item and an event, and what
-it attaches is written into the store, so the next sync round carries it.
+"""Plugins, run on this host: the bundled plugin host (`plugin_host.mjs`,
+under Node) runs a repo's plugin config for an item and an event, and what it
+attaches is written into the store, so the next sync round carries it.
 
-- Definitions come from the repo's default branch in its local checkout, never
-  its working tree (except `todo plugin test --local`); a repo without a
-  plugins file still gets the shipped defaults.
-- Instances and grants come from the server on a synced store (cached in
-  `.sync/plugins.json`) and from `.TODO/.plugins.yaml` on a local-only one.
-  On a synced store the CLI runs only the instances the server leaves to it.
+- The config, instances and grants come from the server on a synced store
+  (cached in `.sync/plugins.json`) and from `.TODO/.plugins.yaml` on a
+  local-only one (see plugin_config). A repo with no config still gets the
+  shipped plugins that are always on. `todo plugin test --draft` runs a draft
+  plugin from a file in place of the config's plugin of that name.
+- On a synced store the CLI runs only the instances the server leaves to it,
+  and never starts a command a connection from the server's config names.
 - Links and edges replace what the instance attached before; logs and
   requests only add. Each written note or log entry carries `plugin` and
   `plugin_key` and a uid derived from both. One a person removed is never
@@ -15,7 +16,7 @@ it attaches is written into the store, so the next sync round carries it.
 - Every job of a command or round runs in one host process. Failures never
   stop a command: they go to the run record and one line on stderr.
 
-See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §4.
+See docs/plans/2026-10-27-server-owned-plugins-design.md.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import checkout, connections, docs, gitfacts, identity, render, statelock, store, sync, yamlio
+from . import checkout, connections, docs, gitfacts, identity, plugin_config, render, statelock, store, sync, yamlio
 from .remote import RemoteError, remote_for, sync_config
 from .uids import hash_uid
 from .util import now, to_str
@@ -45,9 +46,7 @@ OFF_ENV = "TODO_PLUGINS"            # "0" or "off" turns plugins off on this hos
 JIRA_READ_ONLY_ENV = "JIRA_READ_ONLY"  # "1": the host jira connection is never written through
 BUNDLE = Path(__file__).with_name("plugin_host.mjs")
 HOST_TIMEOUT = 360
-PLUGINS_DIR = ".todo-plugins"
-LOCAL_FILE = ".plugins.yaml"
-CACHE_FILE = "plugins.json"
+CACHE_FILE = plugin_config.CACHE_FILE
 RUNS_FILE = "plugin-runs.json"
 TIPS_FILE = "plugin-tips.json"
 DEFS_FILE = "plugin-defs.json"
@@ -55,9 +54,6 @@ DEFERRED_FILE = "plugin-deferred.json"
 PLUGIN_BUDGET = 20.0                # seconds of automatic plugin runs a command allows itself
 BATCH_JOBS = 8                      # jobs per host process, so the budget is checked between them
 MIN_RUN = 1.0                       # the least time a run is given, even when the budget is spent
-CACHE_EVERY = 60                    # seconds a synced store trusts its cached instances
-RETRY_EVERY = 60                    # seconds before a failed fetch of them is tried again
-STALE_AFTER = 3600                  # a cached list this old, while the server fails, can't be trusted
 FLOOR_EVERY = 60                    # seconds between checks for due `every:` floors
 DEFS_KEPT = 32
 LOG_KEPT = 50
@@ -71,7 +67,6 @@ HOST_FAILED = "the plugin host failed"
 NO_NODE = "plugins skipped: node isn't installed"
 _DURATION = re.compile(r"^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)$")
 _UNITS = {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400}
-_CODE_NAME = re.compile(r"^(?!\.)[\w.-]+(/[\w.-]+)*$")
 
 
 class HostError(Exception):
@@ -213,69 +208,51 @@ def _ok(r) -> bool:
     return r is not None and r.returncode == 0
 
 
-# ── where an item's plugins come from ─────────────────────────────────────────
-def default_ref(d: Path, info: dict | None) -> tuple:
-    """(ref, why, older): the default branch's tip as this checkout has it, or
-    (None, why, False). The default comes from ls-remote --symref, else
-    origin/HEAD; nothing is fetched, so `older` says the ref is behind the
-    tip ls-remote saw."""
-    default = (info or {}).get("default")
-    if not default:
-        r = _git(d, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-        head = r.stdout.strip() if _ok(r) else ""
-        default = head.split("/", 1)[1] if head.startswith("origin/") else None
-    if not default:
-        return None, "default", False
-    tip = ((info or {}).get("tips") or {}).get(default)
-    if tip and _ok(_git(d, "cat-file", "-e", f"{tip}^{{commit}}")):
-        return tip, None, False
-    if _ok(_git(d, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{default}")):
-        return f"refs/remotes/origin/{default}", default, bool(tip)
-    return None, default, False
-
-
-def _code_names(text: str) -> list:
+# ── a draft plugin ────────────────────────────────────────────────────────────
+def read_draft(path: Path) -> dict:
+    """`{manifest, code}` from a draft plugin's YAML file and the code file its `code:` names beside it."""
+    try:
+        manifest = path.read_text()
+    except OSError as e:
+        raise HostError(f"can't read {path} ({e.strerror or e})") from None
+    code = None
     try:
         from ruamel.yaml import YAML
-        doc = YAML(typ="safe").load(text)
-    except Exception:  # noqa: BLE001 — the host reports a malformed file
-        return []
-    plugins = doc.get("plugins") if isinstance(doc, dict) else None
-    if not isinstance(plugins, dict):
-        return []
-    names = {p.get("code") for p in plugins.values() if isinstance(p, dict) and isinstance(p.get("code"), str)}
-    return sorted(n for n in names if _CODE_NAME.match(n) and ".." not in n.split("/"))
+        doc = YAML(typ="safe").load(manifest)
+    except Exception:  # noqa: BLE001 — the host reports YAML that doesn't parse
+        doc = None
+    name = doc.get("code") if isinstance(doc, dict) else None
+    if isinstance(name, str):
+        f = path.parent / name
+        if not f.is_file():
+            raise HostError(f"{path.name} names code {name}, which isn't beside it")
+        code = f.read_text()
+    return {"manifest": manifest, "code": code}
 
 
-def _payload(text: str | None, show) -> dict | None:
-    if text is None:
-        return None
-    files = {}
-    for name in _code_names(text):
-        body = show(name)
-        if body is not None:
-            files[name] = body
-    return {"text": text, "files": files}
-
-
-def read_repo(d: Path, ref: str) -> dict | None:
-    """`{text, files}` from `.todo-plugins/` at `ref`; None when the repo has no plugins file there."""
-    def show(name: str) -> str | None:
-        r = _git(d, "show", f"{ref}:{PLUGINS_DIR}/{name}")
-        return r.stdout if _ok(r) else None
-    return _payload(show("plugins.yaml"), show)
-
-
-def read_worktree(d: Path) -> dict | None:
-    """`{text, files}` from the working tree's `.todo-plugins/`, for `todo plugin test --local` alone."""
-    def show(name: str) -> str | None:
-        f = d / PLUGINS_DIR / name
-        return f.read_text() if f.is_file() else None
-    return _payload(show("plugins.yaml"), show)
+def with_draft(config: dict | None, name: str, draft: dict) -> dict:
+    """The config with the draft standing in for its plugin `name`."""
+    from ruamel.yaml import YAML
+    safe = YAML(typ="safe")
+    try:
+        doc = safe.load((config or {}).get("text") or "") or {}
+    except Exception:  # noqa: BLE001 — the host reports the config's own errors
+        doc = {}
+    doc = doc if isinstance(doc, dict) else {}
+    try:
+        manifest = safe.load(draft["manifest"])
+    except Exception as e:  # noqa: BLE001
+        raise HostError(f"the draft isn't YAML: {e}") from None
+    plugins = doc.get("plugins") if isinstance(doc.get("plugins"), dict) else {}
+    doc["plugins"] = {**plugins, name: manifest if manifest is not None else {}}
+    code = {k: v for k, v in ((config or {}).get("code") or {}).items() if k != name}
+    if draft.get("code") is not None:
+        code[name] = draft["code"]
+    return {"text": yamlio.dump(yamlio.yaml(), _plain(doc)), "code": code}
 
 
 def describe(root: Path, payload: dict | None) -> dict | None:
-    """What the repo file declares, as the host reads it; None without a host.
+    """What the repo's config declares, as the host reads it; None without a host.
     Cached by content, unless the host itself failed."""
     key = hashlib.sha1((_host_stamp() + "\x1f" + json.dumps(payload, sort_keys=True)).encode()).hexdigest()
     cached = _read(_state(root, DEFS_FILE)).get(key)
@@ -283,7 +260,7 @@ def describe(root: Path, payload: dict | None) -> dict | None:
         return cached
     if host_command() is None:
         return None
-    out = call_host({"mode": "describe", **({"repo": payload} if payload else {})})
+    out = call_host({"mode": "describe", **({"config": payload} if payload else {})})
     if not isinstance(out.get("plugins"), list):
         raise HostError("the plugin host's describe answer has no plugins")
     failed = next((e for e in out.get("errors") or [] if str(e).startswith(HOST_FAILED)), None)
@@ -298,47 +275,21 @@ def describe(root: Path, payload: dict | None) -> dict | None:
 
 
 # ── instances ─────────────────────────────────────────────────────────────────
-def _local_file(root: Path) -> Path:
-    return root / LOCAL_FILE
-
-
-def _read_local(root: Path) -> dict:
-    f = _local_file(root)
-    if not f.is_file():
-        return {}
-    try:
-        data = _plain(yamlio.read(f) or {})
-    except Exception as e:  # noqa: BLE001
-        notice(f"plugins: {f} isn't readable YAML ({e})")
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _norm_stored(raw) -> dict:
-    raw = raw if isinstance(raw, dict) else {}
-    inst = raw.get("instances") if isinstance(raw.get("instances"), dict) else {}
-    grants = raw.get("grants") if isinstance(raw.get("grants"), dict) else {}
-    return {"instances": {str(k): [i for i in v if isinstance(i, dict)] for k, v in inst.items() if isinstance(v, list)},
-            "grants": {str(k): [str(g) for g in v] for k, v in grants.items() if isinstance(v, list)},
-            "plugins": [p for p in raw.get("plugins") or [] if isinstance(p, dict)],
-            "secrets": [str(s) for s in raw.get("secrets") or [] if isinstance(s, str)],
-            "host_secrets": [str(s) for s in raw.get("host_secrets") or [] if isinstance(s, str)],
-            "runs": raw.get("runs") if isinstance(raw.get("runs"), dict) else {}}
-
-
 class Context:
-    """One command's view of plugins: repo files, definitions, instances and repo keys, each read once."""
+    """One command's view of plugins: configs, definitions, instances and repo keys, each read once. `draft` is
+    `{name, manifest, code}`, a plugin that stands in for the config's own of that name; `instances` replaces a
+    plugin's stored instances, by plugin, for this command alone."""
 
     def __init__(self, root: Path, remote=None, project: str | None = None, seen: dict | None = None,
-                 local: bool = False, fresh: bool = False):
-        self.root, self.seen, self.local, self.fresh = root, seen or {}, local, fresh
+                 draft: dict | None = None, instances: dict | None = None, fresh: bool = False):
+        self.root, self.seen, self.draft, self.fresh = root, seen or {}, draft, fresh
+        self.overrides = instances or {}
         self.cfg = sync_config(root)
         self.project = project or (self.cfg or {}).get("project")
         self._remote = remote
         self._repos: dict = {}
         self._stored: dict = {}
         self._own: str | None = None
-        self._tips: dict | None = None
         self.user = identity.user()
 
     @property
@@ -363,71 +314,44 @@ class Context:
         d = (self.seen.get(key) or {}).get("dir")
         return Path(d) if d else gitfacts.repo_dir(self.root, key)
 
-    def tips(self, key: str) -> dict:
-        """The repo's last ls-remote answer: this command's, else the one git facts saved."""
-        if key in self.seen:
-            return self.seen[key]
-        if self._tips is None:
-            self._tips = _read(gitfacts.state_file(self.root, gitfacts.TIPS_FILE))
-        return self._tips.get(key) or {}
-
     def repo(self, key: str) -> dict:
         """`{dir, payload, described}` for the repo; `described` is None when its plugins can't run here."""
         if key not in self._repos:
             self._repos[key] = self._load_repo(key)
         return self._repos[key]
 
+    def config(self, key: str) -> dict | None:
+        """The repo's config as the host reads it, `{text, code}`; None when a synced store's server gave none."""
+        if self.synced:
+            config = self.stored(key)["config"]
+        else:
+            config = plugin_config.local_config(self.root, key, notice)
+        if self.draft:
+            config = with_draft(config, self.draft["name"], self.draft)
+        return config
+
     def _load_repo(self, key: str) -> dict:
         d = self.checkout(key)
-        payload = None
-        if d is not None and self.local:
-            payload = read_worktree(d)
-        elif d is not None:
-            ref, why, older = default_ref(d, self.tips(key))
-            if older:
-                notice(f"plugins: running {key}'s plugins from an older copy of {why}; run git fetch origin")
-            if ref is None:
-                notice(f"plugins: can't tell {key}'s default branch; run git remote set-head origin -a"
-                       if why == "default" else f"plugins: {key}'s default branch {why} isn't fetched here; "
-                                                "run git fetch origin")
-                return {"dir": d, "payload": None, "described": None}
-            payload = read_repo(d, ref)
         try:
+            payload = self.config(key)
             described = describe(self.root, payload)
         except HostError as e:
             notice(f"plugins: {key}: {e}")
-            described = None
+            payload, described = None, None
         return {"dir": d, "payload": payload, "described": described}
 
     def stored(self, key: str) -> dict:
         if key not in self._stored:
-            self._stored[key] = self._load_stored(key)
+            got = self._load_stored(key)
+            if self.overrides:
+                got = {**got, "instances": {**got["instances"], **self.overrides}}
+            self._stored[key] = got
         return self._stored[key]
 
     def _load_stored(self, key: str) -> dict:
         if not self.cfg:
-            return _norm_stored(_read_local(self.root).get(key))
-        got = _read(_state(self.root, CACHE_FILE)).get(key) or {}
-        failing = {**_norm_stored(got), "stale": time.time() - got.get("at", 0) > STALE_AFTER}
-        if time.time() - got.get("failed_at", 0) < RETRY_EVERY:
-            return failing
-        if not self.fresh and time.time() - got.get("at", 0) < CACHE_EVERY:
-            return _norm_stored(got)
-        r = self.remote()
-        fetch = getattr(r, "plugins", None)
-        if fetch is None:
-            return _norm_stored(got)
-        try:
-            answer = _norm_stored(fetch(self.project, key))
-        except RemoteError as e:
-            if e.status != 404:
-                with _updating(self.root, CACHE_FILE) as cache:
-                    cache[key] = {**(cache.get(key) or {}), "failed_at": time.time()}
-                return failing
-            answer = _norm_stored({})
-        with _updating(self.root, CACHE_FILE) as cache:
-            cache[key] = {**answer, "at": time.time()}
-        return answer
+            return plugin_config.norm(plugin_config.local_entry(self.root, key, notice))
+        return plugin_config.synced(self.root, key, self.remote(), self.project, self.fresh)
 
     def save_stored(self, key: str, plugin: str, instances: list) -> None:
         if self.cfg:
@@ -435,18 +359,18 @@ class Context:
             if r is None:
                 raise RemoteError("this store's server can't be reached (offline)")
             r.put_plugins(self.project, key, plugin, instances=instances)
-            with _updating(self.root, CACHE_FILE) as cache:
-                got = {**(cache.get(key) or {}), **_norm_stored(cache.get(key))}
+            with plugin_config.updating_cache(self.root) as cache:
+                got = {**(cache.get(key) or {}), **plugin_config.norm(cache.get(key))}
                 got["instances"][plugin] = instances
                 cache[key] = {**got, "at": time.time()}
         else:
-            with state_lock(self.root):
-                data = _read_local(self.root)
-                entry = data.setdefault(key, {})
-                entry.setdefault("instances", {})[plugin] = instances
+            with plugin_config.editing_local(self.root, key) as entry:
+                rows = entry.setdefault("instances", {})
+                rows[plugin] = instances
                 if not instances:
-                    del entry["instances"][plugin]
-                yamlio.write_atomic(_local_file(self.root), yamlio.dump(yamlio.yaml(), data))
+                    del rows[plugin]
+                if not rows:
+                    del entry["instances"]
         self._stored.pop(key, None)
 
     def listed(self, key: str, plugin: str, inst: dict) -> dict | None:
@@ -485,15 +409,10 @@ def _needs_no_settings(plugin: dict) -> bool:
                for s in (plugin.get("settings") or {}).values() if isinstance(s, dict))
 
 
-def merged_instances(plugin: dict, repo: list, stored: list, dropped: bool) -> list:
-    """The repo's instances with stored ones over them by id, then the rest of the stored;
-    an implicit default when there are none. Disabled ones included."""
-    out = []
-    for r in repo:
-        s = next((x for x in stored if x.get("id") == r.get("id")), None)
-        out.append({**r, **s, "settings": {**(r.get("settings") or {}), **(s.get("settings") or {})}} if s else dict(r))
-    out += [dict(s) for s in stored if not any(r.get("id") == s.get("id") for r in repo)]
-    if not out and not dropped and _needs_no_settings(plugin):
+def merged_instances(plugin: dict, stored: list) -> list:
+    """The stored instances, or an implicit default when there are none and nothing must be set. Disabled ones included."""
+    out = [dict(s) for s in stored]
+    if not out and _needs_no_settings(plugin):
         out.append({"id": "default", "name": "default", "implicit": True})
     return out
 
@@ -539,9 +458,7 @@ def plugin_view(ctx: Context, key: str) -> list:
     if described is None:
         return []
     stored = ctx.stored(key)["instances"]
-    return [(p, merged_instances(p, (described.get("instances") or {}).get(p["name"]) or [],
-                                 stored.get(p["name"]) or [], p["name"] in (described.get("dropped") or [])))
-            for p in described["plugins"]]
+    return [(p, merged_instances(p, stored.get(p["name"]) or [])) for p in described["plugins"]]
 
 
 # ── the item a plugin sees ────────────────────────────────────────────────────
@@ -615,14 +532,18 @@ def _plan(ctx: Context, job: Job, dry_run: bool) -> dict | None:
                 rows = stored.setdefault(p["name"], [])
                 rows[:] = [r for r in rows if r.get("id") != i.get("id")]
                 rows.append({"id": i.get("id"), "name": i.get("name") or i.get("id"), "enabled": False})
-    payload = {"hostConnections": connections.host_connections(), "secrets": connections.secrets_for(key),
+    secrets = connections.secrets_for(key, repo["described"].get("connections") or {})
+    for name in secrets.pop("moved"):
+        notice(f"plugins: {key}'s {name} connection points elsewhere than where its secret here was given, so it gets none; "
+               f"todo connection auth {name} --repo {key} gives it one")
+    payload = {"hostConnections": connections.host_connections(), "secrets": secrets,
                "storedInstances": stored, "grants": ctx.stored(key)["grants"],
                "item": item_json(it, key, repo["dir"], root / it["folder"] / it["id"]), "event": job.event, "repoKey": key,
-               "dryRun": dry_run, "allowRepoCommands": True}
+               "dryRun": dry_run, "allowRepoCommands": not ctx.synced}
     if os.environ.get(JIRA_READ_ONLY_ENV) == "1":
         payload["dryRunConnections"] = ["jira"]
     if repo["payload"]:
-        payload["repo"] = repo["payload"]
+        payload["config"] = repo["payload"]
     plan["payload"] = payload
     return plan
 

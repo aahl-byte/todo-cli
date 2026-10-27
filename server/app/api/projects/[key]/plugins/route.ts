@@ -1,7 +1,7 @@
 import { json } from "@/lib/http";
 import { projectRepo } from "@/lib/plugins/route-helpers";
 import { NoSecretKey } from "@/lib/plugins/secrets";
-import { PluginInputError, putGrants, putInstances, repoPlugins } from "@/lib/plugins/store";
+import { PluginConflict, PluginInputError, putGrants, putInstances, repoPlugins } from "@/lib/plugins/store";
 
 type Ctx = { params: Promise<{ key: string }> };
 
@@ -24,6 +24,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     if (body.grants !== undefined) await putGrants(a.d, a.key, a.repo, body.plugin, body.grants, a.user.handle);
   } catch (e) {
     if (e instanceof PluginInputError) return json({ error: e.message }, 400);
+    if (e instanceof PluginConflict) return json({ error: e.message }, 409);
     if (e instanceof NoSecretKey) return json({ error: e.message }, 503);
     throw e;
   }

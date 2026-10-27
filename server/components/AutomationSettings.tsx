@@ -1,32 +1,53 @@
 "use client";
 // Project settings → Automation: pick a repo, then one row per thing todo can
 // do for its items, each saying whether it's on, what it last did, or the steps
-// that turn it on and who takes them. A row's settings (instances, credentials,
-// grants) and its run history open beneath it. Settings save through the
-// /plugins API routes; the repo list through server actions.
+// that turn it on and who takes them. A shipped plugin's row has its switch; a
+// row's settings (deploy branches, instances, credentials, grants), a custom
+// plugin's YAML and code, and its run history open beneath it; the repo's
+// connections and a new custom plugin follow the rows. Everything saves through
+// the /plugins API routes, the repo list through server actions.
 import Link from "next/link";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { addPluginRepo, removePluginRepo } from "@/app/plugin-actions";
-import { automationRows, repoChoices, WHO, type AutomationRow, type LastRun, type RowState, type Step } from "@/lib/automation";
+import {
+  automationRows, CUSTOM_STARTER, repoChoices, splitBranches, suggestBranches, WHO, type AutomationRow, type LastRun, type RowState, type Step,
+} from "@/lib/automation";
 import { withBase } from "@/lib/base";
 import { addInstance as addInstanceTo, describeConnections, describeTrigger, draftPlugin, fieldsOf, savedInstances, type PluginDraft } from "@/lib/plugin-form";
+import { checkCustom } from "@/lib/plugins/config";
 import { configurable, connectionNotice } from "@/lib/plugin-summary";
-import type { AutomationPage, DashConnection, DashPlugin, DashRepo, RepoEntry } from "@/lib/plugin-views";
-import { CopyButton } from "./Copy";
+import type { AutomationPage, DashConnection, DashCustom, DashPlugin, DashRepo, RepoEntry } from "@/lib/plugin-views";
 import { InstanceCard, RunLog, SettingInput } from "./PluginInstance";
 import { notify } from "./Toaster";
 import { Ago, Stamp } from "./ui";
 
 /** Send a write to a plugins API route; the error text when it's refused. */
-async function send(project: string, path: string, method: "PUT" | "POST", body: unknown): Promise<string | null> {
+/** Send a write to a plugins API route; what refused it, with the status, or null when it went through. */
+async function sendFor(project: string, path: string, method: "PUT" | "POST" | "DELETE", body: unknown):
+    Promise<{ error: string; status: number } | null> {
   const res = await fetch(withBase(`/api/projects/${encodeURIComponent(project)}/plugins${path}`), {
     method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   }).catch(() => null);
-  if (!res) return "the server couldn't be reached";
+  if (!res) return { error: "the server couldn't be reached", status: 0 };
   if (res.ok) return null;
   const err = await res.json().catch(() => null);
-  return err?.error ?? `the server answered ${res.status}`;
+  return { error: err?.error ?? `the server answered ${res.status}`, status: res.status };
+}
+
+/** Send a write to a plugins API route; the error text when it's refused. */
+async function send(project: string, path: string, method: "PUT" | "POST" | "DELETE", body: unknown): Promise<string | null> {
+  return (await sendFor(project, path, method, body))?.error ?? null;
+}
+
+/** A save refused because someone else saved first: what changed, and a reload that shows it. */
+function Stale({ message, onReload }: { message: string; onReload: () => void }) {
+  return (
+    <span className="hot stale">
+      Not saved: {message}.{" "}
+      <button type="button" className="link-btn" onClick={onReload}>Reload ›</button>
+    </span>
+  );
 }
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -55,9 +76,11 @@ export function AutomationSettings({ projectKey, page, statuses, secretKeySet }:
       {repo && (
         <div className="auto-rows" data-repo={repo.repo}>
           {rows.map((r) => (
-            <Row key={`${repo.repo}/${r.key}`} projectKey={projectKey} repo={repo} row={r} statuses={statuses} secretKeySet={secretKeySet} />
+            <Row key={`${repo.repo}/${r.key}`} projectKey={projectKey} repo={repo} row={r} statuses={statuses} secretKeySet={secretKeySet}
+                 shipped={page.shipped} />
           ))}
-          <UnusedConnections projectKey={projectKey} repo={repo} secretKeySet={secretKeySet} />
+          <AddCustom key={repo.repo} projectKey={projectKey} repo={repo} shipped={page.shipped} />
+          <Connections projectKey={projectKey} repo={repo} secretKeySet={secretKeySet} serverNames={page.host.map((h) => h.name)} />
         </div>
       )}
     </div>
@@ -120,7 +143,7 @@ function RepoPicker({ projectKey, repos, selected }: { projectKey: string; repos
         </form>
       )}
       {unconnected.length > 0 && <Unconnected projectKey={projectKey} repos={unconnected} />}
-      {selected && <Source repo={selected} />}
+      {selected && <RepoNotes repo={selected} />}
     </div>
   );
 }
@@ -159,20 +182,17 @@ function Unconnected({ projectKey, repos }: { projectKey: string; repos: RepoEnt
   );
 }
 
-function Source({ repo }: { repo: DashRepo }) {
-  const s = repo.source;
-  if (!s) return null;
-  const file = <code>{s.path}</code>;
-  let text;
-  if (!s.branch) text = <>GitHub doesn&apos;t show this repo to the server, so todo can&apos;t read its {file}.</>;
-  else if (!s.exists) text = <>This repo has no {file} on <code>{s.branch}</code> yet; the steps below say what to put in it.</>;
-  else text = <>Settings for this repo come from {file} on <code>{s.branch}</code>{s.commit && <>, read at commit {s.commit.slice(0, 7)}</>}.</>;
+/** What the server can't read of the repo, and what of its config doesn't load. */
+function RepoNotes({ repo }: { repo: DashRepo }) {
+  if (repo.branches.visible !== false && !repo.errors.length) return null;
   return (
     <div className="repo-source">
-      <p className="hint">{text}</p>
+      {repo.branches.visible === false && (
+        <p className="hint">GitHub doesn&apos;t show {repo.repo} to the server, so todo can&apos;t read its branches, commits or pull requests.</p>
+      )}
       {repo.errors.length > 0 && (
         <>
-          <p className="hot">The repo&apos;s plugins file has problems, so some rows may be missing. A developer fixes them on {s.branch ?? "the default branch"}:</p>
+          <p className="hot">Some of this repo&apos;s plugin settings don&apos;t load, so their rows may be missing:</p>
           <ul className="problems">{repo.errors.map((e) => <li key={e} className="error">{e}</li>)}</ul>
         </>
       )}
@@ -181,31 +201,33 @@ function Source({ repo }: { repo: DashRepo }) {
 }
 
 // ── one row ───────────────────────────────────────────────────────────────────
+type Panel = "setup" | "edit" | "history";
 /** Panels a person opened, kept open across the refresh a save causes. */
-const opened = new Map<string, "setup" | "history">();
+const opened = new Map<string, Panel>();
 
 function hasSettings(p: DashPlugin, repo: DashRepo): boolean {
   return configurable(p) || p.capabilities.includes("post-request")
     || repo.connections.some((c) => c.usedBy.includes(p.name) && !!connectionNotice(p.shipped, c)?.form);
 }
 
-function Row({ projectKey, repo, row, statuses, secretKeySet }: {
-  projectKey: string; repo: DashRepo; row: AutomationRow; statuses: readonly string[]; secretKeySet: boolean;
+function Row({ projectKey, repo, row, statuses, secretKeySet, shipped }: {
+  projectKey: string; repo: DashRepo; row: AutomationRow; statuses: readonly string[]; secretKeySet: boolean; shipped: string[];
 }) {
   const id = `${repo.repo}/${row.key}`;
-  const [panel, setPanelState] = useState<"setup" | "history" | null>(() => opened.get(id) ?? null);
-  const setPanel = (p: "setup" | "history" | null) => {
+  const [panel, setPanelState] = useState<Panel | null>(() => opened.get(id) ?? null);
+  const setPanel = (p: Panel | null) => {
     if (p) opened.set(id, p);
     else opened.delete(id);
     setPanelState(p);
   };
-  const toggle = (p: "setup" | "history") => setPanel(panel === p ? null : p);
+  const toggle = (p: Panel) => setPanel(panel === p ? null : p);
   const p = row.plugin;
-  const settings = !!p && hasSettings(p, repo);
+  const settings = row.branches || (!!p && hasSettings(p, repo));
   const history = !!p && p.instances.length > 0;
   const showSteps = row.state === "setup" || row.state === "off";
-  // A step that opens the settings stands in for the row's own link.
-  const stepOpens = showSteps && settings && row.steps.some((s) => s.setup && !s.done);
+  // A step that opens the settings stands in for the row's own link; a broken custom plugin's opens its editor.
+  const stepPanel: Panel | null = settings ? "setup" : row.custom ? "edit" : null;
+  const stepOpens = showSteps && !!stepPanel && row.steps.some((s) => s.setup && !s.done);
   return (
     <section className={`auto-row ${row.state}`} data-row={row.key} data-state={row.state}>
       <div className="auto-state"><span className="dot" aria-hidden />{STATE_LABEL[row.state]}</div>
@@ -213,6 +235,7 @@ function Row({ projectKey, repo, row, statuses, secretKeySet }: {
         <div className="auto-head">
           <span className="auto-title">{row.title}</span>
           <span className="auto-plugins">{row.plugins.join(", ")}</span>
+          {row.toggle && <Switch projectKey={projectKey} repo={repo.repo} plugin={row.toggle.plugin} on={row.toggle.on} />}
         </div>
         {row.last !== undefined && (row.last ? <Last projectKey={projectKey} last={row.last} /> : row.state === "on" && <p className="auto-line faint">Hasn&apos;t run yet.</p>)}
         {row.offers && row.state === "off" && <p className="auto-line">{row.offers}</p>}
@@ -222,19 +245,27 @@ function Row({ projectKey, repo, row, statuses, secretKeySet }: {
           </p>
         ))}
         {showSteps && row.steps.length > 0 && (
-          <Steps steps={row.steps} lead={row.state === "setup" ? "To finish:" : "To turn on:"} onSetup={settings ? () => setPanel("setup") : null} />
+          <Steps steps={row.steps} lead={row.state === "setup" ? "To finish:" : "To turn on:"} onSetup={stepPanel ? () => setPanel(stepPanel) : null} />
         )}
-        {((settings && !stepOpens) || history) && (
+        {((settings && !stepOpens) || (row.custom && !(stepOpens && stepPanel === "edit")) || history) && (
           <div className="auto-actions">
             {settings && !stepOpens && (
               <button type="button" className="link-btn" aria-expanded={panel === "setup"} onClick={() => toggle("setup")}>
                 {row.state === "on" ? "Settings" : "Set up"} ›
               </button>
             )}
+            {row.custom && !(stepOpens && stepPanel === "edit") && (
+              <button type="button" className="link-btn" aria-expanded={panel === "edit"} onClick={() => toggle("edit")}>Edit YAML ›</button>
+            )}
             {history && <button type="button" className="link-btn" aria-expanded={panel === "history"} onClick={() => toggle("history")}>History ›</button>}
           </div>
         )}
-        {p && panel === "setup" && <SetupPanel projectKey={projectKey} repo={repo} plugin={p} statuses={statuses} secretKeySet={secretKeySet} />}
+        {panel === "setup" && row.branches && <BranchesPanel key={repo.track.join(",")} projectKey={projectKey} repo={repo} />}
+        {panel === "setup" && p && <SetupPanel projectKey={projectKey} repo={repo} plugin={p} statuses={statuses} secretKeySet={secretKeySet} />}
+        {panel === "edit" && row.custom && (
+          <CustomEditor key={`${row.custom.name}:${row.custom.updated.at}`} projectKey={projectKey} repo={repo} custom={row.custom} shipped={shipped}
+                        onClose={() => setPanel(null)} />
+        )}
         {p && panel === "history" && (
           <div className="auto-panel run-logs">
             {p.instances.map((i) => <RunLog key={i.id} name={i.name || i.id} rows={p.runs[i.id] ?? []} projectKey={projectKey} />)}
@@ -242,6 +273,32 @@ function Row({ projectKey, repo, row, statuses, secretKeySet }: {
         )}
       </div>
     </section>
+  );
+}
+
+/** A shipped plugin's on/off switch for the repo; its instances stay while it's off. */
+function Switch({ projectKey, repo, plugin, on }: { projectKey: string; repo: string; plugin: string; on: boolean }) {
+  const router = useRouter();
+  const [want, setWant] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  useEffect(() => setWant(null), [on]);
+  const shown = want ?? on;
+  const flip = (next: boolean) => {
+    // Shown at once, outside the transition, so the switch moves as it's clicked.
+    setWant(next);
+    start(async () => {
+      const err = await send(projectKey, "/config", "PUT", { repo, [next ? "enable" : "disable"]: plugin });
+      setError(err);
+      if (err) setWant(null);
+      else router.refresh();
+    });
+  };
+  return (
+    <label className="switch auto-switch" data-tip={error ? `Not saved: ${error}` : shown ? "Switch it off; its settings stay" : undefined}>
+      <input type="checkbox" role="switch" aria-label={`${plugin} on`} checked={shown} disabled={pending} onChange={(e) => flip(e.target.checked)} />
+      <span className={error ? "hot" : ""}>{error ? "Not saved" : shown ? "On" : "Off"}</span>
+    </label>
   );
 }
 
@@ -268,13 +325,7 @@ function Steps({ steps, lead, onSetup }: { steps: Step[]; lead: string; onSetup:
             <div className="step-body">
               {s.text}
               {s.setup && !s.done && onSetup && <> <button type="button" className="link-btn" onClick={onSetup}>Set up ›</button></>}
-              {s.code && s.who === "repo" && (
-                <div className="step-code">
-                  <pre>{s.code}</pre>
-                  <CopyButton text={s.code} tip="copy the YAML" className="btn">Copy</CopyButton>
-                </div>
-              )}
-              {s.code && s.who !== "repo" && <div className="step-env">{s.code.split("\n").map((v) => <code key={v} className="env">{v}</code>)}</div>}
+              {s.code && <div className="step-env">{s.code.split("\n").map((v) => <code key={v} className="env">{v}</code>)}</div>}
             </div>
           </li>
         ))}
@@ -324,19 +375,205 @@ function SetupPanel({ projectKey, repo, plugin, statuses, secretKeySet }: {
   );
 }
 
-function UnusedConnections({ projectKey, repo, secretKeySet }: { projectKey: string; repo: DashRepo; secretKeySet: boolean }) {
-  const unused = repo.connections.filter((c) => !c.usedBy.length && connectionNotice(false, c));
-  if (!unused.length) return null;
+// ── deploy branches ───────────────────────────────────────────────────────────
+function BranchesPanel({ projectKey, repo }: { projectKey: string; repo: DashRepo }) {
+  const router = useRouter();
+  const [text, setText] = useState(repo.track.join(", "));
+  const [saved, setSaved] = useState<{ ok: boolean; message: string; stale?: boolean } | null>(null);
+  const [pending, start] = useTransition();
+  const chosen = splitBranches(text);
+  const suggested = suggestBranches(repo.branches, chosen);
+  const dirty = chosen.join(",") !== repo.track.join(",");
+  const listId = `branches-${repo.repo.replace(/\W/g, "-")}`;
+  const example = suggestBranches(repo.branches, []).slice(0, 2);
+  const save = (track: string[]) => start(async () => {
+    // base: the list this page shows, so the server refuses the change if someone has changed it since.
+    const err = await sendFor(projectKey, "/config", "PUT", { repo: repo.repo, track, base: repo.track });
+    setSaved(err ? { ok: false, message: err.error, stale: err.status === 409 } : { ok: true, message: "Saved." });
+    if (!err) router.refresh();
+  });
   return (
-    <details className="unused-connections">
-      <summary><span className="chev">›</span> {plural(unused.length, "connection")} the plugins file declares that nothing uses yet</summary>
-      {unused.map((c) => <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={false} secretKeySet={secretKeySet} />)}
-    </details>
+    <form className="auto-panel branches-panel" onSubmit={(e) => { e.preventDefault(); save(chosen); }}>
+      <label className="field branches-field">
+        <span className="field-label">Deploy branches</span>
+        <input aria-label="deploy branches" list={listId} value={text} autoComplete="off"
+               placeholder={`e.g. ${(example.length ? example : ["staging", "main"]).join(", ")}`}
+               onChange={(e) => { setText(e.target.value); setSaved(null); }} />
+      </label>
+      <datalist id={listId}>{repo.branches.names.map((n) => <option key={n} value={n} />)}</datalist>
+      {suggested.length > 0 && (
+        <div className="branch-suggest">
+          <span className="faint">On the remote:</span>
+          {suggested.map((n) => (
+            <button type="button" key={n} className="chip" onClick={() => { setText([...chosen, n].join(", ")); setSaved(null); }}>+ {n}</button>
+          ))}
+        </div>
+      )}
+      <p className="hint">The branches work deploys through, in the order it reaches them, with commas between. Items show whether each holds their work.</p>
+      <div className="save-row">
+        <button type="submit" className="btn primary" disabled={pending || !dirty}>{pending ? "Saving…" : "Save"}</button>
+        {repo.track.length > 0 && <button type="button" className="btn" disabled={pending} onClick={() => { setText(""); save([]); }}>Clear</button>}
+        {saved?.stale && <Stale message={saved.message} onReload={() => router.refresh()} />}
+        {saved && !saved.stale && <span className={saved.ok ? "hint" : "hot"}>{saved.ok ? saved.message : `Not saved: ${saved.message}.`}</span>}
+      </div>
+    </form>
   );
 }
 
-function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet }: {
-  projectKey: string; repo: string; c: DashConnection; shipped: boolean; secretKeySet: boolean;
+// ── custom plugins ────────────────────────────────────────────────────────────
+const CODE_KEY = /^code:\s*["']?([^"'#\s]+)/m;
+
+/** A custom plugin's YAML and code, checked as it's typed with the rules a save applies. */
+function CustomEditor({ projectKey, repo, custom, shipped, onClose }: {
+  projectKey: string; repo: DashRepo; custom: DashCustom | null; shipped: string[]; onClose: () => void;
+}) {
+  const router = useRouter();
+  const [name, setName] = useState(custom?.name ?? "");
+  const [manifest, setManifest] = useState(custom?.manifest ?? CUSTOM_STARTER);
+  const [code, setCode] = useState(custom?.code ?? "");
+  const [refused, setRefused] = useState<{ error: string; status: number } | null>(null);
+  const [pending, start] = useTransition();
+  const reserved = useMemo(() => [...shipped, ...repo.custom.map((c) => c.name).filter((n) => n !== custom?.name)], [shipped, repo.custom, custom]);
+  const check = useMemo(() => checkCustom({ name, manifest, code: code.trim() ? code : null }, { reserved, connections: repo.available.repo }),
+                        [name, manifest, code, reserved, repo.available.repo]);
+  const codeFile = manifest.match(CODE_KEY)?.[1] ?? null;
+  const dirty = !custom || name !== custom.name || manifest !== custom.manifest || code !== (custom.code ?? "");
+  const edit = (f: () => void) => { f(); setRefused(null); };
+  const save = () => start(async () => {
+    // base: the version this page loaded, so a save on top of someone else's is refused, not lost.
+    const err = await sendFor(projectKey, "/custom", "PUT", { repo: repo.repo, name: name.trim(), manifest, code, was: custom?.name ?? null,
+                                                           base: custom?.version ?? null });
+    setRefused(err);
+    if (!err) {
+      router.refresh();
+      onClose();
+    }
+  });
+  const remove = () => start(async () => {
+    if (!custom || !window.confirm(`Remove ${custom.name}? Its instances go with it.`)) return;
+    setRefused(await sendFor(projectKey, "/custom", "DELETE", { repo: repo.repo, name: custom.name }));
+    router.refresh();
+  });
+  const reload = () => { router.refresh(); onClose(); };
+  return (
+    <form className="auto-panel custom-editor" data-custom={custom?.name ?? "new"} onSubmit={(e) => { e.preventDefault(); save(); }}>
+      <label className="field">
+        <span className="field-label">Name</span>
+        <input aria-label="plugin name" value={name} placeholder="e.g. notes-link" onChange={(e) => edit(() => setName(e.target.value))} />
+      </label>
+      <label className="code-field">
+        <span className="field-label">YAML: the plugin&apos;s triggers, settings, steps and what it attaches</span>
+        <textarea aria-label="plugin yaml" spellCheck={false} rows={Math.min(24, Math.max(8, manifest.split("\n").length + 1))} value={manifest}
+                  onChange={(e) => edit(() => setManifest(e.target.value))} />
+      </label>
+      {(codeFile || code) && (
+        <label className="code-field">
+          <span className="field-label">Code{codeFile ? `: ${codeFile}` : ""}, a module whose run() the sandbox calls</span>
+          <textarea aria-label="plugin code" spellCheck={false} rows={Math.min(24, Math.max(8, code.split("\n").length + 1))} value={code}
+                    placeholder="export async function run({ item, attach }) { … }" onChange={(e) => edit(() => setCode(e.target.value))} />
+        </label>
+      )}
+      {(check.errors.length > 0 || check.warnings.length > 0) && (
+        <ul className="problems">
+          {check.errors.map((e) => <li key={e} className="error">{e}</li>)}
+          {check.warnings.map((e) => <li key={e} className="warning">{e}</li>)}
+        </ul>
+      )}
+      <div className="save-row">
+        <button type="submit" className="btn primary" disabled={pending || !dirty || check.errors.length > 0}>{pending ? "Saving…" : custom ? "Save" : "Add plugin"}</button>
+        <button type="button" className="btn" disabled={pending} onClick={onClose}>Cancel</button>
+        {custom && <button type="button" className="btn danger" disabled={pending} onClick={remove}>Remove plugin</button>}
+        {refused?.status === 409 && <Stale message={`${refused.error}; reloading drops this draft`} onReload={reload} />}
+        {refused && refused.status !== 409 && <span className="hot">Not saved: {refused.error}.</span>}
+      </div>
+    </form>
+  );
+}
+
+function AddCustom({ projectKey, repo, shipped }: { projectKey: string; repo: DashRepo; shipped: string[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="auto-add">
+      <button type="button" className="add" aria-expanded={open} onClick={() => setOpen(!open)}><span className="pl">+</span>Add a custom plugin</button>
+      {open && <CustomEditor projectKey={projectKey} repo={repo} custom={null} shipped={shipped} onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+// ── connections ───────────────────────────────────────────────────────────────
+const AUTHS = ["none", "bearer", "basic", "header"] as const;
+
+function Connections({ projectKey, repo, secretKeySet, serverNames }: {
+  projectKey: string; repo: DashRepo; secretKeySet: boolean; serverNames: string[];
+}) {
+  const declared = repo.connections.filter((c) => c.origin === "repo");
+  return (
+    <section className="auto-connections" id="connections">
+      <div className="label sub">Connections</div>
+      <p className="hint">
+        Endpoints this repo&apos;s custom plugins call, and that an instance of a shipped one can name. A credential stays on the server, encrypted.
+      </p>
+      {declared.map((c) => (
+        <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={false} secretKeySet={secretKeySet} removable />
+      ))}
+      <AddConnection projectKey={projectKey} repo={repo.repo} taken={declared.map((c) => c.name)} serverNames={serverNames} />
+    </section>
+  );
+}
+
+function AddConnection({ projectKey, repo, taken, serverNames }: { projectKey: string; repo: string; taken: string[]; serverNames: string[] }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<"http" | "mcp">("http");
+  const [url, setUrl] = useState("");
+  const [auth, setAuth] = useState<(typeof AUTHS)[number]>("none");
+  const [header, setHeader] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const clash = taken.includes(name.trim());
+  const server = serverNames.includes(name.trim());
+  const def = kind === "mcp" ? { mcp: { url: url.trim() } }
+    : { http: { url: url.trim(), ...(auth === "none" ? {} : { auth: auth === "header" ? `header:${header.trim()}` : auth }) } };
+  const add = () => start(async () => {
+    const err = await send(projectKey, "/config", "PUT", { repo, connection: { name: name.trim(), def } });
+    setError(err);
+    if (!err) {
+      setName(""); setUrl(""); setAuth("none"); setHeader(""); setOpen(false);
+      router.refresh();
+    }
+  });
+  if (!open) return <button type="button" className="add" onClick={() => setOpen(true)}><span className="pl">+</span>Add a connection</button>;
+  return (
+    <form className="rule-row add-connection" onSubmit={(e) => { e.preventDefault(); add(); }}>
+      <input aria-label="connection name" placeholder="name, e.g. hooks" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+      <select aria-label="connection kind" value={kind} onChange={(e) => setKind(e.target.value as "http" | "mcp")}>
+        <option value="http">HTTP API</option>
+        <option value="mcp">MCP server</option>
+      </select>
+      <input aria-label="connection url" placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} />
+      {kind === "http" && (
+        <select aria-label="connection auth" value={auth} onChange={(e) => setAuth(e.target.value as (typeof AUTHS)[number])}>
+          <option value="none">no credential</option>
+          <option value="bearer">bearer token</option>
+          <option value="basic">basic (user:password)</option>
+          <option value="header">a header</option>
+        </select>
+      )}
+      {kind === "http" && auth === "header" && (
+        <input aria-label="credential header" placeholder="header name, e.g. X-Api-Key" value={header} onChange={(e) => setHeader(e.target.value)} />
+      )}
+      <button type="submit" className="btn primary" disabled={pending || !name.trim() || !url.trim() || clash || server || (auth === "header" && !header.trim())}>Add</button>
+      <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
+      {clash && <span className="hot">This repo has a connection by that name.</span>}
+      {server && <span className="hot">This server has its own {name.trim()}, which plugins that ship with todo use; give the repo&apos;s another name.</span>}
+      {error && <span className="hot">Not saved: {error}.</span>}
+    </form>
+  );
+}
+
+function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet, removable = false }: {
+  projectKey: string; repo: string; c: DashConnection; shipped: boolean; secretKeySet: boolean; removable?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -344,9 +581,10 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet }: {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const notice = connectionNotice(shipped, c);
-  if (!notice) return null;
+  if (!notice && !removable) return null;
   const post = (value: string | null) => start(async () => {
-    const err = await send(projectKey, "/credentials", "POST", { repo, connection: c.name, secret: value });
+    // The endpoint shown here: the server refuses the secret if the connection has been pointed elsewhere since.
+    const err = await send(projectKey, "/credentials", "POST", { repo, connection: c.name, secret: value, endpoint: c.url });
     setError(err);
     if (!err) {
       setOpen(false);
@@ -354,18 +592,27 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet }: {
       router.refresh();
     }
   });
+  const drop = () => start(async () => {
+    const used = c.usedBy.length ? ` ${c.usedBy.join(", ")} call${c.usedBy.length === 1 ? "s" : ""} it.` : "";
+    if (!window.confirm(`Remove the ${c.name} connection and its credential?${used}`)) return;
+    const err = await send(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def: null } });
+    setError(err);
+    if (!err) router.refresh();
+  });
   return (
     <div className="conn-row" data-connection={c.name}>
       <div className="rrow">
-        <span className="faint">Connection</span>
+        {!removable && <span className="faint">Connection</span>}
         <span className="mono" data-tip={c.url ? `${c.kind} · ${c.url}` : undefined}>{c.name}:</span>
-        <span className={`grow wrap ${notice.hot ? "hot" : "faint"}`}>{notice.text}</span>
-        {notice.form && (
+        {removable && c.url && <span className="mono faint conn-url">{c.kind} {c.url}</span>}
+        <span className={`grow wrap ${notice?.hot ? "hot" : "faint"}`}>{notice?.text ?? (c.usedBy.length ? `Used by ${c.usedBy.join(", ")}.` : "Nothing calls it yet.")}</span>
+        {notice?.form && (
           <button type="button" className="btn" onClick={() => { setOpen(!open); setError(null); }}>{c.held ? "Replace" : "Set"} credential</button>
         )}
-        {notice.form && c.held && (
+        {notice?.form && c.held && (
           <button type="button" className="btn danger" disabled={pending} onClick={() => post(null)}>Clear</button>
         )}
+        {removable && <button type="button" className="btn danger" aria-label={`remove ${c.name}`} disabled={pending} onClick={drop}>Remove</button>}
       </div>
       {open && !secretKeySet && <p className="hint hot">The server can&apos;t store credentials until its admin sets TODO_SECRET_KEY.</p>}
       {open && (
@@ -394,7 +641,7 @@ function Configure({ projectKey, repo, plugin, statuses }: { projectKey: string;
   const id = `${repo.repo}/${plugin.name}`;
   // A plugin with no instance starts with one to fill in, since that's what setting it up means.
   const [draft, setDraft] = useState<PluginDraft>(() => {
-    const d = draftPlugin(plugin, plugin.instances, plugin.declared);
+    const d = draftPlugin(plugin, plugin.instances);
     return d.instances.length ? d : addInstanceTo(plugin, d);
   });
   const [dirty, setDirty] = useState(() => !plugin.instances.length);

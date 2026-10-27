@@ -185,8 +185,8 @@ class Remote:
         return f"/api/projects/{urllib.parse.quote(project)}/plugins{rest}"
 
     def plugins(self, project: str, repo: str) -> dict:
-        """The repo's stored instances and grants, its plugins as the server reads them, the
-        connections the server holds a secret for, and each instance's last server run."""
+        """The repo's plugin config and deploy branches, its stored instances and grants, its plugins as the
+        server reads them, the connections the server holds a secret for, and each instance's last server run."""
         return self.request("GET", self._plugins_path(project, "?" + urllib.parse.urlencode({"repo": repo})))
 
     def put_plugins(self, project: str, repo: str, plugin: str, instances=None, grants=None) -> dict:
@@ -197,9 +197,14 @@ class Remote:
             body["grants"] = grants
         return self.request("PUT", self._plugins_path(project), body)
 
-    def plugin_credential(self, project: str, repo: str, connection: str, secret: str) -> dict:
+    def put_plugin_config(self, project: str, repo: str, **change) -> dict:
+        """Change the repo's plugin config: `track=[...]` (with `base`, the list it was made on), `enable=name` or `disable=name`."""
+        return self.request("PUT", self._plugins_path(project, "/config"), {"repo": repo, **change})
+
+    def plugin_credential(self, project: str, repo: str, connection: str, secret: str, endpoint: str | None) -> dict:
+        """Store a repo connection's secret, given for `endpoint`; the server answers 409 if the connection points elsewhere."""
         return self.request("POST", self._plugins_path(project, "/credentials"),
-                            {"repo": repo, "connection": connection, "secret": secret})
+                            {"repo": repo, "connection": connection, "secret": secret, "endpoint": endpoint})
 
     def run_action(self, project: str, item: str, action: str) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/actions/run"

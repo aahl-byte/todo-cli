@@ -17,7 +17,7 @@ import { queuePluginEvent } from "@/lib/plugins/queue";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import { hashUid } from "@/lib/ulid";
 import { child, item, world, type World } from "./helpers";
-import { API, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
+import { API, configured, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
 
 let w: World;
 let files: string;
@@ -125,32 +125,32 @@ describe("running plugins", () => {
     expect((await runs())[0].result.log).toContain("skipped https://github.com/acme/web/pull/5: already linked on the item");
   });
 
-  it("retries an event while GitHub can't be read, and doesn't rerun plugins that already ran", async () => {
+  it("retries an event while GitHub answers 5xx, and doesn't rerun plugins that already ran", async () => {
     let down = true;
-    const gh = fakeGitHub({ prs: { "feat/x": [PR(5)] }, other: (url) => (down && url === `${API}/repos/acme/web` ? new Response("", { status: 502 }) : undefined) });
+    const gh = fakeGitHub({ prs: { "feat/x": [PR(5)] }, other: (url) => (down && url.includes("/pulls?") ? new Response("", { status: 502 }) : undefined) });
     await onBranch("I1", ["feat/x"]);
     expect(await run(gh.impl)).toEqual({ ran: 0, failed: 1 });
     const [e] = await events();
     expect(e).toMatchObject({ attempts: 1, done_at: null });
-    expect(e.error).toMatch(/502/);
+    expect(e.error).toBe("a read-only run failed for now; it runs again");
+    expect((await runs())[0].result.error).toMatch(/502/);
     down = false;
     await w.d.query("update plugin_events set next_attempt_at = now()");
     expect(await run(gh.impl)).toEqual({ ran: 1, failed: 0 });
     expect((await linkNotes()).length).toBe(1);
   });
 
-  it("reads the repo file once per default-branch head", async () => {
-    const gh = fakeGitHub({ file: "track: [main]\n", prs: { "feat/x": [PR(5)] } });
+  it("runs the repo's stored config, reading nothing of the repo's but its PRs", async () => {
+    const gh = await configured(w.d, { file: "track: [main]\nplugins:\n  hi: {on: [push], attach: [{log: \"hi {{track.0}}\"}]}\n", prs: { "feat/x": [PR(5)] } });
     await onBranch("I1", ["feat/x"]);
-    await onBranch("I2", ["feat/x"]);
     await run(gh.impl);
-    expect(gh.sent.filter((s) => s.url.includes("/contents/")).length).toBe(1);
-    const [defs] = await w.d.query("select sha, default_branch, files from plugin_defs");
-    expect(defs).toEqual({ sha: "s1", default_branch: "main", files: { "plugins.yaml": "track: [main]\n" } });
+    expect(gh.sent.map((s) => s.url)).toEqual([`${API}/repos/acme/web/pulls?head=acme%3Afeat%2Fx&state=all`]);
+    expect((await runs()).map((r) => [r.plugin, r.result.attached.map((a: { kind: string }) => a.kind)])).toEqual([["pr-link", ["link"]], ["hi", ["log"]]]);
+    expect((await w.d.query("select text from logs where project = 'p' and item_uid = 'I1'")).map((r) => r.text)).toEqual(["hi main"]);
   });
 
   it("refuses a repo connection that starts a command", async () => {
-    const gh = fakeGitHub({ file: [
+    const gh = await configured(w.d, { file: [
       "connections:", "  local: {mcp: {command: /bin/echo}}",
       "plugins:", "  local-tool:", "    connections: [local]", "    on: [push]",
       "    steps: [{tool: anything}]", "    attach: []",
@@ -170,7 +170,7 @@ describe("running plugins", () => {
       "GET /api/roster": { sessions: [] }, "POST /api/sessions": { id: "s9" }, "GET /api/sessions/s9": { state: "active", status: "idle" },
       "POST /api/sessions/s9/message": {},
     };
-    const gh = fakeGitHub({ file, code: { "watchtower-session.js": readFileSync(path.join(dir, "watchtower-session.js"), "utf8") },
+    const gh = await configured(w.d, { file, code: { "watchtower-session.js": readFileSync(path.join(dir, "watchtower-session.js"), "utf8") },
       other: (url, init) => {
         if (!url.startsWith("https://wt.example")) return undefined;
         const body = answers[`${init?.method ?? "GET"} ${url.slice("https://wt.example".length)}`];
@@ -190,7 +190,7 @@ describe("running plugins", () => {
     SHIPPED["test-doc"] = { def: { connections: [], on: ["push"], steps: [{ name: "v", value: "`1`" }],
       attach: [{ when: "event.branch == 'feat/x'", doc: { name: "notes.md", content: "# hi {{event.branch}}" } }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  test-doc: {use: shipped}\n" });
+      const gh = await configured(w.d, { file: "plugins:\n  test-doc: {use: shipped}\n" });
       await onBranch("I1", ["feat/x"]);
       await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
       await run(gh.impl);
@@ -212,7 +212,7 @@ describe("running plugins", () => {
     SHIPPED["test-fetch"] = { def: { connections: ["files"], on: ["push"], steps: [{ name: "v", value: "`1`" }],
       attach: [{ doc: { name: "shot.png", url: "/a/1?redirect=false" } }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  test-fetch: {use: shipped}\n",
+      const gh = await configured(w.d, { file: "plugins:\n  test-fetch: {use: shipped}\n",
         other: (url) => (url === "https://files.example/a/1?redirect=false" ? new Response(png, { headers: { "content-type": "image/png" } }) : undefined) });
       await onBranch("I1", ["feat/x"]);
       await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
@@ -234,7 +234,7 @@ describe("running plugins", () => {
     SHIPPED["test-fetch"] = { def: { connections: ["files"], on: ["push"], steps: [{ name: "v", value: "`1`" }],
       attach: [{ doc: { name: "shot.png", url: "/a/1", version: "{{event.branch}}" } }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  test-fetch: {use: shipped}\n",
+      const gh = await configured(w.d, { file: "plugins:\n  test-fetch: {use: shipped}\n",
         other: (url) => (url === "https://files.example/a/1" ? new Response(status === 200 ? png : "gone", { status }) : undefined) });
       const fetches = () => gh.sent.filter((s) => s.url.startsWith("https://files.example")).length;
       await onBranch("I1", ["feat/x"]);
@@ -280,7 +280,7 @@ describe("running plugins", () => {
       description: "Totals as CSV", comment: { total: 2, comments: [
         { id: "7", created: "2026-10-01T10:00:00.000+0000", author: { accountId: "acc-bob", displayName: "Bob B" }, body: "Looks good" },
         { id: "8", author: { accountId: "acc-pat", displayName: "Pat" }, body: "Ship it" }] } } };
-    const gh = fakeGitHub({ file: "plugins:\n  jira-issue: {use: shipped}\n",
+    const gh = await configured(w.d, { file: "plugins:\n  jira-issue: {use: shipped}\n",
       other: (url) => (url.startsWith("https://acme.atlassian.net/rest/api/3/issue/SR-1?") ? Response.json(issue) : undefined) });
     await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
     await w.one("alice", child("note", "R1", "I1", { kind: "ticket-request", text: "Build it" }));
@@ -309,7 +309,7 @@ describe("running plugins", () => {
     vi.stubEnv("JIRA_READ_ONLY", "1");
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
     vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
-    const gh = fakeGitHub({ file: "plugins:\n  jira-transition: {use: shipped}\n", other: (url) => {
+    const gh = await configured(w.d, { file: "plugins:\n  jira-transition: {use: shipped}\n", other: (url) => {
       if (!url.startsWith("https://acme.atlassian.net/")) return undefined;
       return Response.json(url.endsWith("/transitions") ? { transitions: [{ id: "161", to: { name: "QA" } }] } : { fields: { status: { name: "Open" } } });
     } });
@@ -340,7 +340,7 @@ describe("running plugins", () => {
     SHIPPED["test-request"] = { def: { connections: [], on: ["push"], capabilities: ["post-request"],
       steps: [{ name: "v", value: "`1`" }], attach: [{ request: "From Jira: {{event.branch}}" }] } };
     try {
-      const gh = fakeGitHub({ file: "plugins:\n  test-request: {use: shipped}\n" });
+      const gh = await configured(w.d, { file: "plugins:\n  test-request: {use: shipped}\n" });
       await onBranch("I1", ["feat/x"], { status: "requested" });
       await run(gh.impl);
       const requests = () => w.d.query("select uid, text from notes where kind = 'ticket-request'");
@@ -375,7 +375,7 @@ describe("running plugins", () => {
 
 describe("the plugins API", () => {
   it("lists shipped and repo plugins with every instance, grants, secrets held and the last run", async () => {
-    const gh = fakeGitHub({ file: [
+    const gh = await configured(w.d, { file: [
       "connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}",
       "plugins:", "  ping:", "    connections: [hooks]", "    on: [push]", "    every: 1h",
       "    settings: {path: {label: Path, type: text}}",
@@ -384,21 +384,20 @@ describe("the plugins API", () => {
     ].join("\n"), prs: { "feat/x": [] } });
     vi.stubGlobal("fetch", gh.impl);
     await w.d.query(`insert into plugin_instances (project, repo, plugin, id, def, position, updated_by)
-                     values ('p', 'acme/web', 'ping', 'b', '{"id": "b", "name": "B", "enabled": false}', 0, 'alice')`);
+                     values ('p', 'acme/web', 'ping', 'b', '{"id": "b", "name": "B", "enabled": false}', 1, 'alice')`);
     await onBranch("I1", ["feat/x"]);
     await run(gh.impl);
     const body = await (await pluginsGET(req("/api/projects/p/plugins?repo=Acme/Web", "GET", w.tokens.bob), params("p"))).json();
-    expect(body.instances).toEqual({ ping: [{ id: "b", name: "B", enabled: false }] });
+    expect(body.instances).toEqual({ ping: [{ id: "a", name: "A", settings: { path: "x" } }, { id: "b", name: "B", enabled: false }] });
     expect(body.grants).toEqual({});
     expect(body.secrets).toEqual([]);
     expect(body.host_secrets).toEqual(["github"]);
     expect(body.plugins).toEqual([
       { name: "pr-link", connections: ["github"], on: ["push", "pr"], every: null, settings: {},
-        instances: [{ id: "default", name: "default", server_runs: true, server_runs_reason: null, from_repo: false }], shipped: true },
+        instances: [{ id: "default", name: "default", server_runs: true, server_runs_reason: null }], shipped: true },
       { name: "ping", connections: ["hooks"], on: ["push"], every: "1h", settings: { path: { label: "Path", type: "text" } },
-        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false, server_runs_reason: "`hooks` not authorized here",
-                      from_repo: true },
-                    { id: "b", name: "B", enabled: false, server_runs: false, server_runs_reason: "`hooks` not authorized here", from_repo: false }],
+        instances: [{ id: "a", name: "A", settings: { path: "x" }, server_runs: false, server_runs_reason: "`hooks` not authorized here" },
+                    { id: "b", name: "B", enabled: false, server_runs: false, server_runs_reason: "`hooks` not authorized here" }],
         shipped: false },
     ]);
     expect(body.runs["pr-link/default"]).toMatchObject({ item: "I1" });
@@ -409,7 +408,7 @@ describe("the plugins API", () => {
     vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ hooks: { http: { url: "https://hooks.example", auth: "bearer" } } }));
     vi.stubEnv("TODO_PLUGIN_SECRET_HOOKS", "host-hook-secret");
     SHIPPED["test-ping"] = { def: { connections: ["hooks"], on: ["push"], steps: [{ http: { method: "POST", path: "/ping" } }], attach: [] } };
-    const gh = fakeGitHub({ file: "plugins:\n  test-ping: {use: shipped}\n",
+    const gh = await configured(w.d, { file: "plugins:\n  test-ping: {use: shipped}\n",
                             other: (url) => (url.startsWith("https://hooks.example") ? Response.json({}) : undefined) });
     vi.stubGlobal("fetch", gh.impl);
     await onBranch("I1", ["feat/x"]);
@@ -436,18 +435,22 @@ describe("the plugins API", () => {
 
   it("stores credentials encrypted, uses them for repo connections, and never returns them", async () => {
     const credential = (body: unknown) => credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, body), params("p"));
-    const off = await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" });
+    const undeclared = await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" });
+    expect([undeclared.status, (await undeclared.json()).error]).toEqual([400,
+      "acme/web's config declares no connection hooks; a credential is given for a declared one"]);
+    const gh = await configured(w.d, { file: [
+      "connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}",
+      "plugins:", "  ping:", "    connections: [hooks]", "    on: [push]",
+      "    steps: [{http: {method: POST, path: '/ping', body: {item: '{{item.id}}'}}}]", "    attach: [{log: pinged}]",
+    ].join("\n"), other: (url) => (url.startsWith("https://hooks.example") ? Response.json({ echoed: "s3cret-value" }) : undefined) });
+    const off = await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value", endpoint: "https://hooks.example" });
     expect(off.status).toBe(503);
     expect((await off.json()).error).toMatch(/TODO_SECRET_KEY/);
 
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     vi.stubEnv("TODO_PLUGIN_ALLOW_HOSTS", "acme/web=hooks.example");
-    expect(await (await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value" })).json()).toEqual({ ok: true });
-    const gh = fakeGitHub({ file: [
-      "connections:", "  hooks: {http: {url: 'https://hooks.example', auth: bearer}}",
-      "plugins:", "  ping:", "    connections: [hooks]", "    on: [push]",
-      "    steps: [{http: {method: POST, path: '/ping', body: {item: '{{item.id}}'}}}]", "    attach: [{log: pinged}]",
-    ].join("\n"), other: (url) => (url.startsWith("https://hooks.example") ? Response.json({ echoed: "s3cret-value" }) : undefined) });
+    expect(await (await credential({ repo: "acme/web", connection: "hooks", secret: "s3cret-value", endpoint: "https://hooks.example" })).json())
+      .toEqual({ ok: true });
     vi.stubGlobal("fetch", gh.impl);
     await onBranch("I1", ["feat/x"]);
     await run(gh.impl);
@@ -475,14 +478,13 @@ const hook = (kind: string, payload: unknown, signature?: string) => {
 describe("the GitHub webhook", () => {
   beforeEach(() => vi.stubEnv("GITHUB_WEBHOOK_SECRET", SECRET));
 
-  it("queues the event for open items on the branch, in every project, and invalidates definitions on a default-branch push", async () => {
+  it("queues the event for open items on the branch, in every project, and records a push's tip", async () => {
     const gh = fakeGitHub({ prs: { "feat/x": [PR(5)] } });
     vi.stubGlobal("fetch", gh.impl);
     await onBranch("I1", ["feat/x"]);
     await onBranch("I2", ["feat/y"]);
     await onBranch("I3", ["feat/x"], { status: "cancelled" });
     await w.d.query("delete from plugin_events");
-    await w.d.query("insert into plugin_defs (repo, sha, default_branch) values ('acme/web', 's0', 'main')");
 
     const repository = { full_name: "Acme/Web", default_branch: "main" };
     const r = await hook("pull_request", { action: "opened", repository, pull_request: { head: { ref: "feat/x" } } });
@@ -492,7 +494,6 @@ describe("the GitHub webhook", () => {
     await vi.waitFor(async () => expect((await events()).every((e) => e.done_at)).toBe(true));
 
     await hook("push", { ref: "refs/heads/main", after: "m2", repository });
-    expect((await w.d.query("select stale from plugin_defs"))[0].stale).toBe(true);
     const [state] = await w.d.query("select tips, hook_at from repo_polls");
     expect(state.tips).toEqual({ main: "m2" });
     expect(state.hook_at).not.toBeNull();
@@ -540,7 +541,7 @@ describe("the tick", () => {
   });
 
   it("queues a refresh for the plugins whose every: floor is due", async () => {
-    const gh = fakeGitHub({ file: [
+    const gh = await configured(w.d, { file: [
       "plugins:", "  hourly:", "    connections: [github]", "    every: 1h",
       "    steps: [{name: me, http: {method: GET, path: /user}}]", "    attach: [{log: checked}]",
     ].join("\n"), prs: { "feat/x": [] }, other: (url) => (url === `${API}/user` ? Response.json({}) : undefined) });

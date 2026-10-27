@@ -1,15 +1,15 @@
 // The server's plugin runner: delivers queued events through the plugin host
 // and writes what each run attached into the item, so every CLI receives it;
 // hears GitHub's webhooks; and, on a tick, polls repos without webhooks and
-// runs every: floors. What it keeps per repo lives in ./store.
-// See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §3–§4.
+// runs every: floors. What it keeps per repo, each repo's plugin config
+// included, lives in ./store.
 import crypto from "node:crypto";
 import type { Db, Row } from "../db";
 import { applyOps, type Op, type Result } from "../apply";
 import { checkoutDir, projectsAllowed, repoAllowed, repoKey } from "../checkouts";
 import { DocError, docByName, issueUpload, recordDoc, removeDoc } from "../docs";
 import { docType, putObject } from "../files";
-import { PLUGINS_DIR, scheduleRecompute, type Fetch } from "../gitfacts";
+import { scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { itemBranches, nowIso } from "../model";
 import { jiraReadOnly } from "../jira/config";
@@ -19,8 +19,7 @@ import { fillString } from "./template";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import {
-  guardFor, hostConnections, hostSecrets, invalidateDefs, loadDefs, merge, message, repoSecrets, storedGrants, storedInstances,
-  type PluginInfo, type RepoDefs,
+  guardFor, hostConnections, hostSecrets, loadConfig, merge, message, repoSecrets, storedGrants, storedInstances, type PluginInfo,
 } from "./store";
 import { parseDuration } from "./triggers";
 import { DEFAULT_DEADLINE_MS, POST_REQUEST, type Attachment, type InstanceDef, type PluginEvent, type PluginItem } from "./types";
@@ -42,7 +41,7 @@ const HOOK_FRESH_MINUTES = 60;
 export const MAX_HOOK_BYTES = 5 * 1024 * 1024;
 
 export interface RunnerDeps {
-  /** GitHub for definitions and tips, and, in tests, the plugins' own connections (unpinned). */
+  /** GitHub for branch tips, and, in tests, the plugins' own connections (unpinned). */
   fetch?: Fetch;
   /** The host's own dependencies; of a guard, only its lookup is taken, since the allow lists come from the environment. */
   host?: HostDeps;
@@ -276,7 +275,7 @@ export async function withItemLock<T>(d: Pick<Db, "query">, project: string, ite
 }
 
 // ── delivery ──────────────────────────────────────────────────────────────────
-/** A failure that may pass: GitHub unreachable before any plugin ran, or a read-only run that failed transiently. */
+/** A failure that may pass: a read-only run that failed transiently. */
 class Transport extends Error {}
 /** Another delivery took the event over. */
 class LeaseLost extends Error {}
@@ -335,15 +334,9 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
   const [it] = await d.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
   if (!it) return ["the item is gone"];
   if (!(await repoAllowed(d, row.project, row.repo))) return [`${row.repo} isn't one of this project's repos`];
-  let defs: RepoDefs;
-  try {
-    defs = await loadDefs(d, row.repo, f);
-  } catch (e) {
-    throw new Transport(`couldn't read ${row.repo}'s ${PLUGINS_DIR}: ${message(e)}`);
-  }
   const stored = await storedInstances(d, row.project, row.repo, { secrets: true });
   const grants = await storedGrants(d, row.project, row.repo);
-  const merged = merge(defs, stored);
+  const merged = merge(await loadConfig(d, row.project, row.repo), stored);
   const connections = hostConnections();
   const done = new Set<string>(row.finished ?? []);
   let edges = false;
@@ -353,7 +346,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     if (!held) throw new LeaseLost(`event ${row.id} was taken over by another delivery`);
   };
   const out = await runEvent({
-    repo: defs.text === undefined ? undefined : { text: defs.text, files: defs.files },
+    config: merged.config,
     hostConnections: connections,
     secrets: { repo: await repoSecrets(d, row.project, row.repo), host: hostSecrets(connections) },
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
@@ -497,7 +490,6 @@ export async function githubEvent(d: Db, kind: string, payload: unknown): Promis
     else if (typeof body.after === "string") {
       await d.query("update repo_polls set tips = tips || jsonb_build_object($2::text, $3::text) where repo = $1", [repo, branch, body.after]);
     }
-    if (branch === body.repository?.default_branch) await invalidateDefs(d, repo);
     if (!body.deleted) queued = await queueBranch(d, repo, branch, { type: "push", branch });
   } else if (kind === "pull_request" && typeof body.pull_request?.head?.ref === "string"
              && (PR_ACTIONS.includes(body.action) || (body.action === "edited" && isMap(body.changes?.base)))) {
@@ -602,8 +594,6 @@ async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: 
     const before: Record<string, string> | null = state?.polled_at ? state.tips ?? {} : null;
     if (before) {
       const moved = Object.keys(tips).filter((b) => before[b] !== tips[b]);
-      const [defs] = await d.query("select default_branch from plugin_defs where repo = $1", [repo]);
-      if (defs?.default_branch && moved.includes(defs.default_branch)) await invalidateDefs(d, repo);
       for (const branch of moved) queued += await queueBranch(d, repo, branch, { type: "push", branch });
     }
     await d.query(
@@ -615,45 +605,35 @@ async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: 
 }
 
 /** Queue a refresh for each open item with an every: floor that has come due. */
-async function queueFloors(d: Db, items: OpenItem[], f: Fetch): Promise<number> {
-  const byRepo = new Map<string, OpenItem[]>();
-  for (const it of items) byRepo.set(it.repo, [...(byRepo.get(it.repo) ?? []), it]);
+async function queueFloors(d: Db, items: OpenItem[]): Promise<number> {
+  const floors = new Map<string, PluginInfo[]>();
   let queued = 0;
-  for (const [repo, list] of byRepo) {
-    let defs: RepoDefs;
-    try {
-      defs = await loadDefs(d, repo, f);
-    } catch (e) {
-      console.error(`plugins: reading ${repo}'s ${PLUGINS_DIR}: ${message(e)}`);
-      continue;
+  for (const it of items) {
+    const at = `${it.project}\x1f${it.repo}`;
+    if (!floors.has(at)) {
+      const { plugins } = merge(await loadConfig(d, it.project, it.repo), await storedInstances(d, it.project, it.repo));
+      floors.set(at, plugins.filter((p) => p.every && p.instances.some((i) => i.enabled !== false)));
     }
-    const perProject = new Map<string, PluginInfo[]>();
-    for (const it of list) {
-      if (!perProject.has(it.project)) {
-        const { plugins } = merge(defs, await storedInstances(d, it.project, repo));
-        perProject.set(it.project, plugins.filter((p) => p.every && p.instances.some((i) => i.enabled !== false)));
+    const floored = floors.get(at)!;
+    if (!floored.length) continue;
+    const [pending] = await d.query(
+      "select 1 from plugin_events where project = $1 and item_uid = $2 and done_at is null and event->>'type' = 'refresh'",
+      [it.project, it.uid]);
+    if (pending) continue;
+    const last = new Map((await d.query(
+      `select plugin, extract(epoch from now() - max(at)) * 1000 as age from plugin_runs
+        where project = $1 and item_uid = $2 group by plugin`, [it.project, it.uid])).map((r) => [r.plugin, Number(r.age)]));
+    const due = floored.filter((p) => {
+      let every: number;
+      try {
+        every = parseDuration(p.every!);
+      } catch {
+        return false;
       }
-      const floored = perProject.get(it.project)!;
-      if (!floored.length) continue;
-      const [pending] = await d.query(
-        "select 1 from plugin_events where project = $1 and item_uid = $2 and done_at is null and event->>'type' = 'refresh'",
-        [it.project, it.uid]);
-      if (pending) continue;
-      const last = new Map((await d.query(
-        `select plugin, extract(epoch from now() - max(at)) * 1000 as age from plugin_runs
-          where project = $1 and item_uid = $2 group by plugin`, [it.project, it.uid])).map((r) => [r.plugin, Number(r.age)]));
-      const due = floored.filter((p) => {
-        let every: number;
-        try {
-          every = parseDuration(p.every!);
-        } catch {
-          return false;
-        }
-        return !last.has(p.name) || last.get(p.name)! >= every;
-      });
-      if (!due.length) continue;
-      if ((await queuePluginEvent(d, it.project, it.uid, repo, { type: "refresh" }, PLUGIN_HANDLE, due.map((p) => p.name))) !== null) queued++;
-    }
+      return !last.has(p.name) || last.get(p.name)! >= every;
+    });
+    if (!due.length) continue;
+    if ((await queuePluginEvent(d, it.project, it.uid, it.repo, { type: "refresh" }, PLUGIN_HANDLE, due.map((p) => p.name))) !== null) queued++;
   }
   return queued;
 }
@@ -666,7 +646,7 @@ export async function pluginTick(d: Db, deps: RunnerDeps = {}): Promise<TickResu
   const f = deps.fetch ?? fetch;
   const items = await openItems(d);
   const { polled, queued: pushes } = await pollRepos(d, items, f);
-  const refreshes = await queueFloors(d, items, f);
+  const refreshes = await queueFloors(d, items);
   await d.query("delete from plugin_events where done_at < now() - make_interval(days => $1)", [DAYS_KEPT]);
   return { ...(await flushPluginRuns(d, deps, TICK_EVENTS)), polled, pushes, refreshes };
 }

@@ -8,7 +8,6 @@
 // intersecting those sets in memory. A failure
 // never reads as "no edge": the stored facts stay, marked unknown.
 // See docs/plans/2026-10-23-repo-plugins-git-facts-docs-design.md §2.
-import { parse } from "yaml";
 import { db as appDb, type Db, type Row } from "./db";
 import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { githubApi } from "./github";
@@ -23,7 +22,7 @@ export interface BranchFact {
   landed?: string; in?: Record<string, boolean | null>; unknown?: string;
   /** The chain ended at a branch no open item owns. */
   orphan?: string;
-  /** Blocks nothing: the PR's base is a branch nothing tracks, in a repo with no `track:` list. */
+  /** Blocks nothing: the PR's base is a branch nothing tracks, in a repo with no deploy branches. */
   hint?: string;
   /** Deleted, and its last merged PR carried this head: it has landed. */
   merged_gone?: boolean;
@@ -62,8 +61,6 @@ const EDGE_STATES = ["waiting", "landed", "stale", "unknown"];
 const CANT_LAND = ["cancelled", "deferred"];
 const COMPLETE = ["done", "deployed"];
 const OPEN_PR = ["open", "draft"];
-export const PLUGINS_DIR = ".todo-plugins";
-const PLUGINS_FILE = `${PLUGINS_DIR}/plugins.yaml`;
 const TIMEOUT_MS = 5_000;
 const STALE_MS = 2 * 60_000;
 const UNLANDED_CAP = 2_000;
@@ -86,6 +83,7 @@ export function resetGitFactsCache(): void {
   inflight.clear();
   signatures.clear();
   trackedTips.clear();
+  branchLists.clear();
 }
 
 async function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
@@ -119,23 +117,37 @@ async function get(path: string, f: Fetch): Promise<any> {
 
 export const orNull = <T>(p: Promise<T>): Promise<T | null> => p.catch((e) => { if (e instanceof NotFound) return null; throw e; });
 
-/** The `track:` list of a plugins file; empty when the file has none or isn't YAML. */
-export function trackList(text: string): string[] {
-  let raw: unknown;
-  try {
-    raw = parse(text);
-  } catch {
-    return [];
+/** A repo's branches as GitHub lists them, the default first, for picking deploy branches. `visible` is false when GitHub says the
+ * repo isn't there for this server's token, null when it wasn't asked or didn't answer. */
+export interface RemoteBranches { names: string[]; default: string | null; visible: boolean | null }
+
+const BRANCH_LIST_MS = 5 * 60_000;
+const branchLists = new Map<string, { at: number; value: RemoteBranches }>();
+
+/** The repo's branches: GitHub's first page of them, else the tips the tick last polled; kept a few minutes. */
+export async function remoteBranches(d: Pick<Db, "query">, repo: string, f: Fetch = fetch): Promise<RemoteBranches> {
+  const hit = branchLists.get(repo);
+  if (hit && Date.now() - hit.at < BRANCH_LIST_MS) return hit.value;
+  const [poll] = await d.query("select tips from repo_polls where repo = $1", [repo]);
+  let value: RemoteBranches = { names: Object.keys(poll?.tips ?? {}).sort(), default: null, visible: null };
+  if (process.env.GITHUB_TOKEN) {
+    try {
+      const def = String((await get(`/repos/${repo}`, f)).default_branch ?? "") || null;
+      const rows = (await get(`/repos/${repo}/branches?per_page=${PAGE}`, f)) as { name: string }[];
+      const names = rows.map((r) => r.name).sort();
+      value = { names: def ? [def, ...names.filter((n) => n !== def)] : names, default: def, visible: true };
+    } catch (e) {
+      if (e instanceof NotFound) value = { ...value, visible: false };
+    }
   }
-  const track = raw && typeof raw === "object" ? (raw as { track?: unknown }).track : undefined;
-  return Array.isArray(track) ? track.filter((t): t is string => typeof t === "string" && !!t.trim()).map((t) => t.trim()) : [];
+  branchLists.set(repo, { at: Date.now(), value });
+  return value;
 }
 
-/** A text file of the repo at `ref`, or null when there's none. */
-export async function repoFile(owner: string, name: string, path: string, ref: string, f: Fetch): Promise<string | null> {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  const file = await orNull(get(`/repos/${owner}/${name}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, f));
-  return file?.content ? Buffer.from(file.content, "base64").toString("utf8") : null;
+/** A repo's deploy branches in a project, as Settings → Automation (or `todo plugin deploy-branches`) set them. */
+export async function deployBranches(d: Pick<Db, "query">, project: string, repo: string): Promise<string[]> {
+  const [row] = await d.query("select track from plugin_configs where project = $1 and repo = $2", [project, repo]);
+  return row?.track ?? [];
 }
 
 function prFact(pr: any): PrFact {
@@ -160,9 +172,6 @@ class GitHubRepo {
       for (const r of rows) out[r.name] = r.commit.sha;
       if (rows.length < PAGE) return out;
     }
-  }
-  track(branch: string, tip: string): Promise<string[]> {
-    return cached(`track:${this.key}:${tip}`, async () => trackList((await repoFile(this.owner, this.name, PLUGINS_FILE, branch, this.f)) ?? ""));
   }
   /** The PRs most recently closed into `base`, by head branch, from one call. */
   async closedInto(base: string): Promise<Map<string, PrFact[]>> {
@@ -261,10 +270,10 @@ async function branchFacts(c: Ctx, it: ItemRow, old: GitFacts): Promise<BranchFa
 }
 
 export const untrackedHint = (branch: string, base: string) =>
-  `${branch}'s PR is based on ${base}; if ${base} is long-lived, add it under track: in ${PLUGINS_FILE}`;
+  `${branch}'s PR is based on ${base}; if ${base} is long-lived, add it to the repo's deploy branches on Settings → Automation`;
 
 /** T(B): follow an open PR's base through branches open items own, to the first branch none owns. That branch is T(B)
- * when it's tracked, the default, or any other branch on the remote; an untracked one is an orphan beside a `track:` list
+ * when it's tracked, the default, or any other branch on the remote; an untracked one is an orphan beside deploy branches
  * and a hint without one. A base a cancelled or archived item lists, or one gone from the remote, ends the chain as an
  * orphan. With no open PR, the first tracked branch, else the default. */
 function targets(c: Ctx, facts: Map<string, Facts>, owners: Map<string, string>, others: Map<string, ItemRow>): void {
@@ -730,7 +739,7 @@ export async function computeProject(d: Db, project: string, fetchImpl: Fetch = 
     let facts: Map<string, Facts>;
     try {
       const [def, tips] = await Promise.all([gh.defaultBranch(), gh.tips()]);
-      const track = tips[def] ? await gh.track(def, tips[def]) : [];
+      const track = await deployBranches(d, project, key);
       const sig = signature(items, notes, stored, tips, def, track);
       if (signatures.get(`${project}\x1f${key}`) === sig) continue;
       const last = trackedTips.get(`${project}\x1f${key}`);

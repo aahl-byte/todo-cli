@@ -1,6 +1,6 @@
 // Convert a project's Actions and Jira triggers into plugin instances: prints
-// them, with the connections, secrets, allowed hosts and repo file lines they
-// need; --write stores them in each repo the project's items use.
+// them, with the connections, secrets and allowed hosts they need; --write
+// switches their plugins on and stores them in each repo the project's items use.
 import { db } from "../lib/db";
 import { describePlan, planPort, writePlan } from "../lib/plugins/port";
 

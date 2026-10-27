@@ -565,25 +565,102 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await page.locator("select[aria-label=repo] option", { hasText: "acme/docs · 1 item" }).waitFor({ state: "attached" });
   });
 
-  await step("automation: a repo with no plugins file has pr-link on, deploy branches first among what's off, and the YAML that turns each on", async () => {
+  await step("automation: a repo nobody has set up has pr-link on, deploy branches first among what's off, a switch on each shipped plugin, and nothing to commit", async () => {
     await page.goto(automation("acme/api"));
     const order = await page.locator(".auto-rows[data-repo='acme/api'] .auto-row").evaluateAll((els) => els.map((e) => `${e.dataset.row}:${e.dataset.state}`));
     if (order[0] !== "pr-link:on") throw new Error("first row " + order[0]);
     const firstOff = order.find((r) => r.endsWith(":off"));
     if (firstOff !== "track:off") throw new Error("first off row " + firstOff + " in " + order.join(", "));
     await autoRow("pr-link", "acme/api").locator(".auto-line", { hasText: "Hasn't run yet." }).waitFor();
+    if (await autoRow("pr-link", "acme/api").locator("input[role=switch]").count()) throw new Error("pr-link, always on, has a switch");
     const track = autoRow("track", "acme/api");
     await track.locator(".auto-title", { hasText: "Show where work has landed" }).waitFor();
     await track.locator(".auto-line", { hasText: "in staging ✓ · in main ✗" }).waitFor();
-    await track.locator("li[data-who=repo] pre", { hasText: "track: [staging, main]" }).waitFor();
-    await track.locator("li[data-who=repo] .copy", { hasText: "Copy" }).waitFor();
+    await track.locator("li[data-who=here]", { hasText: "Name the branches work deploys from" }).waitFor();
     const vercel = autoRow("vercel-preview", "acme/api");
-    const yaml = await vercel.locator("li[data-who=repo] pre").textContent();
-    if (yaml !== "plugins:\n  vercel-preview: {use: shipped}") throw new Error("yaml " + JSON.stringify(yaml));
+    if (await vercel.locator("input[aria-label='vercel-preview on']").isChecked()) throw new Error("vercel-preview starts on");
     await vercel.locator("li[data-who=admin] code", { hasText: "TODO_PLUGIN_SECRET_VERCEL" }).waitFor();
-    await vercel.locator("li[data-who=here]", { hasText: "once it's turned on in the repo" }).waitFor();
-    if (await vercel.locator("button:has-text('Set up')").count()) throw new Error("offers settings for a plugin the repo hasn't turned on");
-    await page.screenshot({ path: out + "/automation-no-file.png", fullPage: true });
+    await vercel.locator("li[data-who=here]", { hasText: "once it's switched on" }).waitFor();
+    if (await vercel.locator("button:has-text('Set up')").count()) throw new Error("offers settings for a plugin that's off");
+    if (await page.locator("li[data-who=repo], .step-code pre").count()) throw new Error("a step asks someone to commit to the repo");
+    if (await page.getByText("In the repo").count()) throw new Error("a step is the repo's");
+    await page.screenshot({ path: out + "/automation-unset.png", fullPage: true });
+  });
+
+  await step("automation: deploy branches are typed into a field that suggests the remote's, and turn the row on", async () => {
+    const track = autoRow("track", "acme/api");
+    await track.locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    const field = track.locator(".branches-panel input[aria-label='deploy branches']");
+    if (await field.inputValue() !== "") throw new Error("the field starts with " + await field.inputValue());
+    if (await field.getAttribute("placeholder") !== "e.g. main, staging") throw new Error("placeholder " + await field.getAttribute("placeholder"));
+    const chips = await track.locator(".branch-suggest .chip").allTextContents();
+    if (JSON.stringify(chips) !== '["+ main","+ staging"]') throw new Error("suggests " + JSON.stringify(chips));
+    await track.locator(".branch-suggest .chip", { hasText: "staging" }).click();
+    await track.locator(".branch-suggest .chip", { hasText: "main" }).click();
+    if (await field.inputValue() !== "staging, main") throw new Error("the field holds " + await field.inputValue());
+    await page.screenshot({ path: out + "/automation-branches.png", fullPage: true });
+    await track.locator(".branches-panel button.primary", { hasText: "Save" }).click();
+    await track.locator(".auto-title", { hasText: "Show where work has landed (staging, main)" }).waitFor();
+    if (await rowState("track", "acme/api") !== "on") throw new Error("deploy branches are " + await rowState("track", "acme/api"));
+  });
+
+  await step("automation: switching a shipped plugin on gives it settings here, and switching it off keeps them", async () => {
+    const vercel = autoRow("vercel-preview", "acme/api");
+    await vercel.locator("input[aria-label='vercel-preview on']").check();
+    await page.locator(".auto-rows[data-repo='acme/api'] .auto-row[data-row='vercel-preview'][data-state=setup]").waitFor();
+    await vercel.locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    const card = vercel.locator(".auto-panel.plugin-card");
+    await card.locator(".setting[data-setting=project] input").fill("prj_smoke");
+    await card.locator(".setting[data-setting=team] input").fill("team_smoke");
+    await card.locator(".save-row button.primary", { hasText: "Save" }).click();
+    await card.locator("fieldset.plugin-edit:not([disabled]) .save-row .hint", { hasText: "Saved." }).waitFor();
+    await vercel.locator("input[aria-label='vercel-preview on']").uncheck();
+    await page.locator(".auto-rows[data-repo='acme/api'] .auto-row[data-row='vercel-preview'][data-state=off]").waitFor();
+    await vercel.locator("input[aria-label='vercel-preview on']").check();
+    await page.locator(".auto-rows[data-repo='acme/api'] .auto-row[data-row='vercel-preview']:not([data-state=off])").waitFor();
+    if (!(await card.count())) await vercel.locator("button.link-btn", { hasText: /^(Set up|Settings) ›$/ }).first().click();
+    if (await card.locator(".setting[data-setting=project] input").inputValue() !== "prj_smoke") throw new Error("its settings didn't stay");
+  });
+
+  await step("automation: a custom plugin is added from YAML checked as it's typed, edited, and removed", async () => {
+    await page.goto(automation("acme/api"));
+    page.once("dialog", (d) => d.accept());
+    await page.click("button.add:has-text('Add a custom plugin')");
+    const editor = page.locator(".custom-editor[data-custom=new]");
+    await editor.locator("input[aria-label='plugin name']").fill("smoke-hello");
+    const yaml = editor.locator("textarea[aria-label='plugin yaml']");
+    await yaml.fill("description: Logs hello from the smoke.\non: [manual]\nwat: 1\nattach:\n  - log: \"hello {{item.id}}\"\n");
+    await editor.locator(".problems .error", { hasText: 'unknown key "wat"' }).waitFor();
+    if (!(await editor.locator("button.primary").isDisabled())) throw new Error("a plugin with errors can be saved");
+    await yaml.fill("description: Logs hello from the smoke.\non: [manual]\ncode: hello.js\n");
+    await editor.locator("textarea[aria-label='plugin code']").waitFor();
+    await editor.locator(".problems .error", { hasText: "code names hello.js: paste that file's code" }).waitFor();
+    await editor.locator("textarea[aria-label='plugin code']").fill("export function run({ attach, item }) { attach.log('hello ' + item.id); }\n");
+    await editor.locator(".problems").waitFor({ state: "detached" });
+    await page.screenshot({ path: out + "/automation-custom.png", fullPage: true });
+    await editor.locator("button.primary", { hasText: "Add plugin" }).click();
+    const row = autoRow("smoke-hello", "acme/api");
+    await row.locator(".auto-title", { hasText: "Logs hello from the smoke" }).waitFor();
+    if (await rowState("smoke-hello", "acme/api") !== "on") throw new Error("smoke-hello is " + await rowState("smoke-hello", "acme/api"));
+    await row.locator("button.link-btn", { hasText: "Edit YAML ›" }).click();
+    if (!(await row.locator("textarea[aria-label='plugin yaml']").inputValue()).includes("code: hello.js")) throw new Error("the editor lost the YAML");
+    await row.locator("button.danger", { hasText: "Remove plugin" }).click();
+    await row.waitFor({ state: "detached" });
+  });
+
+  await step("automation: a connection is declared for custom plugins, and removed with its credential", async () => {
+    const section = page.locator(".auto-rows[data-repo='acme/api'] .auto-connections");
+    await section.locator("button.add", { hasText: "Add a connection" }).click();
+    await section.locator("input[aria-label='connection name']").fill("smoke-hooks");
+    await section.locator("input[aria-label='connection url']").fill("https://hooks.example.com");
+    await section.locator("select[aria-label='connection auth']").selectOption("bearer");
+    await section.locator("button.primary", { hasText: "Add" }).click();
+    const row = section.locator(".conn-row[data-connection=smoke-hooks]");
+    await row.locator(".grow", { hasText: "No credential on this server" }).waitFor();
+    await row.locator(".conn-url", { hasText: "http https://hooks.example.com" }).waitFor();
+    page.once("dialog", (d) => d.accept());
+    await row.locator("button[aria-label='remove smoke-hooks']").click();
+    await row.waitFor({ state: "detached" });
   });
 
   await step("automation: what the Jira bridge and Actions do today shows as elsewhere, linking to the General tab", async () => {
@@ -605,10 +682,10 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const jt = autoRow("jira-transition");
     if (await rowState("jira-transition") !== "setup") throw new Error("jira-transition is " + await rowState("jira-transition"));
     await jt.locator(".auto-line", { hasText: "The Jira bridge also moves tickets with 3 triggers, so both would send." }).waitFor();
-    await jt.locator("li.done[data-who=repo]", { hasText: "Turned on." }).waitFor();
+    if (!(await jt.locator("input[aria-label='jira-transition on']").isChecked())) throw new Error("jira-transition's switch is off");
     await jt.locator("li[data-who=admin]", { hasText: "Connect the server to Jira" }).waitFor();
     await autoRow("rest").locator(".auto-line", { hasText: "items would get both buttons" }).waitFor();
-    await autoRow("ping").locator(".auto-line", { hasText: "This repo's own plugin" }).waitFor();
+    await autoRow("ping").locator(".auto-line", { hasText: "A custom plugin of this repo" }).waitFor();
     await page.screenshot({ path: out + "/automation-page.png", fullPage: true });
     await autoRow("vercel-preview").locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
     await card("vercel-preview").locator(".setting[data-setting=project] input").waitFor();
@@ -668,23 +745,17 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if ((await page.content()).includes("s3cret")) throw new Error("the secret came back to the page");
   });
 
-  await step("automation: rest offers the connections an instance may use, says its settings are templates, and why a repo-declared one gets no server connection", async () => {
+  await step("automation: rest offers each instance the repo's connections and the server's, and says its settings are templates", async () => {
     await page.goto(automation("acme/web"));
     await configure("rest");
     const rest = card("rest");
     await rest.locator(".plugin-meta", { hasText: "calls the connection each instance names" }).waitFor();
     const hook = rest.locator('.instance-card[data-instance="hook"]');
-    await hook.locator(".repo-declared", { hasText: "only the repo's own connections" }).waitFor();
     const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
-    const declared = await offered(hook);
-    if (JSON.stringify(declared) !== JSON.stringify(["hooks"])) throw new Error("a repo-declared instance offered " + declared.join(", "));
+    const choices = await offered(hook);
+    if (!choices.includes("github") || !choices.includes("hooks")) throw new Error("an instance offered " + choices.join(", "));
     const note = await hook.locator(".setting[data-setting=path] .hint").textContent();
     if (!note.startsWith("A template")) throw new Error("no template hint: " + note);
-    await rest.locator("button.add", { hasText: "instance" }).click();
-    const added = rest.locator(".instance-card").last();
-    const stored = await offered(added);
-    if (!stored.includes("github") || !stored.includes("hooks")) throw new Error("a stored instance offered " + stored.join(", "));
-    if (await added.locator(".repo-declared").count()) throw new Error("a stored instance says it's repo-declared");
     await page.screenshot({ path: out + "/automation-rest.png", fullPage: true });
     await page.reload();
   });
@@ -702,7 +773,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await setting("go", "token").locator(".tag", { hasText: "set" }).count()) throw new Error("the secret is still set");
   });
 
-  await step("automation: add, duplicate and remove instances; a repo file's instance only switches off", async () => {
+  await step("automation: add, duplicate and remove instances", async () => {
     await card("notes-link").locator("button.add:has-text('instance')").click();
     await inst("instance").waitFor();
     await inst("go").locator("button[aria-label='duplicate go']").click();
@@ -710,13 +781,11 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const order = () => card("notes-link").locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
     if (JSON.stringify(await order()) !== '["go","go-copy","instance"]') throw new Error("order " + JSON.stringify(await order()));
     if (await card("notes-link").locator(".order").count()) throw new Error("order arrows on a plugin that fires every instance");
-    await inst("go").locator("button[aria-label='remove go']").click();
-    if (await inst("go").locator("input[aria-label='go on']").isChecked()) throw new Error("removing a repo file's instance didn't switch it off");
-    await inst("go").locator("input[aria-label='go on']").check();
     await inst("instance").locator("button[aria-label='remove instance']").click();
     await inst("go-copy").locator("button[aria-label='remove go-copy']").click();
     await inst("instance").waitFor({ state: "detached" });
     if (await inst("go-copy").count()) throw new Error("go-copy wasn't removed");
+    if (JSON.stringify(await order()) !== '["go"]') throw new Error("left " + JSON.stringify(await order()));
   });
 
   await step("automation: setting up a first-match plugin starts with an instance to fill in, and orders several", async () => {

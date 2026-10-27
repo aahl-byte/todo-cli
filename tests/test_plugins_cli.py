@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from todo import connections, gitfacts, plugins, remote, store, sync, yamlio
+from ruamel.yaml import YAML
+
+from todo import connections, gitfacts, plugin_config, plugins, remote, store, sync, yamlio
 from todo.uids import hash_uid
 
 from .conftest import run_cli
@@ -92,12 +94,31 @@ def github(fx):
     gh.server.shutdown()
 
 
-def plugins_file(fx, text):
-    """Commit `.todo-plugins/plugins.yaml` (and code files) to main and push it."""
-    git(fx.work, "checkout", "-q", "main")
-    fx.write(".todo-plugins/plugins.yaml", text)
-    git(fx.work, "commit", "-qm", "plugins")
-    git(fx.work, "push", "-q", "origin", "main")
+def plugins_file(fx, text, code=None):
+    """The store's repo's plugin config, as a local-only store keeps it in `.TODO/.plugins.yaml`; `code` gives each
+    code file by name, kept beside it. Instances the text lists are kept as the store's instances."""
+    key = gitfacts.store_repo(fx.root)[0]
+    f = fx.root / plugin_config.LOCAL_FILE
+    data = yamlio.read(f) if f.is_file() else {}
+    data[key] = {**(data.get(key) or {}), **(YAML(typ="safe").load(text) or {})}
+    yamlio.write_atomic(f, yamlio.dump(yamlio.yaml(), data))
+    for name, body in (code or {}).items():
+        path = plugin_config.code_dir(fx.root, key) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    return key
+
+
+def server_config(server, fx, text, code=None):
+    """The store's repo's plugin config on the fake server: the text less its instances, which it stores apart; `code`
+    by plugin name."""
+    key = gitfacts.store_repo(fx.root)[0]
+    doc = YAML(typ="safe").load(text) or {}
+    got = server.plugin_config.setdefault(key, {"instances": {}, "grants": {}})
+    got["instances"].update(doc.pop("instances", None) or {})
+    got["config"] = {"text": yamlio.dump(yamlio.yaml(), doc), "code": dict(code or {})}
+    got["track"] = list(doc.get("track") or [])
+    return key
 
 
 def item_with_branch(fx, title="Alpha", branch="feat/a"):
@@ -230,31 +251,50 @@ plugins:
 
 
 @needs_node
-def test_plugin_test_dry_runs_the_working_tree_and_prints_what_it_would_send(fx, capsys):
+def test_plugin_test_dry_runs_a_draft_from_a_file_and_prints_what_it_would_send(fx, tmp_path, capsys):
     hook = FakeGitHub()
     try:
-        fx.write(".todo-plugins/plugins.yaml", f"""\
-connections:
-  hook: {{http: {{url: "{hook.url}"}}}}
-plugins:
-  poster:
-    connections: [hook]
-    on: [manual]
-    steps:
-      - http: {{method: POST, path: /notify, body: {{item: "{{{{item.id}}}}"}}}}
-    attach:
-      - log: posted
+        plugins_file(fx, f"connections:\n  hook: {{http: {{url: \"{hook.url}\"}}}}\n")
+        draft = tmp_path / "drafts" / "poster.yaml"
+        draft.parent.mkdir()
+        draft.write_text("""\
+connections: [hook]
+on: [manual]
+steps:
+  - http: {method: POST, path: /notify, body: {item: "{{item.id}}"}}
+attach:
+  - log: posted
 """)
         a = fx.item("Alpha", [])
-        run_cli(fx.root, ["plugin", "test", "poster", a, "--local", "--event", "manual:default"])
+        run_cli(fx.root, ["plugin", "test", "poster", a, "--draft", str(draft), "--event", "manual:default"])
         out = capsys.readouterr().out
-        assert out == (f"{a}: poster on manual default (working tree) — dry run\n"
+        assert out == (f"{a}: poster on manual default (draft {draft}) — dry run\n"
                        "  poster/default: would attach 1:\n    log · posted\n"
                        "    would send 1:\n      hook: POST /notify  {\"item\": \"" + a + "\"}\n"
                        "    log: would send hook POST /notify\n")
         assert hook.requests == [] and store.get_item(fx.root, a)["log"] == []
+        assert "poster" not in (fx.root / plugin_config.LOCAL_FILE).read_text()
     finally:
         hook.server.shutdown()
+
+
+@needs_node
+def test_a_draft_s_code_comes_from_beside_it_and_its_load_errors_print(fx, tmp_path, capsys):
+    drafts = tmp_path / "drafts"
+    drafts.mkdir()
+    (drafts / "coded.yaml").write_text("on: [manual]\ncode: coded.js\nsettings: {who: {label: Who, type: text}}\n")
+    (drafts / "coded.js").write_text("export function run({ attach, settings }) { attach.log('hi ' + settings.who); }\n")
+    a = fx.item("Alpha", [])
+    run_cli(fx.root, ["plugin", "test", "coded", a, "--draft", str(drafts / "coded.yaml"), "--event", "manual:test", "--set", "who=Pat"])
+    out = capsys.readouterr().out
+    assert "coded/test: would attach 1:\n    log · hi Pat" in out
+    (drafts / "bad.yaml").write_text("on: [sometimes]\n")
+    run_cli(fx.root, ["plugin", "test", "bad", a, "--draft", str(drafts / "bad.yaml")])
+    assert 'error: plugin bad: on[0]: unknown trigger "sometimes"' in capsys.readouterr().out
+    (drafts / "lost.yaml").write_text("on: [manual]\ncode: lost.js\n")
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "test", "lost", a, "--draft", str(drafts / "lost.yaml")])
+    assert "lost.yaml names code lost.js, which isn't beside it" in capsys.readouterr().err
 
 
 # ── through a fake host ───────────────────────────────────────────────────────
@@ -355,7 +395,7 @@ def test_a_local_only_store_keeps_instances_in_its_plugins_file(fx, host, capsys
     run_cli(fx.root, ["plugin", "add", "p", "go", "--set", "to=review", "--on", "manual", "--name", "Go"])
     run_cli(fx.root, ["plugin", "set", "p/go", "--set", "n=3", "--disable"])
     data = yamlio.read(fx.root / ".plugins.yaml")
-    assert json.loads(json.dumps(data)) == {key: {"instances": {"p": [
+    assert json.loads(json.dumps(data)) == {key: {"track": ["staging", "main"], "instances": {"p": [
         {"id": "go", "name": "Go", "on": ["manual"], "settings": {"to": "review", "n": 3}, "enabled": False}]}}}
     run_cli(fx.root, ["plugin", "list"])
     assert "    go \"Go\"  off  · on: manual  · settings: to=review, n=3" in capsys.readouterr().out
@@ -367,7 +407,7 @@ def test_a_local_only_store_keeps_instances_in_its_plugins_file(fx, host, capsys
     assert call["storedInstances"]["p"][0]["settings"] == {"to": "review", "n": 3}
     assert call["event"] == {"type": "manual", "instance": "go"} and call["allowRepoCommands"] is True
     run_cli(fx.root, ["plugin", "rm", "p/go"])
-    assert yamlio.read(fx.root / ".plugins.yaml") == {key: {"instances": {}}}
+    assert yamlio.read(fx.root / ".plugins.yaml") == {key: {"track": ["staging", "main"]}}
 
 
 def test_a_synced_store_keeps_instances_on_the_server(fx, host, monkeypatch):
@@ -508,9 +548,12 @@ def test_credentials_are_private_and_keyed_by_repo_or_host(on, monkeypatch, tmp_
     f = on / ".todo" / "credentials.json"
     assert stat.S_IMODE(f.stat().st_mode) == 0o600
     assert json.loads(f.read_text()) == {"*/github": "ghp_host", "acme/web/vercel": "vc_repo"}
-    assert connections.secrets_for("acme/web") == {"repo": {"vercel": "vc_repo"}, "host": {"github": "ghp_host"}}
-    assert connections.secrets_for("acme/other") == {"repo": {}, "host": {"github": "ghp_host"}}
-    assert "ghp_host" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "acme/web's plugin config declares no vercel yet, so nothing gets this secret" in out and "ghp_host" not in out
+    assert connections.secrets_for("acme/web", VERCEL) == {"repo": {}, "host": {"github": "ghp_host"}, "moved": ["vercel"]}
+    connections.bind_credential("vercel", "acme/web", VERCEL["vercel"])
+    assert connections.secrets_for("acme/web", VERCEL) == {"repo": {"vercel": "vc_repo"}, "host": {"github": "ghp_host"}, "moved": []}
+    assert connections.secrets_for("acme/other", VERCEL) == {"repo": {}, "host": {"github": "ghp_host"}, "moved": []}
 
 
 def test_auth_reads_the_secret_hidden_from_a_terminal(on, monkeypatch, tmp_path, capsys):
@@ -538,8 +581,19 @@ def test_auth_with_server_posts_a_repo_connection_s_secret(fx, synced, host, mon
     key = gitfacts.store_repo(fx.root)[0]
     monkeypatch.setattr(sys, "stdin", io.StringIO("vc\n"))
     run_cli(fx.root, ["connection", "auth", "vercel", "--server"])
-    assert synced.plugin_creds == [(key, "vercel", "vc")]
-    assert connections.load_credentials() == {f"{key}/vercel": "vc"}
+    assert synced.plugin_creds == [(key, "vercel", "vc")] and synced.cred_endpoints == ["https://api.vercel.com"]
+    assert connections.load_credentials() == {f"{key}/vercel": "vc", f"{key}/vercel@url": "https://api.vercel.com"}
+
+
+def test_auth_with_server_says_when_the_server_s_connection_points_elsewhere(fx, synced, host, monkeypatch, capsys):
+    host.describe([], connections_=VERCEL)
+    synced.creds_moved = True
+    monkeypatch.setattr(sys, "stdin", io.StringIO("vc\n"))
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["connection", "auth", "vercel", "--server"])
+    err = capsys.readouterr().err
+    assert "vercel points at https://elsewhere now, not https://api.vercel.com" in err and "run this again" in err
+    assert synced.plugin_creds == []
 
 
 def test_connection_add_and_list(fx, host, capsys):
@@ -553,18 +607,25 @@ def test_connection_add_and_list(fx, host, capsys):
            "~/.todo/credentials.json" in out
 
 
-def test_the_payload_keeps_repo_and_host_secrets_apart(fx, host):
-    key = gitfacts.store_repo(fx.root)[0]
+def test_the_payload_keeps_repo_and_host_secrets_apart(fx, host, capsys):
+    hooks = {"hooks": {"http": {"url": "https://hooks.example/new", "auth": "bearer"}}}
+    host.describe([{"name": "p", "shipped": False, "connections": [], "on": ["push"], "settings": {}}], connections_={**VERCEL, **hooks})
+    key = plugins_file(fx, "track: [staging, main]\n")
     connections.save_credential("*/github", "ghp_host")
     connections.save_credential(f"{key}/vercel", "vc")
+    connections.bind_credential("vercel", key, VERCEL["vercel"])
+    connections.save_credential(f"{key}/hooks", "given-for-the-old-url")
+    connections.bind_credential("hooks", key, {"http": {"url": "https://hooks.example/old"}})
     connections.save_credential("other/repo/vercel", "not-ours")
     a = item_with_branch(fx)
     refresh(fx.root, a)
     [call] = host.calls()
     assert call["secrets"] == {"repo": {"vercel": "vc"}, "host": {"github": "ghp_host"}}
+    assert (f"plugins: {key}'s hooks connection points elsewhere than where its secret here was given, so it gets none"
+            in capsys.readouterr().err)
     assert call["repoKey"] == key and call["hostConnections"]["github"]["http"]["url"] == "https://api.github.com"
     assert call["item"]["dir"] == str(fx.work) and call["item"]["branches"] == ["feat/a"]
-    assert call["repo"]["text"].startswith("track:")
+    assert YAML(typ="safe").load(call["config"]["text"]) == {"track": ["staging", "main"]} and call["config"]["code"] == {}
 
 
 def test_plugins_shows_each_instance_last_run_on_the_item(fx, host, capsys):
@@ -594,37 +655,20 @@ def test_connection_test_makes_one_read_only_call(fx, host, capsys):
 
 
 # ── where plugin code comes from ──────────────────────────────────────────────
-def test_plugins_come_from_the_default_branch_never_the_working_tree(fx, host, monkeypatch, capsys):
-    plugins_file(fx, "plugins: {safe: {on: [manual], attach: [{log: default-branch}]}}\n")
-    git(fx.work, "checkout", "-q", "-b", "evil")
-    fx.write(".todo-plugins/plugins.yaml", "plugins: {evil: {on: [manual], attach: [{log: WORKING-TREE}]}}\n")
-    git(fx.work, "commit", "-qm", "evil")
+def test_plugins_come_from_the_store_s_config_never_the_repo(fx, host, capsys):
+    host.describe([{"name": "safe", "shipped": False, "connections": [], "on": ["manual"], "settings": {}}])
+    plugins_file(fx, "plugins: {safe: {on: [manual], attach: [{log: from-config}]}}\n")
+    git(fx.work, "checkout", "-q", "main")
+    fx.write(".todo-plugins/plugins.yaml", "plugins: {evil: {on: [manual], attach: [{log: FROM-THE-REPO}]}}\n")
+    git(fx.work, "commit", "-qm", "a repo file")
+    git(fx.work, "push", "-q", "origin", "main")
     key = gitfacts.store_repo(fx.root)[0]
-    assert "safe" in plugins.Context(fx.root).repo(key)["payload"]["text"]
-    assert "evil" in plugins.Context(fx.root, local=True).repo(key)["payload"]["text"]
-    calls = []
-    real = plugins._git
-    monkeypatch.setattr(plugins, "_git", lambda d, *a, **kw: calls.append(a) or real(d, *a, **kw))
-    gone = "0" * 40
-    ctx = plugins.Context(fx.root, seen={key: {"default": "main", "tips": {"main": gone}, "dir": fx.work}})
-    assert "safe" in ctx.repo(key)["payload"]["text"]           # the local origin/main, no fetch
-    assert not any(a[0] == "fetch" for a in calls)
-    git(fx.work, "remote", "set-head", "origin", "-d")
-    ctx = plugins.Context(fx.root)
-    assert ctx.repo(key)["payload"] is None and ctx.repo(key)["described"] is None
+    payload = plugins.Context(fx.root).repo(key)["payload"]
+    assert "safe" in payload["text"] and "evil" not in payload["text"]
     a = fx.item("Alpha", [])
-    assert plugins.run(ctx, store.resolve_item(fx.root, a), {"type": "manual", "instance": "default"}) == []
-    assert capsys.readouterr().err.count(f"can't tell {key}'s default branch; run git remote set-head origin -a") == 1
-    assert host.calls() == []
-
-
-def test_git_facts_tips_name_the_default_branch(fx, host, monkeypatch):
-    monkeypatch.setattr(gitfacts, "POLL_EVERY", -1)
-    item_with_branch(fx)
-    git(fx.work, "remote", "set-head", "origin", "-d")
-    gitfacts.on_round(fx.root)                     # saves the ls-remote --symref answer
-    key = gitfacts.store_repo(fx.root)[0]
-    assert plugins.Context(fx.root).repo(key)["payload"]["text"].startswith("track:")
+    plugins.run(plugins.Context(fx.root), store.resolve_item(fx.root, a), {"type": "manual", "instance": "default"})
+    [call] = host.calls()
+    assert "safe" in call["config"]["text"] and "evil" not in json.dumps(call)
 
 
 # ── one host per instance ─────────────────────────────────────────────────────
@@ -646,6 +690,60 @@ def test_on_a_synced_store_the_cli_runs_only_what_the_server_leaves_it(fx, synce
     cli_runs(synced, fx.root, "p/default")
     refresh(fx.root, a)
     assert len(host.calls()) == 1 and plugin_notes(fx.root, a, "p/default")
+
+
+def test_a_synced_store_runs_the_server_s_config_and_starts_no_command_it_names(fx, synced, host):
+    a = item_with_branch(fx)
+    key = server_config(synced, fx, "connections:\n  local: {mcp: {command: node, args: [x.js]}}\nplugins:\n  p: {on: [push], code: p.js}\n",
+                        {"p": "export function run() {}"})
+    cli_runs(synced, fx.root, "p/default")
+    host.results({"refresh": [ran("p")]})
+    refresh(fx.root, a)
+    [call] = host.calls()
+    assert call["config"] == synced.plugin_config[key]["config"] and call["config"]["code"] == {"p": "export function run() {}"}
+    assert call["allowRepoCommands"] is False
+
+
+@needs_node
+def test_a_local_only_store_runs_a_code_plugin_from_the_file_beside_its_config(fx, capsys):
+    plugins_file(fx, "plugins:\n  hello: {on: [manual], code: hello.js}\n",
+                 {"hello.js": "export function run({ attach, item }) { attach.log('hello ' + item.id); }\n"})
+    a = fx.item("Alpha", [])
+    run_cli(fx.root, ["plugin", "run", a, "hello/default"])
+    assert f"{a}: hello/default (ran on this host): 1 added" in capsys.readouterr().out
+    assert [e["text"] for e in store.get_item(fx.root, a)["log"]] == [f"hello {a}"]
+
+
+@needs_node
+def test_enable_and_disable_switch_a_shipped_plugin_in_a_local_only_store(fx, capsys):
+    key = plugins_file(fx, "track: [main]\n")
+    run_cli(fx.root, ["plugin", "enable", "vercel-preview"])
+    assert capsys.readouterr().out == f"plugin vercel-preview: on in {key}\n"
+    assert yamlio.read(fx.root / plugin_config.LOCAL_FILE) == {key: {"track": ["main"], "plugins": {"vercel-preview": {"use": "shipped"}}}}
+    run_cli(fx.root, ["plugin", "disable", "vercel-preview"])
+    assert yamlio.read(fx.root / plugin_config.LOCAL_FILE) == {key: {"track": ["main"]}}
+    plugins_file(fx, "plugins:\n  rest: {on: [manual]}\n")
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "enable", "rest"])
+    assert f"{key} has a custom plugin named rest; rename it first" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "enable", "nope"])
+    assert "no plugin named nope ships with todo." in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "disable", "pr-link"])
+    assert "pr-link is on for every repo" in capsys.readouterr().err
+
+
+def test_enable_and_disable_go_to_the_server_on_a_synced_store(fx, synced, capsys):
+    key = gitfacts.store_repo(fx.root)[0]
+    run_cli(fx.root, ["plugin", "enable", "db-request"])
+    assert synced.plugin_config[key]["shipped"] == ["db-request"]
+    run_cli(fx.root, ["plugin", "disable", "db-request"])
+    assert synced.plugin_config[key]["shipped"] == []
+    synced.plugins_down = True
+    with pytest.raises(SystemExit):
+        run_cli(fx.root, ["plugin", "enable", "db-request"])
+    assert "The server didn't take it: fake offline" in capsys.readouterr().err
 
 
 def test_a_synced_store_without_the_server_runs_nothing_by_itself(fx, synced, host):
@@ -1197,13 +1295,6 @@ def test_a_stale_list_from_a_failing_server_runs_nothing(fx, synced, host):
     synced.plugins_down = True
     host.results({"refresh": [ran("p", [LINK])]})
     assert refresh(fx.root, a) == [] and host.calls() == []
-
-
-def test_an_older_copy_of_the_default_branch_says_so(fx, host, capsys):
-    key = gitfacts.store_repo(fx.root)[0]
-    ctx = plugins.Context(fx.root, seen={key: {"default": "main", "tips": {"main": "1" * 40}, "dir": fx.work}})
-    assert ctx.repo(key)["payload"] is not None
-    assert f"plugins: running {key}'s plugins from an older copy of main; run git fetch origin" in capsys.readouterr().err
 
 
 def test_no_cli_instance_on_the_server_list_costs_nothing(fx, synced, host, monkeypatch):

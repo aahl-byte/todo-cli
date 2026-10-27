@@ -4,7 +4,6 @@
 // the order the triggers were listed so the first that fires still wins.
 import type { Db } from "../db";
 import { checkoutDir, repoAllowed, repoKey } from "../checkouts";
-import type { Fetch } from "../gitfacts";
 import { storedActions, type ActionDef } from "../actions/model";
 import { outboundRules } from "../jira/rules";
 import { jiraConfig } from "../jira/config";
@@ -12,7 +11,7 @@ import { apiBase } from "../watchtower";
 import { lookup as dnsLookup } from "node:dns/promises";
 import net from "node:net";
 import { blockedAddress, type AddressGuard } from "./connections";
-import { hostConnections, hostSecrets, putGrants, putInstances, storedInstances } from "./store";
+import { hostConnections, hostSecrets, putGrants, putInstances, setShipped, storedInstances } from "./store";
 import { CREDENTIAL_HEADER } from "./limits";
 import { POST_REQUEST, type ConnectionDef, type HttpAuth, type InstanceDef, type Trigger } from "./types";
 
@@ -276,8 +275,7 @@ export function describePlan(plan: PortPlan): string {
     for (const i of list) lines.push(`    ${JSON.stringify(shown(i))}`);
   }
   for (const [plugin, caps] of Object.entries(plan.grants)) lines.push(`  grant ${plugin}: ${caps.join(", ")}`);
-  lines.push("each repo's .todo-plugins/plugins.yaml, on its default branch, enables them:", "  plugins:");
-  for (const plugin of Object.keys(plan.instances)) lines.push(`    ${plugin}: {use: shipped}`);
+  if (Object.keys(plan.instances).length) lines.push(`--write switches on, in each repo: ${Object.keys(plan.instances).join(", ")}`);
   if (Object.keys(plan.connections).length) lines.push(`TODO_PLUGIN_CONNECTIONS needs ${JSON.stringify(plan.connections)}`);
   for (const [name, what] of Object.entries(plan.secrets)) lines.push(`TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}=<${what}>`);
   if (Object.keys(plan.secrets).length) lines.push("(the port never prints a secret: copy each from the Action it names)");
@@ -288,15 +286,16 @@ export function describePlan(plan: PortPlan): string {
   return lines.join("\n");
 }
 
-/** Store the plan's instances and grants in each repo, beside instances already there; one a repo doesn't enable is reported, not written. */
-export async function writePlan(d: Db, plan: PortPlan, by: string, f?: Fetch): Promise<string[]> {
+/** Switch the plan's plugins on in each repo and store its instances and grants there, beside instances already there. */
+export async function writePlan(d: Db, plan: PortPlan, by: string): Promise<string[]> {
   const problems: string[] = [];
   for (const repo of plan.repos) {
     const stored = await storedInstances(d, plan.project, repo, { secrets: true });
     for (const [plugin, list] of Object.entries(plan.instances)) {
       const kept = (stored[plugin] ?? []).filter((i) => !list.some((x) => x.id === i.id));
       try {
-        await putInstances(d, plan.project, repo, plugin, [...kept, ...list], by, f);
+        await setShipped(d, plan.project, repo, plugin, true, by);
+        await putInstances(d, plan.project, repo, plugin, [...kept, ...list], by);
         if (plan.grants[plugin]) await putGrants(d, plan.project, repo, plugin, plan.grants[plugin], by);
       } catch (e) {
         problems.push(`${repo} ${plugin}: ${(e as Error).message}`);

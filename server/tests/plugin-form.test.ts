@@ -47,13 +47,13 @@ describe("template and connection settings", () => {
   it("finds the settings a plugin's connections list names, and makes each a choice of connection", () => {
     expect(connectionKeysOf(["{{settings.connection}}", "github", "{{ settings.other }}"])).toEqual(["connection", "other"]);
     const [f] = fieldsOf({ connection: S({ label: "Connection" }) }, ["connection"]);
-    expect([f.control, f.connection, f.note]).toEqual(["select", true, "The connection it calls; the server's own are offered only to instances stored here."]);
+    expect([f.control, f.connection, f.note]).toEqual(["select", true, "The connection it calls: this repo's, and for a plugin that ships with todo, the server's too."]);
   });
 
-  it("offers a repo-declared instance only the repo's connections, and a stored one the server's too", () => {
+  it("offers a custom plugin's instance the repo's connections and github, and a shipped one's the server's too", () => {
     const available = { repo: ["hooks", "jira"], host: ["github", "jira", "watchtower"] };
-    expect(connectionChoices(available, true)).toEqual(["hooks", "jira"]);
-    expect(connectionChoices(available, false)).toEqual(["github", "hooks", "jira", "watchtower"]);
+    expect(connectionChoices(available, false)).toEqual(["github", "hooks", "jira"]);
+    expect(connectionChoices(available, true)).toEqual(["github", "hooks", "jira", "watchtower"]);
   });
 
   it("names a connections list that holds a settings reference in words", () => {
@@ -148,7 +148,7 @@ const WATCH: PluginShape = {
 describe("instances", () => {
   const start = { id: "start", name: "Start agent", on: ["manual" as const], settings: { prompt: "/todo {{item.id}}", token: { set: true }, never: ["Done"] } };
   const review = { id: "review", name: "Review agent", on: [{ status: { to: "review" } }], settings: { never: ["Done"] } };
-  const draft = () => draftPlugin(WATCH, [start, review], {});
+  const draft = () => draftPlugin(WATCH, [start, review]);
 
   it("draft each instance with its triggers and settings, and plugin-scope settings once", () => {
     const d = draft();
@@ -182,7 +182,7 @@ describe("instances", () => {
 
   it("add, duplicate without secrets, and remove", () => {
     let d = addInstance(WATCH, draft());
-    expect(d.instances[2]).toMatchObject({ id: "instance", declared: false, storedAs: null, inherit: true });
+    expect(d.instances[2]).toMatchObject({ id: "instance", storedAs: null, inherit: true });
     d = duplicateInstance(WATCH, d, d.instances[0].key);
     expect(d.instances.map((i) => i.id)).toEqual(["start", "start-copy", "review", "instance"]);
     expect(d.instances[1]).toMatchObject({ name: "Start agent (copy)", storedAs: null });
@@ -207,7 +207,7 @@ describe("instances", () => {
 
   it("refuse bad or repeated ids and bad values, and warn about empty required settings", () => {
     const shape: PluginShape = { settings: { project: { label: "Project", type: "text" }, n: { label: "N", type: "number", optional: true } } };
-    let d = draftPlugin(shape, [{ id: "a", name: "a" }, { id: "b", name: "b" }], {});
+    let d = draftPlugin(shape, [{ id: "a", name: "a" }, { id: "b", name: "b" }]);
     d = editInstance(d, d.instances[1].key, { id: "a" });
     d = editInstance(d, d.instances[0].key, { settings: { project: "", n: "x" } });
     const out = savedInstances(shape, d);
@@ -224,31 +224,12 @@ describe("instances", () => {
   });
 });
 
-describe("instances the repo file declares", () => {
-  const shape: PluginShape = { on: ["push"], settings: { project: { label: "Project", type: "text" }, team: { label: "Team", type: "text", optional: true } } };
-  const base = { id: "web", name: "Web", settings: { project: "p1" } };
-
-  it("save nothing for an untouched one and only the difference for a changed one", () => {
-    let d = draftPlugin(shape, [base, { id: "extra", name: "Extra", settings: { project: "p2" } }], { web: base });
-    expect(savedInstances(shape, d).instances).toEqual([{ id: "extra", name: "Extra", settings: { project: "p2" } }]);
-    d = editInstance(d, d.instances[0].key, { settings: { project: "p1", team: "t" }, dryRun: true });
-    expect(savedInstances(shape, d).instances[0]).toEqual({ id: "web", name: "Web", dry_run: true, settings: { team: "t" } });
-  });
-
-  it("keep, then clear, a secret stored for one", () => {
+describe("a stored secret", () => {
+  it("is kept untouched, then cleared on request", () => {
     const secretShape: PluginShape = { settings: { token: { label: "Token", type: "secret", optional: true } } };
-    const repo = { id: "web", name: "Web" };
-    let d = draftPlugin(secretShape, [{ ...repo, settings: { token: { set: true } } }], { web: repo });
+    let d = draftPlugin(secretShape, [{ id: "web", name: "Web", settings: { token: { set: true } } }]);
     expect(savedInstances(secretShape, d).instances).toEqual([{ id: "web", name: "Web", settings: { token: { set: true } } }]);
     d = editInstance(d, d.instances[0].key, { settings: { token: { state: "cleared" } } });
     expect(savedInstances(secretShape, d).instances).toEqual([{ id: "web", name: "Web", settings: { token: null } }]);
-  });
-
-  it("switch one off instead of removing it, and keep the repo file's order", () => {
-    let d = draftPlugin(shape, [base, { id: "extra", name: "Extra" }], { web: base });
-    d = removeInstance(d, d.instances[0].key);
-    expect(d.instances[0]).toMatchObject({ id: "web", enabled: false });
-    expect(savedInstances(shape, d).instances[0]).toEqual({ id: "web", name: "Web", enabled: false });
-    expect(canMove(d, d.instances[1].key, -1)).toBe(false);
   });
 });
