@@ -24,6 +24,13 @@ async function save(project: string, body: unknown): Promise<Refusal | null> {
   return { error: err?.error ?? `the server answered ${res.status}`, status: res.status, private: !!err?.private };
 }
 
+/** Where an address lands, as the server's guard sees it. */
+async function landing(project: string, address: string): Promise<string | null> {
+  const q = new URLSearchParams({ address });
+  const res = await fetch(withBase(`/api/projects/${encodeURIComponent(project)}/plugins/connections?${q}`)).catch(() => null);
+  return res?.ok ? (await res.json().catch(() => null))?.address ?? null : null;
+}
+
 /** The host a link names, for "Make one at vercel.com/account/tokens". */
 const shortUrl = (url: string) => url.replace(/^https?:\/\//, "").replace(/\/$/, "");
 
@@ -61,7 +68,8 @@ export function ConnectionForm({ projectKey, name: fixedName, current, service, 
   const clash = !fixedName && taken.includes(trimmed);
   const badName = !fixedName && !!trimmed && !NAME.test(trimmed);
   const moved = !!own && (url.trim() !== (own.url ?? "") || authOf(kind, header) !== (own.auth ?? undefined));
-  const asksPrivate = !!refused?.private || !!current?.refused;
+  const [isPrivate, setPrivate] = useState(false);
+  const asksPrivate = isPrivate || !!refused?.private || !!current?.refused;
   const value = kind === "basic" ? (user || pass ? `${user}:${pass}` : "") : secret;
   const needsSecret = kind !== "none" && (!own?.held || moved);
   const label = service?.label ?? (trimmed || "the connection");
@@ -69,6 +77,18 @@ export function ConnectionForm({ projectKey, name: fixedName, current, service, 
   const missing = unchanged || !trimmed || clash || badName || (!fixed && !url.trim()) || (kind === "header" && !header.trim())
     || (needsSecret && !value) || (kind === "basic" && !!value && (!user || !pass)) || (asksPrivate && !allow && !own?.privateOk);
   const submit = () => run(async () => {
+    // A private address is allowed before it's saved, so ask where it lands first.
+    if (!fixed && !allow && !(own?.privateOk && !moved)) {
+      const at = await landing(projectKey, url.trim());
+      if (at === "link-local") {
+        setRefused({ error: "that's a link-local address, where a cloud's metadata service answers, which todo never calls", status: 400 });
+        return;
+      }
+      if (at === "private") {
+        setPrivate(true);
+        return;
+      }
+    }
     const def = fixed ? undefined : { http: { url: url.trim(), ...(kind === "none" ? {} : { auth: authOf(kind, header) }) } };
     const err = await save(projectKey, {
       name: trimmed, ...(def ? { def } : {}), ...(value ? { secret: value } : {}), base: own?.version ?? null, ...(allow ? { allowPrivate: true } : {}),
@@ -104,7 +124,7 @@ export function ConnectionForm({ projectKey, name: fixedName, current, service, 
         <label className="field conn-address">
           <span className="field-label">Address</span>
           <input aria-label={`${label} address`} placeholder={service?.placeholder ?? "https://…"} value={url}
-                 onChange={(e) => { setUrl(e.target.value); setRefused(null); setAllow(false); }} />
+                 onChange={(e) => { setUrl(e.target.value); setRefused(null); setAllow(false); setPrivate(false); }} />
         </label>
       )}
       {!fixed && (

@@ -2,7 +2,7 @@ import { scheduleRecompute } from "@/lib/gitfacts";
 import { GITHUB } from "@/lib/github-token";
 import { authed, json } from "@/lib/http";
 import { NoSecretKey } from "@/lib/plugins/secrets";
-import { PluginConflict, PluginInputError, PrivateAddress, projectConnections, putProjectConnection } from "@/lib/plugins/store";
+import { addressKind, PluginConflict, PluginInputError, PrivateAddress, projectConnections, putProjectConnection } from "@/lib/plugins/store";
 
 type Ctx = { params: Promise<{ key: string }> };
 
@@ -15,10 +15,14 @@ async function project(req: Request, ctx: Ctx) {
   return { ...a, key };
 }
 
-/** The project's own connections, which plugins that ship with todo use in every repo of it; never a secret. */
+/** The project's own connections, which plugins that ship with todo use in every repo of it; never a secret. With `?address=`,
+ * where that address lands instead: public, private (saving it needs allowing), link-local (never saved), or null when it doesn't
+ * resolve, so the page can ask before it saves. */
 export async function GET(req: Request, ctx: Ctx) {
   const a = await project(req, ctx);
   if (a instanceof Response) return a;
+  const address = new URL(req.url).searchParams.get("address");
+  if (address !== null) return json({ address: await addressKind(address) });
   return json({ connections: await projectConnections(a.d, a.key) });
 }
 

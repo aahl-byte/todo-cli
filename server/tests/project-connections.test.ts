@@ -211,6 +211,13 @@ describe("the trust rule", () => {
 describe("a private address", () => {
   const WT = { http: { url: "http://127.0.0.1:10010/latest" } };
 
+  it("is told apart before saving, so the page can ask first", async () => {
+    const where = async (address: string) => (await (await connectionsGET(
+      req(`/api/projects/p/plugins/connections?address=${encodeURIComponent(address)}`, "GET", w.tokens.bob), params("p"))).json()).address;
+    expect([await where("http://127.0.0.1:10010/latest"), await where("http://169.254.169.254/"), await where("https://93.184.216.34"),
+            await where("nope")]).toEqual(["private", "link-local", "public", null]);
+  });
+
   it("is refused until someone allows it, which records who and when", async () => {
     await expect(put({ name: "watchtower", def: WT, base: null })).rejects.toThrow(PrivateAddress);
     const res = await connectionsPUT(req("/api/projects/p/plugins/connections", "PUT", w.tokens.bob, { name: "watchtower", def: WT, base: null }), params("p"));

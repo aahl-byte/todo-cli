@@ -507,7 +507,7 @@ function webUrl(text: string | null | undefined): URL | null {
 /** Where saving a host connection at `url` lands: public (or opened to every project by TODO_PLUGIN_ALLOW_HOSTS), private, which
  * someone has to allow, link-local, which only TODO_PLUGIN_ALLOW_HOSTS opens; null when it doesn't resolve here, so that can't
  * be told. */
-async function addressKind(url: string, lookup?: AddressGuard["lookup"]) {
+export async function addressKind(url: string, lookup?: AddressGuard["lookup"]) {
   return privateAddress(url, { allow: allowEntries().filter((e) => !e.includes("=")), ...(lookup ? { lookup } : {}) });
 }
 
