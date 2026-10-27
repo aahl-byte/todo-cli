@@ -11,7 +11,7 @@ const act = await import("@/app/plugin-actions");
 const { GET: pluginsGET, PUT: pluginsPUT } = await import("@/app/api/projects/[key]/plugins/route");
 const { automationPage, itemButtons, itemNotices, pluginsPage } = await import("@/lib/plugin-views");
 const { draftPlugin, editInstance, savedInstances } = await import("@/lib/plugin-form");
-const { putGrants } = await import("@/lib/plugins/store");
+const { putGrants, putProjectConnection } = await import("@/lib/plugins/store");
 const { resetGitFactsCache } = await import("@/lib/gitfacts");
 
 const FILE = [
@@ -52,7 +52,6 @@ beforeEach(async () => {
 describe("the plugins settings page", () => {
   it("lists each repo's plugins with their instances, connections, and a custom plugin's load errors beside it", async () => {
     const page = await pluginsPage(w.d, "p");
-    expect(page.ownersSet).toBe(true);
     expect(page.repos.map((r) => [r.repo, r.listed?.by, r.checkout, r.refusal])).toEqual([["acme/web", "alice", false, null]]);
     const [repo] = page.repos;
     expect(repo.plugins.map((p) => [p.name, p.shipped, p.always])).toEqual([["pr-link", true, true], ["note", false, false], ["ping", false, false]]);
@@ -98,12 +97,22 @@ describe("the plugins settings page", () => {
     expect(gone.branches).toEqual({ names: [], default: null, visible: false });
   });
 
-  it("says why a repo gets no plugins", async () => {
+  it("says why a repo gets no plugins, and how to add it here", async () => {
+    await w.one("alice", item("I2", { extra: { repo: "other/thing" } }));
+    const other = (await pluginsPage(w.d, "p")).repos.find((r) => r.repo === "other/thing")!;
+    expect(other.refusal).toBe("other/thing isn't one of this project's repos, so todo doesn't read it from GitHub or run its plugins. "
+      + "It becomes one when it's added under Settings → Automation.");
+    expect(other.refusal).not.toMatch(/TODO_|admin/);
+    expect([other.addable, other.plugins]).toEqual([true, []]);
+  });
+
+  it("uses a repo added here whatever its owner, read with the project's own GitHub token, never the server's", async () => {
     vi.stubEnv("TODO_PLUGIN_OWNERS", "");
-    const page = await pluginsPage(w.d, "p");
-    expect(page.ownersSet).toBe(false);
-    expect(page.repos[0].refusal).toContain("TODO_PLUGIN_OWNERS");
-    expect(page.repos[0].plugins).toEqual([]);
+    await w.d.query("update project_plugin_repos set repo = 'other/thing'");
+    const other = async () => (await pluginsPage(w.d, "p")).repos.find((r) => r.repo === "other/thing")!;
+    expect([(await other()).refusal, (await other()).github]).toEqual([null, null]);
+    await putProjectConnection(w.d, "p", { name: "github", secret: "page-token", base: null }, "alice");
+    expect((await other()).github).toBe("page");
   });
 
   it("shows who granted a capability and when", async () => {
@@ -164,8 +173,10 @@ describe("the Automation page", () => {
     expect(page.repos.map((r) => r.repo)).toEqual(["acme/web", "acme/cli"]);
     expect(page.selected?.repo).toBe("acme/web");
     expect(page.selected?.plugins.map((p) => p.name)).toContain("note");
-    expect(page.pluginsOn).toBe(true);
-    expect(page.host).toEqual([{ name: "github", auth: true, held: true }, { name: "vercel", auth: true, held: false }]);
+    expect(page.host.map((h) => [h.name, h.source, h.auth, h.held, h.url])).toEqual([
+      ["github", "server", "bearer", true, "https://api.github.com"], ["vercel", "server", "bearer", false, "https://api.vercel.com"]]);
+    expect(page.services.find((s) => s.name === "vercel")).toMatchObject({ url: "https://api.vercel.com", tokenUrl: "https://vercel.com/account/tokens" });
+    expect(page.secretProblem).toBeNull();
     expect((await automationPage(w.d, "p", "acme/cli")).selected?.repo).toBe("acme/cli");
   });
 
@@ -208,7 +219,7 @@ describe("the repo allowlist", () => {
       ["acme/api", 1, false, false, false],
       ["acme/docs", 1, false, true, true],
       ["acme/web", 1, false, false, false],
-      ["other/thing", 1, false, false, true],
+      ["other/thing", 1, false, true, true],
       ["acme/cli", 0, true, false, false],
     ]);
   });

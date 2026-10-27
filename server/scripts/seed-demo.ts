@@ -6,6 +6,7 @@ import { applyOps, type Op } from "../lib/apply";
 import { addProject, addUser } from "../lib/auth";
 import { addDisplay } from "../lib/display";
 import { db } from "../lib/db";
+import { tokenHash } from "../lib/github-token";
 import { putConnection, putCustom, putInstances, putTrack, setShipped } from "../lib/plugins/store";
 import { ulid } from "../lib/ulid";
 
@@ -96,8 +97,8 @@ await child(tz, "dev", "check", { kind: "env-var", title: "set TZ", payload: "TZ
 await child(tz, "dev", "check", { kind: "manual-step", title: "spot-check reports", timing: "post-deploy" });
 
 // acme/web's plugin config as Settings → Automation would leave it: deploy branches, three shipped plugins switched on, a
-// connection, and two custom plugins with instances. Settings → Automation and the item's plugin button work without GitHub
-// once the server runs with TODO_PLUGIN_OWNERS=acme.
+// connection, and two custom plugins with instances. No connection a shipped plugin calls is set: the page sets those up.
+// Settings → Automation and the item's plugin button work without GitHub once the server runs with TODO_PLUGIN_OWNERS=acme.
 const NOTES_LINK = `description: Links the item to its page in the team's notes.
 on: [manual]
 settings:
@@ -128,8 +129,10 @@ await putCustom(d, "web", "acme/web", { name: "ping", manifest: PING }, "dev");
 await putInstances(d, "web", "acme/web", "notes-link", [{ id: "go", name: "Go", button: "Link notes" }], "pat");
 await putInstances(d, "web", "acme/web", "rest", [{ id: "hook", name: "Hook", settings: { connection: "hooks", path: "/notify/{{item.id}}" } }], "pat");
 // Each repo's branches as the tick would have polled them, so the deploy-branches field has the remote's to suggest.
-const polled = (repo: string, branches: string[]) => d.query("insert into repo_polls (repo, tips, polled_at) values ($1, $2::jsonb, now())",
-  [repo, JSON.stringify(Object.fromEntries(branches.map((b, i) => [b, String(i + 1).repeat(40)])))]);
+// Polled with the demo server's GITHUB_TOKEN, as the README starts it, so its deploy-branch field offers these while GitHub refuses it.
+const polled = (repo: string, branches: string[]) => d.query(
+  "insert into repo_polls (repo, tips, polled_at, polled_with) values ($1, $2::jsonb, now(), $3)",
+  [repo, JSON.stringify(Object.fromEntries(branches.map((b, i) => [b, String(i + 1).repeat(40)]))), tokenHash("demo")]);
 await polled("acme/web", ["main", "staging", "feat/api-tokens", "feat/signed-hooks"]);
 await polled("acme/api", ["main", "staging", "feat/rate-limit"]);
 const playground = await item("web", "Plugin playground", { ...W, priority: "low", extra: { repo: "acme/web" } }, "Try the repo's plugins here.");
@@ -155,8 +158,8 @@ await d.query("insert into git_facts (project, item_uid, data, computed_by) valu
             chain: true, evidence: "feat/signed-hooks's PR is based on feat/api-tokens" }],
   waits_on: [dep.id] })]);
 // Settings → Automation in every state: pr-link on with a run, plugins that need setup in acme/web, jobs the Jira bridge
-// and Actions do today, and repos items name that the project can't read yet: acme/docs it can add, legacy/billing it
-// can't, since the demo server reads only acme's repos.
+// and Actions do today, and repos items name that the project doesn't read yet: acme/docs, and legacy/billing, whose owner
+// the server's own token doesn't read, so it needs a GitHub token of the project's once it's added.
 await d.query(
   `insert into plugin_runs (project, item_uid, repo, plugin, instance, event, result, at)
    values ('web', $1, 'acme/web', 'pr-link', 'default', $2::jsonb, $3::jsonb, now() - interval '6 minutes')`,

@@ -1,9 +1,11 @@
+import crypto from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as factsPOST } from "@/app/api/projects/[key]/git-facts/route";
 import { describe as describeResults } from "@/lib/action-helpers";
 import { parse } from "yaml";
 import { computeProject as computeFrom, itemGitFacts as factsFor, recomputing, resetGitFactsCache, storedFacts, type Fetch } from "@/lib/gitfacts";
 import { recordCheckout } from "@/lib/checkouts";
+import { putProjectConnection } from "@/lib/plugins/store";
 import { child, item, set, world, type World } from "./helpers";
 
 let w: World;
@@ -597,13 +599,29 @@ describe("a dependency note on a PR in another repo", () => {
     expect((await facts("B")).needs).toMatchObject([{ state: "unknown", reason: "couldn't check PR #3 against staging" }]);
   });
 
-  it("reads no PR of an owner the server doesn't read", async () => {
+  it("reads no PR with the server's token for a project whose own token doesn't decrypt", async () => {
+    await noted({});
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await putProjectConnection(w.d, "p", { name: "github", secret: "page-token", base: null }, "alice");
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    const gh = fakeGitHub(spec((p) => (p === "/repos/acme/db/pulls/3" ? dbPr("open") : undefined)));
+    await computeProject(w.d, "p", gh.impl);
+    expect(gh.calls).toEqual([]);
+  });
+
+  it("reads no PR of an owner the server's token doesn't read, until the project gives a token of its own", async () => {
     await noted({});
     await w.d.query("update notes set meta = jsonb_set(meta, '{needs}', '\"https://github.com/elsewhere/db/pull/3\"') where uid = 'N1'");
     const gh = fakeGitHub(spec(() => undefined));
     await computeProject(w.d, "p", gh.impl);
-    expect((await facts("B")).needs).toMatchObject([{ state: "unknown", reason: expect.stringContaining("TODO_PLUGIN_OWNERS") }]);
+    expect((await facts("B")).needs).toMatchObject([{ state: "unknown",
+      reason: "todo has no GitHub token that reads elsewhere/db; give the project one on Settings → Automation" }]);
     expect(gh.calls.some((c) => c.includes("elsewhere"))).toBe(false);
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await putProjectConnection(w.d, "p", { name: "github", secret: "page-token", base: null }, "alice");
+    resetGitFactsCache();
+    await computeProject(w.d, "p", gh.impl);
+    expect(gh.calls.some((c) => c.includes("/repos/elsewhere/db/pulls/3"))).toBe(true);
   });
 });
 

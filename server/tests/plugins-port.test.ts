@@ -106,16 +106,19 @@ describe("plugins-port", () => {
     });
     expect(plan.secrets).toEqual({ "rest-hooks-example": "the X-Token header of action notify",
                                    "rest-api-example": "the bearer token in the Authorization header of action ping",
-                                   jira: "JIRA_EMAIL:JIRA_API_TOKEN" });
+                                   jira: "the Jira email and API token" });
     expect(plan.allowHosts).toEqual(["127.0.0.1:10010"]);
     expect(plan.notes).toContain("1 item(s) name no GitHub repo, so no plugin runs for them");
     expect(plan.notes).toContain('action send-to-watchtower dir: {{project.dir}} is fixed as "/work/web", its value now; it no longer follows the CLI\'s reports');
     const text = describePlan(plan);
     expect(text).toContain("--write switches on, in each repo: rest, watchtower-session, jira-transition, jira-issue");
-    expect(text).toContain("TODO_PLUGIN_SECRET_JIRA=<JIRA_EMAIL:JIRA_API_TOKEN>");
-    expect(text).toContain("TODO_PLUGIN_ALLOW_HOSTS needs 127.0.0.1:10010");
+    const page = "on Settings → Automation, under This project's connections";
+    expect(text).toContain(`give jira the Jira email and API token ${page}`);
+    expect(text).toContain(`allow todo to call 127.0.0.1:10010, a private address, ${page}`);
+    expect(text).toContain(`add jira ${page}: {"http":{"url":"https://acme.atlassian.net","auth":"basic"}}`);
     expect(text).toContain("every instance is stored in dry-run");
-    expect(text).toContain("TODO_PLUGIN_SECRET_REST_HOOKS_EXAMPLE=<the X-Token header of action notify>");
+    expect(text).toContain(`give rest-hooks-example the X-Token header of action notify ${page}`);
+    expect(text).not.toMatch(/TODO_PLUGIN_|abc|s3cr3t/);
     expect(text).not.toMatch(/abc|s3cr3t/);
   });
 

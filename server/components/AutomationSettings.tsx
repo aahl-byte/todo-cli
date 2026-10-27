@@ -1,28 +1,33 @@
 "use client";
 // Project settings → Automation: pick a repo, then one row per thing todo can
 // do for its items, each saying whether it's on, what it last did, or the steps
-// that turn it on and who takes them. A shipped plugin's row has its switch; a
-// row's settings (deploy branches, instances, credentials, grants), a custom
-// plugin's YAML and code, and its run history open beneath it; the repo's
-// connections and a new custom plugin follow the rows. Everything saves through
-// the /plugins API routes, the repo list through server actions.
+// that turn it on, every one taken here. A shipped plugin's row has its switch;
+// a row's settings (deploy branches, instances, credentials, grants), the
+// connection a step asks for, a custom plugin's YAML and code, and its run
+// history open beneath it; the project's and the repo's connections and a new
+// custom plugin follow the rows. Everything saves through the /plugins API
+// routes, the repo list through server actions.
 import Link from "next/link";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { addPluginRepo, removePluginRepo } from "@/app/plugin-actions";
 import {
-  automationRows, CUSTOM_STARTER, repoChoices, splitBranches, suggestBranches, WHO, type AutomationRow, type LastRun, type RowState, type Step,
+  automationRows, CUSTOM_STARTER, repoChoices, splitBranches, suggestBranches, type AutomationRow, type LastRun, type RowState, type Step,
 } from "@/lib/automation";
 import { withBase } from "@/lib/base";
-import { addInstance as addInstanceTo, describeConnections, describeTrigger, draftPlugin, fieldsOf, savedInstances, type PluginDraft } from "@/lib/plugin-form";
+import {
+  addInstance as addInstanceTo, describeConnections, describeTrigger, draftPlugin, fieldsOf, savedInstances, type InstanceDraft, type PluginDraft,
+} from "@/lib/plugin-form";
 import { checkCustom } from "@/lib/plugins/config";
 import { configurable, connectionNotice } from "@/lib/plugin-summary";
-import type { AutomationPage, DashConnection, DashCustom, DashPlugin, DashRepo, RepoEntry } from "@/lib/plugin-views";
-import { InstanceCard, RunLog, SettingInput } from "./PluginInstance";
+import type { AutomationPage, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry } from "@/lib/plugin-views";
+import { authKind, authOf, serviceLabel, type AuthKind, type Service } from "@/lib/services";
+import { ConnectionForm, connectionReady, connectionState } from "./ConnectionForm";
+import { InstanceCard, RunLog, SettingInput, type NewConnection } from "./PluginInstance";
 import { notify } from "./Toaster";
+import { VercelPick } from "./VercelPick";
 import { Ago, Stamp } from "./ui";
 
-/** Send a write to a plugins API route; the error text when it's refused. */
 /** Send a write to a plugins API route; what refused it, with the status, or null when it went through. */
 async function sendFor(project: string, path: string, method: "PUT" | "POST" | "DELETE", body: unknown):
     Promise<{ error: string; status: number } | null> {
@@ -54,11 +59,13 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 const STATE_LABEL: Record<RowState, string> = { on: "On", setup: "Needs setup", elsewhere: "Elsewhere", off: "Off" };
 
-export function AutomationSettings({ projectKey, page, statuses, secretKeySet }: {
-  projectKey: string; page: AutomationPage; statuses: readonly string[]; secretKeySet: boolean;
-}) {
+/** What the page knows of the project's connections, which a row's steps and forms read. */
+interface Conns { host: HostConnection[]; services: Service[]; secretProblem: string | null }
+
+export function AutomationSettings({ projectKey, page, statuses }: { projectKey: string; page: AutomationPage; statuses: readonly string[] }) {
   const repo = page.selected;
-  const rows = repo ? automationRows(repo, { project: projectKey, bridge: page.bridge, host: page.host }) : [];
+  const conns: Conns = { host: page.host, services: page.services, secretProblem: page.secretProblem };
+  const rows = repo ? automationRows(repo, { project: projectKey, bridge: page.bridge, host: page.host, services: page.services }) : [];
   return (
     <div className="automation">
       <h1>Automation</h1>
@@ -66,21 +73,15 @@ export function AutomationSettings({ projectKey, page, statuses, secretKeySet }:
         todo can keep items up to date from GitHub, Vercel and Jira on its own. Pick a repo to see what it does for that repo&apos;s
         items, and how to turn more on.
       </p>
-      {!page.ownersSet && (
-        <p className="hot automation-off">Automation is off on this server. Its admin sets <code>TODO_PLUGIN_OWNERS</code> to the GitHub owners whose repos it reads.</p>
-      )}
-      {page.ownersSet && !page.pluginsOn && (
-        <p className="hot automation-off">Automation is off on this server. Its admin sets <code>GITHUB_TOKEN</code> so it can read GitHub.</p>
-      )}
       <RepoPicker projectKey={projectKey} repos={page.repos} selected={repo} />
       {repo && (
         <div className="auto-rows" data-repo={repo.repo}>
           {rows.map((r) => (
-            <Row key={`${repo.repo}/${r.key}`} projectKey={projectKey} repo={repo} row={r} statuses={statuses} secretKeySet={secretKeySet}
-                 shipped={page.shipped} />
+            <Row key={`${repo.repo}/${r.key}`} projectKey={projectKey} repo={repo} row={r} statuses={statuses} conns={conns} shipped={page.shipped} />
           ))}
           <AddCustom key={repo.repo} projectKey={projectKey} repo={repo} shipped={page.shipped} />
-          <Connections projectKey={projectKey} repo={repo} secretKeySet={secretKeySet} serverNames={page.host.map((h) => h.name)} />
+          <ProjectConnections projectKey={projectKey} repo={repo} conns={conns} />
+          <Connections projectKey={projectKey} repo={repo} secretProblem={page.secretProblem} projectNames={page.host.map((h) => h.name)} />
         </div>
       )}
     </div>
@@ -188,7 +189,10 @@ function RepoNotes({ repo }: { repo: DashRepo }) {
   return (
     <div className="repo-source">
       {repo.branches.visible === false && (
-        <p className="hint">GitHub doesn&apos;t show {repo.repo} to the server, so todo can&apos;t read its branches, commits or pull requests.</p>
+        <p className="hint">
+          GitHub doesn&apos;t show {repo.repo} to {repo.github === "page" ? "this project's" : "the server's"} token, so todo can&apos;t read its
+          branches, commits or pull requests.
+        </p>
       )}
       {repo.errors.length > 0 && (
         <>
@@ -201,7 +205,8 @@ function RepoNotes({ repo }: { repo: DashRepo }) {
 }
 
 // ── one row ───────────────────────────────────────────────────────────────────
-type Panel = "setup" | "edit" | "history";
+/** A row's settings, a custom plugin's editor, its history, or the form for a connection one of its steps asks for. */
+type Panel = "setup" | "edit" | "history" | `connect:${string}`;
 /** Panels a person opened, kept open across the refresh a save causes. */
 const opened = new Map<string, Panel>();
 
@@ -210,8 +215,8 @@ function hasSettings(p: DashPlugin, repo: DashRepo): boolean {
     || repo.connections.some((c) => c.usedBy.includes(p.name) && !!connectionNotice(p.shipped, c)?.form);
 }
 
-function Row({ projectKey, repo, row, statuses, secretKeySet, shipped }: {
-  projectKey: string; repo: DashRepo; row: AutomationRow; statuses: readonly string[]; secretKeySet: boolean; shipped: string[];
+function Row({ projectKey, repo, row, statuses, conns, shipped }: {
+  projectKey: string; repo: DashRepo; row: AutomationRow; statuses: readonly string[]; conns: Conns; shipped: string[];
 }) {
   const id = `${repo.repo}/${row.key}`;
   const [panel, setPanelState] = useState<Panel | null>(() => opened.get(id) ?? null);
@@ -245,7 +250,8 @@ function Row({ projectKey, repo, row, statuses, secretKeySet, shipped }: {
           </p>
         ))}
         {showSteps && row.steps.length > 0 && (
-          <Steps steps={row.steps} lead={row.state === "setup" ? "To finish:" : "To turn on:"} onSetup={stepPanel ? () => setPanel(stepPanel) : null} />
+          <Steps steps={row.steps} lead={row.state === "setup" ? "To finish:" : "To turn on:"} onSetup={stepPanel ? () => setPanel(stepPanel) : null}
+                 open={panel} onConnect={(name) => toggle(`connect:${name}`)} />
         )}
         {((settings && !stepOpens) || (row.custom && !(stepOpens && stepPanel === "edit")) || history) && (
           <div className="auto-actions">
@@ -260,8 +266,13 @@ function Row({ projectKey, repo, row, statuses, secretKeySet, shipped }: {
             {history && <button type="button" className="link-btn" aria-expanded={panel === "history"} onClick={() => toggle("history")}>History ›</button>}
           </div>
         )}
+        {panel?.startsWith("connect:") && (
+          <div className="auto-panel connect-panel">
+            <HostForm projectKey={projectKey} name={panel.slice("connect:".length)} conns={conns} onClose={() => setPanel(null)} />
+          </div>
+        )}
         {panel === "setup" && row.branches && <BranchesPanel key={repo.track.join(",")} projectKey={projectKey} repo={repo} />}
-        {panel === "setup" && p && <SetupPanel projectKey={projectKey} repo={repo} plugin={p} statuses={statuses} secretKeySet={secretKeySet} />}
+        {panel === "setup" && p && <SetupPanel projectKey={projectKey} repo={repo} plugin={p} statuses={statuses} conns={conns} />}
         {panel === "edit" && row.custom && (
           <CustomEditor key={`${row.custom.name}:${row.custom.updated.at}`} projectKey={projectKey} repo={repo} custom={row.custom} shipped={shipped}
                         onClose={() => setPanel(null)} />
@@ -313,24 +324,41 @@ function Last({ projectKey, last }: { projectKey: string; last: LastRun }) {
   );
 }
 
-function Steps({ steps, lead, onSetup }: { steps: Step[]; lead: string; onSetup: (() => void) | null }) {
+function Steps({ steps, lead, onSetup, open, onConnect }: {
+  steps: Step[]; lead: string; onSetup: (() => void) | null; open: Panel | null; onConnect: (name: string) => void;
+}) {
   return (
     <div className="auto-steps">
       <span className="faint">{lead}</span>
       <ol>
         {steps.map((s, i) => (
-          <li key={i} className={s.done ? "done" : ""} data-who={s.who}>
+          <li key={i} className={s.done ? "done" : ""} data-connect={s.connect}>
             <span className="step-mark" aria-label={s.done ? "done" : undefined}>{s.done ? "✓" : `${i + 1}.`}</span>
-            <span className="who">{WHO[s.who]}</span>
             <div className="step-body">
               {s.text}
               {s.setup && !s.done && onSetup && <> <button type="button" className="link-btn" onClick={onSetup}>Set up ›</button></>}
-              {s.code && <div className="step-env">{s.code.split("\n").map((v) => <code key={v} className="env">{v}</code>)}</div>}
+              {s.connect && (
+                <> <button type="button" className="link-btn" aria-expanded={open === `connect:${s.connect}`} onClick={() => onConnect(s.connect!)}>
+                  {s.done ? "Change" : "Set up"} ›
+                </button></>
+              )}
             </div>
           </li>
         ))}
       </ol>
     </div>
+  );
+}
+
+/** The form for one of the project's connections, filled in from what's there or the service's usual address. */
+function HostForm({ projectKey, name, conns, onClose, onSaved }: {
+  projectKey: string; name: string | null; conns: Conns; onClose: () => void; onSaved?: (name: string) => void;
+}) {
+  const current = name ? conns.host.find((h) => h.name === name) ?? null : null;
+  const service = name ? conns.services.find((s) => s.name === name) ?? null : null;
+  return (
+    <ConnectionForm projectKey={projectKey} name={name} current={current} service={service} secretProblem={conns.secretProblem}
+                    taken={conns.host.map((h) => h.name)} onCancel={onClose} onDone={(n) => { onSaved?.(n); onClose(); }} />
   );
 }
 
@@ -355,8 +383,8 @@ function cadence(p: DashPlugin): string {
   ].filter(Boolean).join(" · ");
 }
 
-function SetupPanel({ projectKey, repo, plugin, statuses, secretKeySet }: {
-  projectKey: string; repo: DashRepo; plugin: DashPlugin; statuses: readonly string[]; secretKeySet: boolean;
+function SetupPanel({ projectKey, repo, plugin, statuses, conns }: {
+  projectKey: string; repo: DashRepo; plugin: DashPlugin; statuses: readonly string[]; conns: Conns;
 }) {
   // Connections a person can't act on here are the row's steps already.
   const connections = repo.connections.filter((c) => c.usedBy.includes(plugin.name) && connectionNotice(plugin.shipped, c)?.form);
@@ -364,13 +392,35 @@ function SetupPanel({ projectKey, repo, plugin, statuses, secretKeySet }: {
   return (
     <div className="auto-panel plugin-card" data-plugin={plugin.name}>
       {line && <p className="plugin-meta faint">{line}.</p>}
-      {connections.map((c) => (
-        <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={plugin.shipped} secretKeySet={secretKeySet} />
-      ))}
+      {connections.map((c) => (connectionNotice(plugin.shipped, c)?.form === "host"
+        ? <HostLine key={c.name} projectKey={projectKey} name={c.name} conns={conns} />
+        : <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={plugin.shipped} secretProblem={conns.secretProblem} />))}
       {plugin.capabilities.includes("post-request") && <Grant projectKey={projectKey} repo={repo.repo} plugin={plugin} />}
       {configurable(plugin) && (
-        <Configure key={`${JSON.stringify(plugin.instances)}:${JSON.stringify(plugin.grant)}`} projectKey={projectKey} repo={repo} plugin={plugin} statuses={statuses} />
+        <Configure key={`${JSON.stringify(plugin.instances)}:${JSON.stringify(plugin.grant)}`} projectKey={projectKey} repo={repo} plugin={plugin}
+                   statuses={statuses} conns={conns} />
       )}
+    </div>
+  );
+}
+
+/** One of the project's connections in a line, with its form a click away. */
+function HostLine({ projectKey, name, conns, label = "Connection" }: { projectKey: string; name: string; conns: Conns; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const current = conns.host.find((h) => h.name === name) ?? null;
+  const service = conns.services.find((s) => s.name === name) ?? null;
+  const state = connectionState(current, service);
+  return (
+    <div className="conn-row host-conn" data-connection={name} data-source={current?.source ?? "none"}>
+      <div className="rrow">
+        {label && <span className="faint">{label}</span>}
+        <span className="mono">{name}:</span>
+        <span className={`grow wrap ${state.hot ? "hot" : "faint"}`}>{state.text}</span>
+        <button type="button" className="btn" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {current?.source === "page" ? "Change" : connectionReady(current, service) ? "Use this project's own" : `Connect ${serviceLabel(conns.services, name)}`}
+        </button>
+      </div>
+      {open && <HostForm projectKey={projectKey} name={name} conns={conns} onClose={() => setOpen(false)} />}
     </div>
   );
 }
@@ -503,25 +553,47 @@ function AddCustom({ projectKey, repo, shipped }: { projectKey: string; repo: Da
 // ── connections ───────────────────────────────────────────────────────────────
 const AUTHS = ["none", "bearer", "basic", "header"] as const;
 
-function Connections({ projectKey, repo, secretKeySet, serverNames }: {
-  projectKey: string; repo: DashRepo; secretKeySet: boolean; serverNames: string[];
-}) {
-  const declared = repo.connections.filter((c) => c.origin === "repo");
+/** The project's own connections, and the server's it uses until it sets its own, for plugins that ship with todo. */
+function ProjectConnections({ projectKey, repo, conns }: { projectKey: string; repo: DashRepo; conns: Conns }) {
+  const [adding, setAdding] = useState(false);
   return (
-    <section className="auto-connections" id="connections">
-      <div className="label sub">Connections</div>
+    <section className="auto-connections project-connections" id="project-connections">
+      <div className="label sub">This project&apos;s connections</div>
       <p className="hint">
-        Endpoints this repo&apos;s custom plugins call, and that an instance of a shipped one can name. A credential stays on the server, encrypted.
+        Endpoints the plugins that ship with todo call, in every repo of this project. A token stays on the server, encrypted, and a custom plugin never gets one.
       </p>
-      {declared.map((c) => (
-        <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={false} secretKeySet={secretKeySet} removable />
-      ))}
-      <AddConnection projectKey={projectKey} repo={repo.repo} taken={declared.map((c) => c.name)} serverNames={serverNames} />
+      {conns.host.map((h) => <HostLine key={h.name} projectKey={projectKey} name={h.name} conns={conns} label="" />)}
+      {adding
+        ? <div className="auto-panel"><HostForm projectKey={projectKey} name={null} conns={{ ...conns, host: [...conns.host, ...repoNames(repo)] }} onClose={() => setAdding(false)} /></div>
+        : <button type="button" className="add" onClick={() => setAdding(true)}><span className="pl">+</span>Add a connection</button>}
     </section>
   );
 }
 
-function AddConnection({ projectKey, repo, taken, serverNames }: { projectKey: string; repo: string; taken: string[]; serverNames: string[] }) {
+/** The repo's own connection names, as connections a new one of the project's can't be named after. */
+const repoNames = (repo: DashRepo): HostConnection[] => repo.available.repo.map((name) => ({
+  name, source: "page", kind: "http", url: null, auth: null, held: false, unreadable: false, refused: false, privateOk: null, version: null, updated: null,
+}));
+
+function Connections({ projectKey, repo, secretProblem, projectNames }: {
+  projectKey: string; repo: DashRepo; secretProblem: string | null; projectNames: string[];
+}) {
+  const declared = repo.connections.filter((c) => c.origin === "repo");
+  return (
+    <section className="auto-connections" id="connections">
+      <div className="label sub">This repo&apos;s connections</div>
+      <p className="hint">
+        Endpoints this repo&apos;s custom plugins call, and that an instance of a shipped one can name. A credential stays on the server, encrypted.
+      </p>
+      {declared.map((c) => (
+        <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={false} secretProblem={secretProblem} removable />
+      ))}
+      <AddConnection projectKey={projectKey} repo={repo.repo} taken={declared.map((c) => c.name)} projectNames={projectNames} />
+    </section>
+  );
+}
+
+function AddConnection({ projectKey, repo, taken, projectNames }: { projectKey: string; repo: string; taken: string[]; projectNames: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -532,11 +604,11 @@ function AddConnection({ projectKey, repo, taken, serverNames }: { projectKey: s
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const clash = taken.includes(name.trim());
-  const server = serverNames.includes(name.trim());
+  const project = projectNames.includes(name.trim());
   const def = kind === "mcp" ? { mcp: { url: url.trim() } }
     : { http: { url: url.trim(), ...(auth === "none" ? {} : { auth: auth === "header" ? `header:${header.trim()}` : auth }) } };
   const add = () => start(async () => {
-    const err = await send(projectKey, "/config", "PUT", { repo, connection: { name: name.trim(), def } });
+    const err = await send(projectKey, "/config", "PUT", { repo, connection: { name: name.trim(), def, base: null } });
     setError(err);
     if (!err) {
       setName(""); setUrl(""); setAuth("none"); setHeader(""); setOpen(false);
@@ -563,39 +635,44 @@ function AddConnection({ projectKey, repo, taken, serverNames }: { projectKey: s
       {kind === "http" && auth === "header" && (
         <input aria-label="credential header" placeholder="header name, e.g. X-Api-Key" value={header} onChange={(e) => setHeader(e.target.value)} />
       )}
-      <button type="submit" className="btn primary" disabled={pending || !name.trim() || !url.trim() || clash || server || (auth === "header" && !header.trim())}>Add</button>
+      <button type="submit" className="btn primary" disabled={pending || !name.trim() || !url.trim() || clash || project || (auth === "header" && !header.trim())}>Add</button>
       <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
       {clash && <span className="hot">This repo has a connection by that name.</span>}
-      {server && <span className="hot">This server has its own {name.trim()}, which plugins that ship with todo use; give the repo&apos;s another name.</span>}
+      {project && <span className="hot">This project has its own {name.trim()}, which plugins that ship with todo use; give the repo&apos;s another name.</span>}
       {error && <span className="hot">Not saved: {error}.</span>}
     </form>
   );
 }
 
-function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet, removable = false }: {
-  projectKey: string; repo: string; c: DashConnection; shipped: boolean; secretKeySet: boolean; removable?: boolean;
+const repoAuth = (c: DashConnection, auth: AuthKind, header: string) =>
+  (c.kind === "mcp" ? { mcp: { url: "" } } : { http: { url: "", ...(authOf(auth, header) ? { auth: authOf(auth, header) } : {}) } });
+
+/** A repo connection as the page shows it, which a change sends so the server refuses it once someone else has changed it. */
+const seen = (c: DashConnection) =>
+  (c.kind === "mcp" ? { mcp: { url: c.url } } : { http: { url: c.url, ...(c.auth ? { auth: c.auth } : {}) } });
+
+function ConnectionRow({ projectKey, repo, c, shipped, secretProblem, removable = false }: {
+  projectKey: string; repo: string; c: DashConnection; shipped: boolean; secretProblem: string | null; removable?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [secret, setSecret] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ error: string; status: number } | null>(null);
   const [pending, start] = useTransition();
   const notice = connectionNotice(shipped, c);
   if (!notice && !removable) return null;
-  const post = (value: string | null) => start(async () => {
+  const done = () => { setOpen(false); setEditing(false); setSecret(""); router.refresh(); };
+  const post = (value: string | null, endpoint = c.url) => start(async () => {
     // The endpoint shown here: the server refuses the secret if the connection has been pointed elsewhere since.
-    const err = await send(projectKey, "/credentials", "POST", { repo, connection: c.name, secret: value, endpoint: c.url });
+    const err = await sendFor(projectKey, "/credentials", "POST", { repo, connection: c.name, secret: value, endpoint });
     setError(err);
-    if (!err) {
-      setOpen(false);
-      setSecret("");
-      router.refresh();
-    }
+    if (!err) done();
   });
   const drop = () => start(async () => {
     const used = c.usedBy.length ? ` ${c.usedBy.join(", ")} call${c.usedBy.length === 1 ? "s" : ""} it.` : "";
     if (!window.confirm(`Remove the ${c.name} connection and its credential?${used}`)) return;
-    const err = await send(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def: null } });
+    const err = await sendFor(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def: null, ...(c.url && !c.command ? { base: seen(c) } : {}) } });
     setError(err);
     if (!err) router.refresh();
   });
@@ -606,15 +683,18 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet, removable =
         <span className="mono" data-tip={c.url ? `${c.kind} · ${c.url}` : undefined}>{c.name}:</span>
         {removable && c.url && <span className="mono faint conn-url">{c.kind} {c.url}</span>}
         <span className={`grow wrap ${notice?.hot ? "hot" : "faint"}`}>{notice?.text ?? (c.usedBy.length ? `Used by ${c.usedBy.join(", ")}.` : "Nothing calls it yet.")}</span>
-        {notice?.form && (
-          <button type="button" className="btn" onClick={() => { setOpen(!open); setError(null); }}>{c.held ? "Replace" : "Set"} credential</button>
+        {notice?.form === "credential" && (
+          <button type="button" className="btn" onClick={() => { setOpen(!open); setEditing(false); setError(null); }}>{c.held ? "Replace" : "Set"} credential</button>
         )}
-        {notice?.form && c.held && (
+        {notice?.form === "credential" && c.held && (
           <button type="button" className="btn danger" disabled={pending} onClick={() => post(null)}>Clear</button>
+        )}
+        {removable && !c.command && (
+          <button type="button" className="btn" aria-label={`edit ${c.name}`} aria-expanded={editing} onClick={() => { setEditing(!editing); setOpen(false); setError(null); }}>Edit</button>
         )}
         {removable && <button type="button" className="btn danger" aria-label={`remove ${c.name}`} disabled={pending} onClick={drop}>Remove</button>}
       </div>
-      {open && !secretKeySet && <p className="hint hot">The server can&apos;t store credentials until its admin sets TODO_SECRET_KEY.</p>}
+      {(open || editing) && secretProblem && <p className="hint hot">Credentials can&apos;t be saved here: {secretProblem}.</p>}
       {open && (
         <form className="rule-row cred-form" onSubmit={(e) => { e.preventDefault(); if (secret) post(secret); }}>
           <label className="field">
@@ -626,8 +706,63 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet, removable =
           <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
         </form>
       )}
-      {error && <p className="hot">Not saved: {error}. Try again.</p>}
+      {editing && <EditRepoConnection projectKey={projectKey} repo={repo} c={c} onDone={done} onCancel={() => setEditing(false)} />}
+      {error?.status === 409 && <Stale message={error.error} onReload={() => { setError(null); router.refresh(); }} />}
+      {error && error.status !== 409 && <p className="hot">Not saved: {error.error}. Try again.</p>}
     </div>
+  );
+}
+
+/** A repo connection's address, auth and credential, changed in place; a new address or auth drops the stored credential. */
+function EditRepoConnection({ projectKey, repo, c, onDone, onCancel }: {
+  projectKey: string; repo: string; c: DashConnection; onDone: () => void; onCancel: () => void;
+}) {
+  const [url, setUrl] = useState(c.url ?? "");
+  const start = authKind(c.needsSecret ? (c.auth ?? "bearer") : null);
+  const [auth, setAuth] = useState<AuthKind>(start.kind);
+  const [header, setHeader] = useState(start.header);
+  const [secret, setSecret] = useState("");
+  const [error, setError] = useState<{ error: string; status: number } | null>(null);
+  const [pending, run] = useTransition();
+  const router = useRouter();
+  const shape = repoAuth(c, auth, header);
+  const def = "mcp" in shape ? { mcp: { url: url.trim() } } : { http: { ...shape.http, url: url.trim() } };
+  const moved = url.trim() !== (c.url ?? "") || (c.kind === "http" && authOf(auth, header) !== (c.auth ?? undefined));
+  const save = () => run(async () => {
+    if (moved) {
+      const err = await sendFor(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def, base: seen(c) } });
+      if (err) { setError(err); return; }
+    }
+    if (secret && (c.kind === "mcp" || auth !== "none")) {
+      const err = await sendFor(projectKey, "/credentials", "POST", { repo, connection: c.name, secret, endpoint: url.trim() });
+      if (err) { setError(err); router.refresh(); return; }
+    }
+    onDone();
+  });
+  return (
+    <form className="rule-row add-connection edit-connection" onSubmit={(e) => { e.preventDefault(); save(); }}>
+      <input aria-label={`${c.name} url`} placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} />
+      {c.kind === "http" && (
+        <select aria-label={`${c.name} auth`} value={auth} onChange={(e) => setAuth(e.target.value as AuthKind)}>
+          <option value="none">no credential</option>
+          <option value="bearer">bearer token</option>
+          <option value="basic">basic (user:password)</option>
+          <option value="header">a header</option>
+        </select>
+      )}
+      {c.kind === "http" && auth === "header" && (
+        <input aria-label="credential header" placeholder="header name, e.g. X-Api-Key" value={header} onChange={(e) => setHeader(e.target.value)} />
+      )}
+      {(c.kind === "mcp" || auth !== "none") && (
+        <input type="password" autoComplete="new-password" aria-label={`${c.name} new secret`} value={secret}
+               placeholder={c.held && !moved ? "stored · type to replace" : "secret, never shown again"} onChange={(e) => setSecret(e.target.value)} />
+      )}
+      <button type="submit" className="btn primary" disabled={pending || !url.trim() || (!moved && !secret) || (auth === "header" && !header.trim())}>Save</button>
+      <button type="button" className="btn" onClick={onCancel}>Cancel</button>
+      {moved && c.held && <span className="hint">A new address or auth drops the stored credential.</span>}
+      {error?.status === 409 && <Stale message={error.error} onReload={() => { router.refresh(); onCancel(); }} />}
+      {error && error.status !== 409 && <span className="hot">Not saved: {error.error}.</span>}
+    </form>
   );
 }
 
@@ -636,7 +771,9 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretKeySet, removable =
 const justSaved = new Map<string, number>();
 const SAVED_SHOWN_MS = 15_000;
 
-function Configure({ projectKey, repo, plugin, statuses }: { projectKey: string; repo: DashRepo; plugin: DashPlugin; statuses: readonly string[] }) {
+function Configure({ projectKey, repo, plugin, statuses, conns }: {
+  projectKey: string; repo: DashRepo; plugin: DashPlugin; statuses: readonly string[]; conns: Conns;
+}) {
   const router = useRouter();
   const id = `${repo.repo}/${plugin.name}`;
   // A plugin with no instance starts with one to fill in, since that's what setting it up means.
@@ -653,6 +790,14 @@ function Configure({ projectKey, repo, plugin, statuses }: { projectKey: string;
   useEffect(() => setRefreshing(false), [plugin]);
   const out = savedInstances(plugin, draft);
   const shared = fieldsOf(plugin.settings).filter((f) => f.scope === "plugin");
+  const vercelPick = (settings: InstanceDraft["settings"], set: (patch: InstanceDraft["settings"]) => void) => (
+    <VercelPick projectKey={projectKey} repo={repo.repo} team={typeof settings.team === "string" ? settings.team : ""}
+                onPick={(team, project) => set({ team, project })} />
+  );
+  // A shipped plugin's instance can name a connection the project adds right there.
+  const newConnection: NewConnection = (onSaved, onClose) => (
+    <HostForm projectKey={projectKey} name={null} conns={{ ...conns, host: [...conns.host, ...repoNames(repo)] }} onClose={onClose} onSaved={onSaved} />
+  );
   const ordered = plugin.exclusive && draft.instances.length > 1;
   const change = (next: PluginDraft) => { setDraft(next); setDirty(true); setSaved(null); justSaved.delete(id); };
   const save = () => start(async () => {
@@ -681,7 +826,9 @@ function Configure({ projectKey, repo, plugin, statuses }: { projectKey: string;
           const live = plugin.instances.find((p) => p.id === (x.storedAs ?? x.id));
           return (
             <InstanceCard key={x.key} plugin={plugin} draft={draft} x={x} index={i} ordered={ordered} statuses={statuses} onChange={change}
-                          available={repo.available} serverRuns={live && x.storedAs ? { runs: live.server_runs, reason: live.server_runs_reason } : null} />
+                          available={repo.available} serverRuns={live && x.storedAs ? { runs: live.server_runs, reason: live.server_runs_reason } : null}
+                          newConnection={plugin.shipped ? newConnection : undefined}
+                          extra={plugin.name === "vercel-preview" && plugin.shipped ? vercelPick : undefined} />
           );
         })}
         {!draft.instances.length && <p className="empty">No instance yet, so it doesn&apos;t run. Add one.</p>}

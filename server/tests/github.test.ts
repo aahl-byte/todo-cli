@@ -99,9 +99,8 @@ describe("prStatus", () => {
   });
 
   it("counts unresolved review threads when a token is set, merged PRs included", async () => {
-    vi.stubEnv("GITHUB_TOKEN", "t");
     const gh = fakeGitHub({ 1: { ...open, state: "closed", merged_at: "2026-10-01T00:00:00Z" } }, [], [], [false, true, false]);
-    expect(await prStatus(ref, gh.impl)).toEqual({ state: "merged", checks: null, unresolved: 2 });
+    expect(await prStatus(ref, gh.impl, "t")).toEqual({ state: "merged", checks: null, unresolved: 2 });
     expect(gh.calls).toEqual(["/repos/acme/web/pulls/1", "/graphql"]);
   });
 
@@ -112,11 +111,10 @@ describe("prStatus", () => {
   });
 
   it("keeps state and checks when review threads fail to load, and retries soon", async () => {
-    vi.stubEnv("GITHUB_TOKEN", "t");
     const gh = fakeGitHub({ 1: open }, [{ status: "completed", conclusion: "success" }], [], null);
-    expect(await prStatus(ref, gh.impl)).toEqual({ state: "open", checks: "pass", unresolved: null });
+    expect(await prStatus(ref, gh.impl, "t")).toEqual({ state: "open", checks: "pass", unresolved: null });
     vi.setSystemTime(Date.now() + 60_000);
-    await prStatus(ref, gh.impl);
+    await prStatus(ref, gh.impl, "t");
     vi.useRealTimers();
     expect(gh.calls.filter((c) => c === "/graphql")).toHaveLength(2);
   });
@@ -134,6 +132,6 @@ describe("linkPrStatuses", () => {
       { uid: "b", meta: { url: "https://example.com/preview" } },
       { uid: "c", meta: { url: "https://github.com/acme/web/pull/2" } },
     ];
-    expect(await linkPrStatuses(links, gh.impl)).toEqual({ a: { state: "draft", checks: null, unresolved: null } });
+    expect(await linkPrStatuses(links, gh.impl, () => null)).toEqual({ a: { state: "draft", checks: null, unresolved: null } });
   });
 });

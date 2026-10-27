@@ -1,6 +1,6 @@
 // What the Automation settings page says about plugins in words: which plugins
-// get a settings form, and which connections need a person. Pure, so the page
-// and the tests share it.
+// get a settings form, and what a person sets for each connection. Pure, so the
+// page and the tests share it.
 import type { DashConnection, DashPlugin } from "./plugin-views";
 
 const DEFAULT_ID = "default";
@@ -16,24 +16,17 @@ export function configurable(p: Shape): boolean {
   return i.id !== DEFAULT_ID || i.enabled === false || !!i.dry_run || i.on !== undefined || !!i.button;
 }
 
-/** The environment variable that holds the secret for one of this server's connections. */
-export const secretVar = (name: string) => (name === "github" ? "GITHUB_TOKEN" : `TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`);
-
-/** What a person can do about a connection a plugin uses, or null when it needs nothing. `form`: a credential is set here. */
-export function connectionNotice(shipped: boolean, c: DashConnection): { text: string; hot: boolean; form: boolean } | null {
+/** What a person can do about a connection a plugin uses, or null when it needs nothing. `form`: what's set here, a repo
+ * connection's credential, or one of the project's own connections. */
+export function connectionNotice(shipped: boolean, c: DashConnection): { text: string; hot: boolean; form: "credential" | "host" | null } | null {
   if (c.name === "github" && !shipped && c.origin !== "repo") return null;
-  if (c.origin === "missing") {
-    const admin = shipped ? ", or the server's admin adds it to TODO_PLUGIN_CONNECTIONS" : "";
-    return { text: `Declared nowhere. Add it under Connections below${admin}.`, hot: true, form: false };
+  if (!shipped && c.origin === "missing") return { text: "Declared nowhere. Add it under Connections below.", hot: true, form: null };
+  if (!shipped && c.origin === "host") {
+    return { text: "Only plugins that ship with todo get the project's own connections. Add one of this repo's own under Connections below.",
+             hot: true, form: null };
   }
-  if (c.origin === "host") {
-    if (!shipped) {
-      return { text: "Only plugins that ship with todo get this server's connections. Add one of this repo's own under Connections below.",
-               hot: true, form: false };
-    }
-    return c.needsSecret && !c.held ? { text: `The server has no secret for it. Its admin sets ${secretVar(c.name)}.`, hot: true, form: false } : null;
-  }
+  if (c.origin !== "repo") return { text: "", hot: false, form: "host" };
   if (c.command || !c.needsSecret) return null;
-  return c.held ? { text: "Credential stored.", hot: false, form: true }
-    : { text: "No credential on this server. Set one so the server can call it.", hot: true, form: true };
+  return c.held ? { text: "Credential stored.", hot: false, form: "credential" }
+    : { text: "No credential on this server. Set one so the server can call it.", hot: true, form: "credential" };
 }

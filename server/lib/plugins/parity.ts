@@ -14,7 +14,7 @@ import { actionInstanceId, planPort, type PortPlan } from "./port";
 import { pluginItem } from "./server";
 import { SHIPPED } from "./shipped";
 import { redactHeaders } from "./limits";
-import { guardFor, hostConnections, hostSecrets } from "./store";
+import { guardFor, hostSecrets, hostSet, type HostSet } from "./store";
 import { settingRef } from "./load";
 import { pickInstances } from "./triggers";
 import { jiraKeys } from "./yaml-runner";
@@ -126,15 +126,17 @@ async function pluginSends(plan: PortPlan, item: Awaited<ReturnType<typeof plugi
   return out;
 }
 
-function connectionsOf(plan: PortPlan): Record<string, ResolvedConnection> {
-  const defs: Record<string, ConnectionDef> = { ...plan.connections, ...hostConnections() };
-  return connectionsFor({ hostConnections: defs, secrets: { host: hostSecrets(defs) } }, {});
+/** The plan's connections, under the project's and the server's own; each secret from where its connection came. */
+function connectionsOf(plan: PortPlan, host: HostSet): Record<string, ResolvedConnection> {
+  const defs: Record<string, ConnectionDef> = { ...plan.connections, ...host.connections };
+  return connectionsFor({ hostConnections: defs, secrets: { host: { ...hostSecrets(plan.connections), ...host.secrets } } }, {});
 }
 
 export async function parity(d: Db, project: string, opts: ParityOptions): Promise<ParityResult> {
   const plan = opts.plan ?? (await planPort(d, project));
   const net = opts.fetch ?? fetch;
-  const connections = connectionsOf(plan);
+  const host = await hostSet(d, project, plan.repos[0] ?? "");
+  const connections = connectionsOf(plan, host);
   // Only Jira and Watchtower are read; a rest Action's every call is held back, a GET too.
   const reads = ["jira", "watchtower"].map((n) => connections[n]).filter((c) => c && "url" in c && c.url)
     .map((c) => String((c as { url: string }).url).replace(/\/+$/, ""));
@@ -150,7 +152,7 @@ export async function parity(d: Db, project: string, opts: ParityOptions): Promi
     let plugins: string[];
     if (!runsPlugins) plugins = [];
     else if (!repo) plugins = old.length ? [`no plugin runs: the item's repo ${key || "(none)"} isn't one the project runs plugins for`] : [];
-    else plugins = await pluginSends(plan, await pluginItem(d, project, it, by), event, connections, net, reads, guardFor(repo, opts.lookup));
+    else plugins = await pluginSends(plan, await pluginItem(d, project, it, by), event, connections, net, reads, guardFor(repo, opts.lookup, host.privateOk));
     const same = canonical([...old].sort()) === canonical([...plugins].sort());
     cases.push({ at, item: it.id, trigger, old, plugins, same });
   };

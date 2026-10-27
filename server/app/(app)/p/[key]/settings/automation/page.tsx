@@ -4,7 +4,6 @@ import { SettingsTabs } from "@/components/SettingsTabs";
 import { db } from "@/lib/db";
 import { STATUSES } from "@/lib/model";
 import { automationPage } from "@/lib/plugin-views";
-import { secretKey } from "@/lib/plugins/secrets";
 import { requireUser } from "@/lib/session";
 
 export default async function AutomationSettingsPage({ params, searchParams }: {
@@ -20,7 +19,7 @@ export default async function AutomationSettingsPage({ params, searchParams }: {
   return (
     <div className="settings automation-settings">
       <SettingsTabs projectKey={key} current="automation" />
-      <AutomationSettings projectKey={key} page={JSON.parse(JSON.stringify(page))} statuses={STATUSES} secretKeySet={!!secretKey()} />
+      <AutomationSettings projectKey={key} page={JSON.parse(JSON.stringify(page))} statuses={STATUSES} />
     </div>
   );
 }

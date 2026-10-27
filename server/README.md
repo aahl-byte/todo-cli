@@ -18,18 +18,18 @@ Design: `docs/plans/2026-10-02-team-store-design.md` and
    | `CRON_SECRET` | the Jira retry cron (`/api/jira/flush`) |
    | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | the Jira bridge |
    | `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | image paste/drop in requests and comments |
-   | `GITHUB_TOKEN` | optional; PR link status for private repos (read-only Pull requests, Checks and Commit statuses). Also turns on git facts and plugins, which read branches, commits and pull requests through it; only plugins shipped with todo receive it, and a custom plugin's `github` goes without it |
+   | `GITHUB_TOKEN` | optional; the server-wide GitHub token, for repos of `TODO_PLUGIN_OWNERS` only: PR link status on private repos (read-only Pull requests, Checks and Commit statuses), git facts and plugins. A project that gives its own token on Settings → Automation uses that for all its repos instead. Only plugins shipped with todo receive either; a custom plugin's `github` goes without it |
    | `GITHUB_WEBHOOK_SECRET` | optional; GitHub webhooks (`push`, `pull_request`, `deployment_status`) at `/api/github/webhook` |
    | `GITHUB_API_URL` | optional; GitHub's REST base, for GitHub Enterprise |
-   | `TODO_SECRET_KEY` | optional; 32 bytes (`openssl rand -base64 32`) that encrypt plugin connection credentials and secret settings |
-   | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; host-wide plugin connections as a JSON map, and their secrets. Only shipped plugins use them, never a repo's custom plugins, and a repo's config can't take their names |
-   | `TODO_PLUGIN_OWNERS` | comma-separated GitHub owners whose repos the server reads for git facts and plugins; unset, both are off. A project uses a repo of these owners once a member's CLI reports a checkout of it or it's listed under Settings → Automation |
-   | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated hosts plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses. `host[:port]` opens one to the server's own connections, which shipped plugins use; `owner/name=host[:port]` opens it to the connections that repo's config declares, e.g. `acme/web=leaf-rain:10011`. Shipped watchtower-session reaches Watchtower on the tailnet through a bare entry such as `127.0.0.1:10010` |
+   | `TODO_SECRET_KEY` | 32 bytes (`openssl rand -base64 32`) that encrypt the tokens set on Settings → Automation, repo connection credentials and secret settings; without it the page can't save any of them, and says so |
+   | `TODO_PLUGIN_CONNECTIONS`, `TODO_PLUGIN_SECRET_<NAME>` | optional; server-wide default plugin connections as a JSON map, and their secrets. A project's own connection of the same name, set on Settings → Automation, replaces one for that project. Only shipped plugins use them, never a repo's custom plugins, and a repo's config can't take their names |
+   | `TODO_PLUGIN_OWNERS` | optional; comma-separated GitHub owners whose repos `GITHUB_TOKEN` reads, and whose repos a member's CLI checkout brings into a project on its own. A repo added under Settings → Automation is the project's whatever its owner, read with the project's own GitHub token when this list leaves it out |
+   | `TODO_PLUGIN_ALLOW_HOSTS` | optional; comma-separated hosts plugins may reach on a loopback, private, link-local, CGNAT or unique-local address, which the server otherwise refuses. `host[:port]` opens one to every project's host connections, which shipped plugins use; `owner/name=host[:port]` opens it to the connections that repo's config declares, e.g. `acme/web=leaf-rain:10011`. Without an entry, Settings → Automation asks before it saves a project's connection on a private address, such as Watchtower at `127.0.0.1:10010`, and allows it for that connection alone |
    | `NEXT_BASE_PATH` | optional; serves the dashboard under a path such as `/todo-bishs`, at build and start, with `PORT` set to the server's port. The CLI's `/api` stays at the root |
 
-   `GITHUB_TOKEN` is the real limit on what the server can read: give it a
-   fine-grained token, or a GitHub App installation, scoped to the team's repos
-   only, with read access to contents, pull requests and checks.
+   A GitHub token is the real limit on what todo can read, the server's or a
+   project's: give a fine-grained token, or a GitHub App installation, scoped to
+   the team's repos only, with read access to contents, pull requests and checks.
 
 4. **Create the schema, then users and projects**, from your machine with the
    same `DATABASE_URL`:
@@ -132,7 +132,18 @@ daily, which Hobby plans allow; on Pro, set it to `*/5 * * * *`.
 
 ## Plugins and git facts
 
-Both need `GITHUB_TOKEN` and `TODO_PLUGIN_OWNERS` (see the table above).
+Both need a GitHub token for the repo: the project's own, given on Settings →
+Automation, or `GITHUB_TOKEN` for a repo of `TODO_PLUGIN_OWNERS`.
+
+- **Connect the services** on the project's Settings → Automation. A row that
+  needs one asks for it in place: GitHub, Vercel, Jira, Watchtower and
+  db-request start with their usual address and auth, and link to where their
+  token is made. A web-request button's connection can be added from its own
+  settings. todo keeps each in `project_connections`, its token encrypted for
+  the address it was given for, so pointing it elsewhere drops the token. A
+  private address saves only once someone allows it there, which records who
+  and when. Only shipped plugins use these connections; the CLI never receives
+  their tokens, so an instance that needs one runs on the server.
 
 - **Set each repo up** on the project's Settings → Automation: its deploy
   branches, the shipped plugins switched on, custom plugins (YAML, with an
@@ -155,7 +166,8 @@ Both need `GITHUB_TOKEN` and `TODO_PLUGIN_OWNERS` (see the table above).
   `curl` both.
 - **Port Actions and Jira triggers** to plugin instances:
   `npx tsx scripts/plugins-port.ts <project> [--repo owner/name]` prints the
-  instances and the connections and env entries they need; `--write` switches
+  instances, and the connections, tokens and private addresses to set up on
+  Settings → Automation; `--write` switches
   their plugins on in each repo and stores them. Every ported instance is
   stored in dry-run, so nothing sends twice while Actions and the Jira bridge
   still run.
@@ -181,4 +193,6 @@ Playwright against a seeded server. Point `BASE_URL` at a real hostname rather
 than localhost: browsers treat localhost as secure, which hides cookie problems
 on plain-http hosts. Its plugin steps need the demo repo `acme/web` allowed and
 a secret key, so start that server with
-`TODO_PLUGIN_OWNERS=acme GITHUB_TOKEN=demo TODO_SECRET_KEY=$(openssl rand -base64 32) TODO_PLUGIN_ALLOW_HOSTS=acme/web=hooks.example.com`.
+`TODO_PLUGIN_OWNERS=acme GITHUB_TOKEN=demo TODO_SECRET_KEY=$(openssl rand -base64 32) TODO_PLUGIN_ALLOW_HOSTS=acme/web=hooks.example.com`,
+and no plugin connection in its environment: the smoke connects Vercel, a
+web-request endpoint and a private address on the page.

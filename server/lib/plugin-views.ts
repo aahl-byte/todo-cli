@@ -4,18 +4,24 @@
 // manual buttons, skip notices and manual-run outcomes.
 import { parse } from "yaml";
 import type { Db, Row } from "./db";
-import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
+import { repoAllowed, repoKey, repoRefusal } from "./checkouts";
+import { githubApi } from "./github";
+import type { GithubSource } from "./github-token";
+import { services, type Service } from "./services";
+import { apiBase, WATCHTOWER_URL } from "./watchtower";
 import { storedActions } from "./actions/model";
 import { outboundRules } from "./jira/rules";
 import { jiraReadOnly } from "./jira/config";
 import { remoteBranches, type Fetch, type RemoteBranches } from "./gitfacts";
-import { hostConnections, hostSecrets, loadConfig, merge, projectRepos, repoPlugins, type RepoPlugins } from "./plugins/store";
-import { finished, pluginsEnabled } from "./plugins/queue";
+import { privateAddress } from "./plugins/connections";
+import { guardFor, hostSet, loadConfig, merge, projectConnections, projectRepos, repoPlugins, type HostSet, type RepoPlugins } from "./plugins/store";
+import { secretKeyProblem } from "./plugins/secrets";
+import { finished } from "./plugins/queue";
 import { ALWAYS_ON, SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
 import { attachedSummary, connectionKeysOf } from "./plugin-form";
 import { pickRepo } from "./automation";
-import type { Attachment, Call, ConnectionDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
+import type { Attachment, Call, ConnectionDef, HttpAuth, PluginDef, PluginEvent, RunResult } from "./plugins/types";
 
 /** Runs the log shows per instance. */
 export const RUNS_SHOWN = 20;
@@ -35,10 +41,12 @@ export interface RunRow {
 
 export interface DashConnection {
   name: string;
-  /** Declared in the repo's config, by this server for every repo, or nowhere. */
+  /** Declared in the repo's config, by this server or the project for every repo, or nowhere. */
   origin: "repo" | "host" | "missing";
   kind: "http" | "mcp" | null;
   url: string | null;
+  /** How an http connection authorizes; null for none. */
+  auth: HttpAuth | null;
   /** Calls carry a secret: an http connection with auth. */
   needsSecret: boolean;
   /** An mcp connection that starts a local command, which the server never does. */
@@ -111,14 +119,16 @@ export interface DashRepo extends RepoEntry {
   offered: DashOffer[];
   custom: DashCustom[];
   connections: DashConnection[];
-  /** Connection names an instance may pick: the repo's own, and this server's, which only instances stored here get. */
+  /** Connection names an instance may pick: the repo's own, and the project's and this server's, which only shipped plugins get. */
   available: { repo: string[]; host: string[] };
+  /** Whose GitHub token reads the repo; null when todo has none for it. */
+  github: GithubSource | null;
   errors: string[];
   /** Who last changed the repo's config, and when; null for a repo nobody has set up. */
   updated: { by: string; at: string } | null;
 }
 
-export interface PluginsPage { ownersSet: boolean; repos: DashRepo[] }
+export interface PluginsPage { repos: DashRepo[] }
 
 /** What still runs outside plugins in a project: the Jira bridge and Actions. */
 export interface BridgeFacts {
@@ -135,17 +145,36 @@ export interface BridgeFacts {
   actions: { name: string; kind: "rest" | "watchtower" }[];
 }
 
-/** A connection this server offers every repo. */
-export interface HostConnection { name: string; auth: boolean; held: boolean }
+/** A connection the project's shipped plugins use in every repo: one the project set on this page, or the server's own. */
+export interface HostConnection {
+  name: string;
+  source: "page" | "server";
+  kind: "http" | "mcp";
+  url: string | null;
+  auth: HttpAuth | null;
+  /** A secret is held for it here. */
+  held: boolean;
+  /** Its stored secret doesn't decrypt on this server. */
+  unreadable: boolean;
+  /** It points at a private address the private-address rule refuses, which nobody has let todo call. */
+  refused: boolean;
+  /** Who let todo call its private address, and when. */
+  privateOk: { by: string; at: string } | null;
+  /** The version a change to the project's own is made on; null for the server's. */
+  version: number | null;
+  updated: { by: string; at: string } | null;
+}
 
 export interface AutomationPage {
-  ownersSet: boolean;
-  /** GITHUB_TOKEN is set, without which no plugin runs. */
-  pluginsOn: boolean;
   repos: RepoEntry[];
   selected: DashRepo | null;
   bridge: BridgeFacts;
+  /** The project's connections for shipped plugins, its own over the server's; github's reads the selected repo. */
   host: HostConnection[];
+  /** The services shipped plugins call, with what their connection form starts with. */
+  services: Service[];
+  /** Why secrets can't be stored here, or null when they can. */
+  secretProblem: string | null;
   /** Every plugin that ships with todo, which a custom plugin can't be named after. */
   shipped: string[];
 }
@@ -179,16 +208,16 @@ async function grantsOf(d: Pick<Db, "query">, project: string, repo: string) {
 }
 
 function connectionOf(name: string, repoDefs: Record<string, ConnectionDef>, hostDefs: Record<string, ConnectionDef>, view: RepoPlugins,
-                      usedBy: string[]): DashConnection {
+                      usedBy: string[], host: HostSet): DashConnection {
   const origin = name in repoDefs ? "repo" : name in hostDefs ? "host" : "missing";
   const def = origin === "repo" ? repoDefs[name] : origin === "host" ? hostDefs[name] : null;
   const http = def && "http" in def ? def.http : null;
   const mcp = def && "mcp" in def ? def.mcp : null;
   return {
     name, origin, kind: http ? "http" : mcp ? "mcp" : null,
-    url: http?.url ?? (mcp && "url" in mcp ? mcp.url : null),
+    url: http?.url ?? (mcp && "url" in mcp ? mcp.url : null), auth: http?.auth ?? null,
     needsSecret: !!http?.auth, command: !!mcp && "command" in mcp,
-    held: origin === "repo" ? view.secrets.includes(name) : origin === "host" ? view.host_secrets.includes(name) : false,
+    held: origin === "repo" ? view.secrets.includes(name) : origin === "host" ? name in host.secrets : false,
     usedBy,
   };
 }
@@ -208,8 +237,9 @@ const errorsOf = (name: string, errors: string[]) =>
 
 /** One allowed repo as the settings page shows it. */
 export async function dashRepo(d: Pick<Db, "query">, project: string, repo: string, f: Fetch = fetch):
-    Promise<Pick<DashRepo, "track" | "branches" | "plugins" | "offered" | "custom" | "connections" | "available" | "errors" | "updated">> {
+    Promise<Pick<DashRepo, "track" | "branches" | "plugins" | "offered" | "custom" | "connections" | "available" | "github" | "errors" | "updated">> {
   const view = await repoPlugins(d, project, repo);
+  const host = await hostSet(d, project, repo);
   const stored = await loadConfig(d, project, repo);
   const bare = merge(stored, {});
   const grants = await grantsOf(d, project, repo);
@@ -232,7 +262,7 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
     for (const i of p.instances) for (const k of keys) if (typeof i.settings?.[k] === "string" && i.settings[k]) use(i.settings[k] as string, p.name);
   }
   const repoDefs = bare.file.connections ?? {};
-  const hostDefs = hostConnections();
+  const hostDefs = host.connections;
   const names = [...new Set([...used.keys(), ...Object.keys(repoDefs)])].sort();
   const offered = Object.entries(SHIPPED).filter(([name]) => !plugins.some((p) => p.name === name)).sort(([a], [b]) => a.localeCompare(b))
     .map(([name, { def }]) => ({ name, description: def.description ?? null, connections: def.connections ?? [] }));
@@ -242,9 +272,9 @@ export async function dashRepo(d: Pick<Db, "query">, project: string, repo: stri
   }));
   const own = new Set(custom.map((c) => c.name));
   return {
-    track: stored.track, branches: await remoteBranches(d, repo, f), plugins, offered, custom,
-    connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [])),
-    available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() },
+    track: stored.track, branches: await remoteBranches(d, project, repo, f), plugins, offered, custom,
+    connections: names.map((n) => connectionOf(n, repoDefs, hostDefs, view, used.get(n) ?? [], host)),
+    available: { repo: Object.keys(repoDefs).sort(), host: Object.keys(hostDefs).filter((n) => !(n in repoDefs)).sort() }, github: host.github,
     errors: view.errors.filter((e) => ![...own].some((n) => e.startsWith(`plugin ${n}: `))), updated: stored.updated,
   };
 }
@@ -266,7 +296,6 @@ async function repoEntries(d: Pick<Db, "query">, project: string): Promise<RepoE
   const { repos, checkouts } = await projectRepos(d, project);
   const used = await itemRepos(d, project);
   const names = [...new Set([...repos.map((r) => r.repo), ...checkouts.map((c) => repoKey(c)).filter(Boolean), ...used.keys()])].sort();
-  const owners = pluginOwners();
   const out: RepoEntry[] = [];
   for (const repo of names) {
     const listed = repos.find((r) => r.repo === repo);
@@ -274,7 +303,7 @@ async function repoEntries(d: Pick<Db, "query">, project: string): Promise<RepoE
     out.push({
       repo, listed: listed ? { by: listed.added_by, at: listed.added_at } : null, checkout: checkouts.includes(repo), items: used.get(repo) ?? 0,
       folded: !listed && !used.has(repo), refusal,
-      addable: !!refusal && !listed && owners.includes(repo.split("/")[0]) && !(await repoAllowed(d, project, repo)),
+      addable: !!refusal && !listed && !(await repoAllowed(d, project, repo)),
     });
   }
   return [...out.filter((r) => !r.folded), ...out.filter((r) => r.folded)];
@@ -282,14 +311,14 @@ async function repoEntries(d: Pick<Db, "query">, project: string): Promise<RepoE
 
 const UNREAD: Omit<DashRepo, keyof RepoEntry> = {
   track: [], branches: { names: [], default: null, visible: null }, plugins: [], offered: [], custom: [], connections: [],
-  available: { repo: [], host: [] }, errors: [], updated: null,
+  available: { repo: [], host: [] }, github: null, errors: [], updated: null,
 };
 
 /** Every repo the project uses, each with its plugins when the project may use it. */
 export async function pluginsPage(d: Pick<Db, "query">, project: string, f: Fetch = fetch): Promise<PluginsPage> {
   const out: DashRepo[] = [];
   for (const e of await repoEntries(d, project)) out.push(e.refusal ? { ...e, ...UNREAD } : { ...e, ...(await dashRepo(d, project, e.repo, f)) });
-  return { ownersSet: pluginOwners().length > 0, repos: out };
+  return { repos: out };
 }
 
 /** The Jira bridge's triggers and polling, and the project's Actions. */
@@ -305,18 +334,46 @@ export async function bridgeFacts(d: Pick<Db, "query">, project: string): Promis
   };
 }
 
+const DNS_WAIT_MS = 2_000;
+
+/** Whether the private-address rule refuses connection `name` at `url`, as a shipped plugin's run would find it. */
+async function refusedAddress(url: string | null, set: HostSet, name: string): Promise<boolean> {
+  if (!url || Object.hasOwn(set.privateOk, name)) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((done) => { timer = setTimeout(() => done(null), DNS_WAIT_MS); });
+  const found = await Promise.race([privateAddress(url, guardFor("")), late]).finally(() => clearTimeout(timer));
+  return found === "private" || found === "link-local";
+}
+
+/** The project's connections for shipped plugins as the page shows them, its own over the server's. */
+async function hostConnectionsOf(d: Pick<Db, "query">, project: string, set: HostSet): Promise<HostConnection[]> {
+  const own = new Map((await projectConnections(d, project)).map((c) => [c.name, c]));
+  const out: HostConnection[] = [];
+  for (const [name, def] of Object.entries(set.connections).sort(([a], [b]) => a.localeCompare(b))) {
+    const page = set.page.includes(name) ? own.get(name) : undefined;
+    const http = "http" in def ? def.http : null;
+    const url = http?.url ?? ("mcp" in def && "url" in def.mcp ? def.mcp.url : null);
+    out.push({
+      name, source: page ? "page" : "server", kind: http ? "http" : "mcp", url, auth: http?.auth ?? null, held: name in set.secrets,
+      unreadable: set.unreadable.includes(name), refused: await refusedAddress(url, set, name), privateOk: page?.privateOk ?? null,
+      version: page?.version ?? null, updated: page?.updated ?? null,
+    });
+  }
+  return out;
+}
+
 /** The Automation page: the repo picker's repos, the one asked for (or the one most items name) with its plugins, and
- * what the server and the General tab bring to every repo. */
+ * what the project, the server and the General tab bring to every repo. */
 export async function automationPage(d: Pick<Db, "query">, project: string, wanted: string | null, f: Fetch = fetch): Promise<AutomationPage> {
   const repos = await repoEntries(d, project);
   const choice = pickRepo(repos, wanted);
   const entry = repos.find((r) => r.repo === choice);
-  const secrets = hostSecrets();
-  const host = Object.entries(hostConnections()).map(([name, def]) => ({ name, auth: "http" in def && !!def.http.auth, held: name in secrets }));
+  const set = await hostSet(d, project, entry?.repo ?? "");
   return {
-    ownersSet: pluginOwners().length > 0, pluginsOn: pluginsEnabled(), repos,
-    selected: entry ? { ...entry, ...(await dashRepo(d, project, entry.repo, f)) } : null,
-    bridge: await bridgeFacts(d, project), host, shipped: Object.keys(SHIPPED).sort(),
+    repos, selected: entry ? { ...entry, ...(await dashRepo(d, project, entry.repo, f)) } : null,
+    bridge: await bridgeFacts(d, project), host: await hostConnectionsOf(d, project, set),
+    services: services({ github: githubApi(), jira: process.env.JIRA_BASE_URL?.replace(/\/+$/, "") || null, watchtower: apiBase(WATCHTOWER_URL) }),
+    secretProblem: secretKeyProblem(), shipped: Object.keys(SHIPPED).sort(),
   };
 }
 

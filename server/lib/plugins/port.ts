@@ -11,7 +11,7 @@ import { apiBase } from "../watchtower";
 import { lookup as dnsLookup } from "node:dns/promises";
 import net from "node:net";
 import { blockedAddress, type AddressGuard } from "./connections";
-import { hostConnections, hostSecrets, putGrants, putInstances, setShipped, storedInstances } from "./store";
+import { hostSet, putGrants, putInstances, setShipped, storedInstances } from "./store";
 import { CREDENTIAL_HEADER } from "./limits";
 import { POST_REQUEST, type ConnectionDef, type HttpAuth, type InstanceDef, type Trigger } from "./types";
 
@@ -33,11 +33,11 @@ export interface PortPlan {
   repos: string[];
   instances: Record<string, InstanceDef[]>;
   grants: Record<string, string[]>;
-  /** Host connections the instances need that the server doesn't declare yet, for TODO_PLUGIN_CONNECTIONS. */
+  /** Connections the instances need that neither the project nor the server has yet, to add on Settings → Automation. */
   connections: Record<string, ConnectionDef>;
-  /** Host connections with no secret yet: TODO_PLUGIN_SECRET_<NAME>, and what it holds. */
+  /** Connections with no secret yet, and what it holds, to give on Settings → Automation. */
   secrets: Record<string, string>;
-  /** Private hosts the server refuses until TODO_PLUGIN_ALLOW_HOSTS lists them. */
+  /** Private addresses, as host:port, someone has to let todo call on Settings → Automation. */
   allowHosts: string[];
   /** Where an instance can't do exactly what the old code did. */
   notes: string[];
@@ -185,13 +185,13 @@ async function projectRepos(d: Db, project: string, notes: string[]): Promise<st
   return out;
 }
 
-/** Whether the server's guard would refuse `url` for a host connection: it is, or resolves to, a private address not yet allowed. */
-async function refused(url: string, lookup: AddressGuard["lookup"], notes: string[]): Promise<string | null> {
+/** Whether the server's guard would refuse `url` for a host connection: it is, or resolves to, a private address nobody allowed. */
+async function refused(url: string, lookup: AddressGuard["lookup"], notes: string[], allowedHere: boolean): Promise<string | null> {
   const u = new URL(url);
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const entry = `${host}:${u.port || (u.protocol === "https:" ? "443" : "80")}`;
   const allowed = (process.env.TODO_PLUGIN_ALLOW_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter((h) => !h.includes("="));
-  if (allowed.includes(host.toLowerCase()) || allowed.includes(entry.toLowerCase())) return null;
+  if (allowedHere || allowed.includes(host.toLowerCase()) || allowed.includes(entry.toLowerCase())) return null;
   try {
     const found = net.isIP(host) ? [{ address: host }] : await (lookup ?? ((h: string) => dnsLookup(h, { all: true })))(host);
     return found.some((a) => blockedAddress(a.address)) ? entry : null;
@@ -240,18 +240,20 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
   // The old Actions and Jira bridge keep running until the cutover, so a live instance would send twice.
   for (const list of Object.values(plan.instances)) for (const i of list) i.dry_run = true;
 
-  // Only what the server lacks is left to add.
-  const host = hostConnections();
-  const secrets = hostSecrets(host);
+  // Only what the project and the server lack is left to add.
+  const host = await hostSet(d, project, plan.repos[0] ?? "");
   for (const [name, def] of Object.entries(plan.connections)) {
-    if (host[name]) {
-      if (JSON.stringify(host[name]) !== JSON.stringify(def)) plan.notes.push(`the server's ${name} connection is ${JSON.stringify(host[name])}, not ${JSON.stringify(def)}`);
+    const has = host.connections[name];
+    if (has) {
+      const whose = host.page.includes(name) ? "project's" : "server's";
+      if (JSON.stringify(has) !== JSON.stringify(def)) plan.notes.push(`the ${whose} ${name} connection is ${JSON.stringify(has)}, not ${JSON.stringify(def)}`);
       delete plan.connections[name];
     }
-    const http = "http" in def ? def.http : undefined;
-    if (!http?.auth || secrets[name]) delete plan.secrets[name];
-    else plan.secrets[name] ??= name === "jira" ? "JIRA_EMAIL:JIRA_API_TOKEN" : `the ${name} credential`;
-    const entry = http?.url && !http.url.includes("<") ? await refused(http.url, opts.lookup, plan.notes) : null;
+    const shape = has ?? def;
+    const http = "http" in shape ? shape.http : undefined;
+    if (!http?.auth || host.secrets[name]) delete plan.secrets[name];
+    else plan.secrets[name] ??= name === "jira" ? "the Jira email and API token" : `the ${name} credential`;
+    const entry = http?.url && !http.url.includes("<") ? await refused(http.url, opts.lookup, plan.notes, Object.hasOwn(host.privateOk, name)) : null;
     if (entry) plan.allowHosts.push(entry);
   }
   return plan;
@@ -276,10 +278,11 @@ export function describePlan(plan: PortPlan): string {
   }
   for (const [plugin, caps] of Object.entries(plan.grants)) lines.push(`  grant ${plugin}: ${caps.join(", ")}`);
   if (Object.keys(plan.instances).length) lines.push(`--write switches on, in each repo: ${Object.keys(plan.instances).join(", ")}`);
-  if (Object.keys(plan.connections).length) lines.push(`TODO_PLUGIN_CONNECTIONS needs ${JSON.stringify(plan.connections)}`);
-  for (const [name, what] of Object.entries(plan.secrets)) lines.push(`TODO_PLUGIN_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}=<${what}>`);
+  const page = "on Settings → Automation, under This project's connections";
+  for (const [name, def] of Object.entries(plan.connections)) lines.push(`add ${name} ${page}: ${JSON.stringify(def)}`);
+  for (const [name, what] of Object.entries(plan.secrets)) lines.push(`give ${name} ${what} ${page}`);
   if (Object.keys(plan.secrets).length) lines.push("(the port never prints a secret: copy each from the Action it names)");
-  if (plan.allowHosts.length) lines.push(`TODO_PLUGIN_ALLOW_HOSTS needs ${plan.allowHosts.join(",")}`);
+  for (const entry of plan.allowHosts) lines.push(`allow todo to call ${entry}, a private address, ${page}`);
   for (const n of [...new Set(plan.notes)]) lines.push(`note: ${n}`);
   lines.push("every instance is stored in dry-run, since the Actions and Jira bridge it replaces still run. The cutover: turn those off,",
              "then clear dry_run on each instance (Test mode, under Settings → Automation), which makes it send.");

@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { currentDisplay } from "@/lib/display-session";
 import { itemGitFacts } from "@/lib/gitfacts";
 import { linkPrStatuses } from "@/lib/github";
+import { prTokens } from "@/lib/github-token";
 import { lastVisit } from "@/lib/inbox";
 import { item as loadItem, project } from "@/lib/views";
 
@@ -31,6 +32,6 @@ export default async function DisplayItem({ params }: { params: Promise<{ key: s
     readOnly: { base: `/display/${key}` },
     lastSeen: display.handle && (await lastVisit(d, display.handle, key, data.item.uid)),
   };
-  const [prs, git] = await Promise.all([linkPrStatuses(data.links), itemGitFacts(d, key, data.item.uid).catch(() => ({}))]);
+  const [prs, git] = await Promise.all([linkPrStatuses(data.links, undefined, await prTokens(d, key)), itemGitFacts(d, key, data.item.uid).catch(() => ({}))]);
   return <ItemView data={JSON.parse(JSON.stringify({ ...data, prs, git }))} ctx={ctx} />;
 }

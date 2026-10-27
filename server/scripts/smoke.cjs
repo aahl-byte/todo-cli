@@ -1,7 +1,8 @@
 // UI smoke run against a seeded server:
 //   TOKENS=<file with {"pat","dev","qa"} tokens> BASE_URL=http://<host>:<port> SHOTS=<dir> node scripts/smoke.cjs
 // Seed with `TODO_PGLITE=<dir> npm run seed:demo`, then start the server on the
-// same dir, with the plugin env the README names. Point BASE_URL at a real hostname rather than localhost:
+// same dir, with the env the README names; no plugin connection comes from the
+// environment, since the smoke sets them up on the page. Point BASE_URL at a real hostname rather than localhost:
 // browsers treat localhost as secure, which hides cookie problems on plain-http hosts.
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -523,6 +524,12 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   };
   const rowState = (key, repo) => autoRow(key, repo).getAttribute("data-state");
   const automation = (repo) => base + "/p/web/settings/automation" + (repo ? "?repo=" + encodeURIComponent(repo) : "");
+  /** Every step on the page is taken there: none names a server setting or a server admin. */
+  const noServerSteps = async () => {
+    const steps = await page.locator(".auto-steps li, .automation .hot, .automation .hint").allTextContents();
+    const bad = steps.filter((t) => /Server admin|its admin|TODO_PLUGIN|GITHUB_TOKEN|TODO_[A-Z_]+/.test(t));
+    if (bad.length) throw new Error("names a server setting: " + bad.join(" | "));
+  };
 
   await step("automation: a settings tab, and the old Plugins address leads to it", async () => {
     await login("pat", "/p/web/settings");
@@ -554,15 +561,22 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if ((await picker.locator("option").allTextContents()).some((o) => o.startsWith("acme/extra"))) throw new Error("acme/extra still listed");
   });
 
-  await step("automation: repos items name that the project can't read fold into one line, and Connect adds one", async () => {
+  await step("automation: repos items name that the project can't read fold into one line, and Connect adds one, whatever its owner", async () => {
     const line = page.locator(".unconnected");
     await line.locator(".hint", { hasText: "2 repos your items name aren't connected yet: acme/docs, legacy/billing" }).waitFor();
     await line.locator("button", { hasText: "Connect ›" }).click();
-    await line.locator(".rrow[data-repo='legacy/billing'] .hint", { hasText: "TODO_PLUGIN_OWNERS" }).waitFor();
-    if (await line.locator(".rrow[data-repo='legacy/billing'] button:has-text('Connect')").count()) throw new Error("offers to connect a repo the server won't read");
+    await line.locator(".rrow[data-repo='legacy/billing'] .hint", { hasText: "todo can read it once it's added to this project." }).waitFor();
     await line.locator(".rrow[data-repo='acme/docs'] button", { hasText: "Connect" }).click();
     await line.locator(".hint", { hasText: "1 repo your items name isn't connected yet: legacy/billing" }).waitFor();
     await page.locator("select[aria-label=repo] option", { hasText: "acme/docs · 1 item" }).waitFor({ state: "attached" });
+    await line.locator(".rrow[data-repo='legacy/billing'] button", { hasText: "Connect" }).click();
+    await line.waitFor({ state: "detached" });
+    await page.goto(automation("legacy/billing"));
+    const track = autoRow("track", "legacy/billing");
+    await track.locator("li[data-connect=github]", { hasText: "Give todo a GitHub token that can read legacy/billing" }).waitFor();
+    await noServerSteps();
+    await page.click(".repo-pick button:has-text('Remove from project')");
+    await page.locator(".auto-rows[data-repo='acme/web']").waitFor();
   });
 
   await step("automation: a repo nobody has set up has pr-link on, deploy branches first among what's off, a switch on each shipped plugin, and nothing to commit", async () => {
@@ -576,20 +590,21 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const track = autoRow("track", "acme/api");
     await track.locator(".auto-title", { hasText: "Show where work has landed" }).waitFor();
     await track.locator(".auto-line", { hasText: "in staging ✓ · in main ✗" }).waitFor();
-    await track.locator("li[data-who=here]", { hasText: "Name the branches work deploys from" }).waitFor();
+    await track.locator("li", { hasText: "Name the branches work deploys from" }).waitFor();
     const vercel = autoRow("vercel-preview", "acme/api");
     if (await vercel.locator("input[aria-label='vercel-preview on']").isChecked()) throw new Error("vercel-preview starts on");
-    await vercel.locator("li[data-who=admin] code", { hasText: "TODO_PLUGIN_SECRET_VERCEL" }).waitFor();
-    await vercel.locator("li[data-who=here]", { hasText: "once it's switched on" }).waitFor();
+    await vercel.locator("li", { hasText: "Connect todo to Vercel with a token." }).waitFor();
+    await vercel.locator("li", { hasText: "once it's switched on" }).waitFor();
     if (await vercel.locator("button:has-text('Set up')").count()) throw new Error("offers settings for a plugin that's off");
-    if (await page.locator("li[data-who=repo], .step-code pre").count()) throw new Error("a step asks someone to commit to the repo");
+    if (await page.locator(".step-code pre, code.env").count()) throw new Error("a step asks someone to commit to the repo or set the server's environment");
     if (await page.getByText("In the repo").count()) throw new Error("a step is the repo's");
+    await noServerSteps();
     await page.screenshot({ path: out + "/automation-unset.png", fullPage: true });
   });
 
   await step("automation: deploy branches are typed into a field that suggests the remote's, and turn the row on", async () => {
     const track = autoRow("track", "acme/api");
-    await track.locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    await track.locator("li:not([data-connect]) button", { hasText: "Set up ›" }).click();
     const field = track.locator(".branches-panel input[aria-label='deploy branches']");
     if (await field.inputValue() !== "") throw new Error("the field starts with " + await field.inputValue());
     if (await field.getAttribute("placeholder") !== "e.g. main, staging") throw new Error("placeholder " + await field.getAttribute("placeholder"));
@@ -604,11 +619,26 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await rowState("track", "acme/api") !== "on") throw new Error("deploy branches are " + await rowState("track", "acme/api"));
   });
 
-  await step("automation: switching a shipped plugin on gives it settings here, and switching it off keeps them", async () => {
+  await step("automation: switching Vercel on asks for its token in the row, the address filled in, and saving it connects todo", async () => {
     const vercel = autoRow("vercel-preview", "acme/api");
     await vercel.locator("input[aria-label='vercel-preview on']").check();
     await page.locator(".auto-rows[data-repo='acme/api'] .auto-row[data-row='vercel-preview'][data-state=setup]").waitFor();
-    await vercel.locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    await vercel.locator("li[data-connect=vercel] button", { hasText: "Set up ›" }).click();
+    const form = vercel.locator("form.conn-form[data-connection-form=vercel]");
+    if (await form.locator("input[aria-label='Vercel address']").inputValue() !== "https://api.vercel.com") throw new Error("the address isn't filled in");
+    if (await form.locator("a[href='https://vercel.com/account/tokens']").count() !== 1) throw new Error("no link to make a token");
+    await form.locator("input[aria-label='Vercel token']").fill("smoke-vercel-token");
+    await page.screenshot({ path: out + "/automation-connect.png", fullPage: true });
+    await form.locator("button.primary", { hasText: "Save" }).click();
+    await vercel.locator("li.done[data-connect=vercel]", { hasText: "Connected to Vercel." }).waitFor();
+    if ((await page.content()).includes("smoke-vercel-token")) throw new Error("the token came back to the page");
+    await page.locator(".project-connections .host-conn[data-connection=vercel][data-source=page]", { hasText: "Set by pat" }).waitFor();
+    await noServerSteps();
+  });
+
+  await step("automation: switching a shipped plugin on gives it settings here, and switching it off keeps them", async () => {
+    const vercel = autoRow("vercel-preview", "acme/api");
+    await vercel.locator("li:not([data-connect]) button", { hasText: "Set up ›" }).click();
     const card = vercel.locator(".auto-panel.plugin-card");
     await card.locator(".setting[data-setting=project] input").fill("prj_smoke");
     await card.locator(".setting[data-setting=team] input").fill("team_smoke");
@@ -648,8 +678,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await row.waitFor({ state: "detached" });
   });
 
-  await step("automation: a connection is declared for custom plugins, and removed with its credential", async () => {
-    const section = page.locator(".auto-rows[data-repo='acme/api'] .auto-connections");
+  await step("automation: a connection is declared for custom plugins, edited in place, and removed with its credential", async () => {
+    const section = page.locator(".auto-rows[data-repo='acme/api'] #connections");
     await section.locator("button.add", { hasText: "Add a connection" }).click();
     await section.locator("input[aria-label='connection name']").fill("smoke-hooks");
     await section.locator("input[aria-label='connection url']").fill("https://hooks.example.com");
@@ -658,6 +688,12 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const row = section.locator(".conn-row[data-connection=smoke-hooks]");
     await row.locator(".grow", { hasText: "No credential on this server" }).waitFor();
     await row.locator(".conn-url", { hasText: "http https://hooks.example.com" }).waitFor();
+    await row.locator("button[aria-label='edit smoke-hooks']").click();
+    await row.locator("input[aria-label='smoke-hooks url']").fill("https://hooks2.example.com");
+    await row.locator("input[aria-label='smoke-hooks new secret']").fill("hooks-secret");
+    await row.locator(".edit-connection button.primary", { hasText: "Save" }).click();
+    await row.locator(".conn-url", { hasText: "http https://hooks2.example.com" }).waitFor();
+    if ((await page.content()).includes("hooks-secret")) throw new Error("the credential came back to the page");
     page.once("dialog", (d) => d.accept());
     await row.locator("button[aria-label='remove smoke-hooks']").click();
     await row.waitFor({ state: "detached" });
@@ -683,11 +719,12 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     if (await rowState("jira-transition") !== "setup") throw new Error("jira-transition is " + await rowState("jira-transition"));
     await jt.locator(".auto-line", { hasText: "The Jira bridge also moves tickets with 3 triggers, so both would send." }).waitFor();
     if (!(await jt.locator("input[aria-label='jira-transition on']").isChecked())) throw new Error("jira-transition's switch is off");
-    await jt.locator("li[data-who=admin]", { hasText: "Connect the server to Jira" }).waitFor();
+    await jt.locator("li[data-connect=jira]", { hasText: "Connect todo to Jira with an email and API token." }).waitFor();
+    await noServerSteps();
     await autoRow("rest").locator(".auto-line", { hasText: "items would get both buttons" }).waitFor();
     await autoRow("ping").locator(".auto-line", { hasText: "A custom plugin of this repo" }).waitFor();
     await page.screenshot({ path: out + "/automation-page.png", fullPage: true });
-    await autoRow("vercel-preview").locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    await autoRow("vercel-preview").locator("li:not([data-connect]) button", { hasText: "Set up ›" }).click();
     await card("vercel-preview").locator(".setting[data-setting=project] input").waitFor();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: out + "/automation-setup.png", fullPage: true });
@@ -703,7 +740,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await card("notes-link").locator(".plugin-meta", { hasText: "Runs when someone presses its button" }).waitFor();
     await inst("go").locator(".runs-where", { hasText: "Runs on the server." }).waitFor();
     if (await rowState("ping") !== "setup") throw new Error("ping is " + await rowState("ping"));
-    await autoRow("ping").locator("li[data-who=here]", { hasText: "Enter the hooks credential." }).waitFor();
+    await autoRow("ping").locator("li", { hasText: "Enter the hooks credential." }).waitFor();
     const note = await setting("go", "jira").locator(".hint").textContent();
     if (!note.includes("list_statuses")) throw new Error("no options_from note: " + note);
     if (await setting("go", "jira").locator("select").count()) throw new Error("an options_from choice rendered as a select");
@@ -753,11 +790,53 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     const hook = rest.locator('.instance-card[data-instance="hook"]');
     const offered = async (card) => (await card.locator(".setting[data-setting=connection] select option").allTextContents()).filter((o) => o !== "—");
     const choices = await offered(hook);
-    if (!choices.includes("github") || !choices.includes("hooks")) throw new Error("an instance offered " + choices.join(", "));
+    if (!choices.includes("github") || !choices.includes("hooks") || !choices.includes("+ New connection…")) throw new Error("an instance offered " + choices.join(", "));
     const note = await hook.locator(".setting[data-setting=path] .hint").textContent();
     if (!note.startsWith("A template")) throw new Error("no template hint: " + note);
     await page.screenshot({ path: out + "/automation-rest.png", fullPage: true });
     await page.reload();
+  });
+
+  await step("automation: a web-request button is pointed at a brand-new endpoint entirely on the page", async () => {
+    await configure("rest");
+    const rest = card("rest");
+    await rest.locator("button.add:has-text('instance')").click();
+    const fresh = rest.locator('.instance-card[data-instance="instance"]');
+    await fresh.locator("input[aria-label=name]").fill("Ping smoke");
+    await fresh.locator(".setting[data-setting=connection] select").selectOption({ label: "+ New connection…" });
+    const form = fresh.locator(".new-connection form.conn-form");
+    await form.locator("input[aria-label='connection name']").fill("smoke-api");
+    await form.locator("input[aria-label='smoke-api address']").fill("https://api.smoke-test.example");
+    await form.locator("select[aria-label='smoke-api auth']").selectOption("bearer");
+    await form.locator("input[aria-label='smoke-api token']").fill("smoke-api-secret");
+    await form.locator("button.primary", { hasText: "Save" }).click();
+    await form.waitFor({ state: "detached" });
+    if (await fresh.locator(".setting[data-setting=connection] select").inputValue() !== "smoke-api") throw new Error("the new connection isn't picked");
+    await fresh.locator(".setting[data-setting=path] input").fill("/ping/{{item.id}}");
+    await savePlugin("rest");
+    await page.locator(".project-connections .host-conn[data-connection=smoke-api]", { hasText: "https://api.smoke-test.example" }).waitFor();
+    if ((await page.content()).includes("smoke-api-secret")) throw new Error("the secret came back to the page");
+    await noServerSteps();
+  });
+
+  await step("automation: a connection on a private address is saved only once someone allows it, which the page records", async () => {
+    const section = page.locator(".auto-rows[data-repo='acme/web'] .project-connections");
+    await section.locator("button.add", { hasText: "Add a connection" }).click();
+    const form = section.locator("form.conn-form[data-connection-form=new]");
+    await form.locator("input[aria-label='connection name']").fill("local-hooks");
+    await form.locator("input[aria-label='local-hooks address']").fill("http://127.0.0.1:10077");
+    await form.locator("button.primary", { hasText: "Save" }).click();
+    const allow = form.locator(".private-ok", { hasText: "This address is on your private network: allow todo to call it" });
+    await allow.waitFor();
+    await allow.locator("input").check();
+    await form.locator("button.primary", { hasText: "Save" }).click();
+    const line = section.locator(".host-conn[data-connection=local-hooks]");
+    await line.waitFor();
+    await line.locator("button", { hasText: "Change" }).click();
+    await line.locator(".hint", { hasText: "Private address allowed by pat" }).waitFor();
+    page.once("dialog", (d) => d.accept());
+    await line.locator("button.danger", { hasText: "Remove" }).click();
+    await line.waitFor({ state: "detached" });
   });
 
   await step("automation: a stored secret is kept when untouched, and cleared on request", async () => {
@@ -790,7 +869,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
 
   await step("automation: setting up a first-match plugin starts with an instance to fill in, and orders several", async () => {
     const jt = autoRow("jira-transition");
-    await jt.locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    await jt.locator("li:not([data-connect]) button", { hasText: "Set up ›" }).click();
     const order = () => card("jira-transition").locator(".instance-card").evaluateAll((els) => els.map((e) => e.dataset.instance));
     await card("jira-transition").locator(".instance-card").first().waitFor();
     if (JSON.stringify(await order()) !== '["instance"]') throw new Error("starts with " + JSON.stringify(await order()));
@@ -804,7 +883,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
   });
 
   await step("automation: a connection's credential is set and cleared, never shown, and turns the row on", async () => {
-    await autoRow("ping").locator("li[data-who=here] button", { hasText: "Set up ›" }).click();
+    await autoRow("ping").locator("li:not([data-connect]) button", { hasText: "Set up ›" }).click();
     const row = card("ping").locator(".conn-row[data-connection=hooks]");
     await row.locator("button:has-text('Set credential')").click();
     await row.locator("input[type=password]").fill("hook-secret");

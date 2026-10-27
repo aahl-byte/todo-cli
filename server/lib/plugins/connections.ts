@@ -27,6 +27,8 @@ export interface AddressGuard {
   allow: string[];
   /** For the repo's own connections. */
   repoAllow?: string[];
+  /** For one host connection each, by name: the host:port someone let it reach. */
+  named?: Record<string, string>;
   /** Stands in for DNS, for tests. */
   lookup?: (host: string) => Promise<Resolved[]>;
 }
@@ -126,39 +128,90 @@ export function blockedAddress(address: string): boolean {
 
 const systemLookup = async (host: string): Promise<Resolved[]> => dnsLookup(host, { all: true, verbatim: true });
 
-/** Whether the allow list for the connection's origin names the URL's host or host:port. */
-function waived(url: URL, guard: AddressGuard, origin: ConnectionOrigin): boolean {
+/** A URL's host:port, the port its scheme implies when it names none. */
+export function hostPort(url: URL): string {
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  return `${host}:${url.port || (url.protocol === "https:" ? "443" : "80")}`;
+}
+
+/** Whether the allow list for the connection's origin names the URL's host or host:port, or, for a host connection, whether it is
+ * the one connection someone let reach that host:port. */
+function waived(url: URL, guard: AddressGuard, origin: ConnectionOrigin, name?: string): boolean {
+  if (namedWaiver(url, guard, origin, name)) return true;
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   const list = origin === "host" ? guard.allow : guard.repoAllow ?? [];
   const allowed = list.map((a) => a.trim().toLowerCase().replace(/^\[(.*)\](:\d+)?$/, "$1$2"));
-  return allowed.includes(host) || allowed.includes(`${host}:${port}`);
+  return allowed.includes(host) || allowed.includes(hostPort(url));
 }
+
+/** Whether the waiver is one a project gave its own connection: that never opens a link-local address, whatever it resolves to now. */
+const namedWaiver = (url: URL, guard: AddressGuard, origin: ConnectionOrigin, name?: string) =>
+  origin === "host" && name !== undefined && Object.hasOwn(guard.named ?? {}, name) && guard.named![name] === hostPort(url);
 
 /** The address to connect to for `url`: resolved, and checked unless the allow list for the connection's origin names it. */
 async function checkedAddress(name: string, url: URL, guard: AddressGuard, origin: ConnectionOrigin = "repo"): Promise<Resolved> {
   const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const open = waived(url, guard, origin);
+  const open = waived(url, guard, origin, name);
+  // A page's allowance, unlike the host's list, gives way to a link-local address the name resolves to now.
+  const pageOnly = open && namedWaiver(url, guard, origin, name) && !waived(url, { ...guard, named: {} }, origin, name);
   let found: Resolved[];
   try {
     found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
   } catch {
     throw new CallError(`${name}: ${url.hostname} doesn't resolve`, undefined, true);
   }
-  if (!found.length || (!open && found.some((a) => blockedAddress(a.address)))) {
+  if (!found.length || (!open && found.some((a) => blockedAddress(a.address))) || (pageOnly && found.some((a) => linkLocal(a.address)))) {
     throw new CallError(`${name}: ${url.hostname} isn't an address this host connects to`);
   }
   return found[0];
 }
 
-/** Whether the guard lets a connection to `url` through, without connecting. */
-export async function addressAllowed(url: string, guard: AddressGuard, origin: ConnectionOrigin = "repo"): Promise<boolean> {
+/** Whether the guard lets connection `name` to `url` through, without connecting. */
+export async function addressAllowed(url: string, guard: AddressGuard, origin: ConnectionOrigin = "repo", name?: string): Promise<boolean> {
   try {
-    if (waived(new URL(url), guard, origin)) return true;
-    await checkedAddress("check", new URL(url), guard, origin);
+    const u = new URL(url);
+    if (waived(u, guard, origin, name) && !namedWaiver(u, guard, origin, name)) return true;
+    await checkedAddress(name ?? "check", u, guard, origin);
     return true;
   } catch {
     return false;
+  }
+}
+
+const LINK_LOCAL = new net.BlockList();
+LINK_LOCAL.addSubnet("169.254.0.0", 16, "ipv4");
+LINK_LOCAL.addSubnet("fe80::", 10, "ipv6");
+// A cloud's instance metadata service, on IPv6.
+LINK_LOCAL.addAddress("fd00:ec2::254", "ipv6");
+
+/** Whether an address is link-local, where a cloud's metadata service answers: never opened from a page, only by the host's allow list. */
+export function linkLocal(address: string): boolean {
+  const bare = address.split("%")[0];
+  const family = net.isIP(bare);
+  if (family === 4) return LINK_LOCAL.check(bare, "ipv4");
+  if (family !== 6) return false;
+  const mapped = bare.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  return mapped ? LINK_LOCAL.check(mapped[1], "ipv4") : LINK_LOCAL.check(bare, "ipv6");
+}
+
+/** Where a host connection to `url` lands, as the guard judges it: on a public address or one the guard opens, on a private one,
+ * on a link-local one; null when it doesn't resolve here, or isn't a URL. */
+export async function privateAddress(url: string, guard: AddressGuard): Promise<"public" | "private" | "link-local" | null> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (waived(u, guard, "host")) return "public";
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  try {
+    const found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
+    if (!found.length) return null;
+    if (found.some((a) => linkLocal(a.address))) return "link-local";
+    return found.some((a) => blockedAddress(a.address)) ? "private" : "public";
+  } catch {
+    return null;
   }
 }
 
@@ -208,6 +261,20 @@ function authHeaders(c: Extract<ResolvedConnection, { kind: "http" }>): Record<s
   return { [c.auth.slice("header:".length)]: c.secret };
 }
 
+/** Whether a call's path, as the URL resolves it, lies under one of the connection's path prefixes; true when it has none. */
+export function pathAllowed(base: string, path: string, prefixes: string[] | undefined): boolean {
+  if (!prefixes) return true;
+  // An encoded separator or dot could mean another path to the far end than the one checked here.
+  if (/%(2f|5c|2e)/i.test(path.split(/[?#]/)[0])) return false;
+  let at: string;
+  try {
+    at = new URL(base + path).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return prefixes.some((p) => at.startsWith(p.toLowerCase()));
+}
+
 function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "http" }>, opts: ConnectionOptions): Connection {
   let fetcher: Promise<typeof fetch> | null = null;
   const base = c.url.replace(/\/+$/, "");
@@ -219,6 +286,7 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
     const method = (call.method ?? "GET").toUpperCase();
     const path = call.path?.startsWith("/") ? call.path : `/${call.path ?? ""}`;
     const what = `${name}: ${method} ${path}`;
+    if (!pathAllowed(base, path, c.paths)) throw new CallError(`${what}: this host's token for ${name} reaches only ${c.paths!.join(", ")}`);
     const headers: Record<string, string> = { accept, "user-agent": "todo-plugin-host" };
     if (call.text !== undefined) headers["content-type"] = "text/plain; charset=utf-8";
     else if (call.input !== undefined) headers["content-type"] = "application/json";

@@ -38,7 +38,7 @@ const CONTROL: Record<SettingDef["type"], Control> = {
 const shown = (v: unknown) => (v === undefined || v === null ? "" : Array.isArray(v) ? v.join(", ") : String(v));
 
 const TEMPLATE_NOTE = "A template: {{item.id}} and other fields fill in where it's used, URL-encoded in a path and as JSON values in a JSON body.";
-const CONNECTION_NOTE = "The connection it calls: this repo's, and for a plugin that ships with todo, the server's too.";
+const CONNECTION_NOTE = "The connection it calls: this repo's, and for a plugin that ships with todo, the project's too, or a new one.";
 const SETTING_REF = /^\{\{\s*settings\.([A-Za-z_$][\w$-]*)\s*\}\}$/;
 
 /** The settings a plugin's connections list names by {{settings.<key>}}. */
@@ -51,7 +51,7 @@ export function describeConnections(connections: string[]): string {
   return connections.map((c) => (SETTING_REF.test(c) ? "the connection each instance names" : c)).join(", ");
 }
 
-/** The connections an instance may name: the repo's own, and this server's for a plugin shipped with todo, github for any. */
+/** The connections an instance may name: the repo's own, and the project's and this server's for a plugin shipped with todo, github for any. */
 export function connectionChoices(available: { repo: string[]; host: string[] }, shipped: boolean): string[] {
   return [...new Set(shipped ? [...available.repo, ...available.host] : [...available.repo, "github"])].sort();
 }

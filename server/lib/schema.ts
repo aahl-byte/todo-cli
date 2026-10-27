@@ -468,6 +468,9 @@ create table if not exists repo_polls (
   polled_at timestamptz,
   hook_at   timestamptz
 );
+-- polled_with: a hash of the token the tips were read with, so only a project
+-- reading with that token is shown them.
+alter table repo_polls add column if not exists polled_with text;
 
 -- Repos a project may read from GitHub and run plugins for, beyond the ones
 -- its members' CLIs report checkouts of.
@@ -541,6 +544,24 @@ alter table plugin_credentials add column if not exists endpoint text;
 delete from plugin_credentials c
  where c.endpoint is null
     or not exists (select 1 from plugin_configs p where p.project = c.project and p.repo = c.repo and p.connections ? c.connection);
+
+-- A project's own connections, set on Settings → Automation, which plugins that
+-- ship with todo use in every repo of the project in place of the server's of
+-- that name. The secret is encrypted under TODO_SECRET_KEY for the endpoint it
+-- was given for; private_ok records who let todo call a private address, and
+-- for which endpoint. version counts its saves, so a stale page's save is refused.
+create table if not exists project_connections (
+  project         text not null,
+  name            text not null,
+  def             jsonb not null,
+  secret_enc      text,
+  secret_endpoint text,
+  private_ok      jsonb,
+  version         integer not null default 1,
+  updated_by      text not null,
+  updated_at      timestamptz not null default now(),
+  primary key (project, name)
+);
 
 -- The plugin outbox: one row per event on an item, queued with what caused it
 -- and delivered after the request or by the tick. only_plugins narrows an

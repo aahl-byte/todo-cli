@@ -33,6 +33,10 @@ export function secretKey(raw = process.env.TODO_SECRET_KEY): Buffer | null {
 
 const aad = (scope: string[]) => Buffer.from(scope.join("\x1f"));
 
+/** What a project connection's secret is encrypted under: the project, the connection and the endpoint it was given for, so it
+ * decrypts for no other. "*" stands where a repo connection's credential names its repo. */
+export const projectSecretScope = (project: string, connection: string, endpoint: string) => [project, "*", connection, endpoint];
+
 export function encryptSecret(plain: string, scope: string[], key = secretKey()): string {
   if (!key) throw new NoSecretKey();
   const iv = crypto.randomBytes(IV_BYTES);
