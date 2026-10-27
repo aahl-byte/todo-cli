@@ -1,6 +1,6 @@
 import { json } from "@/lib/http";
 import { projectRepo } from "@/lib/plugins/route-helpers";
-import { checkStoredCustom, PluginInputError, putCustom, removeCustom } from "@/lib/plugins/store";
+import { checkStoredCustom, PluginConflict, PluginInputError, putCustom, removeCustom } from "@/lib/plugins/store";
 
 type Ctx = { params: Promise<{ key: string }> };
 
@@ -26,6 +26,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     return json({ ok: true, warnings });
   } catch (e) {
     if (e instanceof PluginInputError) return json({ error: e.message, errors: e.errors }, 400);
+    if (e instanceof PluginConflict) return json({ error: e.message }, 409);
     throw e;
   }
 }

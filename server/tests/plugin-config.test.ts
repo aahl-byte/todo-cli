@@ -11,7 +11,7 @@ import { branchList, checkCustom, composeConfig } from "@/lib/plugins/config";
 import { readConfig } from "@/lib/plugins/host";
 import { migrate } from "@/lib/db";
 import { encryptSecret, secretKey } from "@/lib/plugins/secrets";
-import { loadConfig, repoSecrets, storedInstances } from "@/lib/plugins/store";
+import { loadConfig, PluginConflict, putCustom, repoSecrets, storedInstances } from "@/lib/plugins/store";
 import { world, type World } from "./helpers";
 import { params, req } from "./plugin-github";
 
@@ -225,11 +225,48 @@ describe("the config API", () => {
     expect(await (await custom("PUT", { name: "notes-link", manifest: NOTES, was: "notes" })).json()).toMatchObject({ ok: true });
     expect((await loadConfig(w.d, "p", "acme/web")).custom.map((c) => c.name)).toEqual(["notes-link"]);
     expect((await listed()).instances).toEqual({ "notes-link": [{ id: "go", name: "Go", button: "Notes", settings: {} }] });
-    expect(await (await custom("PUT", { name: "x", manifest: NOTES, was: "gone" })).json()).toMatchObject({ error: "no custom plugin named gone in acme/web" });
+    const gone = await custom("PUT", { name: "x", manifest: NOTES, was: "gone" });
+    expect([gone.status, await gone.json()]).toEqual([409, { error: "gone was removed meanwhile; reload to see the plugins as they are" }]);
     expect((await custom("DELETE", { name: "notes-link" })).status).toBe(200);
     expect(await listed()).toMatchObject({ instances: {}, config: { code: {} } });
     expect((await listed()).plugins.map((p: { name: string }) => p.name)).toEqual(["pr-link"]);
     expect(await (await custom("DELETE", { name: "notes-link" })).json()).toEqual({ error: "no custom plugin named notes-link in acme/web" });
+  });
+
+  const leftover = (plugin: string, id = "a", secret?: string) => w.d.query(
+    `insert into plugin_instances (project, repo, plugin, id, def, updated_by, secret_keys, secrets_enc)
+     values ('p', 'acme/web', $1, $2, $3::jsonb, 'alice', $4, $5)`,
+    [plugin, id, JSON.stringify({ id, name: id }), secret ? ["tok"] : [],
+     secret ? encryptSecret(JSON.stringify({ tok: secret }), ["p", "acme/web", plugin, id, "settings"], secretKey()!) : null]);
+
+  it("starts a new custom plugin with no instances or grants left under its name", async () => {
+    await leftover("notes", "a", "LEGACY");
+    await w.d.query("insert into plugin_grants (project, repo, plugin, capabilities, granted_by) values ('p', 'acme/web', 'notes', '{post-request}', 'alice')");
+    expect((await custom("PUT", { name: "notes", manifest: "on: [manual]\nsettings: {tok: {label: Tok, type: secret, optional: true}}\n" })).status).toBe(200);
+    expect(await storedInstances(w.d, "p", "acme/web", { secrets: true })).toEqual({});
+    expect(await w.d.query("select * from plugin_grants")).toEqual([]);
+  });
+
+  it("drops, at migrate, instances and grants of plugins that neither ship with todo nor are a custom plugin", async () => {
+    await custom("PUT", { name: "mine", manifest: "on: [manual]\n" });
+    for (const plugin of ["mine", "rest", "from-the-repo"]) await leftover(plugin);
+    await w.d.query("insert into plugin_grants (project, repo, plugin, capabilities, granted_by) values ('p', 'acme/web', 'from-the-repo', '{post-request}', 'alice')");
+    await migrate(w.d);
+    expect((await w.d.query("select plugin from plugin_instances order by plugin")).map((r) => r.plugin)).toEqual(["mine", "rest"]);
+    expect(await w.d.query("select * from plugin_grants")).toEqual([]);
+  });
+
+  it("renames onto a name with leftover instances, keeping only the renamed plugin's, and answers a racing name with a 409", async () => {
+    await custom("PUT", { name: "foo", manifest: "on: [manual]\n" });
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "foo", instances: [{ id: "a", name: "From foo" }] }), params("p"));
+    await leftover("old");
+    const res = await custom("PUT", { name: "old", manifest: "on: [manual]\n", was: "foo", base: 1 });
+    expect(res.status).toBe(200);
+    expect((await storedInstances(w.d, "p", "acme/web")).old).toEqual([{ id: "a", name: "From foo", settings: {} }]);
+    const racing = { ...w.d, tx: <T>(fn: (t: typeof w.d) => Promise<T>) => w.d.tx((t) => fn({ ...t, query: (sql: string, params?: unknown[]) =>
+      sql.trimStart().startsWith("insert into plugin_custom") ? Promise.reject(Object.assign(new Error("duplicate key"), { code: "23505" })) : t.query(sql, params) } as typeof t)) };
+    await expect(putCustom(racing as typeof w.d, "p", "acme/web", { name: "bar", manifest: "on: [manual]\n" }, "alice"))
+      .rejects.toThrow(new PluginConflict("a plugin named bar was saved meanwhile; reload to see it"));
   });
 
   it("keeps an instance's secret setting readable when its custom plugin is renamed", async () => {

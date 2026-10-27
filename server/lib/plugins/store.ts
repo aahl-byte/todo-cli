@@ -32,6 +32,7 @@ export class PluginInputError extends Error {
 
 /** The change was made against something that has changed since; the API answers 409. */
 export class PluginConflict extends Error {}
+const UNIQUE_VIOLATION = "23505";
 
 /** Where a connection calls: its http or MCP URL, or an MCP command line. A credential is given for this. */
 export function endpointOf(def: unknown): string | null {
@@ -171,19 +172,44 @@ export async function putCustom(d: Db, project: string, repo: string, raw: unkno
   const was = raw.was ?? null;
   const check = await checkStoredCustom(d, project, repo, p, was);
   if (check.errors.length) throw new PluginInputError(check.errors.join("; "), check.errors);
-  await d.tx(async (t) => {
-    if (was && was !== p.name) {
-      const [old] = await t.query("delete from plugin_custom where project = $1 and repo = $2 and name = $3 returning name", [project, repo, was]);
-      if (!old) throw new PluginInputError(`no custom plugin named ${was} in ${repo}`);
-      await moveInstances(t, project, repo, was, p.name);
-      await t.query("update plugin_grants set plugin = $4 where project = $1 and repo = $2 and plugin = $3", [project, repo, was, p.name]);
-    }
-    await t.query(
-      `insert into plugin_custom (project, repo, name, manifest, code, updated_by) values ($1, $2, $3, $4, $5, $6)
-       on conflict (project, repo, name) do update set manifest = excluded.manifest, code = excluded.code, updated_by = excluded.updated_by,
-         updated_at = now()`, [project, repo, p.name, p.manifest, p.code, handle]);
-  });
+  try {
+    await d.tx(async (t) => {
+      if (was === p.name) {
+        const [kept] = await t.query(
+          "update plugin_custom set manifest = $4, code = $5, updated_by = $6, updated_at = now() where project = $1 and repo = $2 and name = $3 returning name",
+          [project, repo, p.name, p.manifest, p.code, handle]);
+        if (!kept) throw new PluginConflict(`${p.name} was removed meanwhile; reload to see the plugins as they are`);
+        return;
+      }
+      // A name new to the repo starts clean: nothing stored under it from before belongs to this plugin.
+      for (const table of ["plugin_instances", "plugin_grants"]) {
+        await t.query(`delete from ${table} where project = $1 and repo = $2 and plugin = $3`, [project, repo, p.name]);
+      }
+      if (was) {
+        const [old] = await t.query("delete from plugin_custom where project = $1 and repo = $2 and name = $3 returning name", [project, repo, was]);
+        if (!old) throw new PluginConflict(`${was} was removed meanwhile; reload to see the plugins as they are`);
+        await moveInstances(t, project, repo, was, p.name);
+        await t.query("update plugin_grants set plugin = $4 where project = $1 and repo = $2 and plugin = $3", [project, repo, was, p.name]);
+      }
+      await t.query("insert into plugin_custom (project, repo, name, manifest, code, updated_by) values ($1, $2, $3, $4, $5, $6)",
+                    [project, repo, p.name, p.manifest, p.code, handle]);
+    });
+  } catch (e) {
+    if ((e as { code?: string }).code === UNIQUE_VIOLATION) throw new PluginConflict(`a plugin named ${p.name} was saved meanwhile; reload to see it`);
+    throw e;
+  }
   return check;
+}
+
+/** Drop instances and grants stored for a plugin that neither ships with todo nor is one of the repo's custom plugins: left from
+ * a plugin a repo's own file once defined, they belong to nothing, and a custom plugin of that name starts clean. */
+export async function pruneLeftovers(d: Pick<Db, "query">): Promise<void> {
+  for (const table of ["plugin_instances", "plugin_grants"]) {
+    await d.query(
+      `delete from ${table} i where not (i.plugin = any($1))
+          and not exists (select 1 from plugin_custom c where c.project = i.project and c.repo = i.repo and c.name = i.plugin)`,
+      [Object.keys(SHIPPED)]);
+  }
 }
 
 /** Remove a custom plugin with its instances and grants. */
