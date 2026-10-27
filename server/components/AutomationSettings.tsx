@@ -26,7 +26,7 @@ import { ConnectionForm, connectionReady, connectionState } from "./ConnectionFo
 import { REST, WATCHTOWER, type CardPlugin } from "@/lib/action-cards";
 import { ActionPluginEditor } from "./ActionPluginEditor";
 import { Handover } from "./Handover";
-import { JiraTransitionEditor } from "./JiraTransitionEditor";
+import { asStored, JiraTransitionEditor } from "./JiraTransitionEditor";
 import { InstanceCard, RunLog, SettingInput, type NewConnection } from "./PluginInstance";
 import { notify } from "./Toaster";
 import { VercelPick } from "./VercelPick";
@@ -814,7 +814,7 @@ function Configure({ projectKey, repo, plugin, statuses, conns }: {
     return d.instances.length ? d : addInstanceTo(plugin, d);
   });
   const [dirty, setDirty] = useState(() => !plugin.instances.length);
-  const [saved, setSaved] = useState<{ ok: boolean; message: string } | null>(
+  const [saved, setSaved] = useState<{ ok: boolean; message: string; stale?: boolean } | null>(
     () => (Date.now() - (justSaved.get(id) ?? 0) < SAVED_SHOWN_MS ? { ok: true, message: "Saved." } : null));
   const [pending, start] = useTransition();
   // Between a save and the refreshed data the form is locked, since the new data replaces the drafts.
@@ -833,8 +833,9 @@ function Configure({ projectKey, repo, plugin, statuses, conns }: {
   const ordered = plugin.exclusive && draft.instances.length > 1;
   const change = (next: PluginDraft) => { setDraft(next); setDirty(true); setSaved(null); justSaved.delete(id); };
   const save = () => start(async () => {
-    const err = await send(projectKey, "", "PUT", { repo: repo.repo, plugin: plugin.name, instances: out.instances });
-    setSaved(err ? { ok: false, message: err } : { ok: true, message: "Saved." });
+    // base: the instances this page shows, so a save on top of someone else's is refused, not lost.
+    const err = await sendFor(projectKey, "", "PUT", { repo: repo.repo, plugin: plugin.name, instances: out.instances, base: plugin.instances.map(asStored) });
+    setSaved(err ? { ok: false, message: err.error, stale: err.status === 409 } : { ok: true, message: "Saved." });
     if (!err) {
       setDirty(false);
       setRefreshing(true);
@@ -868,7 +869,8 @@ function Configure({ projectKey, repo, plugin, statuses, conns }: {
       <div className="save-row">
         <button type="button" className="add" onClick={() => change(addInstanceTo(plugin, draft))}><span className="pl">+</span>Add instance</button>
         <button type="button" className="btn primary" disabled={pending || !dirty || out.errors.length > 0} onClick={save}>{pending ? "Saving…" : "Save"}</button>
-        {saved && <span className={saved.ok ? "hint" : "hot"}>{saved.ok ? saved.message : `Not saved: ${saved.message}. Fix it and save again.`}</span>}
+        {saved?.stale && <Stale message={`${saved.message}; reloading drops these changes`} onReload={() => router.refresh()} />}
+        {saved && !saved.stale && <span className={saved.ok ? "hint" : "hot"}>{saved.ok ? saved.message : `Not saved: ${saved.message}. Fix it and save again.`}</span>}
       </div>
       {(out.errors.length > 0 || out.warnings.length > 0) && (
         <ul className="problems">
