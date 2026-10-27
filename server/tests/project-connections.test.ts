@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as connectionsGET, PUT as connectionsPUT } from "@/app/api/projects/[key]/plugins/connections/route";
 import { PUT as configPUT } from "@/app/api/projects/[key]/plugins/config/route";
+import { GET as pluginsGET } from "@/app/api/projects/[key]/plugins/route";
 import { addProject } from "@/lib/auth";
 import { recomputeAll, remoteBranches, resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
 import { githubToken } from "@/lib/github-token";
@@ -190,11 +191,19 @@ describe("the trust rule", () => {
     expect(gh.sent.filter((s) => s.url === "https://hooks.example/ping").map((s) => s.headers.authorization)).toEqual(["Bearer hook-token"]);
   });
 
-  it("never sends a project's secret to a CLI", async () => {
-    await put({ name: "vercel", def: VERCEL, secret: "vc-token", base: null });
+  it("never sends a project's secret to a CLI, and tells it the server runs what the secret serves", async () => {
+    await configured(w.d, { file: "plugins:\n  vercel-preview: {use: shipped}\ninstances:\n  vercel-preview: [{id: web, name: Web, settings: {project: prj, team: tm}}]\n" });
+    const runs = async () => (await repoPlugins(w.d, "p", "acme/web", publicDns)).plugins.find((p) => p.name === "vercel-preview")!.instances[0];
+    expect(await runs()).toMatchObject({ server_runs: false, server_runs_reason: "`vercel` not authorized here" });
+    await put({ name: "vercel", def: VERCEL, base: null });
+    expect(await runs()).toMatchObject({ server_runs: false, server_runs_reason: "`vercel` not authorized here" });
+    await put({ name: "vercel", def: VERCEL, secret: "vc-token", base: 1 });
+    expect(await runs()).toMatchObject({ server_runs: true, server_runs_reason: null });
     const view = await repoPlugins(w.d, "p", "acme/web");
     expect(view.host_secrets).toContain("vercel");
     expect(JSON.stringify(view)).not.toContain("vc-token");
+    const res = await pluginsGET(req("/api/projects/p/plugins?repo=acme/web", "GET", w.tokens.bob), params("p"));
+    expect(JSON.stringify(await res.json())).not.toContain("vc-token");
   });
 });
 
