@@ -18,6 +18,7 @@ import { hashUid, ulid } from "../ulid";
 import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } from "./host";
 import { fillString } from "./template";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
+import { heldPlugins } from "./exclusive";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import { guardFor, hostSet, loadConfig, merge, message, repoSecrets, storedGrants, storedInstances, type PluginInfo } from "./store";
 import { parseDuration } from "./triggers";
@@ -353,7 +354,7 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
     secrets: { repo: await repoSecrets(d, row.project, row.repo), host: host.secrets },
     storedInstances: narrowed(stored, merged.plugins, row.only_plugins ?? null),
     grants, item: await pluginItem(d, row.project, it, row.by), event: row.event as PluginEvent, repoKey: row.repo,
-    allowRepoCommands: false, dryRunConnections: jiraReadOnly() ? ["jira"] : undefined,
+    allowRepoCommands: false, dryRunConnections: jiraReadOnly() ? ["jira"] : undefined, held: await heldPlugins(d, row.project),
   }, hostDeps(deps, row.repo, host.privateOk), {
     before: async (plugin, instance) => {
       if (done.has(instanceKey(plugin, instance))) return false;

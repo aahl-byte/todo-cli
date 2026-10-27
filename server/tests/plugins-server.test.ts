@@ -15,6 +15,7 @@ import { resetGitFactsCache, type Fetch } from "@/lib/gitfacts";
 import { flushPluginRuns, pluginTick, pluginUid } from "@/lib/plugins/server";
 import { queuePluginEvent } from "@/lib/plugins/queue";
 import { SHIPPED } from "@/lib/plugins/shipped";
+import { putProjectConnection } from "@/lib/plugins/store";
 import { hashUid } from "@/lib/ulid";
 import { child, item, world, type World } from "./helpers";
 import { API, configured, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
@@ -322,6 +323,44 @@ describe("running plugins", () => {
     await run(gh.impl);
     const ran = (await runs()).find((r) => r.plugin === "jira-transition")!;
     expect(ran.result).toMatchObject({ dryRun: true, wouldSend: [{ method: "POST", path: "/rest/api/3/issue/SR-1/transitions" }] });
+    expect(gh.sent.filter((s) => s.url.startsWith("https://acme.atlassian.net") && s.method !== "GET")).toEqual([]);
+  });
+
+  const jiraMove = async (f: Fetch) => {
+    await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
+    await w.d.query("delete from plugin_events");
+    await w.one({ handle: "alice", unconditional: true }, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { status: "review" } });
+    await run(f);
+    return (await runs()).find((r) => r.plugin === "jira-transition")!;
+  };
+  const jiraSite = (url: string) => {
+    if (!url.startsWith("https://acme.atlassian.net/")) return undefined;
+    return Response.json(url.endsWith("/transitions") ? { transitions: [{ id: "161", to: { name: "QA" } }] } : { fields: { status: { name: "Open" } } });
+  };
+  const QA = "instances:\n  jira-transition:\n    - {id: qa, name: QA, on: [{status: {from: in-progress, to: review}}], settings: {to: QA}}\n";
+
+  it("holds back every Jira write under JIRA_READ_ONLY through the project's own jira connection too", async () => {
+    vi.stubEnv("JIRA_READ_ONLY", "1");
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await putProjectConnection(w.d, "p", { name: "jira", def: { http: { url: "https://acme.atlassian.net", auth: "basic" } }, secret: "me@acme.test:tok",
+                                           base: null }, "alice", { lookup: publicDns });
+    const gh = await configured(w.d, { file: `plugins:\n  jira-transition: {use: shipped}\n${QA}`, other: jiraSite });
+    vi.stubGlobal("fetch", gh.impl);
+    const ran = await jiraMove(gh.impl);
+    expect(ran.result).toMatchObject({ dryRun: true, wouldSend: [{ method: "POST", path: "/rest/api/3/issue/SR-1/transitions" }] });
+    expect(ran.result.log[0]).toBe("jira is read-only on this host, so every write is held back");
+    expect(gh.sent.filter((s) => s.url.startsWith("https://acme.atlassian.net") && s.method !== "GET")).toEqual([]);
+  });
+
+  it("holds jira-transition in test mode while the Jira bridge sends the project's moves", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    await w.d.query(`update projects set jira_outbound = '{"writes":true,"never":[],"triggers":[{"from":"todo","to":"in-progress","jira":"Doing"}]}'::jsonb`);
+    const gh = await configured(w.d, { file: `plugins:\n  jira-transition: {use: shipped}\n${QA}`, other: jiraSite });
+    vi.stubGlobal("fetch", gh.impl);
+    const ran = await jiraMove(gh.impl);
+    expect(ran.dry_run).toBe(true);
+    expect(ran.result.log[0]).toBe("the Jira bridge sends this project's Jira moves, so this run only records what it would do");
     expect(gh.sent.filter((s) => s.url.startsWith("https://acme.atlassian.net") && s.method !== "GET")).toEqual([]);
   });
 

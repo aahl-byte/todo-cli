@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { describeMove, outboundTarget, validateRules, type OutboundRules } from "@/lib/jira/rules";
 import { pluginRules, ruleInstances, rulesOf, type PluginRules } from "@/lib/jira/plugin-rules";
 import { STATUSES } from "@/lib/model";
+import type { InstanceDef } from "@/lib/plugins/types";
 
 const rules = (triggers: OutboundRules["triggers"], never: string[] = []): OutboundRules => ({ writes: true, never, triggers });
 
@@ -39,8 +40,8 @@ describe("jira-transition's rows and instances", () => {
   });
 
   it("split an instance with several status triggers into adjacent rows, and keep one with a button as it is", () => {
-    const two = { id: "two", name: "x", on: [{ status: { from: "a", to: "b" } }, { status: { to: "c" } }], settings: { to: "QA" } };
-    const button = { id: "btn", name: "Press", on: ["manual"], settings: { to: "QA" } };
+    const two: InstanceDef = { id: "two", name: "x", on: [{ status: { from: "a", to: "b" } }, { status: { to: "c" } }], settings: { to: "QA" } };
+    const button: InstanceDef = { id: "btn", name: "Press", on: ["manual"], settings: { to: "QA" } };
     const p = pluginRules([two, button]);
     expect(p.triggers.map((t) => [t.from, t.to, t.id])).toEqual([["a", "b", "two"], ["*", "c", "two-2"], ["", "", "btn"]]);
     expect(p.triggers[2].kept).toEqual(button);
@@ -71,7 +72,7 @@ describe("jira-transition's rows and instances", () => {
     const bridge = rules([{ from: "review", to: "in-qa", jira: "QA" }, { from: "in-qa", to: "done", jira: "Done" }], ["UAT"]);
     const back = rulesOf(ruleInstances({ writes: false, never: bridge.never, triggers: bridge.triggers }));
     expect(back).toEqual({ rules: { writes: false, never: ["UAT"], triggers: bridge.triggers }, problems: [] });
-    const wild = rulesOf([instance("w", undefined, "done", "Done"), { id: "btn", name: "Press", on: ["manual"], settings: { to: "QA" } }]);
+    const wild = rulesOf([instance("w", undefined, "done", "Done"), { id: "btn", name: "Press", on: ["manual"], settings: { to: "QA" } } as InstanceDef]);
     expect(wild.problems).toEqual([
       "The trigger * → done can't go back: the Jira bridge needs both statuses.",
       "Press runs on a button press, which the Jira bridge can't do.",

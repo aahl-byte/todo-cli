@@ -169,8 +169,8 @@ function watchtowerInstance(a: ActionDef, places: Places, plan: PortPlan): Insta
   return { id: actionInstanceId(a), name: a.name, on: ["manual", ...statusTriggers(a)], settings };
 }
 
-/** The repos a project's items name that it may run plugins for. */
-async function projectRepos(d: Db, project: string, notes: string[]): Promise<string[]> {
+/** The repos a project's items name that it may run plugins for; `notes` gets the items no plugin runs for. */
+export async function pluginRepos(d: Pick<Db, "query">, project: string, notes: string[]): Promise<string[]> {
   const rows = await d.query("select extra->>'repo' as repo, count(*)::int as n from items where project = $1 group by 1 order by 1", [project]);
   const out: string[] = [];
   for (const r of rows) {
@@ -206,7 +206,7 @@ export async function planPort(d: Db, project: string, opts: { repos?: string[];
   const [p] = await d.query("select actions, jira_outbound from projects where key = $1", [project]);
   if (!p) throw new Error(`no project ${project}`);
   const plan: PortPlan = { project, repos: [], instances: {}, grants: {}, connections: {}, secrets: {}, allowHosts: [], notes: [] };
-  plan.repos = opts.repos?.length ? opts.repos.map((r) => repoKey(r)).filter(Boolean) : await projectRepos(d, project, plan.notes);
+  plan.repos = opts.repos?.length ? opts.repos.map((r) => repoKey(r)).filter(Boolean) : await pluginRepos(d, project, plan.notes);
   const own = await checkoutDir(d, project, "", "");
   const places: Places = { project, dir: own.dir, repo: own.repo };
 

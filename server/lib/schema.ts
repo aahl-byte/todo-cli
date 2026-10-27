@@ -236,6 +236,8 @@ alter table jira_links add column if not exists replayed_through bigint;
 alter table projects add column if not exists jira_outbound jsonb;
 alter table projects add column if not exists jira_settings_by text;
 alter table projects add column if not exists jira_settings_at timestamptz;
+-- Off once jira-issue mirrors the project's linked tickets in the bridge's place.
+alter table projects add column if not exists jira_poll boolean not null default true;
 alter table status_history add column if not exists override boolean not null default false;
 alter table status_history add column if not exists note text;
 alter table logs add column if not exists meta jsonb not null default '{}'::jsonb;
@@ -260,6 +262,8 @@ alter table checks add column if not exists envs text;
 alter table projects add column if not exists actions jsonb not null default '[]'::jsonb;
 alter table projects add column if not exists actions_by text;
 alter table projects add column if not exists actions_at timestamptz;
+-- Actions moved into plugin instances, each with where it went, kept so they can move back.
+alter table projects add column if not exists actions_moved jsonb not null default '[]'::jsonb;
 
 create table if not exists action_runs (
   id              bigserial primary key,

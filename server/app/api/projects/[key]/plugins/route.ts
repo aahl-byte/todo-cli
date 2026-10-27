@@ -12,7 +12,8 @@ export async function GET(req: Request, ctx: Ctx) {
   return json(await repoPlugins(a.d, a.key, a.repo));
 }
 
-/** Replace one plugin's instances in a repo, or its grants: `{repo, plugin, instances?, grants?}`. */
+/** Replace one plugin's instances in a repo, or its grants: `{repo, plugin, instances?, base?, grants?}`, `base` the instances the
+ * page showed, refused with a 409 once they've changed. */
 export async function PUT(req: Request, ctx: Ctx) {
   const body = await req.clone().json().catch(() => null);
   const a = await projectRepo(req, ctx, body?.repo);
@@ -20,7 +21,7 @@ export async function PUT(req: Request, ctx: Ctx) {
   if (typeof body?.plugin !== "string" || !body.plugin) return json({ error: "plugin must be a plugin name" }, 400);
   if (body.instances === undefined && body.grants === undefined) return json({ error: "give instances or grants" }, 400);
   try {
-    if (body.instances !== undefined) await putInstances(a.d, a.key, a.repo, body.plugin, body.instances, a.user.handle);
+    if (body.instances !== undefined) await putInstances(a.d, a.key, a.repo, body.plugin, body.instances, a.user.handle, { base: body.base });
     if (body.grants !== undefined) await putGrants(a.d, a.key, a.repo, body.plugin, body.grants, a.user.handle);
   } catch (e) {
     if (e instanceof PluginInputError) return json({ error: e.message }, 400);

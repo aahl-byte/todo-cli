@@ -218,6 +218,8 @@ export interface RunInput {
   track?: string[];
   /** Host connections this host never writes through: a run that uses one is held back as in dry-run. */
   dryRunConnections?: string[];
+  /** Why the host holds this run in test mode, when it does. */
+  held?: string;
 }
 
 export const POST_REQUEST = "post-request";
