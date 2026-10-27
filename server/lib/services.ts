@@ -41,8 +41,8 @@ export function services(at: ServiceAddresses): Service[] {
       tokenUrl: "https://id.atlassian.com/manage-profile/security/api-tokens", hint: "The site URL, and the email and API token of the account that moves tickets." },
     { name: "watchtower", label: "Watchtower", url: at.watchtower, placeholder: at.watchtower, auth: "none",
       hint: "Watchtower's own address on the machine it runs on." },
-    { name: "db-request", label: "db-request", url: "", placeholder: "https://db-request.example.com", auth: "none",
-      hint: "The db-request service that answers GET /submissions." },
+    { name: "db-request", label: "db-request", url: "https://db-request.vercel.app", placeholder: "https://db-request.vercel.app", auth: "bearer",
+      secret: "db-request API token", hint: "A db-request API token, from whoever runs db-request." },
   ];
 }
 

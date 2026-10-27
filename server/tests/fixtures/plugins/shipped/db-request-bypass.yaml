@@ -1,0 +1,26 @@
+about: db-request behind Vercel Deployment Protection gets the bypass secret beside the connection's bearer token
+plugin: db-request
+instance: {id: default, name: (default), settings: {bypass: vb-secret}}
+event: {type: push, branch: feat/login}
+track: [staging, main]
+connections:
+  db-request: {kind: http, auth: bearer, secret: api-token}
+responses:
+  db-request:
+    - method: GET
+      path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin
+      body:
+        - {submission_id: 41, name: add-sessions, status: pr_open, pr_url: "https://github.com/acme/moneyball/pull/560"}
+    - method: GET
+      path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin-api
+      body: []
+received:
+  db-request:
+    - {method: GET, path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin, x-vercel-protection-bypass: vb-secret, authorization: Bearer api-token}
+    - {method: GET, path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin-api, x-vercel-protection-bypass: vb-secret, authorization: Bearer api-token}
+expect:
+  attached:
+    - {kind: link, key: "link:https://github.com/acme/moneyball/pull/560", type: db-request, url: "https://github.com/acme/moneyball/pull/560", label: "db-request #41 · add-sessions (pr_open)"}
+    - {kind: edge, key: "edge:https://github.com/acme/moneyball/pull/560 in staging", needs: "https://github.com/acme/moneyball/pull/560", in: staging, because: "db-request #41 add-sessions"}
+  wouldSend: []
+  log: []

@@ -8,7 +8,7 @@ connections:
 responses:
   db-request:
     - method: GET
-      path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin
+      path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin
       body: [{submission_id: 7, name: x, status: merged, pr_url: "https://github.com/acme/moneyball/pull/9"}]
 expect:
   attached:
@@ -17,4 +17,4 @@ expect:
   wouldSend: []
 received:
   db-request:
-    - {method: GET, path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin, authorization: Bearer dtok}
+    - {method: GET, path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin, authorization: Bearer dtok}

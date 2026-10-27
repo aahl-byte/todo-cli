@@ -8,12 +8,12 @@ connections:
 responses:
   db-request:
     - method: GET
-      path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin
+      path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin
       body:
         - {submission_id: 41, name: add-sessions, status: approved, pr_url: "https://github.com/acme/moneyball/pull/560", pr_state: open}
         - {submission_id: 42, name: draft-idea, status: draft, pr_url: null}
     - method: GET
-      path: /submissions?repo=acme%2Fweb&branch=feat%2Flogin-api
+      path: /api/submissions?repo=acme%2Fweb&branch=feat%2Flogin-api
       body: []
 expect:
   attached:
