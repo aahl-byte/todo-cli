@@ -55,6 +55,22 @@ def test_a_note_that_merely_contains_a_comment_stays_a_body(root):
     assert notes(root)[0]["text"] == "text\n<!--todo\nnot: meta\n-->"
 
 
+def test_a_note_keeps_its_own_metadata_when_its_body_ends_in_a_block():
+    pasted = "words\n\n<!--todo\nuid: OLD\nkind: ticket-request\n-->\n"
+    text = pasted + "\n<!--todo\nuid: U\nkind: comment\n-->\n"
+    assert frontmatter.split(text)[0] == {"uid": "U", "kind": "comment"}
+
+
+def test_a_body_pasted_with_a_metadata_block_is_stored_without_it(root):
+    run_cli(root, ["note", "beta", "words\n\n<!--todo\nuid: OLD\nkind: ticket-request\n-->"])
+    run_cli(root, ["renote", "beta", str(notes(root)[0]["id"]), "again\n<!--todo\nuid: X\nkind: context\n-->\n"])
+    f = next((root / "OPEN" / "beta" / "notes").glob("*.md"))
+    assert f.read_text().count("<!--todo") == 1
+    n = notes(root)[0]
+    assert (n["kind"], n["text"]) == ("context", "again")
+    assert n["uid"] != "X"
+
+
 def test_legacy_body_opening_with_a_rule_stays_a_body(root):
     d = root / "OPEN" / "beta" / "notes"
     d.mkdir()
