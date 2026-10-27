@@ -9,7 +9,7 @@ import { POST as credentialsPOST } from "@/app/api/projects/[key]/plugins/creden
 import { deployBranches } from "@/lib/gitfacts";
 import { branchList, checkCustom, composeConfig } from "@/lib/plugins/config";
 import { readConfig } from "@/lib/plugins/host";
-import { loadConfig } from "@/lib/plugins/store";
+import { loadConfig, storedInstances } from "@/lib/plugins/store";
 import { world, type World } from "./helpers";
 import { params, req } from "./plugin-github";
 
@@ -152,6 +152,28 @@ describe("the config API", () => {
     expect((await listed()).secrets).toEqual([]);
   });
 
+  it("forgets a connection's credential when its endpoint changes, and refuses the server's own names", async () => {
+    const hooks = (url: string) => put({ connection: { name: "hooks", def: { http: { url, auth: "bearer" } } } });
+    await hooks("https://hooks.example");
+    await credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, { repo: "acme/web", connection: "hooks", secret: "s3" }), params("p"));
+    await hooks("https://hooks.example");
+    expect((await listed()).secrets).toEqual(["hooks"]);
+    await hooks("https://elsewhere.example");
+    expect((await listed()).secrets).toEqual([]);
+    for (const name of ["github", "watchtower"]) {
+      expect(await (await put({ connection: { name, def: { http: { url: "https://x.example" } } } })).json()).toMatchObject({
+        error: `connection ${name}: this server has its own ${name}, which plugins that ship with todo use; give the repo's another name` });
+    }
+    expect((await put({ connection: { name: "toString", def: { http: { url: "https://x.example" } } } })).status).toBe(400);
+  });
+
+  it("refuses names every object inherits, for a shipped plugin or a custom one", async () => {
+    expect(await (await put({ enable: "toString" })).json()).toMatchObject({ error: "no plugin named toString ships with todo" });
+    expect(await (await custom("PUT", { name: "constructor", manifest: "on: [manual]\n" })).json())
+      .toMatchObject({ errors: ["constructor can't be a plugin's name"] });
+    expect((await listed()).plugins.map((p: { name: string }) => p.name)).toEqual(["pr-link"]);
+  });
+
   it("adds, checks, renames and removes a custom plugin, its instances following it", async () => {
     const check = await (await custom("POST", { name: "notes", manifest: "on: [manual]\nwat: 1\n" })).json();
     expect(check).toEqual({ errors: ['unknown key "wat"'], warnings: [] });
@@ -172,6 +194,14 @@ describe("the config API", () => {
     expect(await listed()).toMatchObject({ instances: {}, config: { code: {} } });
     expect((await listed()).plugins.map((p: { name: string }) => p.name)).toEqual(["pr-link"]);
     expect(await (await custom("DELETE", { name: "notes-link" })).json()).toEqual({ error: "no custom plugin named notes-link in acme/web" });
+  });
+
+  it("keeps an instance's secret setting readable when its custom plugin is renamed", async () => {
+    const manifest = "on: [manual]\nsettings: {token: {label: Token, type: secret}}\nattach: [{log: hi}]\n";
+    await custom("PUT", { name: "keyed", manifest });
+    await pluginsPUT(req("/api/projects/p/plugins", "PUT", w.tokens.alice, { repo: "acme/web", plugin: "keyed", instances: [{ id: "a", name: "A", settings: { token: "s3cret" } }] }), params("p"));
+    expect(await (await custom("PUT", { name: "renamed", manifest, was: "keyed" })).json()).toMatchObject({ ok: true });
+    expect((await storedInstances(w.d, "p", "acme/web", { secrets: true })).renamed).toEqual([{ id: "a", name: "A", settings: { token: "s3cret" } }]);
   });
 
   it("stores a code plugin's module and hands it to the CLI by plugin name", async () => {

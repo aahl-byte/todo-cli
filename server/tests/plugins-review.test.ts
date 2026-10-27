@@ -104,7 +104,7 @@ describe("repos a project may use", () => {
 });
 
 describe("the private-address guard", () => {
-  it("keeps repo connections off loopback and the metadata address, and off a private github the repo redefines", async () => {
+  it("keeps repo connections off loopback and the metadata address, and a shipped plugin on the host's github when the repo has its own", async () => {
     const file = ["connections:", "  pg: {http: {url: 'http://127.0.0.1:5432'}}", "  meta: {http: {url: 'http://169.254.169.254'}}",
       "  github: {http: {url: 'http://10.0.0.5'}}",
       "plugins:", "  y:", "    connections: [pg, meta]", "    on: [push]",
@@ -115,7 +115,10 @@ describe("the private-address guard", () => {
     await push("main");
     await run(gh.impl);
     expect(gh.sent.filter((s) => !s.url.startsWith(API)).map((s) => s.url)).toEqual([]);
-    for (const r of await runs()) expect(r.result.error ?? r.result.skipped).toMatch(/isn't an address this host connects to/);
+    const result = Object.fromEntries((await runs()).map((r) => [r.plugin, r.result]));
+    expect(result.y.error).toMatch(/isn't an address this host connects to/);
+    expect(result["pr-link"].error).toBeUndefined();
+    expect(gh.sent.find((s) => s.url.includes("/pulls?"))!.headers.authorization).toBe("Bearer gh-token");
   });
 
   const localPlugin = ["connections:", "  wt: {http: {url: 'http://127.0.0.1:8710'}}",
@@ -468,6 +471,7 @@ describe("secrets", () => {
   });
 
   it("forgets a credential without the key, and names a key that doesn't decode to 32 bytes", async () => {
+    await configured(w.d, SPEC);
     const credential = (b: unknown) => credentialsPOST(req("/api/projects/p/plugins/credentials", "POST", w.tokens.alice, b), params("p"));
     vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
     await credential({ repo: "acme/web", connection: "hooks", secret: "abc" });

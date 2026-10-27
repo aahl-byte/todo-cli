@@ -9,6 +9,8 @@ import type { ConnectionDef, PluginConfig, PluginDef } from "./types";
 
 /** A custom plugin's name, and a connection's. */
 export const NAME = /^[A-Za-z][\w-]*$/;
+/** Names every object already has, which a plugin or connection can't take. */
+export const INHERITED = Object.getOwnPropertyNames(Object.prototype);
 export const MAX_MANIFEST = 64 * 1024;
 export const MAX_CODE = 1024 * 1024;
 /** A branch name as git allows one, near enough: no spaces, no `..`, no leading `-`. */
@@ -74,6 +76,7 @@ export function checkCustom(p: CustomPlugin, ctx: { reserved: string[]; connecti
   const name = p.name.trim();
   if (!name) errors.push("give the plugin a name");
   else if (!NAME.test(name)) errors.push("a name starts with a letter and has only letters, digits, - and _");
+  else if (INHERITED.includes(name)) errors.push(`${name} can't be a plugin's name`);
   else if (ctx.reserved.includes(name)) errors.push(`${name} is taken: a plugin ships with todo or this repo has one by that name`);
   if (p.manifest.length > MAX_MANIFEST) errors.push(`the YAML is over ${MAX_MANIFEST / 1024} KB`);
   if (p.code !== null && p.code.length > MAX_CODE) errors.push(`the code is over ${MAX_CODE / 1024} KB`);

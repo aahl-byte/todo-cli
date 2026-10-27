@@ -63,7 +63,7 @@ export function AutomationSettings({ projectKey, page, statuses, secretKeySet }:
                  shipped={page.shipped} />
           ))}
           <AddCustom key={repo.repo} projectKey={projectKey} repo={repo} shipped={page.shipped} />
-          <Connections projectKey={projectKey} repo={repo} secretKeySet={secretKeySet} />
+          <Connections projectKey={projectKey} repo={repo} secretKeySet={secretKeySet} serverNames={page.host.map((h) => h.name)} />
         </div>
       )}
     </div>
@@ -481,7 +481,9 @@ function AddCustom({ projectKey, repo, shipped }: { projectKey: string; repo: Da
 // ── connections ───────────────────────────────────────────────────────────────
 const AUTHS = ["none", "bearer", "basic", "header"] as const;
 
-function Connections({ projectKey, repo, secretKeySet }: { projectKey: string; repo: DashRepo; secretKeySet: boolean }) {
+function Connections({ projectKey, repo, secretKeySet, serverNames }: {
+  projectKey: string; repo: DashRepo; secretKeySet: boolean; serverNames: string[];
+}) {
   const declared = repo.connections.filter((c) => c.origin === "repo");
   return (
     <section className="auto-connections" id="connections">
@@ -492,12 +494,12 @@ function Connections({ projectKey, repo, secretKeySet }: { projectKey: string; r
       {declared.map((c) => (
         <ConnectionRow key={c.name} projectKey={projectKey} repo={repo.repo} c={c} shipped={false} secretKeySet={secretKeySet} removable />
       ))}
-      <AddConnection projectKey={projectKey} repo={repo.repo} taken={declared.map((c) => c.name)} />
+      <AddConnection projectKey={projectKey} repo={repo.repo} taken={declared.map((c) => c.name)} serverNames={serverNames} />
     </section>
   );
 }
 
-function AddConnection({ projectKey, repo, taken }: { projectKey: string; repo: string; taken: string[] }) {
+function AddConnection({ projectKey, repo, taken, serverNames }: { projectKey: string; repo: string; taken: string[]; serverNames: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -508,6 +510,7 @@ function AddConnection({ projectKey, repo, taken }: { projectKey: string; repo: 
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const clash = taken.includes(name.trim());
+  const server = serverNames.includes(name.trim());
   const def = kind === "mcp" ? { mcp: { url: url.trim() } }
     : { http: { url: url.trim(), ...(auth === "none" ? {} : { auth: auth === "header" ? `header:${header.trim()}` : auth }) } };
   const add = () => start(async () => {
@@ -538,9 +541,10 @@ function AddConnection({ projectKey, repo, taken }: { projectKey: string; repo: 
       {kind === "http" && auth === "header" && (
         <input aria-label="credential header" placeholder="header name, e.g. X-Api-Key" value={header} onChange={(e) => setHeader(e.target.value)} />
       )}
-      <button type="submit" className="btn primary" disabled={pending || !name.trim() || !url.trim() || clash || (auth === "header" && !header.trim())}>Add</button>
+      <button type="submit" className="btn primary" disabled={pending || !name.trim() || !url.trim() || clash || server || (auth === "header" && !header.trim())}>Add</button>
       <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
       {clash && <span className="hot">This repo has a connection by that name.</span>}
+      {server && <span className="hot">This server has its own {name.trim()}, which plugins that ship with todo use; give the repo&apos;s another name.</span>}
       {error && <span className="hot">Not saved: {error}.</span>}
     </form>
   );

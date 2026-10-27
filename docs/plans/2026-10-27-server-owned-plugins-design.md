@@ -61,9 +61,13 @@ and a CLI doesn't for a server's config (below).
 
 **Writes.** `PUT /api/projects/<key>/plugins/config` takes `track`, `enable`,
 `disable` or `connection: {name, def}` (`def: null` drops the connection and
-its credential). `PUT`, `POST` (check only) and `DELETE` on
+its credential). A credential belongs to the endpoint it was given for, so
+changing a connection's definition forgets it too. A repo's connection can't
+take the name of one of the server's own (`github`, or any in
+`TODO_PLUGIN_CONNECTIONS`). `PUT`, `POST` (check only) and `DELETE` on
 `/api/projects/<key>/plugins/custom` add, check and remove a custom plugin;
-renaming one moves its instances and grants with it. Switching a shipped plugin
+renaming one moves its instances and grants with it, secret settings
+encrypted again for the new name. Switching a shipped plugin
 off keeps its instances, so switching it back on restores them. Setting deploy
 branches recomputes the repo's git facts.
 
@@ -74,14 +78,20 @@ those in `TODO_PLUGIN_CONNECTIONS` with `TODO_PLUGIN_SECRET_<NAME>`):
 
 - **A shipped plugin**, through any of its instances, gets the host's
   connections with their secrets, and the repo config's connections with the
-  repo's credentials. A repo connection of the same name as a host one wins,
-  with the repo's credential only.
+  repo's credentials.
 - **A custom plugin** gets the repo config's connections with the repo's
   credentials, and `github` pointed at the server's GitHub API without the
   token. It never gets another host connection or any host secret. One that
   names a host connection is skipped, saying to declare the connection for the
-  repo. A repo that declares its own `github` connection gives custom plugins
-  that one, with the repo's credential.
+  repo under another name.
+
+Since anyone signed in can edit a config, it can't repoint what a host set up.
+Of a name both declare, a shipped plugin keeps the host's connection, and a
+custom plugin gets the repo's. The server refuses a repo connection named after
+one of its own, and takes a credential only for a connection the config
+declares. A CLI gives its own secret for a repo connection only while that
+connection points where the secret was given: `todo connection auth` records
+the endpoint beside it.
 
 `host.ts` draws the line in `connectionsOf`: `shipped` decides, and nothing a
 person types into a config can make a custom plugin shipped, since a custom

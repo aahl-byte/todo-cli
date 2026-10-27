@@ -2,6 +2,7 @@
 // plugins, instances, connections, grants and run log for the Automation
 // settings page, what the Jira bridge and Actions do beside them, and an item's
 // manual buttons, skip notices and manual-run outcomes.
+import { parse } from "yaml";
 import type { Db, Row } from "./db";
 import { pluginOwners, repoAllowed, repoKey, repoRefusal } from "./checkouts";
 import { storedActions } from "./actions/model";
@@ -14,7 +15,6 @@ import { ALWAYS_ON, SHIPPED } from "./plugins/shipped";
 import { triggersOf } from "./plugins/triggers";
 import { attachedSummary, connectionKeysOf } from "./plugin-form";
 import { pickRepo } from "./automation";
-import { parse } from "yaml";
 import type { Attachment, Call, ConnectionDef, PluginDef, PluginEvent, RunResult } from "./plugins/types";
 
 /** Runs the log shows per instance. */

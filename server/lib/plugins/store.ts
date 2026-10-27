@@ -5,13 +5,13 @@
 import type { Db, Row } from "../db";
 import { repoKey } from "../checkouts";
 import { githubApi } from "../github";
-import { branchList, checkCustom, composeConfig, NAME, type ConfigParts, type CustomCheck, type CustomPlugin } from "./config";
+import { branchList, checkCustom, composeConfig, INHERITED, NAME, type ConfigParts, type CustomCheck, type CustomPlugin } from "./config";
 import { addressAllowed, type AddressGuard } from "./connections";
 import { allInstances, bindConnections, connectionsFor, pluginsFor, wouldSkip, type Resolved } from "./host";
 import { pluginsEnabled } from "./queue";
 import { checkFile, parsePlugins } from "./load";
 import { decryptSecret, encryptSecret, NoSecretKey, secretKey } from "./secrets";
-import { ALWAYS_ON, SHIPPED } from "./shipped";
+import { ALWAYS_ON, isShipped, SHIPPED } from "./shipped";
 import {
   POST_REQUEST, type ConnectionDef, type InstanceDef, type PluginConfig, type PluginDef, type PluginsFile, type ResolvedConnection,
   type RunResult, type Trigger,
@@ -48,7 +48,7 @@ export async function loadConfig(d: Pick<Db, "query">, project: string, repo: st
   const custom = await d.query("select name, manifest, code, updated_by, updated_at from plugin_custom where project = $1 and repo = $2 order by name",
                                [project, repo]);
   return {
-    track: row?.track ?? [], shipped: (row?.shipped ?? []).filter((n: string) => n in SHIPPED),
+    track: row?.track ?? [], shipped: (row?.shipped ?? []).filter((n: string) => isShipped(n)),
     connections: isMap(row?.connections) ? row.connections : {},
     custom: custom.map((c) => ({ name: c.name, manifest: c.manifest, code: c.code ?? null, updated_by: c.updated_by, updated_at: iso(c.updated_at) })),
     updated: row ? { by: row.updated_by, at: iso(row.updated_at) } : null,
@@ -82,28 +82,45 @@ export async function putTrack(d: Pick<Db, "query">, project: string, repo: stri
 
 /** Switch a shipped plugin on or off for the repo; its stored instances stay either way. */
 export async function setShipped(d: Pick<Db, "query">, project: string, repo: string, name: unknown, on: boolean, handle: string): Promise<void> {
-  if (typeof name !== "string" || !(name in SHIPPED)) throw new PluginInputError(`no plugin named ${String(name)} ships with todo`);
+  if (typeof name !== "string" || !isShipped(name)) throw new PluginInputError(`no plugin named ${String(name)} ships with todo`);
   if (ALWAYS_ON.includes(name)) throw new PluginInputError(`${name} is on for every repo; switch its instance off in its settings instead`);
   await updateConfig(d, project, repo, handle,
     on ? "shipped = case when $4 = any(shipped) then shipped else array_append(shipped, $4) end" : "shipped = array_remove(shipped, $4)", [name]);
 }
 
-/** Declare (or, with null, drop) one of the repo's connections; dropping one forgets its credential too. The server never starts a
- * command, and a CLI never does for a connection the server's config declares, so only http and MCP URLs are taken. */
+/** JSON with every map's keys sorted, so two spellings of one definition compare equal. */
+const canonical = (v: unknown): string => JSON.stringify(v, (_, x) =>
+  (isMap(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a.localeCompare(b))) : x));
+
+/** Declare (or, with null, drop) one of the repo's connections. Dropping or changing one forgets its credential, which was given
+ * for the endpoint it named. A repo can't take the name of one of this server's own connections, which the shipped plugins
+ * use. The server never starts a command, and a CLI never does for a connection the server's config declares, so only http and
+ * MCP URLs are taken. */
 export async function putConnection(d: Db, project: string, repo: string, name: unknown, def: unknown, handle: string): Promise<void> {
-  if (typeof name !== "string" || !NAME.test(name)) throw new PluginInputError("a connection's name starts with a letter and has only letters, digits, - and _");
+  if (typeof name !== "string" || !NAME.test(name) || INHERITED.includes(name)) {
+    throw new PluginInputError("a connection's name starts with a letter and has only letters, digits, - and _");
+  }
+  const forget = (t: Pick<Db, "query">) =>
+    t.query("delete from plugin_credentials where project = $1 and repo = $2 and connection = $3", [project, repo, name]);
   if (def === null) {
     await d.tx(async (t) => {
       await updateConfig(t, project, repo, handle, "connections = connections - $4::text", [name]);
-      await t.query("delete from plugin_credentials where project = $1 and repo = $2 and connection = $3", [project, repo, name]);
+      await forget(t);
     });
     return;
+  }
+  if (name in hostConnections()) {
+    throw new PluginInputError(`connection ${name}: this server has its own ${name}, which plugins that ship with todo use; give the repo's another name`);
   }
   const { file, errors } = checkFile({ connections: { [name]: def } });
   if (errors.length) throw new PluginInputError(errors.join("; "), errors);
   const conn = file.connections![name];
   if ("mcp" in conn && "command" in conn.mcp) throw new PluginInputError(`connection ${name}: give an MCP server's URL; the server never starts a command`);
-  await updateConfig(d, project, repo, handle, "connections = connections || jsonb_build_object($4::text, $5::jsonb)", [name, JSON.stringify(conn)]);
+  await d.tx(async (t) => {
+    const [row] = await t.query("select connections -> $3::text as def from plugin_configs where project = $1 and repo = $2", [project, repo, name]);
+    if (row?.def && canonical(row.def) !== canonical(conn)) await forget(t);
+    await updateConfig(t, project, repo, handle, "connections = connections || jsonb_build_object($4::text, $5::jsonb)", [name, JSON.stringify(conn)]);
+  });
 }
 
 /** Check a custom plugin against the repo's config as it is now; `was` is the name it's saved under, when it has one. */
@@ -111,6 +128,19 @@ export async function checkStoredCustom(d: Pick<Db, "query">, project: string, r
   const config = await loadConfig(d, project, repo);
   const reserved = [...Object.keys(SHIPPED), ...config.custom.map((c) => c.name).filter((n) => n !== was)];
   return checkCustom(p, { reserved, connections: Object.keys(config.connections) });
+}
+
+/** Give a plugin's instances to another name, their secret settings encrypted again for it, since the plugin's name is part of
+ * what they're encrypted under. Without the key they move as they are, as unreadable as they were. */
+async function moveInstances(t: Pick<Db, "query">, project: string, repo: string, from: string, to: string): Promise<void> {
+  const key = secretKey();
+  const rows = await t.query("select id, secrets_enc from plugin_instances where project = $1 and repo = $2 and plugin = $3", [project, repo, from]);
+  for (const r of rows) {
+    const plain = key && r.secrets_enc ? decryptSecret(r.secrets_enc, settingsScope(project, repo, from, r.id), key) : null;
+    const secrets = plain === null ? r.secrets_enc : encryptSecret(plain, settingsScope(project, repo, to, r.id), key!);
+    await t.query("update plugin_instances set plugin = $4, secrets_enc = $5 where project = $1 and repo = $2 and plugin = $3 and id = $6",
+                  [project, repo, from, to, secrets, r.id]);
+  }
 }
 
 /** Add or replace a custom plugin, renaming it from `was`, whose instances and grants follow it. Refused, every problem listed,
@@ -128,9 +158,8 @@ export async function putCustom(d: Db, project: string, repo: string, raw: unkno
     if (was && was !== p.name) {
       const [old] = await t.query("delete from plugin_custom where project = $1 and repo = $2 and name = $3 returning name", [project, repo, was]);
       if (!old) throw new PluginInputError(`no custom plugin named ${was} in ${repo}`);
-      for (const table of ["plugin_instances", "plugin_grants"]) {
-        await t.query(`update ${table} set plugin = $4 where project = $1 and repo = $2 and plugin = $3`, [project, repo, was, p.name]);
-      }
+      await moveInstances(t, project, repo, was, p.name);
+      await t.query("update plugin_grants set plugin = $4 where project = $1 and repo = $2 and plugin = $3", [project, repo, was, p.name]);
     }
     await t.query(
       `insert into plugin_custom (project, repo, name, manifest, code, updated_by) values ($1, $2, $3, $4, $5, $6)
@@ -327,10 +356,15 @@ const credentialScope = (project: string, repo: string, connection: string) => [
 /** Store (or, with null, forget) the secret for a connection the repo's config declares. */
 export async function putCredential(d: Pick<Db, "query">, project: string, repo: string, connection: unknown, secret: unknown,
                                     handle: string): Promise<void> {
-  if (typeof connection !== "string" || !NAME.test(connection)) throw new PluginInputError("connection must be a connection name");
+  if (typeof connection !== "string" || !NAME.test(connection) || INHERITED.includes(connection)) {
+    throw new PluginInputError("connection must be a connection name");
+  }
   if (secret === null) {
     await d.query("delete from plugin_credentials where project = $1 and repo = $2 and connection = $3", [project, repo, connection]);
     return;
+  }
+  if (!Object.hasOwn((await loadConfig(d, project, repo)).connections, connection)) {
+    throw new PluginInputError(`${repo}'s config declares no connection ${connection}; a credential is given for a declared one`);
   }
   const key = secretKey();
   if (!key) throw new NoSecretKey();
@@ -440,7 +474,8 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
   const unreadable = (await d.query("select connection from plugin_credentials where project = $1 and repo = $2", [project, repo]))
     .map((x) => x.connection as string).filter((c) => !(c in secrets));
   const usable = merge(stored, await storedInstances(d, project, repo, { secrets: true }));
-  const connections = connectionsFor({ hostConnections: hostConnections(), secrets: { repo: secrets, host: hostSecrets() } }, usable.file);
+  const given = { hostConnections: hostConnections(), secrets: { repo: secrets, host: hostSecrets() } };
+  const connections = { shipped: connectionsFor(given, usable.file, true), custom: connectionsFor(given, usable.file) };
   const guard = guardFor(repo, lookup);
   const plugins = [];
   for (const p of merged.plugins) {
@@ -449,7 +484,7 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
     const shown = [];
     for (const i of p.instances) {
       const inst = real.instances.find((x) => x.id === i.id) ?? i;
-      const why = await serverRefusal(r, inst, connections, guard, unreadable);
+      const why = await serverRefusal(r, inst, connections[r.shipped ? "shipped" : "custom"], guard, unreadable);
       shown.push({ ...masked(i, secretKeysOf(p.settings)), server_runs: why === null, server_runs_reason: why });
     }
     plugins.push({ ...p, instances: shown });

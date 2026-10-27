@@ -6,7 +6,7 @@ import { test } from "./expr";
 import { addLog, Attached, finish } from "./limits";
 import { parsePlugins, pluginErrors, settingRef } from "./load";
 import { fetchDocs } from "./docs";
-import { ALWAYS_ON, SHIPPED } from "./shipped";
+import { ALWAYS_ON, isShipped, SHIPPED } from "./shipped";
 import { pickInstances } from "./triggers";
 import { fillJson } from "./template";
 import { runYaml } from "./yaml-runner";
@@ -188,7 +188,7 @@ export async function runInstance(input: RunInput, deps: HostDeps = {}): Promise
 export interface EventInput {
   /** The repo's plugin config; absent when it has none, which runs the always-on shipped plugins alone. */
   config?: PluginConfig;
-  /** Host-wide connections; one of the same name in the repo's config overrides one. */
+  /** Host-wide connections; a shipped plugin keeps the host's of a name the repo's config also declares. */
   hostConnections?: Record<string, ConnectionDef>;
   /** This host's secrets for this repo by connection name, kept apart by where the connection was declared. */
   secrets?: { repo?: Record<string, string>; host?: Record<string, string> };
@@ -219,8 +219,10 @@ function resolveConnection(def: ConnectionDef, origin: ConnectionOrigin, secret:
   return null;
 }
 
-/** The host's connections, then the repo config's over them, each with only the secret stored for its own origin. */
-export function connectionsFor(input: Pick<EventInput, "hostConnections" | "secrets">, file: PluginsFile): Record<string, ResolvedConnection> {
+/** The connections a run may get, each with only the secret stored for its own origin. Of a name both declare, a shipped
+ * plugin gets the host's, which a config anyone can edit mustn't repoint; a custom plugin gets the repo config's. */
+export function connectionsFor(input: Pick<EventInput, "hostConnections" | "secrets">, file: PluginsFile, shipped = false):
+    Record<string, ResolvedConnection> {
   const out: Record<string, ResolvedConnection> = {};
   const add = (defs: Record<string, ConnectionDef> | undefined, origin: ConnectionOrigin) => {
     for (const [name, def] of Object.entries(defs ?? {})) {
@@ -228,8 +230,8 @@ export function connectionsFor(input: Pick<EventInput, "hostConnections" | "secr
       if (c) out[name] = c;
     }
   };
-  add(input.hostConnections, "host");
-  add(file.connections, "repo");
+  const order: [Record<string, ConnectionDef> | undefined, ConnectionOrigin][] = [[input.hostConnections, "host"], [file.connections, "repo"]];
+  for (const [defs, origin] of shipped ? order.reverse() : order) add(defs, origin);
   return out;
 }
 
@@ -243,9 +245,9 @@ export function pluginsFor(input: Pick<EventInput, "config">, file: PluginsFile,
   for (const [name, def] of Object.entries(file.plugins ?? {})) {
     const code = input.config?.code?.[name];
     if (def.use !== undefined) {
-      if (def.use === "shipped" && SHIPPED[name]) fromRegistry(name);
+      if (def.use === "shipped" && isShipped(name)) fromRegistry(name);
       else errors.push(def.use === "shipped" ? `plugin ${name}: no plugin named ${name} ships with todo` : `plugin ${name}: use: ${def.use} isn't a source todo knows`);
-    } else if (name in SHIPPED) {
+    } else if (isShipped(name)) {
       errors.push(`plugin ${name}: ships with todo, so it is switched on, never redefined`);
     } else if (def.code && typeof code !== "string") {
       errors.push(`plugin ${name}: no code is stored for ${def.code}`);
@@ -289,13 +291,14 @@ export function readConfig(config: PluginConfig | undefined): { file: PluginsFil
 /** Given a repo's plugin config and an event on an item, run every instance the event fires, one after another. */
 export async function runEvent(input: EventInput, deps: HostDeps = {}, hooks: EventHooks = {}): Promise<EventResult> {
   const { file, errors } = readConfig(input.config);
-  const connections = connectionsFor(input, file);
+  const connections = { shipped: connectionsFor(input, file, true), custom: connectionsFor(input, file) };
   const results: EventRun[] = [];
   for (const { name, def, code, shipped } of pluginsFor(input, file, errors)) {
     for (const instance of pickInstances(def, instancesFor(def, input.storedInstances?.[name] ?? []), input.event)) {
       if (hooks.before && !(await hooks.before(name, instance))) continue;
       const result = await runInstance({
-        plugin: def, name, code, instance, item: input.item, event: input.event, connections, dryRun: !!input.dryRun,
+        plugin: def, name, code, instance, item: input.item, event: input.event, connections: connections[shipped ? "shipped" : "custom"],
+        dryRun: !!input.dryRun,
         limits: input.limits, grants: input.grants?.[name], allowRepoCommands: input.allowRepoCommands, shipped,
         repoKey: input.repoKey, track: file.track ?? [], dryRunConnections: input.dryRunConnections,
       }, deps);

@@ -66,15 +66,24 @@ describe("shipped plugins", () => {
     expect(gh.received).toEqual([]);
   });
 
-  it("never hands the host's secret to a repo connection of the same name", async () => {
+  it("keeps a shipped plugin on the host's connection when the config declares one of the same name", async () => {
     const evil = await serve([{ method: "GET", path: PULLS, body: [] }]);
     const { gh, ...conns } = await github();
     const config = { text: `connections:\n  github: {http: {url: "${evil.url}", auth: bearer}}\n` };
-    expect(summary(await run({ ...conns, config }))).toEqual([["pr-link", "default", "pr-link: `github` not authorized here"]]);
+    const out = await run({ ...conns, config, secrets: { host: { github: "HOST" }, repo: { github: "REPO" } } });
+    expect(summary(out)).toEqual([["pr-link", "default", [PR.html_url]]]);
+    expect(gh.received.map((r) => r.headers.authorization)).toEqual(["Bearer HOST"]);
     expect(evil.received).toEqual([]);
-    const own = await run({ ...conns, config, secrets: { host: { github: "HOST" }, repo: { github: "REPO" } } });
-    expect(summary(own)).toEqual([["pr-link", "default", []]]);
-    expect(evil.received.map((r) => r.headers.authorization)).toEqual(["Bearer REPO"]);
+  });
+
+  it("gives a custom plugin the config's connection of a host one's name, with the repo's secret only", async () => {
+    const own = await serve([{ method: "GET", path: "/x", body: { ok: 1 } }]);
+    const { gh, ...conns } = await github();
+    const config = { text: `connections:\n  github: {http: {url: "${own.url}", auth: bearer}}\nplugins:\n  mine: {connections: [github], on: [push], steps: [{http: {method: GET, path: /x}}]}\n` };
+    const out = await run({ ...conns, config, secrets: { host: { github: "HOST" }, repo: { github: "REPO" } },
+                            storedInstances: { "pr-link": [{ id: "default", name: "default", enabled: false }] } });
+    expect(summary(out)).toEqual([["mine", "default", []]]);
+    expect(own.received.map((r) => r.headers.authorization)).toEqual(["Bearer REPO"]);
     expect(gh.received).toEqual([]);
   });
 });
@@ -148,9 +157,11 @@ instances:
 plugins:
   pr-link: {use: shipped}
   nope: {use: shipped}
+  toString: {use: shipped}
   coded: {on: [push], code: coded.js}
 ` }, storedInstances: { "pr-link": [{ id: "mine", name: "Mine" }] } });
-    expect(out.errors).toEqual(["plugin nope: no plugin named nope ships with todo", "plugin coded: no code is stored for coded.js"]);
+    expect(out.errors).toEqual(["plugin nope: no plugin named nope ships with todo", "plugin toString: no plugin named toString ships with todo",
+                                "plugin coded: no code is stored for coded.js"]);
     expect(summary(out)).toEqual([["pr-link", "mine", [PR.html_url]]]);
     const shadow = await run({ ...conns, config: { text: "plugins: {pr-link: {on: [push], attach: [{log: mine}]}}" } });
     expect(shadow.errors).toEqual(["plugin pr-link: ships with todo, so it is switched on, never redefined"]);
