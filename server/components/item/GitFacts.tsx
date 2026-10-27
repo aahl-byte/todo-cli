@@ -45,7 +45,7 @@ function EdgeRow({ e, base, by }: { e: Edge; base: string; by?: string }) {
 }
 
 /** One other item's branch and the files both branches change, the conflicting ones split out. */
-export interface FileClash { id: string; title?: string; branch: string; via: string; conflict: string[]; overlap: string[] }
+export interface FileClash { id: string; title?: string; status?: string; branch: string; via: string; conflict: string[]; overlap: string[] }
 
 /** Conflicts and overlaps folded into one entry per other branch, the most conflicting first. */
 export function fileClashes(conflicts: Hint[], overlaps: Hint[]): FileClash[] {
@@ -55,6 +55,7 @@ export function fileClashes(conflicts: Hint[], overlaps: Hint[]): FileClash[] {
     let e = byKey.get(key);
     if (!e) byKey.set(key, (e = { id: h.id, branch: h.branch, via: h.via, conflict: [], overlap: [] }));
     if (h.title) e.title = h.title;
+    if (h.status) e.status = h.status;
     return e;
   };
   for (const h of conflicts) entry(h).conflict.push(...h.files);
@@ -112,7 +113,10 @@ function ClashRow({ c, base, showVia }: { c: FileClash; base: string; showVia: b
   return (
     <details className="git-clash">
       <summary>
-        <a className="git-clash-item" href={withBase(`${base}/i/${c.id}`)} data-tip={c.id}>{c.title ?? c.id}</a>
+        <span className="git-clash-title">
+          {c.status && <span className={`git-dot s-${c.status}`} data-tip={c.status} aria-label={`status: ${c.status}`} />}
+          <a className="git-clash-item" href={withBase(`${base}/i/${c.id}`)} data-tip={c.id}>{c.title ?? c.id}</a>
+        </span>
         <span className="git-clash-sub faint">
           {c.conflict.length > 0
             ? <span className="git-conflicts" data-tip="files that won't merge cleanly">{plural(c.conflict.length, "conflict")}</span>

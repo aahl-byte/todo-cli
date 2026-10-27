@@ -40,4 +40,12 @@ describe("files other branches change too", () => {
     expect(html).toContain("+2 more files");
     expect(html).not.toContain(" with feat/mine");
   });
+
+  it("mark each other item with a dot in its status's color that names the status on hover", () => {
+    const html = renderToStaticMarkup(<GitFacts base="/p/p" facts={{
+      overlaps: [{ id: "b", branch: "feat/b", via, files: ["a.ts"], title: "Bee", status: "in-qa" }],
+    }} />);
+    expect(html).toContain('<span class="git-dot s-in-qa" data-tip="in-qa" aria-label="status: in-qa"></span>');
+    expect(html).toContain(">Bee</a>");
+  });
 });

@@ -228,10 +228,11 @@ function githubSteps(repo: DashRepo): Step[] {
   return [{ text: `${whose} can't see ${repo.repo}: give the project a token that can read its branches, commits and pull requests.`, done: false, connect }];
 }
 
-/** How a service authorizes, in words: "a token", "an email and API token". */
+/** How a service authorizes, in words: "an API token", "an email and API token". */
 function credentialWords(s: Service | undefined): string {
   if (s?.auth === "basic") return `${s.user ? `an ${s.user.toLowerCase()}` : "a user"} and ${s.pass ?? "password"}`;
-  return s?.secret ? `a ${s.secret.toLowerCase()}` : "a token";
+  const what = s?.secret ? s.secret.replace(new RegExp(`^${s.label} `), "") : "token";
+  return `${/^[AEIOUaeiou]/.test(what) ? "an" : "a"} ${what}`;
 }
 
 /** What one of the project's or the server's connections still needs before a shipped plugin can call it, and what it has. */

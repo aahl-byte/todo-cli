@@ -1,17 +1,29 @@
-# db-request has no HTTP endpoint yet: this plugin expects GET
-# /submissions?repo=&branch= answering `db-request status --json`'s list, and is
-# tested against a fake of it.
+# Calls db-request's GET /api/submissions, which answers the rows `db-request
+# status --json` lists, with a bearer token from the connection. A db-request
+# behind Vercel Deployment Protection also takes its bypass secret.
 description: Links each db-request submission for the item's branches to its migrations PR, and makes the item wait on that PR.
 connections: [db-request]
 on: [push, pr]
 every: 15m
 per: branch
+settings:
+  bypass: {label: Vercel protection bypass secret, type: secret, scope: plugin, optional: true}
 steps:
-  - name: submissions
+  - name: protected
+    when: "settings.bypass"
     http:
       method: GET
-      path: /submissions
+      path: /api/submissions
       query: {repo: "{{item.repo}}", branch: "{{branch}}"}
+      headers: {x-vercel-protection-bypass: "{{settings.bypass}}"}
+  - name: open
+    when: "!(settings.bypass)"
+    http:
+      method: GET
+      path: /api/submissions
+      query: {repo: "{{item.repo}}", branch: "{{branch}}"}
+  - name: submissions
+    value: "protected || open"
 attach:
   - each: "submissions[?pr_url]"
     link: {type: db-request, url: "{{each.pr_url}}", label: "db-request #{{each.submission_id}} · {{each.name}} ({{each.status}})"}

@@ -1,6 +1,9 @@
 // The host side of a code plugin: what its sandbox may call, attach and sleep,
 // and where the sandbox runs. In-process hosts run it in a worker thread so a
 // crash ends only the worker; the CLI's bundle is its own process and runs it inline.
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { AttachError, makeAttachment } from "./attachments";
 import { CallError, DeadlineError, withQuery, type Calls } from "./connections";
@@ -99,8 +102,14 @@ export function hostCodeSlots(total?: number, perRepo?: number): CodeSlots {
   return (shared ??= new CodeSlots(total, perRepo));
 }
 
-// One self-contained file, so a bundler that copies it as an asset ships a worker that runs.
-const WORKER_URL = new URL("./code-worker.bundle.mjs", import.meta.url);
+const WORKER_FILE = "code-worker.bundle.mjs";
+
+/** The worker's file on disk: beside this module when it runs unbundled, else in the server's lib/plugins, since a
+ * bundled server's rewritten module URL doesn't name a file. */
+export function workerFile(here: string = String(new URL(`./${WORKER_FILE}`, import.meta.url)), cwd = process.cwd()): string {
+  const candidates = [here.startsWith("file:") ? fileURLToPath(here) : "", path.join(cwd, "lib", "plugins", WORKER_FILE)];
+  return candidates.find((f) => f && existsSync(f)) ?? candidates[candidates.length - 1];
+}
 /** How long past the deadline a worker gets before it's terminated. */
 const KILL_GRACE_MS = 5_000;
 const WORKER_HEAP_MB = 256;
@@ -157,10 +166,16 @@ function hostFor(run: CodeRun): SandboxHost {
   };
 }
 
+/** The worker's file as a path: a bundled server builds the URL with a URL class Worker doesn't accept. */
+export const workerPath = (url: URL | string): string => {
+  const href = String(url);
+  return href.startsWith("file:") ? fileURLToPath(href) : href;
+};
+
 /** The sandbox in its own thread; whatever happens to the thread comes back as an error. */
-function inWorker(job: SandboxJob, host: SandboxHost, url: URL): Promise<{ error?: string }> {
+function inWorker(job: SandboxJob, host: SandboxHost, url: URL | string): Promise<{ error?: string }> {
   return new Promise((resolve) => {
-    const worker = new Worker(url, { workerData: job, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } });
+    const worker = new Worker(workerPath(url), { workerData: job, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } });
     let settled = false;
     const finish = (out: { error?: string }) => {
       if (settled) return;
@@ -193,7 +208,7 @@ export async function runCode(run: CodeRun): Promise<void> {
   if (!(await run.slots.take(run.repoKey, run.deadline))) throw new DeadlineError("the run passed its deadline waiting for a free sandbox");
   let out: { error?: string };
   try {
-    out = run.isolation === "inline" ? await runSandbox(job, host) : await inWorker(job, host, run.workerUrl ?? WORKER_URL);
+    out = run.isolation === "inline" ? await runSandbox(job, host) : await inWorker(job, host, run.workerUrl ?? workerFile());
   } finally {
     run.slots.give(run.repoKey);
   }

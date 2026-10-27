@@ -615,7 +615,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await track.locator("li", { hasText: "Name the branches work deploys from" }).waitFor();
     const vercel = autoRow("vercel-preview", "acme/api");
     if (await vercel.locator("input[aria-label='vercel-preview on']").isChecked()) throw new Error("vercel-preview starts on");
-    await vercel.locator("li", { hasText: "Connect todo to Vercel with a token." }).waitFor();
+    await vercel.locator("li", { hasText: "Connect todo to Vercel with an API token." }).waitFor();
     await vercel.locator("li", { hasText: "once it's switched on" }).waitFor();
     if (await vercel.locator("button:has-text('Set up')").count()) throw new Error("offers settings for a plugin that's off");
     if (await page.locator(".step-code pre, code.env").count()) throw new Error("a step asks someone to commit to the repo or set the server's environment");
