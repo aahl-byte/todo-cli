@@ -145,6 +145,8 @@ export interface BridgeFacts {
     linked: number;
   };
   actions: { name: string; kind: "rest" | "watchtower" }[];
+  /** Actions moved into plugin instances, which can move back. */
+  moved: { name: string; plugin: string }[];
 }
 
 /** A connection the project's shipped plugins use in every repo: one the project set on this page, or the server's own. */
@@ -327,7 +329,7 @@ export async function pluginsPage(d: Pick<Db, "query">, project: string, f: Fetc
 
 /** The Jira bridge's triggers and polling, and the project's Actions. */
 export async function bridgeFacts(d: Pick<Db, "query">, project: string): Promise<BridgeFacts> {
-  const [p] = await d.query("select jira_outbound, jira_synced_at, jira_poll, actions from projects where key = $1", [project]);
+  const [p] = await d.query("select jira_outbound, jira_synced_at, jira_poll, actions, actions_moved from projects where key = $1", [project]);
   const [linked] = await d.query("select count(distinct jira_key)::int as n from jira_links where project = $1 and source = 'field'", [project]);
   const rules = outboundRules(p?.jira_outbound);
   const actions = storedActions(p?.actions);
@@ -336,6 +338,8 @@ export async function bridgeFacts(d: Pick<Db, "query">, project: string): Promis
             polled: p?.jira_synced_at ? iso(p.jira_synced_at) : null, polls: !!p?.jira_synced_at && p?.jira_poll !== false,
             linked: Number(linked?.n ?? 0) },
     actions: actions.map((a) => ({ name: a.name || a.id, kind: a.kind })),
+    moved: (Array.isArray(p?.actions_moved) ? p.actions_moved : [])
+      .map((m: { action?: { name?: string; id?: string }; plugin?: string }) => ({ name: m.action?.name || m.action?.id || "?", plugin: String(m.plugin) })),
   };
 }
 

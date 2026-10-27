@@ -9,5 +9,5 @@ settings:
   dir:          {label: Folder, type: text, default: "{{item.dir}}"}
   prompt:       {label: Prompt, type: long-text, default: "/todo {{item.id}}"}
   resumePrompt: {label: Prompt for a live or resumed session, type: long-text, optional: true}
-  model:        {label: Model, type: choice, options: [opus, sonnet], optional: true}
+  model:        {label: Model, type: choice, options: [opus, sonnet, haiku], optional: true}
   link:         {label: Watchtower address for session links, type: text, optional: true}

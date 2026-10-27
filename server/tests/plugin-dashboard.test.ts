@@ -182,13 +182,13 @@ describe("the Automation page", () => {
 
   it("counts the Jira bridge's triggers and linked issues, and the project's Actions", async () => {
     let facts = (await automationPage(w.d, "p", null)).bridge;
-    expect(facts).toEqual({ jira: { triggers: 0, writes: false, readOnly: false, polled: null, linked: 0 }, actions: [] });
+    expect(facts).toEqual({ jira: { triggers: 0, writes: false, readOnly: false, polled: null, polls: false, linked: 0 }, actions: [], moved: [] });
     await w.d.query(`update projects set jira_synced_at = now(), jira_outbound = $1::jsonb, actions = $2::jsonb where key = 'p'`, [
       JSON.stringify({ writes: true, never: [], triggers: [{ from: "review", to: "ready-for-qa", jira: "QA" }] }),
       JSON.stringify([{ id: "go", name: "Start agent", kind: "watchtower", runner: "server", auto: [], base: "http://wt", dir: "/src" }])]);
     await w.d.query("insert into jira_links (project, item_uid, jira_key, source) values ('p', 'I1', 'ABC-1', 'field')");
     facts = (await automationPage(w.d, "p", null)).bridge;
-    expect(facts.jira).toMatchObject({ triggers: 1, writes: true, linked: 1 });
+    expect(facts.jira).toMatchObject({ triggers: 1, writes: true, linked: 1, polls: true });
     expect(facts.jira.polled).toEqual(expect.any(String));
     expect(facts.actions).toEqual([{ name: "Start agent", kind: "watchtower" }]);
   });

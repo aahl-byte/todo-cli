@@ -55,7 +55,7 @@ export interface AutomationRow {
 }
 
 export interface Handover {
-  move: "jira-triggers" | "jira-polling";
+  move: "jira-triggers" | "jira-polling" | "watchtower" | "rest";
   /** Offered while the old code does the job. */
   here?: string;
   /** Offered while the plugin does it. */
@@ -206,6 +206,13 @@ function handoverOf(plugin: string, ctx: RowContext, on: DashPlugin | null): Han
     if (jira.polls) return { move: "jira-polling", here: "Move polling here" };
     if (on && jira.polled) return { move: "jira-polling", back: "Move polling back to the Jira bridge" };
   }
+  const kind = plugin === "rest" ? "rest" : plugin === "watchtower-session" ? "watchtower" : null;
+  if (kind) {
+    const here = ctx.bridge.actions.some((a) => a.kind === kind);
+    const back = ctx.bridge.moved.some((m) => m.plugin === plugin);
+    if (!here && !back) return undefined;
+    return { move: kind, ...(here ? { here: "Move these Actions here" } : {}), ...(back ? { back: "Move these Actions back to the General tab" } : {}) };
+  }
   return undefined;
 }
 
@@ -342,7 +349,7 @@ function offeredRow(repo: DashRepo, name: string, description: string | null, co
   const handover = handoverOf(name, ctx, null);
   if (elsewhere) {
     // Moving the job here needs the connections it calls first, so nothing goes undone in between.
-    const steps = handover ? staticConnections(connections).flatMap((c) => connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx, true)) : [];
+    const steps = handover?.move.startsWith("jira") ? staticConnections(connections).flatMap((c) => connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx, true)) : [];
     // Switching jira-issue on is refused while the bridge polls: the move is the way.
     const switchable = !(name === "jira-issue" && ctx.bridge.jira.polls);
     return { key: name, title, plugins: [name], state: "elsewhere", notes: [{ text: elsewhere.text, link: elsewhere.link }], steps, plugin: null,
@@ -353,7 +360,8 @@ function offeredRow(repo: DashRepo, name: string, description: string | null, co
   for (const c of staticConnections(connections)) {
     steps.push(...connectionSteps(c, repo.connections.find((x) => x.name === c), true, ctx, false));
   }
-  return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null, toggle };
+  return { key: name, title, plugins: [name], state: "off", offers: copy?.offers ?? description ?? undefined, notes: [], steps, plugin: null, toggle,
+           ...(handover ? { handover } : {}) };
 }
 
 function pluginRow(repo: DashRepo, p: DashPlugin, ctx: RowContext): AutomationRow {

@@ -35,8 +35,9 @@ const custom = (name: string, over: Partial<DashCustom> = {}): DashCustom => ({
 
 const offer = (name: string, connections: string[] = []) => ({ name, description: `${name} does things.`, connections });
 
-const bridge = (over: { jira?: Partial<BridgeFacts["jira"]>; actions?: BridgeFacts["actions"] } = {}): BridgeFacts => ({
+const bridge = (over: { jira?: Partial<BridgeFacts["jira"]>; actions?: BridgeFacts["actions"]; moved?: BridgeFacts["moved"] } = {}): BridgeFacts => ({
   jira: { triggers: 0, writes: true, readOnly: false, polled: null, polls: !!over.jira?.polled, linked: 0, ...over.jira }, actions: over.actions ?? [],
+  moved: over.moved ?? [],
 });
 
 const host = (name: string, over: Partial<HostConnection> = {}): HostConnection => ({
@@ -341,7 +342,15 @@ describe("work the Jira bridge or Actions do today", () => {
     expect(row(rows, "jira-transition").handover).toEqual({ move: "jira-triggers", here: "Move these triggers here" });
     expect(row(rows, "jira-issue").handover).toEqual({ move: "jira-polling", here: "Move polling here" });
     expect(row(rows, "jira-issue").toggle).toBeUndefined();
-    expect(row(rows, "rest").handover).toBeUndefined();
+    expect(row(rows, "rest").handover).toEqual({ move: "rest", here: "Move these Actions here" });
+    expect(row(rows, "watchtower-session").handover).toEqual({ move: "watchtower", here: "Move these Actions here" });
+    expect(row(rows, "watchtower-session").title).toBe("Start or resume a Claude session in Watchtower");
+    expect(row(rows, "rest").title).toBe("Send a web request to any URL");
+  });
+
+  it("offers Actions moved into a plugin back to the General tab", () => {
+    const moved = automationRows(repo({ offered }), ctx({ bridge: bridge({ moved: [{ name: "ROSM", plugin: "watchtower-session" }] }) }));
+    expect(row(moved, "watchtower-session").handover).toEqual({ move: "watchtower", back: "Move these Actions back to the General tab" });
   });
 
   it("offers the way back once the plugin does the job", () => {

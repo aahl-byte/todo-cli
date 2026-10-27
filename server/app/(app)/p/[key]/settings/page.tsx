@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ActionsSettingsForm } from "@/components/ActionsSettingsForm";
 import { JiraSettingsForm } from "@/components/JiraSettingsForm";
-import { projectActions, recentRuns } from "@/lib/actions/runs";
+import { movedActions, projectActions, recentRuns } from "@/lib/actions/runs";
 import { db } from "@/lib/db";
 import { dryRuns, loadJiraSettings } from "@/lib/jira/settings";
 import { JIRA_TRANSITION, liveRepos } from "@/lib/plugins/exclusive";
@@ -21,7 +21,7 @@ export default async function Settings({ params }: { params: Promise<{ key: stri
   const actions = (
     <>
       <div className="label section" id="actions">Actions</div>
-      <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} />
+      <ActionsSettingsForm projectKey={key} actions={await projectActions(d, key)} statuses={STATUSES} moved={await movedActions(d, key)} />
       <div className="label section">Recent runs</div>
       <RecentRuns runs={await recentRuns(d, key)} projectKey={key} />
     </>

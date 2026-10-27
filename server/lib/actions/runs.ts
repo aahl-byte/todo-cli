@@ -12,6 +12,12 @@ import { firesOn, itemVars, render, storedActions, type ActionDef, type ItemLike
 export const MAX_ATTEMPTS = 4;
 const LEASE_MINUTES = 5;
 
+/** The names of the Actions moved into plugin instances. */
+export async function movedActions(t: Db, project: string): Promise<string[]> {
+  const [p] = await t.query("select actions_moved from projects where key = $1", [project]);
+  return (Array.isArray(p?.actions_moved) ? p.actions_moved : []).map((m: { action?: { name?: string; id?: string } }) => m.action?.name || m.action?.id || "?");
+}
+
 export async function projectActions(t: Db, project: string): Promise<ActionDef[]> {
   const [p] = await t.query("select actions from projects where key = $1", [project]);
   return storedActions(p?.actions);

@@ -23,6 +23,8 @@ import { configurable, connectionNotice } from "@/lib/plugin-summary";
 import type { AutomationPage, BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry } from "@/lib/plugin-views";
 import { authKind, authOf, serviceLabel, type AuthKind, type Service } from "@/lib/services";
 import { ConnectionForm, connectionReady, connectionState } from "./ConnectionForm";
+import { REST, WATCHTOWER, type CardPlugin } from "@/lib/action-cards";
+import { ActionPluginEditor } from "./ActionPluginEditor";
 import { Handover } from "./Handover";
 import { JiraTransitionEditor } from "./JiraTransitionEditor";
 import { InstanceCard, RunLog, SettingInput, type NewConnection } from "./PluginInstance";
@@ -413,6 +415,11 @@ function SetupPanel({ projectKey, repo, plugin, statuses, conns }: {
       {plugin.shipped && plugin.name === "jira-transition" ? (
         <JiraTransitionEditor key={JSON.stringify(plugin.instances)} projectKey={projectKey} repo={repo.repo} plugin={plugin} statuses={statuses}
                               sendLock={jiraSendLock(repo, conns)} />
+      ) : plugin.shipped && (plugin.name === WATCHTOWER || plugin.name === REST) ? (
+        <ActionPluginEditor key={JSON.stringify(plugin.instances)} projectKey={projectKey} repo={repo} plugin={plugin as DashPlugin & { name: CardPlugin }}
+                            statuses={statuses} newConnection={(onSaved, onClose) => (
+          <HostForm projectKey={projectKey} name={null} conns={{ ...conns, host: [...conns.host, ...repoNames(repo)] }} onClose={onClose} onSaved={onSaved} />
+        )} />
       ) : configurable(plugin) && (
         <Configure key={`${JSON.stringify(plugin.instances)}:${JSON.stringify(plugin.grant)}`} projectKey={projectKey} repo={repo} plugin={plugin}
                    statuses={statuses} conns={conns} />
