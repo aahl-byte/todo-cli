@@ -189,7 +189,10 @@ function RepoNotes({ repo }: { repo: DashRepo }) {
   return (
     <div className="repo-source">
       {repo.branches.visible === false && (
-        <p className="hint">GitHub doesn&apos;t show {repo.repo} to the server, so todo can&apos;t read its branches, commits or pull requests.</p>
+        <p className="hint">
+          GitHub doesn&apos;t show {repo.repo} to {repo.github === "page" ? "this project's" : "the server's"} token, so todo can&apos;t read its
+          branches, commits or pull requests.
+        </p>
       )}
       {repo.errors.length > 0 && (
         <>
