@@ -10,15 +10,9 @@ import { withBase } from "@/lib/base";
 import { pluginRules, ruleInstances, type PluginRules, type PluginTrigger } from "@/lib/jira/plugin-rules";
 import { validateRules } from "@/lib/jira/rules";
 import type { DashPlugin, RunRow } from "@/lib/plugin-views";
-import type { InstanceDef } from "@/lib/plugins/types";
+import { asStored } from "@/lib/plugin-summary";
 import { asRules, JiraTriggers, Problems } from "./JiraSettingsForm";
 import { Stamp } from "./ui";
-
-/** An instance as the server stored it, without what the page adds. */
-export const asStored = (i: DashPlugin["instances"][number]): InstanceDef => {
-  const { server_runs: _runs, server_runs_reason: _why, ...rest } = i;
-  return rest;
-};
 
 const keptText = (t: PluginTrigger) => (t.kept ? `${t.kept.name || t.kept.id} runs on a button press, so it's kept as it is here.` : null);
 

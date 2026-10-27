@@ -955,6 +955,7 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
     await panel.locator(".hot", { hasText: "The trigger * → deployed can't go back: the Jira bridge needs both statuses." }).waitFor();
     if (!(await panel.locator("button.primary").isDisabled())) throw new Error("the way back is open with a * trigger");
     await panel.locator("button", { hasText: "Cancel" }).click();
+    await configure("jira-transition");
     const ed = card("jira-transition").locator("[data-plugin-editor=jira-transition]");
     await ed.locator(".rule-table .rule-row[data-trigger='*>deployed'] button[aria-label='remove trigger']").click();
     await saveEditor("jira-transition");

@@ -19,14 +19,14 @@ import {
   addInstance as addInstanceTo, describeConnections, describeTrigger, draftPlugin, fieldsOf, savedInstances, type InstanceDraft, type PluginDraft,
 } from "@/lib/plugin-form";
 import { checkCustom } from "@/lib/plugins/config";
-import { configurable, connectionNotice } from "@/lib/plugin-summary";
+import { asStored, configurable, connectionNotice } from "@/lib/plugin-summary";
 import type { AutomationPage, BridgeFacts, DashConnection, DashCustom, DashPlugin, DashRepo, HostConnection, RepoEntry } from "@/lib/plugin-views";
 import { authKind, authOf, serviceLabel, type AuthKind, type Service } from "@/lib/services";
 import { ConnectionForm, connectionReady, connectionState } from "./ConnectionForm";
 import { REST, WATCHTOWER, type CardPlugin } from "@/lib/action-cards";
 import { ActionPluginEditor } from "./ActionPluginEditor";
 import { Handover } from "./Handover";
-import { asStored, JiraTransitionEditor } from "./JiraTransitionEditor";
+import { JiraTransitionEditor } from "./JiraTransitionEditor";
 import { InstanceCard, RunLog, SettingInput, type NewConnection } from "./PluginInstance";
 import { notify } from "./Toaster";
 import { VercelPick } from "./VercelPick";

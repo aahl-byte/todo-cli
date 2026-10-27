@@ -772,7 +772,8 @@ input.big { font-size: 15px; padding: 7px 9px; }
 .auto-steps .step-mark { color: var(--faint); }
 .auto-steps li.done { color: var(--faint); }
 .auto-steps li.done .step-mark { color: var(--cyan); }
-.auto-actions { display: flex; gap: 16px; margin-top: 8px; }
+.auto-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }
+.auto-actions .move-back, .auto-line .move-here { white-space: normal; text-align: left; }
 .auto-panel { display: grid; gap: 8px; margin-top: 10px; padding: 10px 12px; background: var(--tray); border: 1px solid var(--line); border-radius: 7px; }
 .auto-panel.plugin-card { border-top: 1px solid var(--line); padding: 10px 12px; }
 .auto-switch { display: inline-flex; gap: 6px; align-items: center; flex: none; font: 600 9px var(--disp); letter-spacing: .14em; text-transform: uppercase;

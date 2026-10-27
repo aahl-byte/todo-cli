@@ -11,9 +11,9 @@ import {
   BODYLESS, blankCard, cardsOf, instancesOf, MODELS, PLUGIN_TEMPLATE_GROUPS, WATCHTOWER, type ActionCard, type CardPlugin,
 } from "@/lib/action-cards";
 import { connectionChoices } from "@/lib/plugin-form";
+import { asStored } from "@/lib/plugin-summary";
 import type { DashPlugin, DashRepo } from "@/lib/plugin-views";
 import { TemplateReference } from "./ActionsSettingsForm";
-import { asStored } from "./JiraTransitionEditor";
 import type { NewConnection } from "./PluginInstance";
 
 // No connection name starts with "+", so this never stands for one.
