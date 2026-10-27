@@ -1,7 +1,7 @@
 // Live pull-request status for PR links, read from GitHub's API and cached
 // briefly in memory. A token is optional: public repos work without it, private
 // ones need it, and unresolved review threads (GraphQL only) need it. Callers
-// pass the project's (github-token.ts); it defaults to the server's GITHUB_TOKEN.
+// pick it per repo (github-token.ts prTokens); without one, a PR reads as public.
 import crypto from "node:crypto";
 
 export type Fetch = typeof fetch;
@@ -101,7 +101,7 @@ const tokenKey = (token: string | undefined) => (token ? crypto.createHash("sha2
 
 /** A PR's status, or null when GitHub can't tell us; failed lookups, checks included, retry after a short pause. Each token's
  * answers are cached apart, since what a token sees is its own. */
-export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch, token: string | null | undefined = process.env.GITHUB_TOKEN): Promise<PrStatus | null> {
+export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch, token: string | null = null): Promise<PrStatus | null> {
   const auth = token || undefined;
   const key = `${tokenKey(auth)}:${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
   const hit = cache.get(key);
@@ -120,10 +120,9 @@ export function prStatus(ref: PrRef, fetchImpl: Fetch = fetch, token: string | n
   return entry.value;
 }
 
-/** Statuses for every link pointing at a GitHub PR, keyed by the link's uid, each read with the token `tokenFor` gives its repo
- * (the server's by default). */
-export async function linkPrStatuses(links: Record<string, any>[], fetchImpl?: Fetch,
-                                     tokenFor: (repo: string) => string | null = () => process.env.GITHUB_TOKEN ?? null): Promise<Record<string, PrStatus>> {
+/** Statuses for every link pointing at a GitHub PR, keyed by the link's uid, each read with the token `tokenFor` gives its repo. */
+export async function linkPrStatuses(links: Record<string, any>[], fetchImpl: Fetch | undefined,
+                                     tokenFor: (repo: string) => string | null): Promise<Record<string, PrStatus>> {
   const found = await Promise.all(links.map(async (l) => {
     const ref = parsePrUrl(l.meta?.url);
     return [l.uid, ref && (await prStatus(ref, fetchImpl, tokenFor(`${ref.owner}/${ref.repo}`.toLowerCase())))] as const;
