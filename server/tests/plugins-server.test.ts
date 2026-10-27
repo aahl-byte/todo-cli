@@ -16,6 +16,7 @@ import { flushPluginRuns, pluginTick, pluginUid } from "@/lib/plugins/server";
 import { queuePluginEvent } from "@/lib/plugins/queue";
 import { SHIPPED } from "@/lib/plugins/shipped";
 import { putProjectConnection } from "@/lib/plugins/store";
+import { commented } from "@/lib/jira/inbound";
 import { hashUid } from "@/lib/ulid";
 import { child, item, world, type World } from "./helpers";
 import { API, configured, fakeGitHub, params, PR, publicDns, req, type Spec } from "./plugin-github";
@@ -304,6 +305,24 @@ describe("running plugins", () => {
     await run(gh.impl);
     expect(await w.d.query("select 1 from notes where item_uid = 'I1' and kind = 'ticket-request'")).toHaveLength(2);
     expect((await comments()).map((c) => [c.text, c.author])).toEqual([["Looks good, mostly", "bob"], ["Ship it", "jira:Pat"]]);
+  });
+
+  it("leaves a comment the Jira bridge brought in before jira-issue took over, and the bridge leaves jira-issue's", async () => {
+    vi.stubEnv("TODO_PLUGIN_CONNECTIONS", JSON.stringify({ jira: { http: { url: "https://acme.atlassian.net", auth: "basic" } } }));
+    vi.stubEnv("TODO_PLUGIN_SECRET_JIRA", "me@acme.test:tok");
+    const issue = { key: "SR-1", self: "https://acme.atlassian.net/rest/api/3/issue/1", fields: { summary: "Export", status: { name: "QA" },
+      comment: { total: 2, comments: [{ id: "7", author: { displayName: "Bob" }, body: "Old" }, { id: "8", author: { displayName: "Pat" }, body: "New" }] } } };
+    const gh = await configured(w.d, { file: "plugins:\n  jira-issue: {use: shipped}\n",
+      other: (url) => (url.startsWith("https://acme.atlassian.net/rest/api/3/issue/SR-1?") ? Response.json(issue) : undefined) });
+    await onBranch("I1", ["feat/x"], { extra: { repo: "acme/web", branches: ["feat/x"], jira: ["SR-1"] } });
+    await commented(w.d, { project: "p", item_uid: "I1" }, issue.fields.comment.comments[0], "SR-1", "p:I1");
+    await w.d.query("delete from plugin_events");
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
+    await run(gh.impl);
+    const texts = async () => (await w.d.query("select text from notes where item_uid = 'I1' and kind = 'comment' order by n")).map((n) => n.text);
+    expect(await texts()).toEqual(["Old", "New"]);
+    expect((await commented(w.d, { project: "p", item_uid: "I1" }, issue.fields.comment.comments[1], "SR-1", "p:I1")).reason).toBe("mirrored by jira-issue");
+    expect(await texts()).toEqual(["Old", "New"]);
   });
 
   it("holds back every Jira write under JIRA_READ_ONLY", async () => {

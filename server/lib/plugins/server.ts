@@ -18,7 +18,7 @@ import { hashUid, ulid } from "../ulid";
 import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } from "./host";
 import { fillString } from "./template";
 import { REPO_CODE_DEADLINE_MS } from "./code-runner";
-import { heldPlugins } from "./exclusive";
+import { heldPlugins, JIRA_ISSUE } from "./exclusive";
 import { finished, PLUGIN_HANDLE, pluginsEnabled, queuePluginEvent } from "./queue";
 import { guardFor, hostSet, loadConfig, merge, message, repoSecrets, storedGrants, storedInstances, type PluginInfo } from "./store";
 import { parseDuration } from "./triggers";
@@ -104,6 +104,12 @@ function noteOf(a: Extract<Attachment, { kind: "link" | "edge" | "comment" }>, i
 
 interface Applied { applied: string[]; log: string[]; edges: boolean }
 
+/** The Jira comment id of a jira-issue comment the Jira bridge already brought in to the item, before jira-issue took its place. */
+function bridgeComment(notes: Row[], key: string): string | null {
+  const id = key.match(/^comment:[^:]+:(.+)$/)?.[1];
+  return id && notes.some((n) => n.kind === "comment" && !n.meta?.plugin && n.meta?.jira_comment_id === id) ? id : null;
+}
+
 /** Write one run's attachments: create what's new, set what changed, remove what's gone. The caller holds the item's lock. */
 async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: string[]): Promise<Applied> {
   const instance = instanceKey(run.plugin, run.instance);
@@ -118,6 +124,11 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
   const urls = new Set<string>();
   for (const a of run.result.attached) {
     const uid = pluginUid(instance, it.uid, a.key);
+    const bridged = a.kind === "comment" && run.plugin === JIRA_ISSUE ? bridgeComment(notes, a.key) : null;
+    if (bridged) {
+      log.push(`kept the Jira bridge's copy of comment ${bridged}`);
+      continue;
+    }
     if (a.kind === "link" || a.kind === "edge" || a.kind === "comment") {
       if (a.kind === "link") {
         const other = notes.find((n) => n.uid !== uid && n.kind === "link" && sameUrl(n.meta?.url ?? n.text, a.url));
