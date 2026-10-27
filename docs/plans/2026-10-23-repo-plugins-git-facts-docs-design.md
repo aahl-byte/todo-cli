@@ -238,18 +238,20 @@ connections:
   `plugins.yaml` declares, alone or under a stored override, gets the repo's
   connections only, so a repo file can't point a shipped plugin at the host's
   Jira or GitHub token. The dashboard shows such an instance's reason.
-- **A project runs plugins only for its repos.** The server's operator lists
-  the GitHub owners it serves (`TODO_PLUGIN_OWNERS`). A repo of a listed owner
-  is allowed for a project once a member's CLI has reported a checkout of it,
-  or once it is added on the project's settings page. An item naming any other
-  repo gets no plugin runs and no git facts, so pointing an item at a repo
-  can't make the server act on it. The server token itself should be scoped to
-  the team's repos.
+- **A project runs plugins only for its repos.** A repo is allowed for a
+  project once someone adds it on the project's settings page, or once a
+  member's CLI reports a checkout of it and its owner is one the server's
+  operator lists (`TODO_PLUGIN_OWNERS`). The server's own token reads only
+  those owners' repos; any other needs the project's own GitHub token. An item
+  naming any other repo gets no plugin runs and no git facts, so pointing an
+  item at a repo can't make the server act on it. Each token should be scoped
+  to the team's repos.
 - **No private addresses from the server.** A server connection refuses
   loopback, private and link-local addresses unless
   `TODO_PLUGIN_ALLOW_HOSTS` lists the host: a bare entry opens it to host-wide
   connections, which only shipped plugins use; a repo's own connections need an
-  `owner/name=host` entry. The check uses the resolved
+  `owner/name=host` entry. A project's own connection can be allowed on its
+  settings page, for that connection alone. The check uses the resolved
   address it connects to. The CLI has no such limit, since a dev machine's own
   network is its user's.
 

@@ -67,7 +67,7 @@ and a CLI doesn't for a server's config (below).
 `disable` or `connection: {name, def}` (`def: null` drops the connection and
 its credential). Declaring or changing a connection forgets any credential
 stored under its name. A repo's connection can't take the name of one of the
-server's own (`github`, or any in `TODO_PLUGIN_CONNECTIONS`).
+server's own (`github`, or any in `TODO_PLUGIN_CONNECTIONS`) or the project's.
 `POST /api/projects/<key>/plugins/credentials` takes the endpoint the person
 saw beside the secret. A credential is handed out only while its connection
 points there.
@@ -87,13 +87,40 @@ branches recomputes the repo's git facts.
   that stores it.
 - Instances check their custom plugin still exists in the transaction that
   stores them.
+- A project connection change sends `base`, the version it was made on; a repo
+  connection edit sends the endpoint it was made on.
 
 The page says what changed and offers a reload.
 
+## A project's own connections
+
+The connections shipped plugins call (`vercel`, `jira`, `watchtower`,
+`db-request`, `github`'s token, and any a web-request button names) are set on
+Settings → Automation, per project, in `project_connections`.
+`PUT /api/projects/<key>/plugins/connections` takes `{name, def?, secret?, base,
+allowPrivate?}`:
+
+- **Precedence.** A project's connection replaces the server's of that name
+  (`TODO_PLUGIN_CONNECTIONS`) for every repo of the project, address and secret
+  together: the server's secret is never lent to it. github's address is always
+  the server's GitHub API; a project gives only its token.
+- **Endpoint binding.** The secret is encrypted for the project, the connection
+  and the endpoint it was given for, and a change to the address or auth drops
+  it. It decrypts for no other endpoint, whatever the row says.
+- **Private addresses.** Saving one on an address that resolves to a private
+  network needs `allowPrivate: true`, recorded with who and when, unless
+  `TODO_PLUGIN_ALLOW_HOSTS` opens it. The guard waives the rule for that
+  connection's name and host:port alone, and only for host-origin calls.
+- **GitHub reads.** The project's github token reads its repos for git facts,
+  polling, PR status and plugins. The server's `GITHUB_TOKEN` reads only repos
+  of `TODO_PLUGIN_OWNERS`. A repo added on the page is the project's whatever
+  its owner; a checkout brings one in only for those owners.
+
 ## The trust rule
 
-Who may use the server's own connections (`github` with `GITHUB_TOKEN`, and
-those in `TODO_PLUGIN_CONNECTIONS` with `TODO_PLUGIN_SECRET_<NAME>`):
+Who may use the host's connections (the project's own, `github` with the
+project's token or `GITHUB_TOKEN`, and those in `TODO_PLUGIN_CONNECTIONS` with
+`TODO_PLUGIN_SECRET_<NAME>`):
 
 - **A shipped plugin**, through any of its instances, gets the host's
   connections with their secrets, and the repo config's connections with the
@@ -116,10 +143,10 @@ the endpoint beside it.
 decides, and nothing a person types into a config can make a custom plugin
 shipped, since a custom plugin can't take a shipped plugin's name.
 
-The private-address rule is unchanged. `TODO_PLUGIN_ALLOW_HOSTS` opens a private
-host to the server's own connections with a bare `host[:port]`, and to one
-repo's connections with `owner/name=host[:port]`; the `github` a custom plugin
-gets counts as the repo's. `JIRA_READ_ONLY` still holds every write through the
+`TODO_PLUGIN_ALLOW_HOSTS` opens a private host to the host's connections with a
+bare `host[:port]`, and to one repo's connections with `owner/name=host[:port]`;
+a project's own connection can also be allowed on the page, for itself alone.
+The `github` a custom plugin gets counts as the repo's. `JIRA_READ_ONLY` still holds every write through the
 host's `jira` connection back.
 
 ## The sync path

@@ -383,10 +383,12 @@ local-only store. Nothing is read from the repo itself.
   switch. Edit them under the server's Settings → Automation, or with
   `todo plugin add|set|rm`.
 - **Connections** are the endpoints plugins call. A repo's config declares its
-  own; the host declares host-wide ones (`todo connection add`, or the server's
-  `TODO_PLUGIN_CONNECTIONS`). Host connections and their secrets go only to
-  shipped plugins. A custom plugin gets the repo's connections, and `github`
-  without the host's token.
+  own; the host declares host-wide ones. On the server those are the project's
+  own, set on Settings → Automation with their tokens (the server's
+  environment can give defaults); in the CLI, `todo connection add`. Host
+  connections and their secrets go only to shipped plugins, and a CLI never
+  receives the server's. A custom plugin gets the repo's connections, and
+  `github` without the host's token.
   `todo connection auth <name> [--repo owner/name] [--server]` stores a secret;
   a repo connection gets it only while it points where the secret was given.
 - **Where it runs:** each instance runs on one host. The server runs whatever
