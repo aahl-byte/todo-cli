@@ -51,7 +51,8 @@ export interface RunResult {
 export type HttpAuth = "bearer" | "basic" | `header:${string}`;
 
 export type ConnectionDef =
-  | { http: { url: string; auth?: HttpAuth } }
+  /** `paths`: the path prefixes its calls are kept to, which only the host sets, never a config. */
+  | { http: { url: string; auth?: HttpAuth; paths?: string[] } }
   | { mcp: { url: string } | { command: string; args?: string[] } };
 
 /** Where a connection was declared: the repo's plugin config, or the host itself. */
@@ -59,7 +60,7 @@ export type ConnectionOrigin = "repo" | "host";
 
 /** A connection as a host hands it to a run: its endpoint plus this host's secret for it. Without an origin it counts as the repo's. */
 export type ResolvedConnection =
-  | { kind: "http"; url: string; auth?: HttpAuth; secret?: string; origin?: ConnectionOrigin }
+  | { kind: "http"; url: string; auth?: HttpAuth; paths?: string[]; secret?: string; origin?: ConnectionOrigin }
   | { kind: "mcp"; url?: string; command?: string; args?: string[]; secret?: string; origin?: ConnectionOrigin };
 
 export type Trigger =

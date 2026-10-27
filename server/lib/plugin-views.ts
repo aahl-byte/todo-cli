@@ -338,11 +338,11 @@ const DNS_WAIT_MS = 2_000;
 
 /** Whether the private-address rule refuses connection `name` at `url`, as a shipped plugin's run would find it. */
 async function refusedAddress(url: string | null, set: HostSet, name: string): Promise<boolean> {
-  if (!url) return false;
-  const guard = guardFor("", undefined, set.privateOk);
-  if (Object.hasOwn(set.privateOk, name)) return false;
-  const found = await Promise.race([privateAddress(url, guard), new Promise<null>((done) => setTimeout(() => done(null), DNS_WAIT_MS))]);
-  return found === true;
+  if (!url || Object.hasOwn(set.privateOk, name)) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((done) => { timer = setTimeout(() => done(null), DNS_WAIT_MS); });
+  const found = await Promise.race([privateAddress(url, guardFor("")), late]).finally(() => clearTimeout(timer));
+  return found === "private" || found === "link-local";
 }
 
 /** The project's connections for shipped plugins as the page shows them, its own over the server's. */

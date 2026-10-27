@@ -6,7 +6,8 @@
 import type { Db, Row } from "../db";
 import { repoKey } from "../checkouts";
 import { githubApi } from "../github";
-import { GITHUB, githubToken, type GithubSource } from "../github-token";
+import { pluginOwners } from "../checkouts";
+import { GITHUB, githubToken, pageGithub, type GithubSource } from "../github-token";
 import { branchList, checkCustom, composeConfig, INHERITED, NAME, type ConfigParts, type CustomCheck, type CustomPlugin } from "./config";
 import { addressAllowed, hostPort, privateAddress, type AddressGuard } from "./connections";
 import { allInstances, bindConnections, connectionsFor, pluginsFor, wouldSkip, type Resolved } from "./host";
@@ -120,8 +121,8 @@ const lockName = (t: Pick<Db, "query">, project: string, name: string) =>
   t.query("select pg_advisory_xact_lock(hashtext($1))", [`connection\x1f${project}\x1f${name}`]);
 
 /** Declare (or, with null, drop) one of the repo's connections. Dropping or changing one forgets its credential, which was given
- * for the endpoint it named. With `base`, where the person saw it point (null for a new one), it's refused once it points
- * elsewhere. A repo can't take the name of one of this server's or this project's own connections, which the shipped plugins
+ * for the endpoint it named. With `base`, the definition the person saw (null for a new one; an endpoint alone checks only
+ * where it points), it's refused once the connection has changed. A repo can't take the name of one of this server's or this project's own connections, which the shipped plugins
  * use. The server never starts a command, and a CLI never does for a connection the server's config declares, so only http and
  * MCP URLs are taken. */
 export async function putConnection(d: Db, project: string, repo: string, name: unknown, def: unknown, handle: string,
@@ -129,7 +130,9 @@ export async function putConnection(d: Db, project: string, repo: string, name: 
   if (typeof name !== "string" || !NAME.test(name) || INHERITED.includes(name)) {
     throw new PluginInputError("a connection's name starts with a letter and has only letters, digits, - and _");
   }
-  if (base !== undefined && base !== null && typeof base !== "string") throw new PluginInputError("base is where the connection pointed, or null for a new one");
+  if (base !== undefined && base !== null && typeof base !== "string" && !isMap(base)) {
+    throw new PluginInputError("base is the connection as the page showed it, or null for a new one");
+  }
   const forget = (t: Pick<Db, "query">) =>
     t.query("delete from plugin_credentials where project = $1 and repo = $2 and connection = $3", [project, repo, name]);
   /** The connection as it stands, locked; refused when it isn't where the change was made. */
@@ -138,9 +141,10 @@ export async function putConnection(d: Db, project: string, repo: string, name: 
     const [row] = await t.query("select connections -> $3::text as def from plugin_configs where project = $1 and repo = $2 for update",
                                 [project, repo, name]);
     const now = row?.def ? endpointOf(row.def) : null;
-    if (base !== undefined && now !== base) {
+    const stale = base !== undefined && (isMap(base) ? !row?.def || canonical(row.def) !== canonical(base) : now !== base);
+    if (stale) {
       throw new PluginConflict(now === null ? `${name} was removed meanwhile; reload to see the connections as they are`
-        : `${name} points at ${now} now; reload to see it`);
+        : `${name} was changed meanwhile: it points at ${now} now; reload to see it`);
     }
     return row?.def ?? null;
   };
@@ -490,11 +494,21 @@ export async function projectConnections(d: Pick<Db, "query">, project: string):
   });
 }
 
-/** Whether saving a host connection at `url` needs someone to allow its private address: not when TODO_PLUGIN_ALLOW_HOSTS opens it
- * to every project, nor when it doesn't resolve here, so that can't be told. */
-async function needsPrivateOk(url: string | null, lookup?: AddressGuard["lookup"]): Promise<boolean> {
-  if (!url) return false;
-  return (await privateAddress(url, { allow: allowEntries().filter((e) => !e.includes("=")), ...(lookup ? { lookup } : {}) })) === true;
+/** An http(s) URL, or null for anything else. */
+function webUrl(text: string | null | undefined): URL | null {
+  try {
+    const u = new URL(String(text));
+    return u.protocol === "http:" || u.protocol === "https:" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where saving a host connection at `url` lands: public (or opened to every project by TODO_PLUGIN_ALLOW_HOSTS), private, which
+ * someone has to allow, link-local, which only TODO_PLUGIN_ALLOW_HOSTS opens; null when it doesn't resolve here, so that can't
+ * be told. */
+async function addressKind(url: string, lookup?: AddressGuard["lookup"]) {
+  return privateAddress(url, { allow: allowEntries().filter((e) => !e.includes("=")), ...(lookup ? { lookup } : {}) });
 }
 
 /** Add, change or (def null) remove one of a project's own connections: `{name, def?, secret?, base, allowPrivate?}`. `base` is the
@@ -526,10 +540,17 @@ export async function putProjectConnection(d: Db, project: string, raw: unknown,
     if (errors.length) throw new PluginInputError(errors.join("; "), errors);
     def = file.connections![name];
     if ("mcp" in def && "command" in def.mcp) throw new PluginInputError(`connection ${name}: give an MCP server's URL; the server never starts a command`);
+    if (!webUrl(endpointOf(def))) throw new PluginInputError(`connection ${name}: its address must be an http or https URL`);
   }
   const key = secretKey();
   if (typeof secret === "string" && !key) throw new NoSecretKey();
-  const checkPrivate = def !== undefined && def !== null ? needsPrivateOk(endpointOf(def), opts.lookup) : null;
+  // Where the connection will point, resolved before the transaction; the transaction refuses the save if that has moved since.
+  let checked: string | null = def ? endpointOf(def) : null;
+  if (!checked && allowPrivate === true) {
+    const [now] = await d.query("select def from project_connections where project = $1 and name = $2", [project, name]);
+    checked = now ? endpointOf(name === GITHUB ? githubDef() : now.def) : null;
+  }
+  const landing = checked ? addressKind(checked, opts.lookup) : null;
   try {
     await d.tx(async (t) => {
       await lockName(t, project, name);
@@ -558,9 +579,16 @@ export async function putProjectConnection(d: Db, project: string, raw: unknown,
       if (typeof secret === "string") secretEnc = encryptSecret(secret, projectSecretScope(project, name, endpoint), key!);
       else if (secret === null) secretEnc = null;
       if (name === GITHUB && !secretEnc) throw new PluginInputError("give github's token");
+      if (checked !== null && checked !== endpoint) throw new PluginConflict(`${name} was changed since this page loaded; reload to see it`);
+      const kind = landing ? await landing : null;
+      if (kind === "link-local") {
+        throw new PluginInputError(`${endpoint} is a link-local address, where a cloud's metadata service answers; todo never calls one from a project's connection`);
+      }
       const kept = !moved && was?.privateOk ? row!.private_ok : null;
-      const privateOk = allowPrivate === true ? { by: handle, at: new Date().toISOString(), endpoint } : allowPrivate === false ? null : kept;
-      if (checkPrivate && (await checkPrivate) && !privateOk) {
+      // An allowance is recorded only for an address that is private when it's given.
+      const privateOk = allowPrivate === true ? (kind === "private" ? { by: handle, at: new Date().toISOString(), endpoint } : null)
+        : allowPrivate === false ? null : kept;
+      if (kind === "private" && !privateOk) {
         throw new PrivateAddress(`${endpoint} is on a private network: allow todo to call it there, or give another address`);
       }
       await t.query(
@@ -607,14 +635,26 @@ export async function hostSet(d: Pick<Db, "query">, project: string, repo: strin
     delete secrets[r.name];
     if (secret !== null) secrets[r.name] = secret;
     else if (bound) unreadable.push(r.name);
-    if (ok) privateOk[r.name] = hostPort(new URL(endpoint));
+    const at = ok ? webUrl(endpoint) : null;
+    if (at) privateOk[r.name] = hostPort(at);
   }
   const gh = await githubToken(d, project, repo);
-  connections[GITHUB] = { http: { url: githubApi(), ...(gh ? { auth: "bearer" as const } : {}) } };
+  // The server's token reads only its owners' repos, whatever path a plugin asks for.
+  const paths = gh?.source === "server" ? serverGithubPaths() : undefined;
+  connections[GITHUB] = { http: { url: githubApi(), ...(gh ? { auth: "bearer" as const } : {}), ...(paths ? { paths } : {}) } };
   delete secrets[GITHUB];
   if (gh) secrets[GITHUB] = gh.token;
-  if (gh?.source === "page") page.push(GITHUB);
+  if ((await pageGithub(d, project)).given) {
+    page.push(GITHUB);
+    if (!gh) unreadable.push(GITHUB);
+  }
   return { connections, secrets, page: page.sort(), privateOk, unreadable, github: gh?.source ?? null };
+}
+
+/** The paths under the server's GitHub API that its own token may reach: the repos of each owner TODO_PLUGIN_OWNERS lists. */
+function serverGithubPaths(): string[] {
+  const base = (webUrl(githubApi())?.pathname ?? "").replace(/\/+$/, "");
+  return pluginOwners().map((o) => `${base}/repos/${o}/`);
 }
 
 const credentialScope = (project: string, repo: string, connection: string) => [project, repo, connection];

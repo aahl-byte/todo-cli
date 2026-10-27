@@ -214,7 +214,9 @@ export const DEFAULT_INSTANCE: InstanceDef = { id: "default", name: "default" };
 
 function resolveConnection(def: ConnectionDef, origin: ConnectionOrigin, secret: string | undefined): ResolvedConnection | null {
   const extra = { origin, ...(secret === undefined ? {} : { secret }) };
-  if ("http" in def && def.http) return { kind: "http", url: def.http.url, ...(def.http.auth ? { auth: def.http.auth } : {}), ...extra };
+  if ("http" in def && def.http) {
+    return { kind: "http", url: def.http.url, ...(def.http.auth ? { auth: def.http.auth } : {}), ...(def.http.paths ? { paths: def.http.paths } : {}), ...extra };
+  }
   if ("mcp" in def && def.mcp) return { kind: "mcp", ...def.mcp, ...extra };
   return null;
 }

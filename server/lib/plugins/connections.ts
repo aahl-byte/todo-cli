@@ -171,20 +171,38 @@ export async function addressAllowed(url: string, guard: AddressGuard, origin: C
   }
 }
 
-/** Whether a host connection to `url` would be refused for its private address: true when it resolves to one the guard doesn't
- * open, null when it doesn't resolve here. */
-export async function privateAddress(url: string, guard: AddressGuard): Promise<boolean | null> {
+const LINK_LOCAL = new net.BlockList();
+LINK_LOCAL.addSubnet("169.254.0.0", 16, "ipv4");
+LINK_LOCAL.addSubnet("fe80::", 10, "ipv6");
+// A cloud's instance metadata service, on IPv6.
+LINK_LOCAL.addAddress("fd00:ec2::254", "ipv6");
+
+/** Whether an address is link-local, where a cloud's metadata service answers: never opened from a page, only by the host's allow list. */
+export function linkLocal(address: string): boolean {
+  const bare = address.split("%")[0];
+  const family = net.isIP(bare);
+  if (family === 4) return LINK_LOCAL.check(bare, "ipv4");
+  if (family !== 6) return false;
+  const mapped = bare.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  return mapped ? LINK_LOCAL.check(mapped[1], "ipv4") : LINK_LOCAL.check(bare, "ipv6");
+}
+
+/** Where a host connection to `url` lands, as the guard judges it: on a public address or one the guard opens, on a private one,
+ * on a link-local one; null when it doesn't resolve here, or isn't a URL. */
+export async function privateAddress(url: string, guard: AddressGuard): Promise<"public" | "private" | "link-local" | null> {
   let u: URL;
   try {
     u = new URL(url);
   } catch {
     return null;
   }
-  if (waived(u, guard, "host")) return false;
+  if (waived(u, guard, "host")) return "public";
   const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   try {
     const found = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await (guard.lookup ?? systemLookup)(host);
-    return found.length ? found.some((a) => blockedAddress(a.address)) : null;
+    if (!found.length) return null;
+    if (found.some((a) => linkLocal(a.address))) return "link-local";
+    return found.some((a) => blockedAddress(a.address)) ? "private" : "public";
   } catch {
     return null;
   }
@@ -236,6 +254,18 @@ function authHeaders(c: Extract<ResolvedConnection, { kind: "http" }>): Record<s
   return { [c.auth.slice("header:".length)]: c.secret };
 }
 
+/** Whether a call's path, as the URL resolves it, lies under one of the connection's path prefixes; true when it has none. */
+export function pathAllowed(base: string, path: string, prefixes: string[] | undefined): boolean {
+  if (!prefixes) return true;
+  let at: string;
+  try {
+    at = new URL(base + path).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return prefixes.some((p) => at.startsWith(p.toLowerCase()));
+}
+
 function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "http" }>, opts: ConnectionOptions): Connection {
   let fetcher: Promise<typeof fetch> | null = null;
   const base = c.url.replace(/\/+$/, "");
@@ -247,6 +277,7 @@ function httpConnection(name: string, c: Extract<ResolvedConnection, { kind: "ht
     const method = (call.method ?? "GET").toUpperCase();
     const path = call.path?.startsWith("/") ? call.path : `/${call.path ?? ""}`;
     const what = `${name}: ${method} ${path}`;
+    if (!pathAllowed(base, path, c.paths)) throw new CallError(`${what}: this host's token for ${name} reaches only ${c.paths!.join(", ")}`);
     const headers: Record<string, string> = { accept, "user-agent": "todo-plugin-host" };
     if (call.text !== undefined) headers["content-type"] = "text/plain; charset=utf-8";
     else if (call.input !== undefined) headers["content-type"] = "application/json";

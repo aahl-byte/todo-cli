@@ -342,3 +342,124 @@ describe("vercel-preview's team and project", () => {
                                                     ["https://api.vercel.com/v9/projects?limit=100&teamId=team_a", "Bearer vc-token"]]);
   });
 });
+
+describe("the server's GitHub token", () => {
+  const REST = (path: string) => `plugins:\n  rest: {use: shipped}\ninstances:\n  rest: [{id: gh, name: GH, settings: {connection: github, method: GET, path: "${path}"}}]\n`;
+  const press = async (gh: { impl: Fetch }) => {
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "manual", instance: "gh" }, "alice");
+    await flushPluginRuns(w.d, { fetch: gh.impl, host: { sleep: async () => {}, guard: { allow: [], lookup: publicDns } } }, 50);
+    const [run] = await w.d.query("select result from plugin_runs where plugin = 'rest' order by id desc limit 1");
+    return run.result;
+  };
+  beforeEach(async () => { await w.one("alice", item("I1", { status: "in-progress", extra: { repo: "acme/web" } })); });
+
+  it("reaches only the repos of TODO_PLUGIN_OWNERS, whatever path a shipped plugin asks for", async () => {
+    for (const path of ["/repos/other/private/contents/x", "/repos/acme/../other/private", "/user", "/repos/acmeish/x"]) {
+      const gh = await configured(w.d, { file: REST(path) });
+      expect((await press(gh)).error, path).toMatch(/this host's token for github reaches only \/repos\/acme\//);
+      expect(gh.sent.filter((s) => s.url.startsWith("https://api.github.com") && !s.url.includes("/repos/acme/web/pulls")), path).toEqual([]);
+    }
+    const ok = await configured(w.d, { file: REST("/repos/acme/web") });
+    expect((await press(ok)).error).toBeUndefined();
+    expect(ok.sent.find((s) => s.url === "https://api.github.com/repos/acme/web")!.headers.authorization).toBe("Bearer gh-token");
+  });
+
+  it("is never the one a project's own token stands in for, which reaches any path", async () => {
+    const gh = await configured(w.d, { file: REST("/user"), other: (url) => (url === "https://api.github.com/user" ? Response.json({}) : undefined) });
+    await put({ name: "github", secret: "page-token", base: null });
+    expect((await press(gh)).error).toBeUndefined();
+    expect(gh.sent.find((s) => s.url === "https://api.github.com/user")!.headers.authorization).toBe("Bearer page-token");
+  });
+
+  it("stays the server's for a project whose own token doesn't decrypt: the project's repos get no token at all", async () => {
+    await put({ name: "github", secret: "page-token", base: null });
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    expect(await githubToken(w.d, "p", "acme/web")).toBeNull();
+    const set = await hostSet(w.d, "p", "acme/web");
+    expect([set.secrets.github, set.page, set.unreadable, set.github]).toEqual([undefined, ["github"], ["github"], null]);
+    vi.stubEnv("TODO_SECRET_KEY", crypto.randomBytes(32).toString("base64"));
+    await put({ name: "github", secret: "new-token", base: 1 });
+    expect(await githubToken(w.d, "p", "acme/web")).toEqual({ token: "new-token", source: "page" });
+  });
+});
+
+describe("a delivery", () => {
+  it("runs nothing for an item moved to another repo since it was queued", async () => {
+    const gh = fakeGitHub({ prs: { "feat/x": [PR(7)] } });
+    await w.one("alice", item("I1", { status: "in-progress", extra: { repo: "acme/web", branches: ["feat/x"] } }));
+    await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "push", branch: "feat/x" }, "alice");
+    await w.one({ handle: "alice", unconditional: true }, { op: "set", entity: "item", uid: "I1", item_uid: "I1", data: { "extra.repo": "other/private" } });
+    await flushPluginRuns(w.d, { fetch: gh.impl, host: { sleep: async () => {}, guard: { allow: [], lookup: publicDns } } }, 50);
+    expect(gh.sent).toEqual([]);
+    const [event] = await w.d.query("select errors from plugin_events");
+    expect(event.errors).toEqual(["the item moved off acme/web since this was queued"]);
+  });
+});
+
+describe("the branches a project sees of a repo", () => {
+  beforeEach(async () => {
+    await w.d.query(`insert into repo_polls (repo, tips, polled_at) values ('acme/web', '{"secret-branch": "s1"}'::jsonb, now())`);
+  });
+  const answering = (status: number) => (async () => new Response("", { status })) as Fetch;
+
+  it("are none without a token, or once GitHub says its token can't see the repo, though the tick polled it with another's", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    expect(await remoteBranches(w.d, "p", "acme/web", answering(200))).toEqual({ names: [], default: null, visible: null });
+    await put({ name: "github", secret: "page-token", base: null });
+    expect(await remoteBranches(w.d, "p", "acme/web", answering(404))).toEqual({ names: [], default: null, visible: false });
+    resetGitFactsCache();
+    expect((await remoteBranches(w.d, "p", "acme/web", answering(403))).names).toEqual([]);
+    resetGitFactsCache();
+    expect((await remoteBranches(w.d, "p", "acme/web", answering(502))).names).toEqual(["secret-branch"]);
+  });
+});
+
+describe("the tick's poll", () => {
+  it("tries the next project's token when GitHub refuses one", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    await addProject(w.d, "q");
+    await w.d.query("insert into project_plugin_repos (project, repo, added_by) values ('q', 'acme/web', 'alice')");
+    await put({ name: "github", secret: "expired", base: null });
+    await put({ name: "github", secret: "works", base: null }, "q");
+    await w.one("alice", item("I1", { status: "in-progress", extra: { repo: "acme/web", branches: ["feat/x"] } }));
+    await w.d.query(`insert into items (project, uid, id, title, status, extra, created)
+                     select 'q', 'Q1', 'q1', title, status, extra, created from items where uid = 'I1'`);
+    const gh = fakeGitHub({ tips: { main: "m1" } });
+    const f = (async (url: unknown, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>)?.authorization;
+      return auth === "Bearer expired" ? new Response("", { status: 401 }) : gh.impl(url as string, init);
+    }) as Fetch;
+    expect((await pluginTick(w.d, { fetch: f, host: { sleep: async () => {}, guard: { allow: [], lookup: publicDns } } })).polled).toBe(1);
+  });
+});
+
+describe("a project connection's address", () => {
+  it("must be an http or https URL", async () => {
+    for (const url of ["nope", "ftp://files.example", "file:///etc/passwd"]) {
+      await expect(put({ name: "x", def: { http: { url } }, base: null, allowPrivate: true }), url).rejects.toThrow(/must be an http or https URL/);
+    }
+    expect(await projectConnections(w.d, "p")).toEqual([]);
+  });
+
+  it("is never link-local, where a cloud's metadata service answers, even when someone allows it", async () => {
+    for (const url of ["http://169.254.169.254/latest", "http://[fe80::1]:80"]) {
+      await expect(put({ name: "meta", def: { http: { url } }, base: null, allowPrivate: true }), url).rejects.toThrow(/link-local/);
+    }
+  });
+
+  it("records an allowance only for an address that is private when it's given", async () => {
+    await put({ name: "hooks", def: { http: { url: "https://hooks.example" } }, base: null, allowPrivate: true });
+    expect(await projectConnections(w.d, "p")).toMatchObject([{ privateOk: null }]);
+    expect((await hostSet(w.d, "p", "acme/web")).privateOk).toEqual({});
+  });
+});
+
+describe("a repo connection edited in place, by two people", () => {
+  it("refuses the second change made on the definition the first one changed, address or auth", async () => {
+    const seen = { http: { url: "https://hooks.example", auth: "bearer" as const } };
+    await putConnection(w.d, "p", "acme/web", "hooks", seen, "alice");
+    await putConnection(w.d, "p", "acme/web", "hooks", { http: { url: "https://hooks.example", auth: "header:X-Key" } }, "bob", seen);
+    await expect(putConnection(w.d, "p", "acme/web", "hooks", { http: { url: "https://hooks.example", auth: "basic" } }, "carol", seen))
+      .rejects.toThrow(PluginConflict);
+  });
+});

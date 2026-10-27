@@ -88,7 +88,7 @@ branches recomputes the repo's git facts.
 - Instances check their custom plugin still exists in the transaction that
   stores them.
 - A project connection change sends `base`, the version it was made on; a repo
-  connection edit sends the endpoint it was made on.
+  connection edit sends the definition it was made on.
 
 The page says what changed and offers a reload.
 
@@ -107,14 +107,23 @@ allowPrivate?}`:
 - **Endpoint binding.** The secret is encrypted for the project, the connection
   and the endpoint it was given for, and a change to the address or auth drops
   it. It decrypts for no other endpoint, whatever the row says.
-- **Private addresses.** Saving one on an address that resolves to a private
-  network needs `allowPrivate: true`, recorded with who and when, unless
-  `TODO_PLUGIN_ALLOW_HOSTS` opens it. The guard waives the rule for that
-  connection's name and host:port alone, and only for host-origin calls.
+- **Addresses.** A connection's address is an http or https URL. Saving one
+  that resolves to a private network needs `allowPrivate: true`, recorded with
+  who and when, unless `TODO_PLUGIN_ALLOW_HOSTS` opens it; an allowance is
+  recorded only for an address that is private when it's given. The guard
+  waives the rule for that connection's name and host:port alone, and only for
+  host-origin calls. A link-local address, where a cloud's metadata service
+  answers, is never allowed from the page.
 - **GitHub reads.** The project's github token reads its repos for git facts,
-  polling, PR status and plugins. The server's `GITHUB_TOKEN` reads only repos
-  of `TODO_PLUGIN_OWNERS`. A repo added on the page is the project's whatever
-  its owner; a checkout brings one in only for those owners.
+  polling, PR status and plugins, and a project that gave one never falls back
+  to the server's, even while its own doesn't decrypt. The server's
+  `GITHUB_TOKEN` reads only repos of `TODO_PLUGIN_OWNERS`: the `github`
+  connection holding it refuses a path outside `/repos/<owner>/` of those
+  owners. PR link status alone still reads any link with it. A repo added on
+  the page is the project's whatever its owner; a checkout brings one in only
+  for those owners. The tick polls a repo with the first of its projects'
+  tokens GitHub accepts, and a project sees polled branch names only while its
+  own token can read the repo.
 
 ## The trust rule
 

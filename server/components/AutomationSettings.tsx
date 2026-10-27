@@ -647,6 +647,10 @@ function AddConnection({ projectKey, repo, taken, projectNames }: { projectKey: 
 const repoAuth = (c: DashConnection, auth: AuthKind, header: string) =>
   (c.kind === "mcp" ? { mcp: { url: "" } } : { http: { url: "", ...(authOf(auth, header) ? { auth: authOf(auth, header) } : {}) } });
 
+/** A repo connection as the page shows it, which a change sends so the server refuses it once someone else has changed it. */
+const seen = (c: DashConnection) =>
+  (c.kind === "mcp" ? { mcp: { url: c.url } } : { http: { url: c.url, ...(c.auth ? { auth: c.auth } : {}) } });
+
 function ConnectionRow({ projectKey, repo, c, shipped, secretProblem, removable = false }: {
   projectKey: string; repo: string; c: DashConnection; shipped: boolean; secretProblem: string | null; removable?: boolean;
 }) {
@@ -668,7 +672,7 @@ function ConnectionRow({ projectKey, repo, c, shipped, secretProblem, removable 
   const drop = () => start(async () => {
     const used = c.usedBy.length ? ` ${c.usedBy.join(", ")} call${c.usedBy.length === 1 ? "s" : ""} it.` : "";
     if (!window.confirm(`Remove the ${c.name} connection and its credential?${used}`)) return;
-    const err = await sendFor(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def: null, ...(c.url ? { base: c.url } : {}) } });
+    const err = await sendFor(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def: null, ...(c.url && !c.command ? { base: seen(c) } : {}) } });
     setError(err);
     if (!err) router.refresh();
   });
@@ -726,7 +730,7 @@ function EditRepoConnection({ projectKey, repo, c, onDone, onCancel }: {
   const moved = url.trim() !== (c.url ?? "") || (c.kind === "http" && authOf(auth, header) !== (c.auth ?? undefined));
   const save = () => run(async () => {
     if (moved) {
-      const err = await sendFor(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def, base: c.url } });
+      const err = await sendFor(projectKey, "/config", "PUT", { repo, connection: { name: c.name, def, base: seen(c) } });
       if (err) { setError(err); return; }
     }
     if (secret && (c.kind === "mcp" || auth !== "none")) {

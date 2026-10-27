@@ -333,6 +333,8 @@ async function deliver(d: Db, row: Row, deps: RunnerDeps): Promise<string[]> {
   const f = deps.fetch ?? fetch;
   const [it] = await d.query("select * from items where project = $1 and uid = $2", [row.project, row.item_uid]);
   if (!it) return ["the item is gone"];
+  // The repo picks the token and connections, so an item moved to another repo since this was queued gets none of this one's.
+  if (repoKey(it.extra?.repo) !== row.repo) return [`the item moved off ${row.repo} since this was queued`];
   if (!(await repoAllowed(d, row.project, row.repo))) return [`${row.repo} isn't one of this project's repos`];
   const stored = await storedInstances(d, row.project, row.repo, { secrets: true });
   const grants = await storedGrants(d, row.project, row.repo);
@@ -551,6 +553,9 @@ async function openItems(d: Db): Promise<OpenItem[]> {
 
 interface Page { etag: string | null; tips: Record<string, string> }
 
+/** GitHub refused the token: another may read the repo. */
+class Refused extends Error {}
+
 /** Every branch's tip, each page asked with its own ETag, so an unchanged first page never hides a later one that moved. */
 async function branchPages(repo: string, before: Page[], f: Fetch, token: string): Promise<Page[]> {
   const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28",
@@ -563,6 +568,7 @@ async function branchPages(repo: string, before: Page[], f: Fetch, token: string
     });
     let got: Page;
     if (res.status === 304 && known) got = known;
+    else if (res.status === 401 || res.status === 403 || res.status === 404) throw new Refused(`GitHub GET /repos/${repo}/branches: ${res.status}`);
     else if (!res.ok) throw new Error(`GitHub GET /repos/${repo}/branches: ${res.status}`);
     else {
       const rows = (await res.json()) as { name: string; commit: { sha: string } }[];
@@ -573,12 +579,28 @@ async function branchPages(repo: string, before: Page[], f: Fetch, token: string
   }
 }
 
-/** The token a repo is polled with: the first of its projects' (by key) that reads it. */
-async function pollToken(d: Db, repo: string, items: OpenItem[]): Promise<string | null> {
+/** The tokens a repo may be polled with, its projects' (by key), each once. */
+async function pollTokens(d: Db, repo: string, items: OpenItem[]): Promise<string[]> {
+  const out: string[] = [];
   for (const project of [...new Set(items.filter((it) => it.repo === repo).map((it) => it.project))].sort()) {
     const auth = await githubToken(d, project, repo);
-    if (auth) return auth.token;
+    if (auth && !out.includes(auth.token)) out.push(auth.token);
   }
+  return out;
+}
+
+/** The repo's branch pages, read with the first of its tokens GitHub doesn't refuse. */
+async function pollWith(repo: string, before: Page[], f: Fetch, tokens: string[]): Promise<Page[] | null> {
+  let refused: Error | null = null;
+  for (const token of tokens) {
+    try {
+      return await branchPages(repo, before, f, token);
+    } catch (e) {
+      if (!(e instanceof Refused)) throw e;
+      refused = e;
+    }
+  }
+  if (refused) throw refused;
   return null;
 }
 
@@ -590,15 +612,14 @@ async function pollRepos(d: Db, items: OpenItem[], f: Fetch): Promise<{ polled: 
   for (const repo of repos) {
     const [state] = await d.query("select * from repo_polls where repo = $1", [repo]);
     if (state?.hook_at && Date.now() - new Date(state.hook_at).getTime() < HOOK_FRESH_MINUTES * 60_000) continue;
-    const token = await pollToken(d, repo, items);
-    if (!token) continue;
-    let pages: Page[];
+    let pages: Page[] | null;
     try {
-      pages = await branchPages(repo, state?.pages ?? [], f, token);
+      pages = await pollWith(repo, state?.pages ?? [], f, await pollTokens(d, repo, items));
     } catch (e) {
       console.error(`plugins: polling ${repo}: ${message(e)}`);
       continue;
     }
+    if (!pages) continue;
     polled++;
     const tips = Object.assign({}, ...pages.map((p) => p.tips)) as Record<string, string>;
     const before: Record<string, string> | null = state?.polled_at ? state.tips ?? {} : null;

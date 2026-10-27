@@ -73,6 +73,12 @@ const SHOWN_COMMITS = 3;
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
 export class NotFound extends Error {}
+/** GitHub answered, with an error status. */
+class GitHubError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
 
 /** A bounded LRU of the few fields each compare is read for. */
 const cache = new Map<string, unknown>();
@@ -108,7 +114,7 @@ async function get(path: string, f: Fetch, token: string | null): Promise<any> {
     headers: { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", ...(token ? { authorization: `Bearer ${token}` } : {}) },
   });
   if (res.status === 404) throw new NotFound(path);
-  if (!res.ok) throw new Error(`GitHub GET ${path}: ${res.status}`);
+  if (!res.ok) throw new GitHubError(`GitHub GET ${path}: ${res.status}`, res.status);
   return res.json();
 }
 
@@ -121,23 +127,27 @@ export interface RemoteBranches { names: string[]; default: string | null; visib
 const BRANCH_LIST_MS = 5 * 60_000;
 const branchLists = new Map<string, { at: number; value: RemoteBranches }>();
 
-/** The repo's branches as the project's token sees them: GitHub's first page of them, else the tips the tick last polled; kept a
- * few minutes for each token. */
+/** The repo's branches as the project's token sees them: GitHub's first page of them, or, while GitHub doesn't answer, the tips the
+ * tick last polled; none without a token or once GitHub says the token can't see the repo, since the tick may poll with another
+ * project's. Kept a few minutes for each token. */
 export async function remoteBranches(d: Pick<Db, "query">, project: string, repo: string, f: Fetch = fetch): Promise<RemoteBranches> {
   const auth = await githubToken(d, project, repo);
-  const at = `${repo}\x1f${auth ? crypto.createHash("sha256").update(auth.token).digest("hex") : ""}`;
+  if (!auth) return { names: [], default: null, visible: null };
+  const at = `${repo}\x1f${crypto.createHash("sha256").update(auth.token).digest("hex")}`;
   const hit = branchLists.get(at);
   if (hit && Date.now() - hit.at < BRANCH_LIST_MS) return hit.value;
-  const [poll] = await d.query("select tips from repo_polls where repo = $1", [repo]);
-  let value: RemoteBranches = { names: Object.keys(poll?.tips ?? {}).sort(), default: null, visible: null };
-  if (auth) {
-    try {
-      const def = String((await get(`/repos/${repo}`, f, auth.token)).default_branch ?? "") || null;
-      const rows = (await get(`/repos/${repo}/branches?per_page=${PAGE}`, f, auth.token)) as { name: string }[];
-      const names = rows.map((r) => r.name).sort();
-      value = { names: def ? [def, ...names.filter((n) => n !== def)] : names, default: def, visible: true };
-    } catch (e) {
-      if (e instanceof NotFound) value = { ...value, visible: false };
+  let value: RemoteBranches;
+  try {
+    const def = String((await get(`/repos/${repo}`, f, auth.token)).default_branch ?? "") || null;
+    const rows = (await get(`/repos/${repo}/branches?per_page=${PAGE}`, f, auth.token)) as { name: string }[];
+    const names = rows.map((r) => r.name).sort();
+    value = { names: def ? [def, ...names.filter((n) => n !== def)] : names, default: def, visible: true };
+  } catch (e) {
+    if (e instanceof NotFound) value = { names: [], default: null, visible: false };
+    else if (e instanceof GitHubError && e.status < 500) value = { names: [], default: null, visible: null };
+    else {
+      const [poll] = await d.query("select tips from repo_polls where repo = $1", [repo]);
+      value = { names: Object.keys(poll?.tips ?? {}).sort(), default: null, visible: null };
     }
   }
   branchLists.set(at, { at: Date.now(), value });

@@ -12,10 +12,17 @@ export const GITHUB = "github";
 export type GithubSource = "page" | "server";
 export interface GithubAuth { token: string; source: GithubSource }
 
+/** Whether the project gave a GitHub token of its own, and that token, or null when this server can't read it (another
+ * TODO_SECRET_KEY, or another GITHUB_API_URL than it was given for). */
+export async function pageGithub(d: Pick<Db, "query">, project: string): Promise<{ given: boolean; token: string | null }> {
+  const [row] = await d.query("select secret_enc from project_connections where project = $1 and name = $2", [project, GITHUB]);
+  if (!row?.secret_enc) return { given: false, token: null };
+  return { given: true, token: decryptSecret(row.secret_enc, projectSecretScope(project, GITHUB, githubApi())) };
+}
+
 /** The project's own GitHub token, or null when it has none this server can read. */
 export async function pageGithubToken(d: Pick<Db, "query">, project: string): Promise<string | null> {
-  const [row] = await d.query("select secret_enc from project_connections where project = $1 and name = $2", [project, GITHUB]);
-  return row?.secret_enc ? decryptSecret(row.secret_enc, projectSecretScope(project, GITHUB, githubApi())) : null;
+  return (await pageGithub(d, project)).token;
 }
 
 const serverToken = () => process.env.GITHUB_TOKEN?.trim() || null;
@@ -26,17 +33,19 @@ export function serverGithubToken(repo: string): string | null {
   return token && pluginOwners().includes(repo.split("/")[0]?.toLowerCase()) ? token : null;
 }
 
-/** The token that reads one of the project's repos, or null when todo has none for it. */
+/** The token that reads one of the project's repos, or null when todo has none for it. A project that gave its own never falls
+ * back to the server's, even while its own can't be read. */
 export async function githubToken(d: Pick<Db, "query">, project: string, repo: string): Promise<GithubAuth | null> {
-  const page = await pageGithubToken(d, project);
-  if (page) return { token: page, source: "page" };
+  const page = await pageGithub(d, project);
+  if (page.given) return page.token ? { token: page.token, source: "page" } : null;
   const server = serverGithubToken(repo);
   return server ? { token: server, source: "server" } : null;
 }
 
 /** The token a project's pull-request links are read with: its own, else the server's. */
 export async function prToken(d: Pick<Db, "query">, project: string): Promise<string | null> {
-  return (await pageGithubToken(d, project)) ?? serverToken();
+  const page = await pageGithub(d, project);
+  return page.given ? page.token : serverToken();
 }
 
 /** Whether any project could read GitHub here, so a tick has work to look for. */

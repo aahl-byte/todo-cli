@@ -142,7 +142,6 @@ const SHIPPED_COPY: Record<string, Copy> = {
 const ORDER = ["track", ...Object.keys(SHIPPED_COPY)];
 const STATE_ORDER: Record<RowState, number> = { on: 0, setup: 1, elsewhere: 3, off: 4 };
 
-
 const settingsHref = (project: string, part: "jira" | "actions") => `/p/${project}/settings#${part}`;
 
 // ── what still does a plugin's job outside plugins ───────────────────────────
