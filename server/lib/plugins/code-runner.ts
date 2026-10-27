@@ -1,6 +1,7 @@
 // The host side of a code plugin: what its sandbox may call, attach and sleep,
 // and where the sandbox runs. In-process hosts run it in a worker thread so a
 // crash ends only the worker; the CLI's bundle is its own process and runs it inline.
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { AttachError, makeAttachment } from "./attachments";
 import { CallError, DeadlineError, withQuery, type Calls } from "./connections";
@@ -157,10 +158,16 @@ function hostFor(run: CodeRun): SandboxHost {
   };
 }
 
+/** The worker's file as a path: a bundled server builds the URL with a URL class Worker doesn't accept. */
+export const workerPath = (url: URL | string): string => {
+  const href = String(url);
+  return href.startsWith("file:") ? fileURLToPath(href) : href;
+};
+
 /** The sandbox in its own thread; whatever happens to the thread comes back as an error. */
 function inWorker(job: SandboxJob, host: SandboxHost, url: URL): Promise<{ error?: string }> {
   return new Promise((resolve) => {
-    const worker = new Worker(url, { workerData: job, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } });
+    const worker = new Worker(workerPath(url), { workerData: job, resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB } });
     let settled = false;
     const finish = (out: { error?: string }) => {
       if (settled) return;
