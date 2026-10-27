@@ -267,13 +267,16 @@ function Switch({ projectKey, repo, plugin, on }: { projectKey: string; repo: st
   const [pending, start] = useTransition();
   useEffect(() => setWant(null), [on]);
   const shown = want ?? on;
-  const flip = (next: boolean) => start(async () => {
+  const flip = (next: boolean) => {
+    // Shown at once, outside the transition, so the switch moves as it's clicked.
     setWant(next);
-    const err = await send(projectKey, "/config", "PUT", { repo, [next ? "enable" : "disable"]: plugin });
-    setError(err);
-    if (err) setWant(null);
-    else router.refresh();
-  });
+    start(async () => {
+      const err = await send(projectKey, "/config", "PUT", { repo, [next ? "enable" : "disable"]: plugin });
+      setError(err);
+      if (err) setWant(null);
+      else router.refresh();
+    });
+  };
   return (
     <label className="switch auto-switch" data-tip={error ? `Not saved: ${error}` : shown ? "Switch it off; its settings stay" : undefined}>
       <input type="checkbox" role="switch" aria-label={`${plugin} on`} checked={shown} disabled={pending} onChange={(e) => flip(e.target.checked)} />
@@ -388,7 +391,7 @@ function BranchesPanel({ projectKey, repo }: { projectKey: string; repo: DashRep
           ))}
         </div>
       )}
-      <p className="hint">Branches work deploys from, the first one work reaches first, with commas between them. Items show whether each holds their work.</p>
+      <p className="hint">The branches work deploys through, in the order it reaches them, with commas between. Items show whether each holds their work.</p>
       <div className="save-row">
         <button type="submit" className="btn primary" disabled={pending || !dirty}>{pending ? "Saving…" : "Save"}</button>
         {repo.track.length > 0 && <button type="button" className="btn" disabled={pending} onClick={() => { setText(""); save([]); }}>Clear</button>}
