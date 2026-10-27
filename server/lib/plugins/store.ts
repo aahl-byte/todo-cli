@@ -106,7 +106,7 @@ export async function setShipped(d: Pick<Db, "query" | "tx">, project: string, r
     await lockProject(t, project);
     await updateConfig(t, project, repo, handle,
       on ? "shipped = case when $4 = any(shipped) then shipped else array_append(shipped, $4) end" : "shipped = array_remove(shipped, $4)", [name]);
-    if (on) await settleJira(t, project);
+    if (on) await settleJira(t, project, name);
   });
 }
 
@@ -407,7 +407,7 @@ export async function putInstances(d: Db, project: string, repo: string, plugin:
         [project, repo, plugin, def.id, JSON.stringify(def), i, handle, names,
          names.length ? encryptSecret(JSON.stringify(secrets), settingsScope(project, repo, plugin, def.id), key!) : null]);
     }
-    await settleJira(t, project);
+    await settleJira(t, project, plugin);
   });
 }
 

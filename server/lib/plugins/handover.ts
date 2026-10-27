@@ -180,7 +180,7 @@ async function actionsHere(d: Db, project: string, move: ActionMove, repo: strin
   }
   for (const entry of plan.allowHosts) lines.push(`Lets todo call ${entry}, a private address, as the Action did.`);
   for (const [name, what] of Object.entries(plan.secrets)) {
-    if (!plan.connections[name] && !secrets.length) lines.push(`Give ${name} ${what} on its line below; the button fails until then.`);
+    if (!plan.connections[name]) lines.push(`Give ${name} ${what} on its line below; the button fails until then.`);
   }
   lines.push(...[...new Set(plan.notes)].filter((x) => !/no plugin runs for them|may not run plugins for/.test(x)).map((x) => `${x.charAt(0).toUpperCase()}${x.slice(1)}.`));
   lines.push(...reach(notes, "they get no button"));
@@ -239,11 +239,9 @@ async function moveActionsBack(t: Db, project: string, move: ActionMove, by: str
   const back = all.filter((m) => m.plugin === plugin);
   const ids = new Set(back.map((m) => actionInstanceId(m.action)));
   for (const r of [...new Set(back.flatMap((m) => m.repos))]) {
-    const left = ((await storedInstances(t, project, r, { secrets: true }))[plugin] ?? []).filter((i) => !ids.has(i.id));
-    const [on] = await t.query("select 1 from plugin_configs where project = $1 and repo = $2 and $3 = any(shipped)", [project, r, plugin]);
-    if (!on) continue;
-    await putInstances(t, project, r, plugin, left, by);
-    if (!left.length) await setShipped(t, project, r, plugin, false, by);
+    await t.query("delete from plugin_instances where project = $1 and repo = $2 and plugin = $3 and id = any($4)", [project, r, plugin, [...ids]]);
+    const [left] = await t.query("select 1 from plugin_instances where project = $1 and repo = $2 and plugin = $3 limit 1", [project, r, plugin]);
+    if (!left) await setShipped(t, project, r, plugin, false, by);
   }
   await t.query("update projects set actions = $2::jsonb, actions_moved = $3::jsonb, actions_by = $4, actions_at = now() where key = $1",
                 [project, JSON.stringify([...storedActions(p.actions), ...back.map((m) => m.action)]), JSON.stringify(all.filter((m) => m.plugin !== plugin)), by]);
@@ -272,7 +270,8 @@ export async function makeMove(d: Db, project: string, move: Move, direction: Di
     else if (move === "jira-triggers") await moveTriggersBack(t, project, repo, by);
     else if (direction === "here") await movePollingHere(t, project, repo, by);
     else await movePollingBack(t, project, by);
-    await settleJira(t, project);
+    if (move === "jira-triggers") await settleJira(t, project, JIRA_TRANSITION);
+    if (move === "jira-polling") await settleJira(t, project, JIRA_ISSUE);
   });
 }
 

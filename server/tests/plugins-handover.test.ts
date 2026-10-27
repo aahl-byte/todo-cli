@@ -81,6 +81,15 @@ describe("the Jira bridge and jira-transition", () => {
     expect(await heldPlugins(w.d, "p")).toHaveProperty("jira-transition");
   });
 
+  it("leaves other plugins' saves alone in a project where both already send", async () => {
+    await setShipped(w.d, "p", "acme/web", "jira-transition", true, "alice");
+    await putInstances(w.d, "p", "acme/web", "jira-transition", [qa()], "alice");
+    await bridge({});
+    await setShipped(w.d, "p", "acme/web", "rest", true, "alice");
+    expect((await put({ plugin: "rest", instances: [{ id: "x", name: "X", settings: { connection: "github" } }] })).status).toBe(200);
+    expect(await heldPlugins(w.d, "p")).toHaveProperty("jira-transition");
+  });
+
   it("refuses the bridge's sending while jira-transition sends, and switching jira-transition on over a live instance", async () => {
     await setShipped(w.d, "p", "acme/web", "jira-transition", true, "alice");
     await putInstances(w.d, "p", "acme/web", "jira-transition", [qa()], "alice");

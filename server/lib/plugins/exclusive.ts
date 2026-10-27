@@ -48,17 +48,20 @@ export async function bridgeState(t: Pick<Db, "query">, project: string): Promis
 
 const listed = (repos: string[]) => repos.join(", ");
 
-/** Refuse the transaction's writes if they leave the bridge and a Jira plugin both acting. A project the bridge has never polled
- * stops being polled once jira-issue mirrors it. The caller holds the project's lock. */
-export async function settleJira(t: Pick<Db, "query">, project: string): Promise<void> {
+/** Refuse the transaction's writes if they leave the bridge and a Jira plugin both acting; with `plugin`, only the pair that plugin
+ * belongs to, and nothing for any other plugin. A project the bridge has never polled stops being polled once jira-issue mirrors
+ * it. The caller holds the project's lock. */
+export async function settleJira(t: Pick<Db, "query">, project: string, plugin?: string): Promise<void> {
+  if (plugin !== undefined && plugin !== JIRA_TRANSITION && plugin !== JIRA_ISSUE) return;
   const bridge = await bridgeState(t, project);
-  if (bridge.sends) {
+  if (bridge.sends && plugin !== JIRA_ISSUE) {
     const live = await liveRepos(t, project, JIRA_TRANSITION);
     if (live.length) {
       throw new HandoverConflict(`the Jira bridge moves this project's tickets, so jira-transition can't send too (in ${listed(live)}); `
         + "move the bridge's triggers here, or keep it in test mode");
     }
   }
+  if (plugin === JIRA_TRANSITION) return;
   const mirrored = await liveRepos(t, project, JIRA_ISSUE);
   if (!mirrored.length) return;
   if (bridge.polls) {
