@@ -29,9 +29,9 @@ _FENCE = "---"
 _KEYS = ("uid", "kind")
 _OPEN = "<!--todo"
 _CLOSE = "-->"
-# The last `<!--todo … -->` block, ending the file. YAML indents every line of a
-# multi-line value, so no line inside the block is exactly `-->`.
-_TRAILER = re.compile(r"(?:\A|\n)<!--todo\n(?P<yaml>(?:.*\n)*?)-->\s*\Z")
+# A `<!--todo … -->` block ending the file. YAML indents every line of a
+# multi-line value, so no line inside the block is exactly `<!--todo` or `-->`.
+_TRAILER = re.compile(r"<!--todo\n(?P<yaml>(?:.*\n)*?)-->\s*\Z")
 _reader = YAML(typ="safe")
 _reader.constructor.add_constructor("tag:yaml.org,2002:timestamp", lambda c, n: n.value)
 
@@ -44,16 +44,35 @@ def _meta(text: str):
     return meta if isinstance(meta, dict) and any(k in meta for k in _KEYS) else None
 
 
+def _split_trailer(text: str) -> tuple:
+    """(meta, body) from the last `<!--todo` block, or (None, text) when that
+    block doesn't end the file or isn't metadata."""
+    at = text.rfind("\n" + _OPEN + "\n") + 1
+    if not at and not text.startswith(_OPEN + "\n"):
+        return None, text
+    m = _TRAILER.match(text, at)
+    meta = _meta(m.group("yaml")) if m else None
+    if meta is None:
+        return None, text
+    body = text[:at].rstrip("\n")
+    return meta, body + "\n" if body else ""
+
+
 def split(text: str) -> tuple:
     """(meta, body). `meta` is {} when the file has no metadata block. The body
     keeps one trailing newline, as written."""
-    m = _TRAILER.search(text)
-    if m:
-        meta = _meta(m.group("yaml"))
-        if meta is not None:
-            body = text[:m.start()].rstrip("\n")
-            return meta, body + "\n" if body else ""
-    return _split_front(text)
+    meta, body = _split_trailer(text)
+    return (meta, body) if meta is not None else _split_front(text)
+
+
+def strip_meta(body: str) -> str:
+    """The body without the metadata blocks ending it, as text copied from
+    another note's file carries."""
+    while True:
+        meta, rest = _split_trailer(body)
+        if meta is None:
+            return body
+        body = rest
 
 
 def _split_front(text: str) -> tuple:
@@ -96,7 +115,7 @@ def join(meta: dict, body: str) -> str:
         clean[k] = LiteralScalarString(v) if isinstance(v, str) and "\n" in v else v
     buf = io.StringIO()
     _dumper().dump(clean, buf)
-    text = body.rstrip("\n")
+    text = strip_meta(body).rstrip("\n")
     return f"{text}\n\n{_OPEN}\n{buf.getvalue()}{_CLOSE}\n" if text else f"{_OPEN}\n{buf.getvalue()}{_CLOSE}\n"
 
 
