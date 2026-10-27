@@ -384,7 +384,9 @@ local-only store. Nothing is read from the repo itself.
   `todo plugin add|set|rm`. There `jira-transition` reads as the Jira
   bridge's trigger table, one trigger per instance and the first that fits a
   move winning, and `watchtower-session` and `rest` read as Actions, one
-  button per instance.
+  button per instance. Beside a `watchtower-session` button, the item page
+  and board show the state of the item's session, read through the repo's
+  `watchtower` connection.
 - **Moving over:** a row whose job the Jira bridge or an Action does today
   offers to move it into its plugin, and back, in one step that leaves only
   one of them doing it.
