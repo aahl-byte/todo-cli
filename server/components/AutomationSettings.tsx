@@ -27,6 +27,8 @@ import { REST, WATCHTOWER, type CardPlugin } from "@/lib/action-cards";
 import { ActionPluginEditor } from "./ActionPluginEditor";
 import { Handover } from "./Handover";
 import { JiraTransitionEditor } from "./JiraTransitionEditor";
+import { JiraStatusTransitionsEditor } from "./JiraStatusTransitionsEditor";
+import { JIRA_STATUS_TRANSITIONS } from "@/lib/jira/status-rules";
 import { InstanceCard, RunLog, SettingInput, type NewConnection } from "./PluginInstance";
 import { notify } from "./Toaster";
 import { VercelPick } from "./VercelPick";
@@ -415,6 +417,8 @@ function SetupPanel({ projectKey, repo, plugin, statuses, conns }: {
       {plugin.shipped && plugin.name === "jira-transition" ? (
         <JiraTransitionEditor key={JSON.stringify(plugin.instances)} projectKey={projectKey} repo={repo.repo} plugin={plugin} statuses={statuses}
                               sendLock={jiraSendLock(repo, conns)} />
+      ) : plugin.shipped && plugin.name === JIRA_STATUS_TRANSITIONS ? (
+        <JiraStatusTransitionsEditor key={JSON.stringify(plugin.instances)} projectKey={projectKey} repo={repo.repo} plugin={plugin} statuses={statuses} />
       ) : plugin.shipped && (plugin.name === WATCHTOWER || plugin.name === REST) ? (
         <ActionPluginEditor key={JSON.stringify(plugin.instances)} projectKey={projectKey} repo={repo} plugin={plugin as DashPlugin & { name: CardPlugin }}
                             statuses={statuses} newConnection={(onSaved, onClose) => (

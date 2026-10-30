@@ -1,0 +1,14 @@
+# The Jira half of jira-transition's trigger, turned around: one instance per
+# Jira move, which moves the item while it sits in the instance's todo status.
+description: Moves the item when a Jira issue it links moves between two Jira statuses.
+connections: [jira]
+every: 5m
+capabilities: [move-status]
+code: jira-status-transitions.js
+when: "item.status == settings.from"
+settings:
+  jira_from: {label: Jira moves from, type: text}
+  jira_to:   {label: Jira moves to, type: text}
+  from:      {label: Item moves from, type: text}
+  to:        {label: Item moves to, type: text}
+  note:      {label: Note, type: long-text, optional: true}

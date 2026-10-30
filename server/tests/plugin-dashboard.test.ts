@@ -73,7 +73,7 @@ describe("the plugins settings page", () => {
     expect(repo.updated).toMatchObject({ by: "test" });
     expect(repo.plugins.map((p) => [p.name, p.description])).toEqual([
       ["pr-link", "Links each of the item's branches to its pull requests on GitHub."], ["note", "Says hi."], ["ping", null]]);
-    expect(repo.offered.map((o) => o.name)).toEqual(["db-request", "jira-issue", "jira-transition", "rest", "vercel-preview", "watchtower-session"]);
+    expect(repo.offered.map((o) => o.name)).toEqual(["db-request", "jira-issue", "jira-status-transitions", "jira-transition", "rest", "vercel-preview", "watchtower-session"]);
     expect(repo.offered.find((o) => o.name === "vercel-preview")).toEqual({
       name: "vercel-preview", description: "Links each of the item's branches to its newest ready Vercel preview.", connections: ["vercel"] });
   });

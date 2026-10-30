@@ -10,12 +10,14 @@ export type Attachment =
   | { kind: "log"; key: string; text: string }
   /** A comment from elsewhere, replaced by key so edits follow; author is its Jira account id, author_name its display name. */
   | { kind: "comment"; key: string; text: string; at?: string; author?: string; author_name?: string }
-  | { kind: "request"; key: string; text: string };
+  | { kind: "request"; key: string; text: string }
+  /** A move of the item from one status to another, made only while it still sits in `from` and hasn't moved since `at`; text is its note. */
+  | { kind: "status"; key: string; from: string; to: string; text?: string; at?: string; author?: string; author_name?: string };
 
 export type AttachmentKind = Attachment["kind"];
-export const ATTACHMENT_KINDS: AttachmentKind[] = ["link", "edge", "doc", "log", "request", "comment"];
-/** Kinds only a plugin shipped with todo may attach: a comment speaks as its author. */
-export const SHIPPED_KINDS: AttachmentKind[] = ["comment"];
+export const ATTACHMENT_KINDS: AttachmentKind[] = ["link", "edge", "doc", "log", "request", "comment", "status"];
+/** Kinds only a plugin shipped with todo may attach: a comment speaks as its author, and a status moves the item. */
+export const SHIPPED_KINDS: AttachmentKind[] = ["comment", "status"];
 
 /** One call a plugin made, or in dry-run would have made. */
 export interface Call {
@@ -223,6 +225,8 @@ export interface RunInput {
 }
 
 export const POST_REQUEST = "post-request";
+/** A plugin that declares it may attach status moves. */
+export const MOVE_STATUS = "move-status";
 export const DEFAULT_DEADLINE_MS = 5 * 60_000;
 export const DEFAULT_MEMORY_BYTES = 32 * 1024 * 1024;
 

@@ -372,7 +372,7 @@ local-only store. Nothing is read from the repo itself.
 
 - **Shipped plugins:** `pr-link` (on for every repo: each item branch's PR),
   `vercel-preview`, `db-request`, `rest`, `watchtower-session`,
-  `jira-transition` and `jira-issue`. Switch one on with its switch on
+  `jira-transition`, `jira-status-transitions` and `jira-issue`. Switch one on with its switch on
   Settings → Automation, or `todo plugin enable <name>`.
 - **Custom plugins** are YAML steps, or a JavaScript `run()` in a sandbox,
   added on Settings → Automation, which checks the YAML as it's typed.
@@ -383,7 +383,11 @@ local-only store. Nothing is read from the repo itself.
   switch. Edit them under the server's Settings → Automation, or with
   `todo plugin add|set|rm`. There `jira-transition` reads as the Jira
   bridge's trigger table, one trigger per instance and the first that fits a
-  move winning, and `watchtower-session` and `rest` read as Actions, one
+  move winning; `jira-status-transitions` reads as the same table turned
+  around, one rule per instance: when a linked Jira issue moves between two
+  Jira statuses while the item sits in the rule's todo status, the item moves
+  as the Jira user who moved the issue, with the rule's note (a `qa-rejection`
+  note on a move to `qa-rejected`); and `watchtower-session` and `rest` read as Actions, one
   button per instance. Beside a `watchtower-session` button, the item page
   and board show the state of the item's session, read through the repo's
   `watchtower` connection.

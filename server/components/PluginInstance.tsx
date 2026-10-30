@@ -244,6 +244,7 @@ function attachmentText(a: Attachment): string {
     case "log": return `log: ${a.text}`;
     case "request": return "a new request version";
     case "comment": return `comment${a.author_name ? ` by ${a.author_name}` : ""}: ${a.text}`;
+    case "status": return `move ${a.from} → ${a.to}${a.author_name ? ` as ${a.author_name}` : ""}: ${a.text ?? ""}`;
   }
 }
 

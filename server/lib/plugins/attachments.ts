@@ -10,6 +10,7 @@ export const ATTACH_FIELDS: Record<AttachmentKind, { required: string[]; optiona
   log: { required: ["text"], optional: [], keyFrom: ["text"] },
   request: { required: ["text"], optional: [], keyFrom: ["text"] },
   comment: { required: ["text"], optional: ["at", "author", "author_name"], keyFrom: ["text"] },
+  status: { required: ["from", "to"], optional: ["text", "at", "author", "author_name"], keyFrom: ["from", "to"] },
 };
 
 const NEEDS = /^(item:|branch:)\S|^https?:\/\//;

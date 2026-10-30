@@ -5,7 +5,7 @@ import { ATTACH_FIELDS } from "./attachments";
 import { exprError } from "./expr";
 import { quotedTemplates, templateErrors } from "./template";
 import { parseDuration } from "./triggers";
-import { ATTACHMENT_KINDS, POST_REQUEST, type AttachmentKind, type PluginsFile } from "./types";
+import { ATTACHMENT_KINDS, MOVE_STATUS, POST_REQUEST, type AttachmentKind, type PluginsFile } from "./types";
 
 export class PluginsFileError extends Error {
   constructor(readonly errors: string[]) {
@@ -24,7 +24,7 @@ const ATTACH_KEYS = ["each", "when", "key"];
 const SETTING_KEYS = ["label", "type", "default", "optional", "options", "options_from", "scope", "template"];
 const SETTING_TYPES = ["text", "long-text", "choice", "toggle", "number", "list", "secret"];
 const INSTANCE_KEYS = ["id", "name", "enabled", "on", "button", "dry_run", "settings"];
-const CAPABILITIES = [POST_REQUEST];
+const CAPABILITIES = [POST_REQUEST, MOVE_STATUS];
 const TRIGGERS = ["push", "pr", "deployment", "manual"];
 /** Names a step can't take, because the scope already has them or they'd reach an object's prototype. */
 const RESERVED = ["item", "event", "settings", "branch", "issue", "each", "track", "instance", "trigger", "run", "__proto__", "constructor", "prototype"];
@@ -146,6 +146,9 @@ function attachErrors(entry: unknown, plugin: Record<string, unknown>): string[]
   if (kind === "request" && !(plugin.capabilities as string[] | undefined)?.includes("post-request")) {
     errors.push("request needs the post-request capability");
   }
+  if (kind === "status" && !(plugin.capabilities as string[] | undefined)?.includes(MOVE_STATUS)) {
+    errors.push(`status needs the ${MOVE_STATUS} capability`);
+  }
   return errors;
 }
 
@@ -191,7 +194,7 @@ export function pluginErrors(name: string, def: unknown, opts: LoadOptions = {})
     if (!isStrings(def.capabilities)) errors.push("capabilities must be a list");
     else {
       errors.push(...def.capabilities.filter((c) => !CAPABILITIES.includes(c)).map((c) => `unknown capability "${c}"`));
-      if (!opts.shipped && def.capabilities.includes(POST_REQUEST)) errors.push(`only plugins shipped with todo may declare ${POST_REQUEST}`);
+      for (const c of [POST_REQUEST, MOVE_STATUS]) if (!opts.shipped && def.capabilities.includes(c)) errors.push(`only plugins shipped with todo may declare ${c}`);
     }
   }
   if ("settings" in def) {
