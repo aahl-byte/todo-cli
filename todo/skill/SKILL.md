@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.17.0
+version: 0.17.1
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -191,11 +191,12 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
   write counts as seen; see Working an item, step 1.
 - **Link the Jira tickets an item covers:** `todo jira link <q> CNS-123 [CNS-456 …]`,
   and `todo jira unlink <q> CNS-456` to drop one. An item can hold several keys,
-  and one key can sit on several items, in this project or others. On the
-  server's next Jira poll, each newly linked ticket's summary and description
-  are appended to the item's request as a `## CNS-123 · <summary>` block, and
-  its Jira comments arrive as comment notes. If the request was frozen, that
-  append is a new version and **the item goes back to `requested`** for triage
+  and one key can sit on several items, in this project or others. On a store
+  synced to a team server, `jira link` returns with each newly linked ticket's
+  summary and description appended to the item's request as a
+  `## CNS-123 · <summary>` block (otherwise the server's next Jira poll appends
+  it), and its Jira comments arrive as comment notes. Link before triage: if the
+  request was frozen, that append is a new version and **the item goes back to `requested`** for triage
   (Working an item, step 3).
   Jira's status never moves the item; `todo get` shows it next to each key.
 - **Prepare a `qa-approved` item's deploy, then `todo stage` it.** Make sure
