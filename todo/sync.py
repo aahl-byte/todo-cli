@@ -47,6 +47,7 @@ SETTABLE = {
     "check": ["kind", "title", "payload", "timing", "status", "envs"],
 }
 JSON_FIELD = {"item": "extra", "note": "meta", "log": "meta"}
+HISTORY_FIELDS = {"status", "extra.class"}     # item fields whose changes the server keeps in history
 CREATE_ONLY = {"item": ["id", "created"], "task": ["n"], "note": ["n", "ts"],
                "log": ["n", "ts"], "check": ["n"]}
 CHILDREN = ["task", "note", "log", "check"]
@@ -564,15 +565,18 @@ def diff(local: Local, snap: dict) -> list:
 
 def _history_entry(e) -> dict:
     m = e["meta"]
-    return {"uid": m.get("uid"), "from": m.get("from"), "to": m.get("to"), "by": m.get("by"),
-            "via": m.get("via"), "forced": bool(m.get("forced")), "ts": e["ts"]}
+    out = {"uid": m.get("uid"), "from": m.get("from"), "to": m.get("to"), "by": m.get("by"),
+           "via": m.get("via"), "forced": bool(m.get("forced")), "ts": e["ts"]}
+    if m.get("field"):
+        out["field"] = m["field"]
+    return out
 
 
 def _status_provenance(op: dict, provisional: list, status: str) -> None:
     """A status set carries `via` and `forced` from the newest provisional
     history entry that reached that status."""
     for e in reversed(provisional):
-        if e["meta"].get("to") == status:
+        if not e["meta"].get("field") and e["meta"].get("to") == status:
             if e["meta"].get("via"):
                 op["via"] = e["meta"]["via"]
             if e["meta"].get("forced"):
@@ -810,10 +814,10 @@ def _handle_result(root, op, r, local, snap, report, rejected_fields, pushed_sta
     current = not replay or _still_local(local, op)
     # A replay that a newer local edit superseded must leave that edit's
     # provisional history alone; its own push clears it.
-    if entity == "item" and op["op"] == "set" and current and "status" in (r.get("versions") or {}):
+    if entity == "item" and op["op"] == "set" and current and HISTORY_FIELDS & set(r.get("versions") or {}):
         pushed_status.add(uid)
     if entity == "item" and op["op"] == "set" and current and any(
-            x["field"] == "status" and "server_value" in x for x in r.get("rejected") or []):
+            x["field"] in HISTORY_FIELDS and "server_value" in x for x in r.get("rejected") or []):
         pushed_status.add(uid)          # the server's status was adopted; the local trail never happened
     if entity == "item" and op["op"] == "create" and r.get("status") == "applied" \
             and (op.get("data") or {}).get("history"):
@@ -908,7 +912,7 @@ def _local_row(local: Local, entity: str, uid: str, flat: dict) -> dict:
 
 def _drop_provisional_history(root, local: Local, pushed_status: set) -> None:
     """Server history replaces the provisional entries of every item whose
-    status change was pushed (applied or rejected)."""
+    status or class change was pushed (applied or rejected)."""
     for item_uid in pushed_status:
         with _hold(root, item_uid):
             _follow(root, local, item_uid)
@@ -1407,6 +1411,8 @@ def _write_history(root, now: Local, row) -> bool:
     hd.mkdir(exist_ok=True)
     entry = {"uid": row["uid"], "from": row.get("from_status"), "to": row.get("to_status"),
              "by": row.get("by"), "via": row.get("via"), "server": True}
+    if row.get("field"):
+        entry["field"] = row["field"]
     if row.get("forced"):
         entry["forced"] = True
     target = hd / f"{store.ts_to_name(row['ts'])}-{row['n']}.yaml"

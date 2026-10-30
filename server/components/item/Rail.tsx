@@ -65,6 +65,8 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
           <span className="k">type</span>
           <Menu label="type" current={it.type} onOpen={() => { pinned.current = it.versions; }} trigger={it.type}
                 options={ITEM_TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />
+          <span className="k">class</span>
+          <ClassValue data={data} ctx={ctx} />
           <span className="k">priority</span>
           <Menu label="priority" current={it.priority} onOpen={() => { pinned.current = it.versions; }}
                 trigger={<span className={it.priority === "high" || it.priority === "urgent" ? "hot" : ""}>{it.priority ?? "—"}</span>}
@@ -255,6 +257,38 @@ function AppValue({ data, ctx }: { data: Data; ctx: Ctx }) {
         <Popup title="App and section" onClose={() => setOpen(false)}>
           <form className="row" action={(fd) => void save(fd)}>
             <AppFields apps={data.choices} app={app} section={section} />
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
+              <button className="btn primary">Save</button>
+            </div>
+          </form>
+        </Popup>
+      )}
+    </>
+  );
+}
+
+function ClassValue({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const [open, setOpen] = useState(false);
+  const pinned = useRef(it.versions);
+  const cls: string = it.extra?.class ?? "";
+  const listId = `classes-${it.uid}`;
+  const save = async (fd: FormData) => {
+    const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
+                                   data: { "extra.class": String(fd.get("class") ?? "").trim() || null } });
+    if (report(r)) setOpen(false);
+  };
+  return (
+    <>
+      <Editable readOnly={!!ctx.readOnly} onOpen={() => { pinned.current = it.versions; setOpen(true); }}>
+        {cls || <span className="faint">—</span>}
+      </Editable>
+      {open && (
+        <Popup title="Class" onClose={() => setOpen(false)}>
+          <form className="row" action={(fd) => void save(fd)}>
+            <input name="class" list={listId} defaultValue={cls} aria-label="class" placeholder="class (empty clears it)" autoComplete="off" autoFocus />
+            <datalist id={listId}>{data.classes.map((c) => <option key={c} value={c} />)}</datalist>
             <div className="actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
               <button className="btn primary">Save</button>
@@ -514,9 +548,13 @@ function History({ rows, current, created }: { rows: Row[]; current: string; cre
     <section className="hist">
       <div className="label">History</div>
       {shown.map((h, i) => (
-        <div key={h.uid} tabIndex={0} className={`rrow ${i === 0 && h.to_status === current ? "dimmed" : ""}`}
-             data-tip={[h.by, h.via === "agent" ? "AI" : null, h.forced ? "forced" : null, h.override ? "override" : null, h.note].filter(Boolean).join(" · ")}>
-          <Led status={h.to_status} label />{h.override && <span className="tag hot">override</span>}
+        <div key={h.uid} tabIndex={0} className={`rrow ${i === 0 && !h.field && h.to_status === current ? "dimmed" : ""}`}
+             data-tip={[h.field ? `${h.field} was ${h.from_status ?? "—"}` : null, h.by, h.via === "agent" ? "AI" : null,
+                        h.forced ? "forced" : null, h.override ? "override" : null, h.note].filter(Boolean).join(" · ")}>
+          {h.field
+            ? <span className="stat"><span className="faint">{h.field}</span> {h.to_status ?? "—"}</span>
+            : <Led status={h.to_status} label />}
+          {h.override && <span className="tag hot">override</span>}
           <Ago ts={h.ts} />
         </div>
       ))}

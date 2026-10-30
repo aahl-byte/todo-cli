@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.16.0
+version: 0.17.0
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -289,7 +289,7 @@ query lists the candidates.
 
 ```
 todo list [--status S] [--all]   # list (hides done/cancelled; --all includes them)
-todo list [--app A] [--type T]   # only one app's items, or one type's
+todo list [--app A] [--type T] [--class C]   # only one app's items, one type's, or one class's
 todo list -g                     # active items across all linked projects (grouped)
 todo get <query> [--log]         # show one item in full (--log: the whole dev log)
 todo triage <query>              # → in-triage  (planning)
@@ -327,6 +327,7 @@ todo add "<title>" --request "<text>" [--url U] [--app A] [--section S] [--type 
 todo set <query> title "<new title>"   # rename an item
 todo set <query> app|section <value|none>
 todo set <query> type <type>
+todo set <query> class <value|none>   # a free-form class beside type; each change lands in history
 todo set <query> priority low|medium|high|urgent|critical
 todo set <query> repo|branch <value|none>   # where the work lives (branch replaces the list)
 todo branch [add|rm] <query> [<name>]    # show, add or drop one of an item's branches

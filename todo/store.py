@@ -5,7 +5,7 @@
         phase-{n}/TASKS.yaml    tasks per phase, in order (unphased/ for none)
         notes/{ts}-{id}.md      one note per file (front matter + Markdown)
         devlogs/{ts}-{id}.md    one dev-log entry per file
-        history/{ts}-{id}.yaml  one status transition per file
+        history/{ts}-{id}.yaml  one status or class change per file
         checks/CHECKS.yaml      deployment checks, in order
         docs/{name}             the item's docs; docs/.meta.yaml says who wrote each
 
@@ -194,7 +194,7 @@ def _history(e) -> dict:
     return {"id": e["id"], "ts": e["ts"], "uid": meta.get("uid"),
             "from": meta.get("from"), "to": meta.get("to"), "by": meta.get("by"),
             "via": meta.get("via"), "forced": bool(meta.get("forced")),
-            "provisional": not meta.get("server")}
+            "field": meta.get("field"), "provisional": not meta.get("server")}
 
 
 def _read_tasks(item_dir: Path) -> list:
@@ -289,6 +289,7 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "developer": to_str(meta.get("developer")) or None,
         "qa_assignee": to_str(meta.get("qa_assignee")) or None,
         "app": to_str(meta.get("app")) or None,
+        "class": to_str(meta.get("class")) or None,
         "section": to_str(meta.get("section")) or None,
         "repo": to_str(meta.get("repo")) or None,
         "branches": branch_list(meta),
@@ -416,9 +417,9 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
                 forced: bool = False) -> bool:
     """Patch status/priority/type/title or a people field on an item. `now_iso`
     stamps `completed` when status becomes complete and clears it when status
-    leaves complete. A real status change appends a history entry (`forced`
-    marks a deploy past the check gate or an agent's hand-off to QA), then moves
-    the item into its folder.
+    leaves complete. A real status or class change appends a history entry
+    (`forced` marks a deploy past the check gate or an agent's hand-off to QA),
+    then a status change moves the item into its folder.
     A people field set to None is cleared."""
     item_dir = _find_dir(root, item_id)
     if item_dir is None:
@@ -443,6 +444,12 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     for key in PEOPLE + ("app", "section", "repo"):
         if key in patch:
             meta[key] = patch[key] or None
+    reclassed = None
+    if "class" in patch:
+        was = to_str(meta.get("class")) or None
+        meta["class"] = patch["class"] or None
+        if meta["class"] != was:
+            reclassed = (was, meta["class"])
     if "branches" in patch:
         if patch["branches"]:
             meta["branches"] = list(patch["branches"])
@@ -456,11 +463,14 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
     yamlio.save(y, item_dir / ITEM_FILE, meta)
     if moved:
         _write_history(item_dir, moved[0], moved[1], now_iso, forced)
+    if reclassed:
+        _write_history(item_dir, reclassed[0], reclassed[1], now_iso, False, field="class")
     _place(item_dir, to_str(meta.get("status")) or "todo", bool(meta.get("archived")))
     return True
 
 
-def _write_history(item_dir: Path, was: str, new: str, ts, forced: bool) -> None:
+def _write_history(item_dir: Path, was, new, ts, forced: bool, field: str | None = None) -> None:
+    """One history entry: a status change, or with `field` a change to that field."""
     d = item_dir / HISTORY_DIR
     d.mkdir(exist_ok=True)
     ids = [e["id"] for e in read_entries(d)]
@@ -468,6 +478,8 @@ def _write_history(item_dir: Path, was: str, new: str, ts, forced: bool) -> None
     ts = ts or _now()
     entry = {"uid": ulid.new(), "from": was, "to": new, "by": identity.user(),
              "via": identity.via()}
+    if field:
+        entry["field"] = field
     if forced:
         entry["forced"] = True
     yamlio.write_atomic(d / f"{ts_to_name(ts)}-{new_id}.yaml", frontmatter.dump_map(entry))

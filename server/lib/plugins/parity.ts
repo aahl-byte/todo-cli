@@ -164,7 +164,7 @@ export async function parity(d: Db, project: string, opts: ParityOptions): Promi
   };
 
   const moves = await d.query(
-    `select * from status_history where project = $1 and from_status is not null and ts >= $2 order by ts, n`, [project, since]);
+    `select * from status_history where project = $1 and field is null and from_status is not null and ts >= $2 order by ts, n`, [project, since]);
   for (const m of moves) {
     const [it] = await d.query("select * from items where project = $1 and uid = $2", [project, m.item_uid]);
     if (!it) continue;

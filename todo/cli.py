@@ -157,14 +157,16 @@ def _run_cli_action(root: Path, it, action: dict, frm: str, trigger: str) -> boo
 
 
 def _filter_list(items, args, *, default_active: bool):
-    """Apply --app / --type, then --status / --all / default filtering to a list
-    of items. The default (no flags) hides the terminal statuses locally, but
-    narrows to the active set across projects."""
-    app, kind = getattr(args, "app", None), getattr(args, "type", None)
+    """Apply --app / --type / --class, then --status / --all / default filtering
+    to a list of items. The default (no flags) hides the terminal statuses
+    locally, but narrows to the active set across projects."""
+    app, kind, cls = getattr(args, "app", None), getattr(args, "type", None), getattr(args, "cls", None)
     if app:
         items = [it for it in items if it["app"] == app]
     if kind:
         items = [it for it in items if it["type"] == kind]
+    if cls:
+        items = [it for it in items if it["class"] == cls]
     if args.status:
         return [it for it in items if it["status"] == args.status]
     if args.all:
@@ -1843,6 +1845,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only items where I am the developer or QA assignee")
     p.add_argument("--app", metavar="A", help="only items for this app")
     p.add_argument("--type", choices=store.ITEM_TYPES, help="only items of this type")
+    p.add_argument("--class", dest="cls", metavar="C", help="only items of this class")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("get", parents=[common], aliases=["show"], help="show one item in full")
@@ -2180,10 +2183,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", choices=store.ITEM_TYPES, default=None, help="item type (default: feature)")
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("set", parents=[common], help="set an item's title, type, priority, app, section, repo or branch "
+    p = sub.add_parser("set", parents=[common], help="set an item's title, type, priority, class, app, section, repo or branch "
                             "(branch replaces the list; none clears all but title, type and priority)")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("field", choices=["title", "type", "priority", "app", "section", "repo", "branch"])
+    p.add_argument("field", choices=["title", "type", "priority", "class", "app", "section", "repo", "branch"])
     p.add_argument("value", nargs="+", help="the value, or none")
     p.set_defaults(func=cmd_set)
 
