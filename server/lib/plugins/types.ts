@@ -170,6 +170,7 @@ export interface PluginItem {
   repo_name?: string | null;
   branches: string[];
   jira?: string[] | string | null;
+  tags?: string[];
   app?: string | null;
   section?: string | null;
   developer?: string | null;

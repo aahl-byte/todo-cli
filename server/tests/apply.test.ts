@@ -232,6 +232,27 @@ describe("status rules", () => {
     expect(r.rejected?.[0]).toMatchObject({ field: "extra.class", reason: "invalid" });
   });
 
+  it("records each change to an item's tags in history, as the before and after lists", async () => {
+    await w.one("alice", item("I1"));
+    const a = await w.one("alice", set("item", "I1", "I1", { "extra.tags": ["auto-deploy"] }, {}, { via: "agent" }));
+    const same = await w.one("bob", set("item", "I1", "I1", { "extra.tags": [" auto-deploy "] }, { "extra.tags": a.versions!["extra.tags"] }));
+    const b = await w.one("bob", set("item", "I1", "I1", { "extra.tags": ["auto-deploy", "UI"] }, { "extra.tags": same.versions!["extra.tags"] }));
+    await w.one("bob", set("item", "I1", "I1", { "extra.tags": null }, { "extra.tags": b.versions!["extra.tags"] }));
+    const hist = await w.d.query("select field, from_status, to_status, by, via from status_history order by n");
+    expect(hist).toEqual([
+      { field: "tags", from_status: null, to_status: "auto-deploy", by: "alice", via: "agent" },
+      { field: "tags", from_status: "auto-deploy", to_status: "auto-deploy, UI", by: "bob", via: "human" },
+      { field: "tags", from_status: "auto-deploy, UI", to_status: null, by: "bob", via: "human" }]);
+  });
+
+  it("refuses tags that aren't a list of short comma-free text", async () => {
+    await w.one("alice", item("I1"));
+    for (const tags of ["auto-deploy", ["a,b"], [""], ["x".repeat(41)], [3]]) {
+      const r = await w.one("alice", set("item", "I1", "I1", { "extra.tags": tags }));
+      expect(r.rejected?.[0]).toMatchObject({ field: "extra.tags", reason: "invalid" });
+    }
+  });
+
   it("recomputes calc_status on task changes", async () => {
     await w.one("alice", item("I1"));
     const t = await w.one("alice", child("task", "T1", "I1", { n: 1, title: "x" }));

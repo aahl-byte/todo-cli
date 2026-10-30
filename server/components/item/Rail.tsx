@@ -3,7 +3,7 @@
 // values are click-to-pick; adds open a popup.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as act from "@/app/item-actions";
-import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES, itemBranches } from "@/lib/model";
+import { CHECK_KINDS, ITEM_TYPES, LINK_TYPES, itemBranches, tagList, tagProblem } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { ChecksState, PrStatus } from "@/lib/github";
 import { safeUrl } from "@/lib/url";
@@ -67,6 +67,8 @@ export function Rail({ data, ctx, onTasks }: { data: Data; ctx: Ctx; onTasks?: (
                 options={ITEM_TYPES.map((v) => ({ value: v }))} onPick={(v) => { if (v !== it.type) edit("type", v); }} />
           <span className="k">class</span>
           <ClassValue data={data} ctx={ctx} />
+          <span className="k">tags</span>
+          <TagsValue data={data} ctx={ctx} />
           <span className="k">priority</span>
           <Menu label="priority" current={it.priority} onOpen={() => { pinned.current = it.versions; }}
                 trigger={<span className={it.priority === "high" || it.priority === "urgent" ? "hot" : ""}>{it.priority ?? "—"}</span>}
@@ -292,6 +294,54 @@ function ClassValue({ data, ctx }: { data: Data; ctx: Ctx }) {
             <div className="actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button>
               <button className="btn primary">Save</button>
+            </div>
+          </form>
+        </Popup>
+      )}
+    </>
+  );
+}
+
+function TagsValue({ data, ctx }: { data: Data; ctx: Ctx }) {
+  const it = data.item;
+  const [open, setOpen] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const pinned = useRef(it.versions);
+  const tags = tagList(it.extra?.tags);
+  const listId = `tags-${it.uid}`;
+  const save = async (next: string[]) => {
+    const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
+                                   data: { "extra.tags": next.length ? next : null } });
+    if (report(r)) setOpen(false);
+  };
+  const add = (fd: FormData) => {
+    const given = String(fd.get("tag") ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+    const bad = given.map(tagProblem).find(Boolean);
+    if (bad) return setProblem(bad);
+    void save(tagList([...tags, ...given]));
+  };
+  return (
+    <>
+      <Editable readOnly={!!ctx.readOnly} onOpen={() => { pinned.current = it.versions; setProblem(null); setOpen(true); }}>
+        {tags.length ? <span className="chips">{tags.map((t) => <span key={t} className="chip">{t}</span>)}</span> : <span className="faint">—</span>}
+      </Editable>
+      {open && (
+        <Popup title="Tags" onClose={() => setOpen(false)}>
+          {tags.length > 0 && (
+            <span className="chips">
+              {tags.map((t) => (
+                <span key={t} className="chip">{t}<button type="button" className="x" aria-label={`remove tag ${t}`}
+                                                          onClick={() => void save(tags.filter((x) => x !== t))}>✕</button></span>
+              ))}
+            </span>
+          )}
+          <form className="row" action={(fd) => add(fd)}>
+            <input name="tag" list={listId} aria-label="tag" placeholder="add a tag" autoComplete="off" autoFocus onChange={() => setProblem(null)} />
+            <datalist id={listId}>{data.tags.filter((t) => !tags.some((x) => x.toLowerCase() === t.toLowerCase())).map((t) => <option key={t} value={t} />)}</datalist>
+            {problem && <span className="hot">{problem}</span>}
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setOpen(false)}>Close</button>
+              <button className="btn primary">Add</button>
             </div>
           </form>
         </Popup>

@@ -157,7 +157,7 @@ def _run_cli_action(root: Path, it, action: dict, frm: str, trigger: str) -> boo
 
 
 def _filter_list(items, args, *, default_active: bool):
-    """Apply --app / --type / --class, then --status / --all / default filtering
+    """Apply --app / --type / --class / --tag, then --status / --all / default filtering
     to a list of items. The default (no flags) hides the terminal statuses
     locally, but narrows to the active set across projects."""
     app, kind, cls = getattr(args, "app", None), getattr(args, "type", None), getattr(args, "cls", None)
@@ -167,6 +167,8 @@ def _filter_list(items, args, *, default_active: bool):
         items = [it for it in items if it["type"] == kind]
     if cls:
         items = [it for it in items if it["class"] == cls]
+    for tag in getattr(args, "tag", None) or []:
+        items = [it for it in items if tag.strip().casefold() in (t.casefold() for t in it["tags"])]
     if args.status:
         return [it for it in items if it["status"] == args.status]
     if args.all:
@@ -351,6 +353,24 @@ def _set_branches(root: Path, it, branches: list) -> None:
     for b in branches:
         if b not in it["branches"]:
             plugins_mod.queue(it["id"], {"type": "push", "branch": b})
+
+
+def cmd_tag(root: Path, args) -> None:
+    it = store.resolve_item(root, args.query)
+    given = [t.strip() for t in args.tags]
+    for t in given:
+        problem = store.tag_problem(t)
+        if problem:
+            die(f"{problem[0].upper()}{problem[1:]}.", 2)
+    have = it["tags"]
+    if args.command == "tag":
+        tags = store.tag_list(have + given)
+    else:
+        drop = {t.casefold() for t in given}
+        tags = [t for t in have if t.casefold() not in drop]
+    if tags != have:
+        store.update_todo(root, it["id"], {"tags": tags}, now())
+    print(f'{it["id"]}: tags = {", ".join(tags) or "—"}')
 
 
 _EMPTY_BRANCH = "A branch name can't be empty."
@@ -1873,6 +1893,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--app", metavar="A", help="only items for this app")
     p.add_argument("--type", choices=store.ITEM_TYPES, help="only items of this type")
     p.add_argument("--class", dest="cls", metavar="C", help="only items of this class")
+    p.add_argument("--tag", action="append", metavar="T", help="only items with this tag; repeat to need every one")
     p.set_defaults(func=cmd_list)
 
     p = sub.add_parser("get", parents=[common], aliases=["show"], help="show one item in full")
@@ -2232,6 +2253,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help="id or part of a title")
     p.add_argument("other", help="the related item")
     p.set_defaults(func=cmd_unrelate)
+
+    for name, verb in (("tag", "add"), ("untag", "remove")):
+        p = sub.add_parser(name, parents=[common], help=f"{verb} tags on an item")
+        p.add_argument("query", help="id or part of a title")
+        p.add_argument("tags", nargs="+", metavar="tag", help="free text, no commas")
+        p.set_defaults(func=cmd_tag)
 
     p = sub.add_parser("branch", parents=[common], usage=_BRANCH_USAGE[len("usage: "):],
                        help="show an item's branches, or add or remove one")

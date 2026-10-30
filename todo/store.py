@@ -5,7 +5,7 @@
         phase-{n}/TASKS.yaml    tasks per phase, in order (unphased/ for none)
         notes/{ts}-{id}.md      one note per file (front matter + Markdown)
         devlogs/{ts}-{id}.md    one dev-log entry per file
-        history/{ts}-{id}.yaml  one status or class change per file
+        history/{ts}-{id}.yaml  one status, class or tags change per file
         checks/CHECKS.yaml      deployment checks, in order
         docs/{name}             the item's docs; docs/.meta.yaml says who wrote each
 
@@ -247,6 +247,36 @@ def jira_keys(raw) -> list:
     return out
 
 
+TAG_MAX = 40
+
+
+def tag_problem(tag: str) -> str | None:
+    """Why a tag can't be stored, or None."""
+    if not tag:
+        return "a tag can't be empty"
+    if "," in tag:
+        return f"a tag can't hold a comma: {tag}"
+    if len(tag) > TAG_MAX:
+        return f"a tag is at most {TAG_MAX} characters: {tag}"
+    return None
+
+
+def tag_list(raw) -> list:
+    """The item's tags, trimmed, in order, as first typed, without unusable ones or
+    duplicates that differ only in case."""
+    out = []
+    for t in raw if isinstance(raw, list) else []:
+        t = to_str(t).strip() if t is not None else ""
+        if not tag_problem(t) and t.casefold() not in (x.casefold() for x in out):
+            out.append(t)
+    return out
+
+
+def tag_text(raw) -> str | None:
+    """Tags as one history value, `a, b`; None for none."""
+    return ", ".join(tag_list(raw)) or None
+
+
 def branch_list(meta) -> list:
     """The item's branches, trimmed, in order, without blanks or duplicates.
     A single name, or a legacy `branch`, reads as a one-branch list."""
@@ -294,6 +324,7 @@ def _to_item(item_dir: Path, meta, *, full: bool = True) -> dict:
         "repo": to_str(meta.get("repo")) or None,
         "branches": branch_list(meta),
         "jira": jira_keys(meta.get("jira")),
+        "tags": tag_list(meta.get("tags")),
         "jira_status": {to_str(k): to_str(v) for k, v in (meta.get("jira_status") or {}).items()}
                        if isinstance(meta.get("jira_status"), dict) else {},
         "phases": phase_titles(meta.get("phases")),
@@ -417,7 +448,7 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
                 forced: bool = False) -> bool:
     """Patch status/priority/type/title or a people field on an item. `now_iso`
     stamps `completed` when status becomes complete and clears it when status
-    leaves complete. A real status or class change appends a history entry
+    leaves complete. A real status, class or tags change appends a history entry
     (`forced` marks a deploy past the check gate or an agent's hand-off to QA),
     then a status change moves the item into its folder.
     A people field set to None is cleared."""
@@ -460,11 +491,22 @@ def update_todo(root: Path, item_id: str, patch: dict, now_iso=None, *,
             meta["jira"] = list(patch["jira"])
         else:
             meta.pop("jira", None)
+    retagged = None
+    if "tags" in patch:
+        was = tag_list(meta.get("tags"))
+        if patch["tags"]:
+            meta["tags"] = list(patch["tags"])
+        else:
+            meta.pop("tags", None)
+        if tag_list(meta.get("tags")) != was:
+            retagged = (tag_text(was), tag_text(meta.get("tags")))
     yamlio.save(y, item_dir / ITEM_FILE, meta)
     if moved:
         _write_history(item_dir, moved[0], moved[1], now_iso, forced)
     if reclassed:
         _write_history(item_dir, reclassed[0], reclassed[1], now_iso, False, field="class")
+    if retagged:
+        _write_history(item_dir, retagged[0], retagged[1], now_iso, False, field="tags")
     _place(item_dir, to_str(meta.get("status")) or "todo", bool(meta.get("archived")))
     return True
 
