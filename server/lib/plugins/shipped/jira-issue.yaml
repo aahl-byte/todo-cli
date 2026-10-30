@@ -1,7 +1,7 @@
-# The status sits beside the issue's key, comments come in as their Jira
-# authors', images as docs; once granted post-request, a newly linked issue's
-# summary and description join the item's request.
-description: "Mirrors each Jira issue the item links: its status, comments and images."
+# Comments come in as their Jira authors', images as docs; once granted
+# post-request, a newly linked issue's summary and description join the item's
+# request. The jira field already links the issue itself.
+description: "Mirrors each Jira issue the item links: its comments and images."
 connections: [jira]
 every: 5m
 capabilities: [post-request]

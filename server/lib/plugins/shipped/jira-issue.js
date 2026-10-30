@@ -192,7 +192,7 @@ ${SEPARATOR}`;
 }
 
 // lib/plugins/shipped/src/jira-issue.ts
-var FIELDS = "summary,description,status,updated,comment,attachment";
+var FIELDS = "summary,description,updated,comment,attachment";
 var IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 var MAX_IMAGE = 1024 * 1024;
 var MAX_TEXT = 8 * 1024;
@@ -249,8 +249,6 @@ async function run({ item, jira, attach }) {
     }
     const f = issue?.fields ?? {};
     const site = String(issue?.self ?? "").split("/rest/")[0];
-    const status = f.status?.name ? String(f.status.name) : null;
-    if (site) attach.link({ type: "external-ticket", url: `${site}/browse/${key}`, label: status ? `${key} \xB7 ${status}` : key, key: `status:${key}` });
     const files = f.attachment ?? [];
     const images = files.filter((a) => IMAGES.includes(a?.mimeType) && Number(a.size ?? 0) <= MAX_IMAGE);
     for (const a of images) {

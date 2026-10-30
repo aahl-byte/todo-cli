@@ -291,7 +291,7 @@ describe("running plugins", () => {
     await queuePluginEvent(w.d, "p", "I1", "acme/web", { type: "refresh" }, "alice");
     await run(gh.impl);
     expect((await runs()).find((r) => r.plugin === "jira-issue")!.result.error).toBeUndefined();
-    expect((await linkNotes()).map((n) => [n.text, n.meta.url])).toEqual([["SR-1 · QA", "https://acme.atlassian.net/browse/SR-1"]]);
+    expect(await linkNotes()).toEqual([]);
     const comments = () => w.d.query("select uid, text, author, ts from notes where item_uid = 'I1' and kind = 'comment' order by n");
     expect(await comments()).toEqual([
       { uid: pluginUid("jira-issue/default", "I1", "comment:SR-1:7"), text: "Looks good", author: "bob", ts: "2026-10-01T10:00:00.000Z" },

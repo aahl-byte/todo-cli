@@ -21,7 +21,7 @@ describe("jira-issue's request block", () => {
   it("is links mode's block, byte for byte", async () => {
     const issue = { key: "SR-9", self: "https://acme.atlassian.net/rest/api/3/issue/9",
       fields: { summary: "Totals · CSV", status: { name: "Open" }, description: DESCRIPTION, comment: { total: 0, comments: [] } } };
-    const server = await fakeServer([{ method: "GET", path: "/rest/api/3/issue/SR-9?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment", body: issue }]);
+    const server = await fakeServer([{ method: "GET", path: "/rest/api/3/issue/SR-9?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment", body: issue }]);
     try {
       const { def, code } = SHIPPED["jira-issue"];
       const r = await runInstance({ plugin: def, name: "jira-issue", code, shipped: true, grants: ["post-request"], instance: { id: "default", name: "d" },

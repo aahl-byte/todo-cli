@@ -5688,7 +5688,7 @@ function appendTicketBlock(text, block) {
 }
 
 // lib/plugins/shipped/src/jira-issue.ts
-var FIELDS = "summary,description,status,updated,comment,attachment";
+var FIELDS = "summary,description,updated,comment,attachment";
 var IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 var MAX_IMAGE = 1024 * 1024;
 var MAX_TEXT = 8 * 1024;
@@ -5745,8 +5745,6 @@ async function run({ item, jira, attach }) {
     }
     const f = issue?.fields ?? {};
     const site = String(issue?.self ?? "").split("/rest/")[0];
-    const status = f.status?.name ? String(f.status.name) : null;
-    if (site) attach.link({ type: "external-ticket", url: \`\${site}/browse/\${key}\`, label: status ? \`\${key} \\xB7 \${status}\` : key, key: \`status:\${key}\` });
     const files = f.attachment ?? [];
     const images = files.filter((a) => IMAGES.includes(a?.mimeType) && Number(a.size ?? 0) <= MAX_IMAGE);
     for (const a of images) {
@@ -5795,10 +5793,10 @@ async function run({ item, jira, attach }) {
 export {
   run
 };
-`,"jira-issue.yaml":`# The status sits beside the issue's key, comments come in as their Jira
-# authors', images as docs; once granted post-request, a newly linked issue's
-# summary and description join the item's request.
-description: "Mirrors each Jira issue the item links: its status, comments and images."
+`,"jira-issue.yaml":`# Comments come in as their Jira authors', images as docs; once granted
+# post-request, a newly linked issue's summary and description join the item's
+# request. The jira field already links the issue itself.
+description: "Mirrors each Jira issue the item links: its comments and images."
 connections: [jira]
 every: 5m
 capabilities: [post-request]
@@ -5926,7 +5924,7 @@ attach:
   - each: "[sent, sent_text][?@]"
     key: "sent:{{run.at}}"
     log: "action {{instance.name}} ({{trigger}}): {{each.method}} {{each.url}} \u2192 {{each.status}}"
-`,"vercel-preview.yaml":`description: Links each of the item's branches to its newest ready Vercel preview.
+`,"vercel-preview.yaml":`description: Links each of the item's branches to its Vercel preview, at the branch's own address once a preview is ready.
 connections: [vercel]
 on: [push, deployment]
 every: 1h
@@ -5943,10 +5941,16 @@ steps:
   # The branch filter again, in case the API ignores it; newest first, as the API lists them.
   - name: ready
     value: "listed.deployments[?meta.githubCommitRef == {{branch}} && (readyState == 'READY' || state == 'READY')] | [0]"
+  # Vercel names the branch's alias, which follows its newest deployment, only on the deployment itself.
+  - name: found
+    when: ready
+    http: {method: GET, path: "/v13/deployments/{{ready.uid}}", query: {teamId: "{{settings.team}}"}}
+  - name: host
+    value: "(found.alias[?contains(@, '-git-')] | [0]) || ready.url"
 attach:
   - when: ready
     key: "preview:{{branch}}"
-    link: {type: preview, url: "https://{{ready.url}}", label: "preview \xB7 {{branch}}"}
+    link: {type: preview, url: "https://{{host}}", label: "preview \xB7 {{branch}}"}
 `,"watchtower-session.js":`// watchtower-session: the item's own session, named \`todo: <id>\`, gets the
 // prompt. A live one is sent it; with a resume prompt, the newest stopped one
 // is resumed first; otherwise a new one starts, with a short prompt inline.
