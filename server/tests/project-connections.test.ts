@@ -104,9 +104,10 @@ describe("over the server's connection of a name", () => {
 
   it("is picked up by the next run without a restart", async () => {
     const vercel = (token: string) => (url: string, init: RequestInit | undefined) => {
+      if (url.startsWith("https://api.vercel.com/v13/deployments/dpl_x")) return Response.json({ uid: "dpl_x", alias: ["web-git-feat-x.vercel.app"] });
       if (!url.startsWith("https://api.vercel.com/v7/deployments")) return undefined;
       const auth = (init?.headers as Record<string, string>)?.authorization;
-      return Response.json({ deployments: auth === `Bearer ${token}` ? [{ url: "web-x.vercel.app", readyState: "READY", meta: { githubCommitRef: "feat/x" } }] : [] });
+      return Response.json({ deployments: auth === `Bearer ${token}` ? [{ uid: "dpl_x", url: "web-x.vercel.app", readyState: "READY", meta: { githubCommitRef: "feat/x" } }] : [] });
     };
     const gh = await configured(w.d, { file: "plugins:\n  vercel-preview: {use: shipped}\ninstances:\n  vercel-preview: [{id: web, name: Web, settings: {project: prj, team: tm}}]\n",
                                        other: vercel("vc-token") });

@@ -75,7 +75,7 @@ describe("the plugins settings page", () => {
       ["pr-link", "Links each of the item's branches to its pull requests on GitHub."], ["note", "Says hi."], ["ping", null]]);
     expect(repo.offered.map((o) => o.name)).toEqual(["db-request", "jira-issue", "jira-status-transitions", "jira-transition", "rest", "vercel-preview", "watchtower-session"]);
     expect(repo.offered.find((o) => o.name === "vercel-preview")).toEqual({
-      name: "vercel-preview", description: "Links each of the item's branches to its newest ready Vercel preview.", connections: ["vercel"] });
+      name: "vercel-preview", description: "Links each of the item's branches to its Vercel preview, at the branch's own address once a preview is ready.", connections: ["vercel"] });
   });
 
   it("gives a repo nobody has set up no deploy branches, and offers every shipped plugin it doesn't run", async () => {

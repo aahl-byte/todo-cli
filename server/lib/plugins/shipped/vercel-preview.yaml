@@ -1,4 +1,4 @@
-description: Links each of the item's branches to its newest ready Vercel preview.
+description: Links each of the item's branches to its Vercel preview, at the branch's own address once a preview is ready.
 connections: [vercel]
 on: [push, deployment]
 every: 1h
@@ -15,7 +15,13 @@ steps:
   # The branch filter again, in case the API ignores it; newest first, as the API lists them.
   - name: ready
     value: "listed.deployments[?meta.githubCommitRef == {{branch}} && (readyState == 'READY' || state == 'READY')] | [0]"
+  # Vercel names the branch's alias, which follows its newest deployment, only on the deployment itself.
+  - name: found
+    when: ready
+    http: {method: GET, path: "/v13/deployments/{{ready.uid}}", query: {teamId: "{{settings.team}}"}}
+  - name: host
+    value: "(found.alias[?contains(@, '-git-')] | [0]) || ready.url"
 attach:
   - when: ready
     key: "preview:{{branch}}"
-    link: {type: preview, url: "https://{{ready.url}}", label: "preview · {{branch}}"}
+    link: {type: preview, url: "https://{{host}}", label: "preview · {{branch}}"}
