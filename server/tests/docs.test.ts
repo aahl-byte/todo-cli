@@ -9,6 +9,8 @@ import { DELETE as docDELETE, GET as docGET } from "@/app/api/projects/[key]/doc
 import { GET as changesGET } from "@/app/api/projects/[key]/changes/route";
 import { GET as fileGET, POST as filePOST } from "@/app/api/files/[...key]/route";
 import { addProject } from "@/lib/auth";
+import { changesSince } from "@/lib/changes";
+import type { Db } from "@/lib/db";
 import { docKind, docNameError, docNameKey, docUid, issueUpload, recordDoc, sweepDocUploads, sweepDocUploadsIfDue } from "@/lib/docs";
 import { newDocKey, readLocal, saveLocal } from "@/lib/files";
 import { hashUid } from "@/lib/ulid";
@@ -91,6 +93,14 @@ describe("docs routes", () => {
       { headers: auth(t) }), proj("p"))).json()).changes.map((c: any) => c.entity);
     expect(await feed(true)).toContain("doc");
     expect(await feed(false)).not.toContain("doc");
+  });
+
+  it("sends a doc's size in the feed as a number when the driver reads bigint as a string", async () => {
+    expect((await put(w.tokens.alice, "plan.md", "# Plan\n", null)).status).toBe(200);
+    const pg: Db = { ...w.d, query: async (sql, params) =>
+      (await w.d.query(sql, params)).map((r) => ("size" in r ? { ...r, size: String(r.size) } : r)) as any };
+    const { changes } = await changesSince(pg, "p", 0, 500, true);
+    expect(changes.find((c) => c.entity === "doc")?.data?.size).toBe(7);
   });
 
   it("calls a stale base a conflict and hands back the current doc", async () => {

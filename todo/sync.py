@@ -1469,7 +1469,7 @@ def _trouble(e: RemoteError, name: str, report: Report) -> None:
 
 
 def _from_row(row: dict) -> dict:
-    return {"uid": row["uid"], "sha256": row["sha256"], "size": row["size"], "by": row.get("by"),
+    return {"uid": row["uid"], "sha256": row["sha256"], "size": int(row["size"]), "by": row.get("by"),
             "via": row.get("via"), "at": row.get("at"), "base": row["sha256"], "plugin": row.get("plugin")}
 
 
@@ -1709,7 +1709,7 @@ def _pull_docs(root: Path, remote, project, snap: dict, report: Report, limit) -
     for uid, ch in list(waiting.items()):
         row = None if ch.get("deleted") else ch.get("data")
         name = (row or {}).get("name") or uid
-        if limit is not None and row and (row.get("size") or 0) > limit:
+        if limit is not None and row and int(row.get("size") or 0) > limit:
             _large_waiting(root)
             continue
         try:
