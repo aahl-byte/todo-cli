@@ -710,8 +710,8 @@ describe("notices", () => {
 });
 
 describe("questions and unseen activity per viewer", () => {
-  const answer = (uid: string, itemUid: string, via: "human" | "agent") =>
-    set("note", uid, itemUid, { "meta.state": "answered", "meta.answer": "yes", "meta.answered_by": "bob",
+  const answer = (uid: string, itemUid: string, via: "human" | "agent", by = "bob") =>
+    set("note", uid, itemUid, { "meta.state": "answered", "meta.answer": "yes", "meta.answered_by": by,
                                 "meta.answered_via": via, "meta.answered_at": new Date().toISOString() }, {}, { via });
   const card = async (me: string, id: string) =>
     (await board(w.d, (await project(w.d, "p"))!, {}, me)).columns.flatMap((c) => c.items).find((c) => c.uid === id)!;
@@ -740,6 +740,27 @@ describe("questions and unseen activity per viewer", () => {
     mine = await card("bob", "A1");
     expect([mine.unseen_answers, mine.unseen_comments]).toEqual([0, 1]);
     expect((await card("carol", "A1")).unseen_comments).toBe(0);   // not hers, never opened
+  });
+
+  it("keeps a question the AI asked and answered itself out of notices and flags", async () => {
+    await w.one("bob", item("A1", { developer: "bob", creator: "carol" }));
+    await w.one({ handle: "bob" }, { ...child("note", "Q1", "A1", { kind: "clarification", text: "agent asks @alice" }), via: "agent" });
+    expect((await w.d.query("select handle from notifications order by handle")).map((r) => r.handle)).toEqual(["alice", "carol"]);
+    await w.one({ handle: "bob", unconditional: true }, answer("Q1", "A1", "agent"));
+    await w.one({ handle: "bob" }, { ...child("note", "R1", "A1", { kind: "comment", text: "noted", meta: { thread: "Q1" } }), via: "agent" });
+    expect(await w.d.query("select handle from notifications")).toEqual([]);
+    const mine = await card("bob", "A1");
+    expect([mine.open_questions, mine.my_open_questions, mine.unseen_answers, mine.unseen_comments]).toEqual([0, 0, 0, 0]);
+  });
+
+  it("still flags a person's answer to the AI's question, and the AI's answer to a person's", async () => {
+    await w.one("bob", item("A1", { developer: "bob" }));
+    await w.one({ handle: "bob" }, { ...child("note", "Q1", "A1", { kind: "clarification", text: "agent asks" }), via: "agent" });
+    await w.one({ handle: "alice", unconditional: true }, answer("Q1", "A1", "human", "alice"));
+    await w.one("bob", child("note", "Q2", "A1", { kind: "clarification", text: "I ask" }));
+    await w.one({ handle: "bob", unconditional: true }, answer("Q2", "A1", "agent"));
+    expect((await card("bob", "A1")).unseen_answers).toBe(2);
+    expect((await w.d.query("select kind from notifications where handle = 'bob' order by id")).map((r) => r.kind)).toEqual(["clarification", "answer", "answer"]);
   });
 
   it("keeps a comment unseen until it is marked seen", async () => {

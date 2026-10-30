@@ -6,7 +6,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import * as act from "@/app/item-actions";
 import type { ActionState } from "@/lib/action-helpers";
 import { docPath } from "@/lib/doc-view";
-import { COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
+import { aiTriage, COMPLETE, isAgentParty, moves, PARKED, REASONED, SEEN, STATUSES, type Move } from "@/lib/model";
 import type { ItemView as Data } from "@/lib/views";
 import type { PluginButton } from "@/lib/plugin-views";
 import { forceLabel, GUARDED_MOVES, type WaitLine } from "@/lib/waits";
@@ -144,7 +144,7 @@ export function ItemView({ data, ctx }: { data: Data; ctx: Ctx }) {
   }, [ctx.project, it.uid, ctx.readOnly]);
   const isNew: IsNew = (ts, by, via) => !!lastSeen && !!ts && !(by === ctx.me && via !== "agent") && Date.parse(ts) > Date.parse(lastSeen);
   const newComments = data.comments.some((c) => isNew(c.ts, c.author, c.via));
-  const newQuestions = data.questions.some((q) => isNew(q.ts, q.author, q.via) || answerIsNew(isNew, q));
+  const newQuestions = threads(data.questions).some((t) => threadIsNew(isNew, t));
   const dot = <span className="new-dot" aria-label="new" />;
   const tabs: { key: Tab; label: string; n?: ReactNode }[] = [
     { key: "comments", label: "Comments", n: data.comments.length ? <>{newComments && dot}{data.comments.length}</> : null },
@@ -419,14 +419,15 @@ function Comments({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | 
 // ── questions ─────────────────────────────────────────────────────────────────
 const isOpenQ = (q: Row) => q.kind === "clarification" && q.meta?.state !== "answered";
 
-interface Thread { root: Row; entries: Row[]; open: boolean }
+interface Thread { root: Row; entries: Row[]; open: boolean; ai: boolean }
 
 /** Each question with its follow-ups (questions and replies naming it in meta.thread), in order. */
 function threads(rows: Row[]): Thread[] {
   const uids = new Set(rows.map((r) => r.uid));
   return rows.filter((r) => !r.meta?.thread || !uids.has(r.meta.thread)).map((root) => {
     const entries = [root, ...rows.filter((r) => r !== root && r.meta?.thread === root.uid).sort((a, b) => a.n - b.n)];
-    return { root, entries, open: entries.some(isOpenQ) };
+    return { root, entries, open: entries.some(isOpenQ),
+             ai: entries.every((e) => aiTriage(e) || (e.kind === "comment" && e.via === "agent")) && aiTriage(root) };
   });
 }
 
@@ -434,14 +435,15 @@ function threads(rows: Row[]): Thread[] {
 const lastActivity = (t: Thread) =>
   Math.max(...t.entries.flatMap((q) => [Date.parse(q.ts), Date.parse(q.meta?.answered_at ?? "")]).filter((n) => !Number.isNaN(n)));
 
-const threadIsNew = (isNew: IsNew, t: Thread) => t.entries.some((q) => answerIsNew(isNew, q) || isNew(q.ts, q.author, q.via));
+const threadIsNew = (isNew: IsNew, t: Thread) => !t.ai && t.entries.some((q) => answerIsNew(isNew, q) || isNew(q.ts, q.author, q.via));
 
 function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string | null }) {
   const isNew = useIsNew();
   const all = threads(data.questions);
   const unread = all.filter((t) => threadIsNew(isNew, t)).sort((a, b) => lastActivity(b) - lastActivity(a));
   const rest = all.filter((t) => !unread.includes(t));
-  const answered = rest.filter((t) => !t.open).sort((a, b) => lastActivity(b) - lastActivity(a));
+  const answered = rest.filter((t) => !t.open && !t.ai).sort((a, b) => lastActivity(b) - lastActivity(a));
+  const triage = rest.filter((t) => t.ai).sort((a, b) => lastActivity(b) - lastActivity(a));
   return (
     <>
       <AddBox label="ask" placeholder="Ask a question" users={ctx.users}
@@ -449,12 +451,13 @@ function Questions({ data, ctx, focus }: { data: Data; ctx: Ctx; focus: string |
       <ThreadGroup label="unread" list={unread} ctx={ctx} focus={focus} />
       <ThreadGroup label="questions" list={rest.filter((t) => t.open)} ctx={ctx} focus={focus} />
       <ThreadGroup label="answers" list={answered} ctx={ctx} focus={focus} />
+      <ThreadGroup label="AI triage" list={triage} ctx={ctx} focus={focus} closed />
     </>
   );
 }
 
-function ThreadGroup({ label, list, ctx, focus }: { label: string; list: Thread[]; ctx: Ctx; focus: string | null }) {
-  const [shown, setShown] = useState(true);
+function ThreadGroup({ label, list, ctx, focus, closed }: { label: string; list: Thread[]; ctx: Ctx; focus: string | null; closed?: boolean }) {
+  const [shown, setShown] = useState(!closed);
   useEffect(() => {
     if (list.some((t) => t.entries.some((q) => focus === `n-${q.n}`))) setShown(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
