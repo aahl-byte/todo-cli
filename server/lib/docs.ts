@@ -33,7 +33,8 @@ export interface DocWrite {
 
 const COLUMNS = "uid, item_uid, name, size, sha256, file_key, content_type, by, via, at, versions, plugin, plugin_sha256, plugin_version";
 
-const clean = (row: Row | undefined): Row | null => (row ? { ...row, size: Number(row.size) } : null);
+/** A docs row with its bigint size as a number; node-postgres reads bigint as a string. */
+export const clean = (row: Row | undefined): Row | null => (row ? { ...row, size: Number(row.size) } : null);
 
 /** An item's docs, by name. */
 export async function listDocs(d: Db, project: string, itemUid: string): Promise<Row[]> {

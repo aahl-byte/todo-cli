@@ -751,3 +751,12 @@ def test_doc_add_checks_the_size_before_reading(root, tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         run_cli(root, ["doc", "add", "beta", str(src)])
     assert read == []
+
+
+def test_a_doc_whose_size_comes_as_a_string_syncs_down(pair, server):
+    a, _ = pair
+    server.dashboard_put(item_uid(a), "plan.md", b"carol's v2\n", "carol")
+    server_doc(server, "plan.md")["size"] = "11"
+    assert rnd(a, server, "alice", doc_limit=sync.QUICK_DOC_BYTES).error is None
+    assert (doc_dir(a, "login-bug") / "plan.md").read_text() == "carol's v2\n"
+    assert yamlio.load(doc_dir(a, "login-bug") / docs.META_FILE)[1]["plan.md"]["size"] == 11

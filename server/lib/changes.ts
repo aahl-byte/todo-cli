@@ -1,4 +1,5 @@
 import type { Db, Row } from "./db";
+import { clean as cleanDoc } from "./docs";
 import { TABLE } from "./model";
 
 export interface Change {
@@ -37,7 +38,7 @@ export async function changesSince(db: Db, project: string, since: number, limit
     const [data] = await db.query(`select * from ${table} where uid = $1 and project = $2`, [r.uid, project]);
     const change: Change = {
       seq: Number(r.seq), entity: r.entity, uid: r.uid, item_uid: r.item_uid,
-      deleted: !data, data: data ? clean(data) : null,
+      deleted: !data, data: !data ? null : r.entity === "doc" ? cleanDoc(data) : clean(data),
     };
     if (!data && r.entity === "doc") {
       const [tomb] = await db.query("select sha256 from doc_tombstones where project = $1 and uid = $2", [project, r.uid]);
