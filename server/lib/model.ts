@@ -236,3 +236,11 @@ export function commentRule(from: string, to: string): Pick<Move, "comment" | "r
 export function allowedMove(from: string, to: string, ctx: MoveContext = {}): boolean {
   return moves(from, ctx).some((m) => m.status === to);
 }
+
+/** A question the AI asked and answered itself: triage it keeps, not news for anyone. */
+export const aiTriage = (n: { kind?: string; via?: string | null; meta?: Record<string, any> | null }): boolean =>
+  n.kind === "clarification" && n.via === "agent" && n.meta?.state === "answered" && n.meta?.answered_via === "agent";
+
+/** aiTriage as SQL, for the note aliased `n`. */
+export const aiTriageSql = (n: string) =>
+  `(${n}.kind = 'clarification' and ${n}.via = 'agent' and ${n}.meta->>'state' = 'answered' and ${n}.meta->>'answered_via' = 'agent')`;

@@ -1,7 +1,7 @@
 // Read models for the dashboard pages. Every entity carries its `versions`
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
-import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches, tagList } from "./model";
+import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, aiTriageSql, deriveCalcStatus, itemBranches, tagList } from "./model";
 import { listDocs } from "./docs";
 import { matchEntries, matches, type Entry } from "./filters";
 import { unresolvedEdges, type GitFacts } from "./gitfacts";
@@ -76,11 +76,12 @@ function viewerColumns(me: string) {
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and ${open} and not ${mine("n")}) as open_questions,
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and ${open} and ${mine("n")}) as my_open_questions,
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification'
-           and n.meta->>'state' = 'answered' and n.author = ${me}
+           and n.meta->>'state' = 'answered' and n.author = ${me} and not ${aiTriageSql("n")}
            and not (n.meta->>'answered_by' = ${me} and coalesce(n.meta->>'answered_via', 'human') <> 'agent')
            and (n.meta->>'answered_at')::timestamptz > ${since}) as unseen_answers,
        (select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind in ('comment', 'qa-rejection')
            and not ${mine("n")} and ${since} is not null
+           and not (n.via = 'agent' and exists (select 1 from notes q where q.project = n.project and q.uid = n.meta->>'thread' and ${aiTriageSql("q")}))
            and case when jsonb_typeof(n.meta->'seen_by') = 'array' then not n.meta->'seen_by' @> to_jsonb(${me}::text)
                     else n.ts::timestamptz > ${since} end) as unseen_comments`;
 }

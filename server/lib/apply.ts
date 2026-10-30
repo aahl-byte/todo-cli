@@ -3,7 +3,7 @@
 import type { Db, Row } from "./db";
 import {
   CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE, TERMINAL,
-  SEEN, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, tagProblem, tagText, type Entity,
+  SEEN, aiTriage, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, tagProblem, tagText, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
@@ -626,7 +626,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     }
     if (entity === "task") await recalc(ctx, itemUid);
     if (entity === "note" && json && json.state === "answered" && (row.meta ?? {}).state !== "answered") {
-      await ctx.notify(row.author, "answer", itemUid, row.uid);
+      if (aiTriage({ ...row, meta: json })) {
+        await ctx.t.query("delete from notifications where project = $1 and note_uid = $2", [ctx.project, row.uid]);
+      } else await ctx.notify(row.author, "answer", itemUid, row.uid);
     }
   }
   return { op_id: op.op_id, status: rejected.length && !accepted.length && !Object.keys(out).length ? "rejected" : "applied",
@@ -725,6 +727,7 @@ async function importHistory(ctx: Ctx, itemUid: string, entries: any[]): Promise
 }
 
 async function noteCreated(ctx: Ctx, itemUid: string, note: Row): Promise<void> {
+  if (aiTriage(note)) return;
   const [item] = await ctx.t.query("select developer, creator from items where uid = $1 and project = $2", [itemUid, ctx.project]);
   // One notice per person per note: the specific kind wins over a mention.
   const direct = note.kind === "qa-rejection" ? item.developer : note.kind === "clarification" ? item.creator : null;
