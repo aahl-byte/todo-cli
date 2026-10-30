@@ -3,7 +3,7 @@
 import type { Db, Row } from "./db";
 import {
   CHECK_KINDS, COMPLETE, CREATE_FIELDS, DEFAULTS, JSON_FIELD, NOTE_KINDS, PAST_TRIAGE, SETTABLE, STATUSES, TABLE, TERMINAL,
-  SEEN, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, type Entity,
+  SEEN, deriveCalcStatus, isSettable, itemBranches, mentions, nowIso, party, tagProblem, tagText, type Entity,
 } from "./model";
 import { ulid } from "./ulid";
 import { queueJira } from "./jira/outbound";
@@ -238,6 +238,9 @@ function invalid(entity: Entity, field: string, value: unknown): boolean {
   if (field === "kind" && entity === "check") return !CHECK_KINDS.includes(value as any);
   if (field === "timing") return !["pre-deploy", "post-deploy"].includes(value as any);
   if (field === "extra.class" && entity === "item") return typeof value !== "string" || !value.trim();
+  if (field === "extra.tags" && entity === "item") {
+    return !Array.isArray(value) || value.some((t) => typeof t !== "string" || !!tagProblem(t.trim()));
+  }
   if (field === "title" && (entity === "item" || entity === "task" || entity === "check"))
     return typeof value !== "string" || !value.trim();
   return false;
@@ -615,6 +618,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
     if (entity === "item" && json && accepted.some(([f]) => f === "extra.class") && !same(json.class ?? null, row.extra?.class ?? null)) {
       await fieldChanged(ctx, op, row.uid, "class", row.extra?.class ?? null, json.class ?? null);
     }
+    if (entity === "item" && json && accepted.some(([f]) => f === "extra.tags") && tagText(json.tags) !== tagText(row.extra?.tags)) {
+      await fieldChanged(ctx, op, row.uid, "tags", tagText(row.extra?.tags), tagText(json.tags));
+    }
     if (entity === "item" && json && accepted.some(([f]) => f === "extra.branches")) {
       await branchesAdded(ctx, itemUid, json.repo, itemBranches(row.extra), itemBranches(json));
     }
@@ -696,7 +702,7 @@ async function branchesAdded(ctx: Ctx, itemUid: string, repo: unknown, before: s
 }
 
 /** Item fields besides status whose changes history keeps. */
-const HISTORY_FIELDS = ["class"];
+const HISTORY_FIELDS = ["class", "tags"];
 
 /** Status and class history an item gathered before it was ever synced. */
 async function importHistory(ctx: Ctx, itemUid: string, entries: any[]): Promise<void> {

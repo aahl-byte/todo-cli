@@ -12,7 +12,7 @@ import { docType, putObject } from "../files";
 import { scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { anyGithubToken, githubToken, tokenHash } from "../github-token";
-import { itemBranches, nowIso, STATUSES } from "../model";
+import { itemBranches, nowIso, STATUSES, tagList } from "../model";
 import { jiraReadOnly } from "../jira/config";
 import { jiraHandle } from "../jira/people";
 import { hashUid, ulid } from "../ulid";
@@ -78,7 +78,7 @@ export async function pluginItem(d: Pick<Db, "query">, project: string, it: Row,
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   return {
     id: it.id, uid: it.uid, title: it.title, type: it.type ?? null, status: it.status, priority: it.priority ?? null,
-    repo: repo || null, repo_owner: owner, repo_name: name, branches: itemBranches(x), jira: x.jira ?? null,
+    repo: repo || null, repo_owner: owner, repo_name: name, branches: itemBranches(x), jira: x.jira ?? null, tags: tagList(x.tags),
     app: str(x.app), section: str(x.section), developer: it.developer ?? null, qa_assignee: it.qa_assignee ?? null, dir: dir || null,
     links: notes.map((n) => ({ type: String(n.meta?.type ?? "link"), url: String(n.meta?.url ?? n.text) })),
     requests: requests.map((r) => String(r.text ?? "")),

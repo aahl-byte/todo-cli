@@ -47,7 +47,7 @@ SETTABLE = {
     "check": ["kind", "title", "payload", "timing", "status", "envs"],
 }
 JSON_FIELD = {"item": "extra", "note": "meta", "log": "meta"}
-HISTORY_FIELDS = {"status", "extra.class"}     # item fields whose changes the server keeps in history
+HISTORY_FIELDS = {"status", "extra.class", "extra.tags"}     # item fields whose changes the server keeps in history
 CREATE_ONLY = {"item": ["id", "created"], "task": ["n"], "note": ["n", "ts"],
                "log": ["n", "ts"], "check": ["n"]}
 CHILDREN = ["task", "note", "log", "check"]

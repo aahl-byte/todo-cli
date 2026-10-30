@@ -1,7 +1,7 @@
 // Read models for the dashboard pages. Every entity carries its `versions`
 // so actions can send the base they were rendered with.
 import type { Db, Row } from "./db";
-import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches } from "./model";
+import { CHECK_KINDS, COMPLETE, PARKED, PAST_TRIAGE, deriveCalcStatus, itemBranches, tagList } from "./model";
 import { listDocs } from "./docs";
 import { matchEntries, matches, type Entry } from "./filters";
 import { unresolvedEdges, type GitFacts } from "./gitfacts";
@@ -116,6 +116,8 @@ export interface BoardFilters {
   tab?: number;
   type?: string;
   app?: string;
+  /** A tag the card carries, in any case. */
+  tag?: string;
   parked?: boolean;
   /** Text in the title, id, any branch or a linked Jira key. */
   search?: string;
@@ -146,6 +148,7 @@ function baseFilter<T extends Card>(all: T[], f: BoardFilters, me: string): T[] 
     (!f.review || (c.status === "review" && c.last_to === "review" && c.last_via === "agent" && c.developer === me))
     && (!f.type || c.type === f.type)
     && (!f.app || c.extra?.app === f.app)
+    && (!f.tag || tagList(c.extra?.tags).some((t) => t.toLowerCase() === f.tag!.toLowerCase()))
     && (!f.search || searchMatches(c, f.search)));
 }
 
@@ -227,6 +230,7 @@ export async function item(d: Db, key: string, id: string) {
     phaseTitles: phaseTitles(it.extra),
     choices: await choices(d, key),
     classes: await classChoices(d, key),
+    tags: await tagChoices(d, key),
   };
 }
 
@@ -275,6 +279,14 @@ export async function classChoices(d: Db, key: string): Promise<string[]> {
   const rows = await d.query(
     `select distinct extra->>'class' as class from items where project = $1 and coalesce(extra->>'class', '') <> '' order by 1`, [key]);
   return rows.map((r) => r.class);
+}
+
+/** Tags already used in the project, for the tag picker and filter, each in its first spelling. */
+export async function tagChoices(d: Pick<Db, "query">, key: string): Promise<string[]> {
+  const rows = await d.query(
+    `select distinct lower(t) as k, t from items, jsonb_array_elements_text(case when jsonb_typeof(extra->'tags') = 'array' then extra->'tags' else '[]' end) t
+      where project = $1 order by k, t`, [key]);
+  return tagList(rows.map((r) => r.t));
 }
 
 /** The page adds live PR statuses, keyed by link uid. */

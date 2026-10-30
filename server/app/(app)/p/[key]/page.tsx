@@ -8,7 +8,7 @@ import { filterCookie, legacyQuery, parseEntries, restoreFilter } from "@/lib/fi
 import { clearShippedAction } from "@/app/actions";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import { board, choices, project, users, type BoardFilters as F } from "@/lib/views";
+import { board, choices, project, tagChoices, users, type BoardFilters as F } from "@/lib/views";
 
 type Search = Record<string, string | undefined>;
 
@@ -24,11 +24,11 @@ export default async function Board({ params, searchParams }: { params: Promise<
   const restored = restoreFilter(q, (await cookies()).get(filterCookie(key))?.value);
   if (restored) redirect(`/p/${key}?${restored}`);
   const f: F = { review: q.review === "1", entries: parseEntries(q.f), view: q.view === "merged" ? "merged" : "tabs",
-                 tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app, parked: q.parked === "1", search: q.search };
+                 tab: Math.trunc(Number(q.tab ?? 0)) || 0, type: q.type, app: q.app, tag: q.tag, parked: q.parked === "1", search: q.search };
   const { columns, counts } = await board(d, p, f, user.handle);
   return (
     <>
-      <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} me={user.handle} counts={counts} review />
+      <RoleFilter users={(await users(d)).map((u) => u.handle)} apps={Object.keys(await choices(d, key))} tags={await tagChoices(d, key)} me={user.handle} counts={counts} review />
       <SessionWatch project={key} />
       <div className="board">
         {columns.map((col) => (

@@ -109,6 +109,29 @@ export function itemBranches(extra: Record<string, any> | null | undefined): str
   return [...new Set(names.filter(Boolean))];
 }
 
+export const TAG_MAX = 40;
+
+/** Why a tag can't be stored, or null. */
+export function tagProblem(tag: string): string | null {
+  if (!tag) return "a tag can't be empty";
+  if (tag.includes(",")) return `a tag can't hold a comma: ${tag}`;
+  if (tag.length > TAG_MAX) return `a tag is at most ${TAG_MAX} characters: ${tag}`;
+  return null;
+}
+
+/** The item's tags, trimmed, in order, as first typed, without unusable ones or duplicates that differ only in case. */
+export function tagList(raw: unknown): string[] {
+  const out: string[] = [];
+  for (const t of Array.isArray(raw) ? raw : []) {
+    const tag = typeof t === "string" ? t.trim() : "";
+    if (!tagProblem(tag) && !out.some((x) => x.toLowerCase() === tag.toLowerCase())) out.push(tag);
+  }
+  return out;
+}
+
+/** Tags as one history value, `a, b`; null for none. */
+export const tagText = (raw: unknown): string | null => tagList(raw).join(", ") || null;
+
 export function nowIso(): string {
   return new Date().toISOString();
 }

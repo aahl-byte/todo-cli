@@ -179,6 +179,7 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
     print(f'title:     {it["title"]}')
     print(f'type:      {it["type"]}')
     print(f'class:     {it.get("class") or "—"}')
+    print(f'tags:      {", ".join(it.get("tags") or []) or "—"}')
     print(f'status:    {colorize(it["status"], it["status"], color)}')
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
