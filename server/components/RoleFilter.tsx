@@ -6,7 +6,9 @@ import { useEffect, useRef, useState } from "react";
 import { ITEM_TYPES } from "@/lib/model";
 import { cookieQuery, filterCookie, filterPart, formatEntries, parseEntries, roleLabel, FILTER_KEYS, ROLES, SHARED_KEYS, type Entry, type Role } from "@/lib/filters";
 
-export function RoleFilter({ users, apps, me, counts, review }: { users: string[]; apps: string[]; me: string; counts: number[]; review?: boolean }) {
+export function RoleFilter({ users, apps, tags = [], me, counts, review }: {
+  users: string[]; apps: string[]; tags?: string[]; me: string; counts: number[]; review?: boolean;
+}) {
   const router = useRouter();
   const path = usePathname();
   const q = useSearchParams();
@@ -88,6 +90,13 @@ export function RoleFilter({ users, apps, me, counts, review }: { users: string[
                 </select>
               </label>
             )}
+            {tags.length > 0 && (
+              <label className="k">tag
+                <select value={q.get("tag") ?? ""} onChange={(e) => go({ tag: e.target.value || null })}>
+                  <option value="">any</option>{tags.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+            )}
             {review && <label className="check"><input type="checkbox" checked={q.get("parked") === "1"} onChange={() => go({ parked: q.get("parked") === "1" ? null : "1" })} /> show parked</label>}
           </div>
         </details>
@@ -102,6 +111,7 @@ export function RoleFilter({ users, apps, me, counts, review }: { users: string[
         ))}
         {q.get("type") && <span className="chip">{q.get("type")}<button type="button" className="x" aria-label="clear type" onClick={() => go({ type: null })}>×</button></span>}
         {q.get("app") && <span className="chip">app {q.get("app")}<button type="button" className="x" aria-label="clear app" onClick={() => go({ app: null })}>×</button></span>}
+        {q.get("tag") && <span className="chip">tag {q.get("tag")}<button type="button" className="x" aria-label="clear tag" onClick={() => go({ tag: null })}>×</button></span>}
         <Search value={q.get("search") ?? ""} onChange={(v) => go({ search: v || null })} />
       </div>
       {view === "tabs" && entries.length > 1 && (

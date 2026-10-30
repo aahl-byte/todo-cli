@@ -469,7 +469,7 @@ def item_json(it: dict, key: str, d: Path | None, item_dir: Path | None = None) 
     return {"id": it["id"], "uid": it["uid"], "title": it["title"], "type": it.get("type"),
             "status": it["status"], "priority": it.get("priority"), "repo": key or None,
             "repo_owner": owner or None, "repo_name": name or None, "branches": list(it.get("branches") or []),
-            "jira": list(it.get("jira") or []), "app": it.get("app"), "section": it.get("section"),
+            "jira": list(it.get("jira") or []), "tags": list(it.get("tags") or []), "app": it.get("app"), "section": it.get("section"),
             "developer": it.get("developer"), "qa_assignee": it.get("qa_assignee"),
             "dir": str(d) if d else None, "links": links, "requests": _requests(it),
             "docs": _plugin_docs(item_dir) if item_dir else []}

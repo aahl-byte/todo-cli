@@ -343,3 +343,28 @@ def test_plugins_list_and_instances_against_the_server(server, tmp_path):
         assert "404" in added.stderr        # a server without the plugins routes yet
     else:
         assert "    x  on" in cli(home, repo, "plugin", "list", "--repo", "acme/web", plugins=True).stdout
+
+
+def test_tags_round_trip_with_their_history(server, tmp_path):
+    url, tokens = server
+    users = {}
+    for who in ("alice", "bob"):
+        home, repo = tmp_path / who / "home", tmp_path / who / "repo"
+        home.mkdir(parents=True)
+        (repo / ".TODO").mkdir(parents=True)
+        cli(home, repo, "login", url, tokens[who])
+        users[who] = (home, repo)
+    (ha, ra), (hb, rb) = users["alice"], users["bob"]
+    cli(ha, ra, "add", "Cart totals")
+    cli(ha, ra, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "link", "--remote", url, "--project", "web")
+    cli(hb, rb, "tag", "cart-totals", "auto-deploy")
+    cli(ha, ra, "sync")
+    it = store.resolve_item((ra / ".TODO").resolve(), "cart-totals")
+    assert it["tags"] == ["auto-deploy"]
+    assert [(h["field"], h["to"], h["by"]) for h in it["history"] if h["field"]] == [("tags", "auto-deploy", "bob")]
+    cli(ha, ra, "untag", "cart-totals", "auto-deploy")
+    cli(hb, rb, "sync")
+    assert store.resolve_item((rb / ".TODO").resolve(), "cart-totals")["tags"] == []
+    out = cli(hb, rb, "list", "--tag", "auto-deploy")
+    assert "cart-totals" not in out.stdout

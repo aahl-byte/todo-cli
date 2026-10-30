@@ -53,8 +53,8 @@ export function legacyQuery(q: Record<string, string | undefined>, me: string): 
 }
 
 /** URL params that make up a work-queue filter, remembered per project. */
-export const FILTER_KEYS = ["f", "view", "tab", "type", "app", "review", "parked"];
-export const SHARED_KEYS = ["f", "view", "tab", "type", "app"];
+export const FILTER_KEYS = ["f", "view", "tab", "type", "app", "tag", "review", "parked"];
+export const SHARED_KEYS = ["f", "view", "tab", "type", "app", "tag"];
 /** "thin" when the pinned sidebar is collapsed to its strip of tiles. */
 export const PINS_COOKIE = "todo_pins";
 

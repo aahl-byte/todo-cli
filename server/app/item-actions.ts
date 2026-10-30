@@ -69,7 +69,7 @@ export async function moveItem(a: { project: string; uid: string; versions: Vers
   return state;
 }
 
-const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.class", "extra.repo", "extra.branches", "extra.branch"];
+const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.class", "extra.tags", "extra.repo", "extra.branches", "extra.branch"];
 
 export async function editItem(a: { project: string; uid: string; versions: Versions; data: Record<string, unknown> }) {
   const user = await requireUser();
