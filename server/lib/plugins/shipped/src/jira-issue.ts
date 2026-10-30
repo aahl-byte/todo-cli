@@ -10,7 +10,7 @@ interface Ctx {
   attach: Record<"link" | "comment" | "doc" | "request", (fields: Record<string, unknown>) => void>;
 }
 
-const FIELDS = "summary,description,status,updated,comment,attachment";
+const FIELDS = "summary,description,updated,comment,attachment";
 const IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 /** The host's cap on one doc. */
 const MAX_IMAGE = 1024 * 1024;
@@ -81,8 +81,6 @@ export async function run({ item, jira, attach }: Ctx) {
     }
     const f = issue?.fields ?? {};
     const site = String(issue?.self ?? "").split("/rest/")[0];
-    const status = f.status?.name ? String(f.status.name) : null;
-    if (site) attach.link({ type: "external-ticket", url: `${site}/browse/${key}`, label: status ? `${key} · ${status}` : key, key: `status:${key}` });
 
     const files: any[] = f.attachment ?? [];
     const images = files.filter((a) => IMAGES.includes(a?.mimeType) && Number(a.size ?? 0) <= MAX_IMAGE);

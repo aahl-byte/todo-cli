@@ -8,19 +8,17 @@ connections:
 responses:
   jira:
     - method: GET
-      path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment
       body: {key: SR-101, self: "https://acme.atlassian.net/rest/api/3/issue/1", fields: {summary: S, status: {name: Open}, comment: {total: 2, comments: [{id: "1"}]}}}
     - method: GET
       path: /rest/api/3/issue/SR-101/comment?startAt=0&maxResults=100&orderBy=created
       body: {total: 2, comments: [{id: "1", author: {accountId: acc-a, displayName: A}, body: one}, {id: "2", body: two}]}
     - method: GET
-      path: /rest/api/3/issue/SR-103?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      path: /rest/api/3/issue/SR-103?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment
       body: {key: SR-103, self: "https://acme.atlassian.net/rest/api/3/issue/3", fields: {summary: New summary, status: {name: Done}, comment: {total: 0, comments: []}}}
 expect:
   attached:
-    - {kind: link, key: "status:SR-101", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-101", label: SR-101 · Open}
     - {kind: comment, key: "comment:SR-101:1", text: one, author: acc-a, author_name: A}
     - {kind: comment, key: "comment:SR-101:2", text: two}
-    - {kind: link, key: "status:SR-103", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-103", label: SR-103 · Done}
   wouldSend: []
   log: ["dropped a request: jira-issue hasn't been granted post-request"]

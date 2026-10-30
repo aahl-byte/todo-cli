@@ -8,7 +8,7 @@ connections:
 responses:
   jira:
     - method: GET
-      path: /rest/api/3/issue/SR-1?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      path: /rest/api/3/issue/SR-1?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment
       body:
         key: SR-1
         self: https://acme.atlassian.net/rest/api/3/issue/1
@@ -20,7 +20,6 @@ responses:
     - {method: GET, path: "/rest/api/3/attachment/content/9?redirect=false", status: 404, text: gone}
 expect:
   attached:
-    - {kind: link, key: "status:SR-1", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-1", label: SR-1 · Open}
     - {kind: comment, key: "comment:SR-1:c1", text: hello, author_name: A}
   wouldSend: []
   log: ["dropped a request: jira-issue hasn't been granted post-request", "skipped doc SR-1-9-a.png: jira: GET /rest/api/3/attachment/content/9?redirect=false answered 404: gone"]

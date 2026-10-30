@@ -9,7 +9,7 @@ connections:
 responses:
   jira:
     - method: GET
-      path: /rest/api/3/issue/SR-7?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      path: /rest/api/3/issue/SR-7?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment
       body:
         key: SR-7
         self: https://acme.atlassian.net/rest/api/3/issue/7
@@ -33,7 +33,6 @@ responses:
     - {method: GET, path: "/rest/api/3/attachment/content/21?redirect=false", bytes: "iVBP", type: image/png}
 expect:
   attached:
-    - {kind: link, key: "status:SR-7", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-7", label: SR-7 · Open}
     - {kind: doc, key: "attachment:SR-7:20", name: SR-7-20-image.png, url: "/rest/api/3/attachment/content/20?redirect=false", version: "20", content: iVBO, encoding: base64}
     - {kind: doc, key: "attachment:SR-7:21", name: SR-7-21-image.png, url: "/rest/api/3/attachment/content/21?redirect=false", version: "21", content: iVBP, encoding: base64}
     - kind: request

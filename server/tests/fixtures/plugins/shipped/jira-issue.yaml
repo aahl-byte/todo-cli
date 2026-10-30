@@ -1,4 +1,4 @@
-about: jira-issue mirrors a linked issue's status, comments and images, and with post-request adds its block to the request
+about: jira-issue mirrors a linked issue's comments and images, and with post-request adds its block to the request
 plugin: jira-issue
 instance: {id: default, name: (default)}
 event: {type: refresh}
@@ -9,7 +9,7 @@ connections:
 responses:
   jira:
     - method: GET
-      path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment
+      path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment
       body:
         key: SR-101
         self: https://acme.atlassian.net/rest/api/3/issue/10101
@@ -36,10 +36,9 @@ responses:
     - {method: GET, path: /rest/api/3/attachment/content/11, status: 404, text: gone}
     - {method: GET, path: /rest/api/3/attachment/content/12, status: 303, headers: {location: "https://media.example/file/00000000-0000-0000-0000-000000000012/binary?token=t"}}
     - {method: GET, path: "/rest/api/3/attachment/content/10?redirect=false", bytes: "iVBORw0KGgoA/w==", type: image/png}
-    - {method: GET, path: /rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment, status: 404, body: {errorMessages: [Issue does not exist]}}
+    - {method: GET, path: /rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment, status: 404, body: {errorMessages: [Issue does not exist]}}
 expect:
   attached:
-    - {kind: link, key: "status:SR-101", type: external-ticket, url: "https://acme.atlassian.net/browse/SR-101", label: SR-101 · In Progress}
     - {kind: doc, key: "attachment:SR-101:10", name: SR-101-10-shot.png, url: "/rest/api/3/attachment/content/10?redirect=false", version: "10", content: "iVBORw0KGgoA/w==", encoding: base64}
     - {kind: comment, key: "comment:SR-101:501", text: "**Please hurry**", at: "2026-10-01T10:00:00.000Z", author: acc-pat, author_name: Pat PM}
     - kind: request
@@ -49,9 +48,9 @@ expect:
   log: []
 received:
   jira:
-    - {method: GET, path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment, authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
+    - {method: GET, path: /rest/api/3/issue/SR-101?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment, authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
     - {method: GET, path: /rest/api/3/attachment/content/10}
     - {method: GET, path: /rest/api/3/attachment/content/11}
     - {method: GET, path: /rest/api/3/attachment/content/12}
-    - {method: GET, path: "/rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cstatus%2Cupdated%2Ccomment%2Cattachment"}
+    - {method: GET, path: "/rest/api/3/issue/SR-102?fields=summary%2Cdescription%2Cupdated%2Ccomment%2Cattachment"}
     - {method: GET, path: "/rest/api/3/attachment/content/10?redirect=false", authorization: "Basic bWVAYWNtZS50ZXN0OnRvaw=="}
