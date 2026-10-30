@@ -309,6 +309,7 @@ function TagsValue({ data, ctx }: { data: Data; ctx: Ctx }) {
   const pinned = useRef(it.versions);
   const tags = tagList(it.extra?.tags);
   const listId = `tags-${it.uid}`;
+  const unused = data.tags.filter((t) => !tags.some((x) => x.toLowerCase() === t.toLowerCase()));
   const save = async (next: string[]) => {
     const r = await act.editItem({ project: ctx.project, uid: it.uid, versions: pinned.current,
                                    data: { "extra.tags": next.length ? next : null } });
@@ -335,9 +336,17 @@ function TagsValue({ data, ctx }: { data: Data; ctx: Ctx }) {
               ))}
             </span>
           )}
+          {unused.length > 0 && (
+            <div className="branch-suggest">
+              <span className="faint">Used in this project:</span>
+              {unused.map((t) => (
+                <button type="button" key={t} className="chip" onClick={() => void save([...tags, t])}>+ {t}</button>
+              ))}
+            </div>
+          )}
           <form className="row" action={(fd) => add(fd)}>
-            <input name="tag" list={listId} aria-label="tag" placeholder="add a tag" autoComplete="off" autoFocus onChange={() => setProblem(null)} />
-            <datalist id={listId}>{data.tags.filter((t) => !tags.some((x) => x.toLowerCase() === t.toLowerCase())).map((t) => <option key={t} value={t} />)}</datalist>
+            <input name="tag" list={listId} aria-label="tag" placeholder="new tag" autoComplete="off" autoFocus onChange={() => setProblem(null)} />
+            <datalist id={listId}>{unused.map((t) => <option key={t} value={t} />)}</datalist>
             {problem && <span className="hot">{problem}</span>}
             <div className="actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Close</button>
