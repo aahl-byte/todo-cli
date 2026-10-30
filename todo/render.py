@@ -178,6 +178,7 @@ def print_item(it, full_log: bool = False, related=(), server: str | None = None
     print(f'id:        {it["id"]}')
     print(f'title:     {it["title"]}')
     print(f'type:      {it["type"]}')
+    print(f'class:     {it.get("class") or "—"}')
     print(f'status:    {colorize(it["status"], it["status"], color)}')
     if it["calc_status"]:
         print(f'calc-status: {colorize(it["calc_status"], it["calc_status"], color)}')
@@ -356,9 +357,11 @@ def _history_lines(entries, color) -> list:
         who = f'  {h["by"]}' if h.get("by") else ""
         via = " (AI)" if h.get("via") == "agent" else ""
         forced = "  forced" if h.get("forced") else ""
-        frm = colorize(h["from"] or "", h["from"] or "—", color)
-        to = colorize(h["to"] or "", h["to"] or "—", color)
-        out.append(f'  [{h["id"]}] {stamp(h["ts"])}  {frm} → {to}{who}{via}{forced}')
+        if h.get("field"):
+            change = f'{h["field"]} {h["from"] or "—"} → {h["to"] or "—"}'
+        else:
+            change = f'{colorize(h["from"] or "", h["from"] or "—", color)} → {colorize(h["to"] or "", h["to"] or "—", color)}'
+        out.append(f'  [{h["id"]}] {stamp(h["ts"])}  {change}{who}{via}{forced}')
     return out
 
 

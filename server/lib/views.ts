@@ -97,11 +97,11 @@ export async function cards(d: Db, key: string, where = "", params: unknown[] = 
        ${viewer ? "" : "(select count(*)::int from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'clarification' and coalesce(n.meta->>'state', 'open') <> 'answered') as open_questions,"}
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'pre-deploy' and c.status <> 'done') as pending_pre,
        (select count(*)::int from checks c where c.item_uid = i.uid and c.project = i.project and c.timing = 'post-deploy' and c.status <> 'done') as pending_post,
-       (select h.via from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_via,
+       (select h.via from status_history h where h.item_uid = i.uid and h.project = i.project and h.field is null order by h.n desc limit 1) as last_via,
        (select jsonb_build_object('version', coalesce((n.meta->>'version')::int, 1), 'triaged', coalesce((n.meta->>'triaged')::boolean, false))
           from notes n where n.item_uid = i.uid and n.project = i.project and n.kind = 'ticket-request'
           order by coalesce((n.meta->>'version')::int, 1) desc, n.n desc limit 1) as request_meta,
-       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project order by h.n desc limit 1) as last_to,
+       (select h.to_status from status_history h where h.item_uid = i.uid and h.project = i.project and h.field is null order by h.n desc limit 1) as last_to,
        (select g.data->'waits_on' from git_facts g where g.project = i.project and g.item_uid = i.uid) as waits_on${viewer}
      from items i
      where i.project = $1 ${where}
@@ -198,7 +198,8 @@ export async function item(d: Db, key: string, id: string) {
     listDocs(d, key, it.uid),
   ]);
   const by = (k: string) => notes.filter((n) => n.kind === k);
-  const lastBlock = [...history].reverse().find((h) => h.to_status === "blocked");
+  const moves = history.filter((h) => !h.field);
+  const lastBlock = [...moves].reverse().find((h) => h.to_status === "blocked");
   return {
     item: {
       ...it,
@@ -218,13 +219,14 @@ export async function item(d: Db, key: string, id: string) {
     checks,
     history,
     docs,
-    bounces: bounceCount(history),
+    bounces: bounceCount(moves),
     related: await related(d, key, it.uid),
     files: it.jira.length ? await d.query(
       "select attachment_id, filename, mime, size, file_key from jira_files where project = $1 and issue_key = any($2::text[]) order by filename",
       [key, it.jira.map((j) => j.key)]) : [],
     phaseTitles: phaseTitles(it.extra),
     choices: await choices(d, key),
+    classes: await classChoices(d, key),
   };
 }
 
@@ -268,6 +270,13 @@ export async function choices(d: Db, key: string) {
   return apps;
 }
 
+/** Classes already used in the project, for the class picker. */
+export async function classChoices(d: Db, key: string): Promise<string[]> {
+  const rows = await d.query(
+    `select distinct extra->>'class' as class from items where project = $1 and coalesce(extra->>'class', '') <> '' order by 1`, [key]);
+  return rows.map((r) => r.class);
+}
+
 /** The page adds live PR statuses, keyed by link uid. */
 export type ItemView = NonNullable<Awaited<ReturnType<typeof item>>> & { prs?: Record<string, PrStatus>; git?: GitFacts; pluginNotices?: string[];
   /** What a stage or deploy would wait on. */
@@ -297,7 +306,7 @@ export function bounceCount(history: Row[]): number {
 async function withHistory(d: Db, rows: Card[]) {
   const out = [];
   for (const c of rows) {
-    const history = await d.query("select * from status_history where project = $2 and item_uid = $1 order by n", [c.uid, c.project]);
+    const history = await d.query("select * from status_history where project = $2 and item_uid = $1 and field is null order by n", [c.uid, c.project]);
     const links = await d.query(
       "select * from notes where project = $2 and item_uid = $1 and kind = 'link' and meta->>'type' in ('preview', 'qa-handoff') order by n", [c.uid, c.project]);
     const entered = [...history].reverse().find((h) => h.to_status === c.status)?.ts ?? c.created;

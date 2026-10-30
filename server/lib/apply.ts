@@ -237,6 +237,7 @@ function invalid(entity: Entity, field: string, value: unknown): boolean {
   if (field === "kind" && entity === "note") return !NOTE_KINDS.includes(value as any);
   if (field === "kind" && entity === "check") return !CHECK_KINDS.includes(value as any);
   if (field === "timing") return !["pre-deploy", "post-deploy"].includes(value as any);
+  if (field === "extra.class" && entity === "item") return typeof value !== "string" || !value.trim();
   if (field === "title" && (entity === "item" || entity === "task" || entity === "check"))
     return typeof value !== "string" || !value.trim();
   return false;
@@ -609,6 +610,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
       await syncFieldLinks(ctx.t, ctx.project, itemUid, json?.jira ?? []);
     }
     if (statusChange) await statusChanged(ctx, op, row, statusChange);
+    if (entity === "item" && json && accepted.some(([f]) => f === "extra.class") && !same(json.class ?? null, row.extra?.class ?? null)) {
+      await fieldChanged(ctx, op, row.uid, "class", row.extra?.class ?? null, json.class ?? null);
+    }
     if (entity === "item" && json && accepted.some(([f]) => f === "extra.branches")) {
       await branchesAdded(ctx, itemUid, json.repo, itemBranches(row.extra), itemBranches(json));
     }
@@ -664,6 +668,19 @@ async function statusChanged(ctx: Ctx, op: Op, item: Row, to: string): Promise<v
   }
 }
 
+/** A history row for a change to an item field other than status. */
+async function fieldChanged(ctx: Ctx, op: Op, itemUid: string, field: string, from: unknown, to: unknown): Promise<void> {
+  const [m] = await ctx.t.query(
+    "select coalesce(max(n), 0) as n from status_history where project = $2 and item_uid = $1", [itemUid, ctx.project]);
+  const uid = ulid();
+  await ctx.t.query(
+    `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, ts, project, field)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [uid, itemUid, Number(m.n) + 1, from == null ? null : String(from), to == null ? null : String(to), ctx.actor.handle,
+     op.via ?? "human", nowIso(), ctx.project, field]);
+  await ctx.bump("history", uid, itemUid);
+}
+
 /** A plugin's own attachment: written by the server's plugin runner, or a note a CLI's runner marked with its instance. */
 function pluginCreate(ctx: Ctx, op: Op): boolean {
   return ctx.actor.handle === PLUGIN_HANDLE || (op.entity === "note" && typeof op.data?.meta?.plugin === "string" && !!op.data.meta.plugin);
@@ -676,18 +693,25 @@ async function branchesAdded(ctx: Ctx, itemUid: string, repo: unknown, before: s
   }
 }
 
-/** Status history an item gathered before it was ever synced. */
+/** Item fields besides status whose changes history keeps. */
+const HISTORY_FIELDS = ["class"];
+
+/** Status and class history an item gathered before it was ever synced. */
 async function importHistory(ctx: Ctx, itemUid: string, entries: any[]): Promise<void> {
   let n = 0;
   for (const h of entries) {
-    if (!h || !STATUSES.includes(h.to) || (h.from != null && !STATUSES.includes(h.from))) continue;
+    if (!h) continue;
+    const field = HISTORY_FIELDS.includes(h.field) ? h.field : null;
+    if (h.field != null && !field) continue;
+    if (!field && (!STATUSES.includes(h.to) || (h.from != null && !STATUSES.includes(h.from)))) continue;
+    if (field && [h.from, h.to].some((v) => v != null && typeof v !== "string")) continue;
     const uid = typeof h.uid === "string" && h.uid ? h.uid : ulid();
     n += 1;
     await ctx.t.query(
-      `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts, project)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (project, uid) do nothing`,
-      [uid, itemUid, n, h.from ?? null, h.to, typeof h.by === "string" ? h.by : ctx.actor.handle,
-       h.via === "agent" ? "agent" : "human", !!h.forced, typeof h.ts === "string" ? h.ts : nowIso(), ctx.project]);
+      `insert into status_history (uid, item_uid, n, from_status, to_status, by, via, forced, ts, project, field)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict (project, uid) do nothing`,
+      [uid, itemUid, n, h.from ?? null, h.to ?? null, typeof h.by === "string" ? h.by : ctx.actor.handle,
+       h.via === "agent" ? "agent" : "human", !field && !!h.forced, typeof h.ts === "string" ? h.ts : nowIso(), ctx.project, field]);
     await ctx.bump("history", uid, itemUid);
   }
 }

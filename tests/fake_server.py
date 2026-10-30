@@ -166,7 +166,8 @@ class FakeServer:
             hn = 1 + sum(1 for r in self.rows.values() if r["_entity"] == "history" and r["item_uid"] == uid)
             self.rows[h["uid"]] = {"_entity": "history", "uid": h["uid"], "item_uid": uid, "n": hn,
                                    "from_status": h.get("from"), "to_status": h["to"], "by": h.get("by"),
-                                   "via": h.get("via"), "forced": bool(h.get("forced")), "ts": h["ts"]}
+                                   "via": h.get("via"), "forced": bool(h.get("forced")), "ts": h["ts"],
+                                   "field": h.get("field")}
             self._bump("history", h["uid"], uid, author=author)
         if e == "task":
             self._recalc(row["item_uid"], author)
@@ -217,6 +218,8 @@ class FakeServer:
                 if f == "status" and row["_entity"] == "item":
                     self._history(row, row["status"], v, author, op)
                     row["completed"] = "2026-10-02T00:00:00.000Z" if v in COMPLETE else None
+                if f == "extra.class" and row["_entity"] == "item" and cur != v:
+                    self._history(row, cur, v, author, op, field="class")
                 self._put(row, f, v)
                 row["versions"][f] = seq
                 out[f] = seq
@@ -233,13 +236,14 @@ class FakeServer:
         posted = [f["data"] for f in self.git_facts if f["item_uid"] == item_uid]
         return posted[-1] if posted and posted[-1].get("waits_on") else None
 
-    def _history(self, item, frm, to, author, op):
+    def _history(self, item, frm, to, author, op, field=None):
         import uuid
         uid = "H" + uuid.uuid4().hex[:25].upper()
         n = 1 + sum(1 for r in self.rows.values() if r["_entity"] == "history" and r["item_uid"] == item["uid"])
         self.rows[uid] = {"_entity": "history", "uid": uid, "item_uid": item["uid"], "n": n,
                           "from_status": frm, "to_status": to, "by": author, "via": op.get("via"),
-                          "forced": bool(op.get("force")), "ts": f"2026-10-02T11:{n:02d}:00.000Z"}
+                          "forced": bool(op.get("force")) and not field, "ts": f"2026-10-02T11:{n:02d}:00.000Z",
+                          "field": field}
         self._bump("history", uid, item["uid"], author=author)
 
     def _remove(self, op, author):

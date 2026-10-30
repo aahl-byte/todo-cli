@@ -240,6 +240,9 @@ alter table projects add column if not exists jira_settings_at timestamptz;
 alter table projects add column if not exists jira_poll boolean not null default true;
 alter table status_history add column if not exists override boolean not null default false;
 alter table status_history add column if not exists note text;
+-- field: the item field a row records a change to; null for a status change.
+alter table status_history add column if not exists field text;
+alter table status_history alter column to_status drop not null;
 alter table logs add column if not exists meta jsonb not null default '{}'::jsonb;
 
 create table if not exists jira_outbox (

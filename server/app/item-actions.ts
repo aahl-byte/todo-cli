@@ -47,7 +47,7 @@ async function itemRow(d: Db, project: string, uid: string) {
   const [row] = await d.query(
     `select i.uid, i.status, i.qa_assignee, i.versions, p.deploy_step,
             (select h.from_status from status_history h where h.project = i.project and h.item_uid = i.uid
-               and h.to_status = 'blocked' order by h.n desc limit 1) as blocked_from
+               and h.field is null and h.to_status = 'blocked' order by h.n desc limit 1) as blocked_from
        from items i join projects p on p.key = i.project where i.uid = $1 and i.project = $2`, [uid, project]);
   return row ?? null;
 }
@@ -69,7 +69,7 @@ export async function moveItem(a: { project: string; uid: string; versions: Vers
   return state;
 }
 
-const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.repo", "extra.branches", "extra.branch"];
+const ITEM_FIELDS = ["title", "type", "priority", "developer", "qa_assignee", "super_phase", "extra.app", "extra.section", "extra.class", "extra.repo", "extra.branches", "extra.branch"];
 
 export async function editItem(a: { project: string; uid: string; versions: Versions; data: Record<string, unknown> }) {
   const user = await requireUser();

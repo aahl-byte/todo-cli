@@ -202,6 +202,30 @@ describe("status rules", () => {
     expect(hist).toEqual([{ from_status: "review", to_status: "in-qa" }]);
   });
 
+  it("records each class change in history beside status changes, and leaves the status trail to status rows", async () => {
+    const v = (await w.one("alice", item("I1", { status: "review" }))).versions!;
+    const a = await w.one("alice", set("item", "I1", "I1", { "extra.class": "PATCH" }, {}, { via: "agent" }));
+    await w.one("alice", set("item", "I1", "I1", { "extra.class": "PATCH" }, { "extra.class": a.versions!["extra.class"] }));
+    const b = await w.one("bob", set("item", "I1", "I1", { "extra.class": "ARCHITECT", status: "blocked" },
+                                     { "extra.class": a.versions!["extra.class"], status: v.status }));
+    await w.one("bob", set("item", "I1", "I1", { "extra.class": null }, { "extra.class": b.versions!["extra.class"] }));
+    const hist = await w.d.query("select field, from_status, to_status, by, via from status_history order by n");
+    expect(hist).toEqual([
+      { field: "class", from_status: null, to_status: "PATCH", by: "alice", via: "agent" },
+      { field: null, from_status: "review", to_status: "blocked", by: "bob", via: "human" },
+      { field: "class", from_status: "PATCH", to_status: "ARCHITECT", by: "bob", via: "human" },
+      { field: "class", from_status: "ARCHITECT", to_status: null, by: "bob", via: "human" }]);
+    const [card] = await w.d.query(
+      "select (select h.to_status from status_history h where h.item_uid = 'I1' and h.field is null order by h.n desc limit 1) as last_to");
+    expect(card.last_to).toBe("blocked");
+  });
+
+  it("refuses a class that isn't a non-empty string", async () => {
+    await w.one("alice", item("I1"));
+    const r = await w.one("alice", set("item", "I1", "I1", { "extra.class": "  " }));
+    expect(r.rejected?.[0]).toMatchObject({ field: "extra.class", reason: "invalid" });
+  });
+
   it("recomputes calc_status on task changes", async () => {
     await w.one("alice", item("I1"));
     const t = await w.one("alice", child("task", "T1", "I1", { n: 1, title: "x" }));
@@ -345,6 +369,17 @@ describe("validation fixes", () => {
       { uid: "H2", n: 2, from_status: "in-progress", to_status: "review", via: "human" }]);
     const { changes } = await changesSince(w.d, "p", 0);
     expect(changes.map((c) => c.entity)).toEqual(["item", "history", "history"]);
+  });
+
+  it("imports pre-sync class history carried on an item create", async () => {
+    await w.one("alice", item("I1", { extra: { class: "ARCHITECT" }, history: [
+      { uid: "H1", field: "class", from: null, to: "PATCH", by: "alice", via: "agent", ts: "2026-10-01T10:00:00.000Z" },
+      { uid: "H2", field: "class", from: "PATCH", to: "ARCHITECT", by: "alice", via: "agent", ts: "2026-10-01T11:00:00.000Z" },
+      { uid: "H3", field: "title", from: "a", to: "b", ts: "2026-10-01T12:00:00.000Z" }] }));
+    const hist = await w.d.query("select uid, field, from_status, to_status from status_history order by n");
+    expect(hist).toEqual([
+      { uid: "H1", field: "class", from_status: null, to_status: "PATCH" },
+      { uid: "H2", field: "class", from_status: "PATCH", to_status: "ARCHITECT" }]);
   });
 
   it("keeps an item ahead of its children in a page even when it changed again later", async () => {
