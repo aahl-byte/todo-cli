@@ -38,6 +38,12 @@ describe("creates", () => {
     expect(await w.one("bob", item("I1", { title: "other" }))).toMatchObject({ status: "rejected", reason: "uid-exists" });
   });
 
+  it("never ends a title's id on a dash where the cut lands on one", async () => {
+    const r = await w.one("alice", { ...item("I1"), data: { title: "Multi update shows two notes fields for: x", created: "2026-10-02T00:00:00.000Z" } });
+    expect(r.status).toBe("applied");
+    expect((await row("items", "I1")).id).toBe("multi-update-shows-two-notes-fields-for");
+  });
+
   it("reassigns a taken item id and child n", async () => {
     await w.one("alice", item("I1", { id: "login" }));
     const r = await w.one("bob", item("I2", { id: "login" }));

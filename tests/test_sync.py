@@ -1208,3 +1208,12 @@ def test_a_round_reports_the_checkout_once_until_it_moves(tmp_path, server, monk
     monkeypatch.chdir(moved)
     rnd(root, server, "alice")
     assert server.checkouts[-1][2] == str(moved.resolve())
+
+
+def test_add_prints_the_id_the_server_keeps_when_the_title_cut_lands_on_a_dash(tmp_path, server, monkeypatch, capsys):
+    a = make(tmp_path, "a", server)
+    monkeypatch.setenv("TODO_USER", "alice")
+    run_cli(a, ["add", "Multi update shows two notes fields for: x"])
+    assert "added multi-update-shows-two-notes-fields-for: " in capsys.readouterr().out
+    assert rnd(a, server, "alice").error is None
+    assert item(a, "multi-update")["id"] == "multi-update-shows-two-notes-fields-for"

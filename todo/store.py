@@ -357,7 +357,7 @@ def get_item(root: Path, item_id: str) -> dict | None:
 
 # ── items ─────────────────────────────────────────────────────────────────────
 def _slug_id(title: str, taken: set) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40] or "item"
+    base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].rstrip("-") or "item"
     item_id, n = base, 2
     while item_id in taken:
         item_id = f"{base}-{n}"

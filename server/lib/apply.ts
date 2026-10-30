@@ -248,7 +248,7 @@ function legacyBranch(value: unknown): string {
 }
 
 function slug(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "item";
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "item";
 }
 
 function same(a: unknown, b: unknown): boolean {
