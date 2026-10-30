@@ -4,7 +4,7 @@
 import type { Db } from "../db";
 import { JiraClient, type Fetch } from "./client";
 import { jiraConfig, jiraReadOnly } from "./config";
-import { syncLinked } from "./links";
+import { backfillItem, syncLinked } from "./links";
 import { ensureUser } from "./people";
 
 type Person = { accountId?: string; displayName?: string } | null | undefined;
@@ -58,6 +58,20 @@ export async function syncJira(db: Db, projectKey: string, opts: { createUsers?:
   out.files += linked.files;
   await db.query("update projects set jira_synced_at = $2 where key = $1", [projectKey, startedAt.toISOString()]);
   return out;
+}
+
+/** Put an item's newly linked issues in its request now rather than at the
+ * next poll, so a link made while the item is requested lands in the open
+ * request instead of a later version. */
+export async function backfillLinked(db: Db, projectKey: string, itemUid: string, opts: { fetchImpl?: Fetch } = {}):
+    Promise<{ backfilled: string[] } | { skipped: string }> {
+  const cfg = jiraConfig();
+  if (!cfg) return { skipped: "Jira isn't configured on this server" };
+  const [p] = await db.query("select jira_poll from projects where key = $1", [projectKey]);
+  if (!p) throw new Error(`No project ${projectKey}.`);
+  if (p.jira_poll === false) return { skipped: "jira-issue mirrors this project's tickets" };
+  const jira = new JiraClient(cfg, opts.fetchImpl);
+  return { backfilled: await backfillItem(db, jira, projectKey, itemUid, FIELDS, (jql) => search(jira, jql, FIELDS)) };
 }
 
 /** Every project the bridge polls, for a poll that covers them all: those whose linked tickets jira-issue mirrors are left out. */

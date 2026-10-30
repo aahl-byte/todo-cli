@@ -1217,3 +1217,17 @@ def test_add_prints_the_id_the_server_keeps_when_the_title_cut_lands_on_a_dash(t
     assert "added multi-update-shows-two-notes-fields-for: " in capsys.readouterr().out
     assert rnd(a, server, "alice").error is None
     assert item(a, "multi-update")["id"] == "multi-update-shows-two-notes-fields-for"
+
+
+def test_jira_link_returns_with_the_ticket_text_in_the_open_request(tmp_path, server, monkeypatch):
+    from todo import cli
+
+    a = make(tmp_path, "a", server)
+    monkeypatch.setenv("TODO_USER", "alice")
+    monkeypatch.setattr(remote, "remote_for", lambda root: server.client("alice"))
+    run_cli(a, ["add", "Export totals", "--request", "Filed from SR-1"])
+    server.jira_tickets["SR-1"] = "## SR-1 · Export totals\n\nTotals should export as CSV"
+    assert cli.run_synced(a, cli.build_parser().parse_args(["jira", "link", "export-totals", "SR-1"])) == 0
+    reqs = [n for n in item(a, "export-totals")["notes"] if n["kind"] == "ticket-request"]
+    assert len(reqs) == 1 and "Totals should export as CSV" in reqs[0]["text"]
+    assert item(a, "export-totals")["status"] == "requested"

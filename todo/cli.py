@@ -513,6 +513,33 @@ def cmd_jira_link(root: Path, args) -> None:
     store.update_todo(root, it["id"], {"jira": it["jira"] + added})
     print(f'{it["id"]}: jira {", ".join(it["jira"] + added)}'
           + (f'  (linked {", ".join(added)})' if added else "  (already linked)"))
+    if added:
+        args.after_sync = lambda: _jira_backfill(root, it["id"])
+
+
+def _jira_backfill(root: Path, item_id: str) -> None:
+    """Have the server put newly linked tickets in the request now, then pull it,
+    so the request holds the ticket text when `jira link` returns."""
+    from .remote import RemoteError, remote_for
+
+    remote = remote_for(root)
+    if remote is None or sync.offline():
+        return
+    sync.rounds(root, lambda: sync.quiet_round(root), wait=True)
+    it = store.resolve_item(root, item_id)
+    if not it["uid"]:
+        return
+    try:
+        r = remote.jira_backfill(sync.sync_config(root)["project"], it["uid"])
+    except RemoteError as e:
+        print(f"jira: ticket text not fetched now ({e}); the next Jira poll adds it", file=sys.stderr)
+        return
+    if r.get("skipped"):
+        print(f'jira: ticket text comes with the next Jira pass ({r["skipped"]})', file=sys.stderr)
+        return
+    if r.get("backfilled"):
+        sync.rounds(root, lambda: sync.quiet_round(root), wait=True)
+        print(f'{item_id}: request has {", ".join(r["backfilled"])}')
 
 
 def cmd_jira_unlink(root: Path, args) -> None:
@@ -2371,6 +2398,8 @@ def run_synced(root: Path, args) -> int:
     plugins_mod.after_command(root)
     sync.flag_changes(root)
     after = sync.rounds(root)
+    if getattr(args, "after_sync", None):
+        args.after_sync()
     rejected = any(r is not None and r.rejected for r in (before, after))
     return EXIT_SYNC_REJECTED if rejected else 0
 

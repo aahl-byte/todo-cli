@@ -88,6 +88,22 @@ export async function syncLinked(db: Db, jira: JiraClient, project: string, opts
   return out;
 }
 
+/** Append one item's issues that no pass has backfilled yet to its request;
+ * the keys whose blocks it added. */
+export async function backfillItem(db: Db, jira: JiraClient, project: string, itemUid: string, fields: string[],
+                                   search: (jql: string) => Promise<any[]>): Promise<string[]> {
+  const links = await db.query(
+    `select * from jira_links where project = $1 and item_uid = $2 and source = 'field' and backfilled_at is null
+      order by linked_at, jira_key`, [project, itemUid]);
+  if (!links.length) return [];
+  const added: string[] = [];
+  for (const issue of await linkedIssues(jira, links.map((l) => String(l.jira_key)), fields, search)) {
+    await mirrorAttachments(db, jira, project, jiraUid("item", issue.key), issue);
+    for (const l of links.filter((l) => l.jira_key === issue.key)) if (await backfill(db, project, l, issue)) added.push(issue.key);
+  }
+  return added;
+}
+
 /** Append the issue's block to the item's request, unless a version already
  * holds it. The request-version rules apply as to any other edit. */
 async function backfill(db: Db, project: string, link: any, issue: any): Promise<boolean> {

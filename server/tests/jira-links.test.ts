@@ -3,7 +3,7 @@ import { applyOps, type Op } from "@/lib/apply";
 import { ulid } from "@/lib/ulid";
 import { migrate, pglite } from "@/lib/db";
 import { addProject } from "@/lib/auth";
-import { linkedProjects, syncJira } from "@/lib/jira/sync";
+import { backfillLinked, linkedProjects, syncJira } from "@/lib/jira/sync";
 import { flushJira } from "@/lib/jira/flush";
 import { loadJiraSettings, saveJiraSettings } from "@/lib/jira/settings";
 import { outboundRules } from "@/lib/jira/rules";
@@ -252,6 +252,31 @@ describe("jira links mode", () => {
     expect(h).toEqual({ from_status: "in-progress", to_status: "requested", note: "request v2" });
     expect((await sync(jira.impl)).backfilled).toBe(0);
     expect(await requests("A")).toHaveLength(2);
+  });
+
+  it("backfills one item's new link on request, in place, so triage after it starts no new version", async () => {
+    const jira = fakeJira();
+    await w.apply("alice", item("A", { status: "requested" }),
+      child("note", "R", "A", { kind: "ticket-request", text: "Customers want exports.", ts: "t" }));
+    await w.apply("alice", item("B", { status: "requested", extra: { jira: ["OPS-7"] } }));
+    await link("A", ["CNS-1"]);
+    expect(await backfillLinked(w.d, "p", "A", { fetchImpl: jira.impl })).toEqual({ backfilled: ["CNS-1"] });
+    expect(await backfillLinked(w.d, "p", "A", { fetchImpl: jira.impl })).toEqual({ backfilled: [] });
+    const reqs = await requests("A");
+    expect(reqs.map((r) => r.meta.version ?? 1)).toEqual([1]);
+    expect(reqs[0].text).toContain("Customers want exports.\n\n---\n\n## [CNS-1]");
+    expect(await requests("B")).toEqual([]);
+    const [a] = await w.d.query("select versions from items where uid = 'A'");
+    await w.one("alice", set("item", "A", "A", { status: "in-triage" }, { status: a.versions.status }));
+    expect((await sync(jira.impl)).backfilled).toBe(1);
+    expect(await requests("A")).toHaveLength(1);
+    expect(await status("A")).toBe("in-triage");
+  });
+
+  it("leaves backfill to jira-issue where it mirrors the project's tickets", async () => {
+    await w.d.query("update projects set jira_poll = false where key = 'p'");
+    await w.apply("alice", item("A", { status: "requested", extra: { jira: ["CNS-1"] } }));
+    expect(await backfillLinked(w.d, "p", "A", { fetchImpl: fakeJira().impl })).toEqual({ skipped: "jira-issue mirrors this project's tickets" });
   });
 
   it("mirrors one issue's comments onto every item linking it, new ones included", async () => {

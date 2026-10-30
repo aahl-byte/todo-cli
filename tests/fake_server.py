@@ -39,6 +39,8 @@ class FakeServer:
         self.doc_tombs = {}      # deleted doc uid → its last sha256
         self.git_facts = []
         self.git_facts_offline = False
+        self.jira_tickets = {}          # key → the block a backfill appends to the request
+        self.jira_backfilled = set()    # (item uid, key)
         self.plugin_config = {}  # repo → {config, track, shipped, instances, grants}; None answers 404, like an older server
         self.plugin_creds = []   # (repo, connection, secret) per credential posted
         self.cred_endpoints = []  # the endpoint each was posted for
@@ -375,6 +377,20 @@ class FakeServer:
             def checkout(self, project, dir_, repo):
                 server.checkouts.append((author, project, dir_, repo))
                 return {"ok": True}
+
+            def jira_backfill(self, project, item_uid):
+                """Like the server: each linked ticket not yet backfilled appends its block to the open request."""
+                it = server.rows.get(item_uid) or {}
+                keys = [k for k in (it.get("extra") or {}).get("jira") or []
+                        if k in server.jira_tickets and (item_uid, k) not in server.jira_backfilled]
+                req = next(r for r in server.rows.values() if r["_entity"] == "note" and r["item_uid"] == item_uid
+                           and r["kind"] == "ticket-request")
+                for k in keys:
+                    server.jira_backfilled.add((item_uid, k))
+                    server._set({"op_id": f"jira:{item_uid}:{k}", "op": "set", "entity": "note", "uid": req["uid"],
+                                 "item_uid": item_uid, "data": {"text": req["text"] + "\n\n" + server.jira_tickets[k]},
+                                 "base": {"text": req["versions"].get("text")}}, "jira-bridge")
+                return {"backfilled": keys}
 
             def git_facts(self, project, facts):
                 if server.git_facts_offline:

@@ -177,6 +177,11 @@ class Remote:
         path = f"/api/projects/{urllib.parse.quote(project)}/checkout"
         return self.request("POST", path, {"dir": dir_, "repo": repo})
 
+    def jira_backfill(self, project: str, item_uid: str) -> dict:
+        """Put the item's newly linked tickets in its request now: `{backfilled: [keys]}` or `{skipped: why}`."""
+        path = f"/api/projects/{urllib.parse.quote(project)}/jira/backfill"
+        return self.request("POST", path, {"item_uid": item_uid}, TRANSFER_TIMEOUT)
+
     def git_facts(self, project: str, facts: list) -> dict:
         path = f"/api/projects/{urllib.parse.quote(project)}/git-facts"
         return self.request("POST", path, {"facts": facts})
