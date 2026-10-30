@@ -12,8 +12,9 @@ import { docType, putObject } from "../files";
 import { scheduleRecompute, type Fetch } from "../gitfacts";
 import { githubApi } from "../github";
 import { anyGithubToken, githubToken, tokenHash } from "../github-token";
-import { itemBranches, nowIso } from "../model";
+import { itemBranches, nowIso, STATUSES } from "../model";
 import { jiraReadOnly } from "../jira/config";
+import { jiraHandle } from "../jira/people";
 import { hashUid, ulid } from "../ulid";
 import { runEvent, triggerLabel, type EventRun, type HostDeps, type Resolved } from "./host";
 import { fillString } from "./template";
@@ -121,6 +122,7 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
   const ops: Op[] = [];
   const op = (o: Omit<Op, "op_id" | "item_uid">) => ops.push({ op_id: ulid(), item_uid: it.uid, ...o } as Op);
   const docs: Extract<Attachment, { kind: "doc" }>[] = [];
+  const moves: Extract<Attachment, { kind: "status" }>[] = [];
   const urls = new Set<string>();
   for (const a of run.result.attached) {
     const uid = pluginUid(instance, it.uid, a.key);
@@ -168,6 +170,8 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
       const ruid = pluginUid(instance, it.uid, key);
       applied.push(ruid);
       op({ op: "create", entity: "note", uid: ruid, data: { kind: "ticket-request", text: a.text, meta: { plugin: instance, plugin_key: key } } });
+    } else if (a.kind === "status") {
+      moves.push(a);
     } else {
       docs.push(a);
     }
@@ -179,9 +183,59 @@ async function applyRun(t: Db, project: string, it: Row, run: EventRun, grants: 
     if (why) log.push(why);
   });
   applied.push(...await applyDocs(t, project, it.uid, run, docs, log));
+  for (const a of moves) {
+    const uid = await applyMove(t, project, it.uid, instance, a, log);
+    if (uid) {
+      applied.push(uid);
+      break;
+    }
+  }
   const edgeUids = new Set([...run.result.attached.filter((a) => a.kind === "edge").map((a) => pluginUid(instance, it.uid, a.key)),
                             ...mine.filter((n) => n.kind === "dependency").map((n) => n.uid)]);
   return { applied, log, edges: ops.some((o) => edgeUids.has(o.uid)) };
+}
+
+/** Move the item as a status attachment asks, with its note, as the person it names; the note's uid when it moved. A move is made
+ * once, and only while the item still sits in `from` and hasn't moved since the move happened at its source. */
+async function applyMove(t: Db, project: string, itemUid: string, instance: string, a: Extract<Attachment, { kind: "status" }>,
+                         log: string[]): Promise<string | null> {
+  const what = `move ${a.from} → ${a.to} (${a.key})`;
+  if (![a.from, a.to].every((s) => (STATUSES as readonly string[]).includes(s))) {
+    log.push(`skipped ${what}: not a todo status`);
+    return null;
+  }
+  const uid = pluginUid(instance, itemUid, a.key);
+  const [made] = await t.query("select 1 from notes where project = $1 and uid = $2", [project, uid]);
+  if (made) return null;
+  const [it] = await t.query("select status from items where project = $1 and uid = $2", [project, itemUid]);
+  if (it?.status !== a.from) {
+    log.push(`skipped ${what}: the item is ${it?.status ?? "gone"}`);
+    return null;
+  }
+  const [last] = await t.query(
+    "select max(ts) as ts from status_history where project = $1 and item_uid = $2 and field is null", [project, itemUid]);
+  if (a.at && last?.ts && Date.parse(a.at) <= new Date(last.ts).getTime()) {
+    log.push(`skipped ${what}: it happened before the item last moved`);
+    return null;
+  }
+  const handle = (await jiraHandle(t, { accountId: a.author, displayName: a.author_name })) ?? PLUGIN_HANDLE;
+  const group = ulid();
+  const kind = a.to === "qa-rejected" ? "qa-rejection" : "comment";
+  const text = a.text || `${a.from} → ${a.to}`;
+  const ops: Op[] = [
+    { op_id: ulid(), op: "set", entity: "item", uid: itemUid, item_uid: itemUid, data: { status: a.to }, group },
+    { op_id: ulid(), op: "create", entity: "note", uid, item_uid: itemUid, group,
+      data: { kind, text, meta: { with_status: a.to, moved_by: instance, move_key: a.key } } },
+  ];
+  // Not a bridge: the move reaches plugins and Jira triggers as a person's would.
+  const results = await applyOps(t, project, ops, { handle, unconditional: true });
+  const why = results.map((r, i) => refused(r, ops[i])).find(Boolean);
+  if (why) {
+    log.push(`${what} was refused: ${why}`);
+    return null;
+  }
+  log.push(`moved the item ${a.from} → ${a.to} as ${handle}`);
+  return uid;
 }
 
 function refused(r: Result, o: Op): string | null {

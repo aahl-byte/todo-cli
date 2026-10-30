@@ -305,6 +305,7 @@ function didOf(a: Attachment): { did: string; detail: string | null } {
     case "log": return { did: "logged a line", detail: a.text };
     case "request": return { did: "added to the request", detail: null };
     case "comment": return { did: "mirrored a comment", detail: null };
+    case "status": return { did: `moved the item to ${a.to}`, detail: a.text ?? null };
   }
 }
 
@@ -316,6 +317,8 @@ export function lastRun(p: DashPlugin): LastRun | null {
   const base = { at: r.at, item: r.item };
   if (r.error) return { ...base, did: "failed", detail: r.error, tone: "fail" };
   if (r.skipped) return { ...base, did: "skipped", detail: r.skipped.replace(/^[^:]+: /, ""), tone: "warn" };
+  const move = r.attached.find((a) => a.kind === "status");
+  if (r.dryRun && move?.kind === "status") return { ...base, did: `would have moved the item to ${move.to} (test mode)`, detail: move.text ?? null, tone: "ok" };
   if (r.dryRun) return { ...base, did: `would have sent ${plural(r.wouldSend.length, "request")} (test mode)`, detail: null, tone: "ok" };
   if (!r.attached.length) return { ...base, did: "found nothing new", detail: null, tone: "ok" };
   const first = didOf(r.attached[0]);
