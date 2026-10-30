@@ -53,12 +53,22 @@ def test_repeat_deploy_does_not_claim_force(root, capsys):
     assert len(store.resolve_item(root, "beta")["history"]) == 1
 
 
-def test_reject_only_from_qa_statuses(root):
+def test_reject_only_from_review_and_qa_statuses(root):
     with pytest.raises(SystemExit):
         run_cli(root, ["reject", "beta", "nope"])
     run_cli(root, ["approve", "beta"])
     run_cli(root, ["reject", "beta", "found", "a", "bug"])
     assert store.resolve_item(root, "beta")["status"] == "qa-rejected"
+
+
+def test_agent_rejects_from_review_with_the_change_list(root, monkeypatch):
+    monkeypatch.setenv("TODO_VIA", "agent")
+    run_cli(root, ["review", "beta"])
+    run_cli(root, ["reject", "beta", "rename", "the", "button"])
+    it = store.resolve_item(root, "beta")
+    assert it["status"] == "qa-rejected"
+    assert it["notes"][-1]["kind"] == "qa-rejection"
+    assert it["notes"][-1]["text"] == "rename the button"
 
 
 def test_task_counter_counts_deployed_as_complete(root, capsys):

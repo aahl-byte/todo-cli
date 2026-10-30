@@ -192,7 +192,7 @@ todo set <query> app|section <value|none>
 todo phase <query> <N> ["<title>"]        # name a phase of the item's tasks
 todo relate|unrelate <query> <other>      # related work, shown on both items
 todo jira link|unlink <query> <KEY...>    # Jira tickets this item covers
-todo reject <query> <text...>             # QA → qa-rejected with a required comment
+todo reject <query> <text...>             # review/QA → qa-rejected with a required comment
 todo list --mine                          # where I'm developer or QA
 todo login <url> | whoami | sync | inbox   # team server
 todo link --remote <url> [--project KEY]  # sync this store with a team server
@@ -241,7 +241,8 @@ prepared: PRs merged to staging, migrations and env vars recorded as deployment
 checks. `todo stage` then marks it `ready-to-deploy`.
 
 QA sends work back with `todo reject <q> "<what failed>"`, which needs the
-comment and parks the item in `qa-rejected`. Its developer takes it back with
+comment and parks the item in `qa-rejected`. Change requests on an item in
+`review` go back the same way. Its developer takes it back with
 `todo start`, or returns it to `in-triage` when the scope was wrong. An agent parks finished work in `review`; only a person moves it to
 `ready-for-qa`, unless they ask the agent to, which passes `--force` and is
 recorded as forced. `--agent`/`--human` override the detection
