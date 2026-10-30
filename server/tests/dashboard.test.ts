@@ -288,6 +288,10 @@ describe("request versions", () => {
     await move("bob", "in-triage");
     expect(await meta("V1")).toMatchObject({ version: 1, frozen: true, frozen_by: "bob", frozen_via: "triage" });
     expect(await w.one("alice", set("note", "V1", "R1", { text: "x" }, await nv("V1")))).toMatchObject({ status: "rejected", reason: "request-frozen" });
+    expect(await w.one("alice", set("note", "V1", "R1", { text: "x", "meta.seen_by": ["dave/agent"] }, await nv("V1"))))
+      .toMatchObject({ status: "rejected", reason: "request-frozen" });
+    expect((await w.one("dave", set("note", "V1", "R1", { "meta.seen_by": ["dave/agent"] }, await nv("V1")))).status).toBe("applied");
+    expect((await meta("V1")).seen_by).toContain("dave/agent");
     expect(await w.one("alice", { op: "remove", entity: "note", uid: "V1", item_uid: "R1", base: await nv("V1") }))
       .toMatchObject({ status: "rejected", reason: "request-frozen" });
   });

@@ -500,6 +500,11 @@ def _set_fields(entity: str, local: dict, snap: dict) -> list:
     return [k for k in keys if not _same(local.get(k), snap.get(k))]
 
 
+def _ack_only(entity: str, local: dict, snap: dict | None) -> bool:
+    """The change is only an acknowledgement, which the server always takes."""
+    return snap is not None and _set_fields(entity, local, snap["data"]) == [f"meta.{store.SEEN}"]
+
+
 def _op(op: str, entity: str, uid: str, item_uid: str, **extra) -> dict:
     from . import identity
 
@@ -518,11 +523,11 @@ def diff(local: Local, snap: dict) -> list:
         entity, data = e["entity"], e["data"]
         if e["item_uid"] in local.incomplete or e["item_uid"] in local.busy:
             continue
+        s = ents.get(uid)
         if uid in stuck:
-            if stuck[uid] == _fingerprint(data):
+            if stuck[uid] == _fingerprint(data) and not _ack_only(entity, data, s):
                 continue
             del stuck[uid]
-        s = ents.get(uid)
         if s is None:
             body = _unflatten(entity, data)
             if entity == "item" and local.history.get(uid):
