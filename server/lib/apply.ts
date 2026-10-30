@@ -497,7 +497,9 @@ async function set(ctx: Ctx, op: Op): Promise<Result> {
   const { entity } = op;
   const row = await load(ctx, entity, op.uid);
   if (!row) return removedReason(ctx, op);
-  if (entity === "note" && row.kind === "ticket-request" && row.meta?.frozen) return reject(op, "request-frozen");
+  // A frozen request still takes acknowledgements: they record who saw it, not what it says.
+  const ackOnly = Object.keys(op.data ?? {}).every((f) => f === `meta.${SEEN}`);
+  if (entity === "note" && row.kind === "ticket-request" && row.meta?.frozen && !ackOnly) return reject(op, "request-frozen");
   const jsonCol = JSON_FIELD[entity];
   const versions: Record<string, number> = { ...(row.versions ?? {}) };
   const rejected: Rejection[] = [];

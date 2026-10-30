@@ -1231,3 +1231,15 @@ def test_jira_link_returns_with_the_ticket_text_in_the_open_request(tmp_path, se
     reqs = [n for n in item(a, "export-totals")["notes"] if n["kind"] == "ticket-request"]
     assert len(reqs) == 1 and "Totals should export as CSV" in reqs[0]["text"]
     assert item(a, "export-totals")["status"] == "requested"
+
+
+def test_an_acknowledgement_parked_by_an_earlier_refusal_is_sent_again(pair, server, monkeypatch):
+    _, b = pair
+    monkeypatch.setenv("TODO_USER", "bob")
+    run_cli(b, ["ack", "login-bug", "n1"])
+    uid, note = next((u, e) for u, e in sync.scan(b).entities.items() if e["entity"] == "note")
+    snap = sync.load_snapshot(b)
+    snap.setdefault("stuck", {})[uid] = sync._fingerprint(note["data"])
+    sync.save_snapshot(b, snap)
+    assert rnd(b, server, "bob").error is None
+    assert "bob" in (server.rows[uid].get("meta") or {}).get("seen_by", [])
