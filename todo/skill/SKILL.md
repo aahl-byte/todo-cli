@@ -1,6 +1,6 @@
 ---
 name: todo
-version: 0.17.1
+version: 0.17.2
 description: Use when reading, updating, or tracking work in a project's structured .TODO/ store — pull a specific item, triage it (write its request, fill its type, priority, app, section, repo and branch, plan its phased tasks), change its status through the lifecycle (todo → in-triage → in-progress → review → done, or the team lifecycle through QA and deploy), and attach what you produce (PR, preview and documentation links, notes, questions, deployment checks, dev-log entries). Use whenever you start, plan, or finish a tracked task so the store stays the source of truth.
 ---
 
@@ -174,7 +174,7 @@ lifecycle and some note kinds. Every command syncs on its own; you never call
 | `requested`       | a PM filed it; not triaged yet         | PM                 |
 | `ready-for-qa`    | handed to QA                           | **a person, never you** |
 | `in-qa`           | QA is testing it                       | QA                 |
-| `qa-rejected`     | QA sent it back; waiting on its developer | QA (`todo reject`) |
+| `qa-rejected`     | sent back from review or QA; waiting on its developer | QA, or you when the reviewer asks for changes (`todo reject`) |
 | `qa-approved`     | QA approved; deploy not yet prepared   | QA (`todo approve`) |
 | `ready-to-deploy` | PRs merged, deploy checks recorded     | the developer (`todo stage`) |
 | `deployed`        | shipped (stamps `completed`)           | the deployer       |
@@ -322,7 +322,7 @@ todo deps [<query>] [--from-checks] [--json]   # what an item needs and what nee
 todo needs <query> [<PR URL>|branch:<name>|<item>] [--in B] [--because T]   # list, or record a dependency git can't see
 todo needs rm <query> <id>       # remove a dependency you recorded (a plugin's: change its settings)
 todo refresh [<query>]           # recompute git facts and run plugins now
-todo reject <query> <text...>    # QA → qa-rejected with a required comment
+todo reject <query> <text...>    # review/QA → qa-rejected with a required comment
 todo request <query> --text "<text>" [--url U]   # post a new request version (back to requested)
 todo add "<title>" --request "<text>" [--url U] [--app A] [--section S] [--type T]   # file it as requested, with its request
 todo set <query> title "<new title>"   # rename an item

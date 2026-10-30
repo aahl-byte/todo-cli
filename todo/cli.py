@@ -51,7 +51,7 @@ NO_AUTO_SYNC = {"sync", "whoami", "inbox", "migrate"}
 EXIT_SYNC_REJECTED = 4
 
 # Where QA can send work back from.
-REJECTABLE = ["ready-for-qa", "in-qa", "qa-approved", "ready-to-deploy"]
+REJECTABLE = ["review", "ready-for-qa", "in-qa", "qa-approved", "ready-to-deploy"]
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
@@ -250,7 +250,7 @@ def cmd_reject(root: Path, args) -> None:
     if not text:
         die("A rejection needs a comment saying what failed.", 2)
     if it["status"] not in REJECTABLE:
-        die(f'{it["id"]} is {it["status"]}; QA rejects from {", ".join(REJECTABLE)}.', 2)
+        die(f'{it["id"]} is {it["status"]}; reject works from {", ".join(REJECTABLE)}.', 2)
     store.update_todo(root, it["id"], {"status": "qa-rejected"}, now())
     plugins_mod.queue(it["id"], {"type": "status", "from": it["status"], "to": "qa-rejected"})
     new_id = store.add_note(root, it["id"], text, now(), kind="qa-rejection",
@@ -1916,7 +1916,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("reject", parents=[common],
                        help="→ qa-rejected with a required qa-rejection comment")
     p.add_argument("query", help="id or part of a title")
-    p.add_argument("text", nargs="*", help="what failed QA")
+    p.add_argument("text", nargs="*", help="what failed or needs changing")
     p.set_defaults(func=cmd_reject)
 
     p = sub.add_parser("note", parents=[common], help="append a note")
