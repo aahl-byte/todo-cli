@@ -3,6 +3,7 @@
 // plugins), the instances and grants people set, connection credentials and
 // secret settings (encrypted), each project's own connections for the plugins
 // that ship with todo, and which repos a project may use at all.
+import { lookup as dnsLookup } from "node:dns/promises";
 import type { Db, Row } from "../db";
 import { repoKey } from "../checkouts";
 import { githubApi } from "../github";
@@ -470,6 +471,20 @@ export function guardFor(repo: string, lookup?: AddressGuard["lookup"], named: R
   return { allow, repoAllow, named, ...(lookup ? { lookup } : {}) };
 }
 
+const SHOWN_LOOKUP_MS = 60_000;
+const shownLookups = new Map<string, { at: number; found: ReturnType<NonNullable<AddressGuard["lookup"]>> }>();
+
+/** DNS for showing whether the server would run a plugin, held a minute so a page render resolves each host once.
+ * A real call still resolves afresh. */
+function shownLookup(host: string): ReturnType<NonNullable<AddressGuard["lookup"]>> {
+  const hit = shownLookups.get(host);
+  if (hit && Date.now() - hit.at < SHOWN_LOOKUP_MS) return hit.found;
+  const found = dnsLookup(host, { all: true, verbatim: true });
+  shownLookups.set(host, { at: Date.now(), found });
+  found.catch(() => shownLookups.delete(host));
+  return found;
+}
+
 // ── a project's own connections ───────────────────────────────────────────────
 /** One of a project's own connections, as the page shows it: never its secret. */
 export interface ProjectConnection {
@@ -827,7 +842,7 @@ export async function repoPlugins(d: Pick<Db, "query">, project: string, repo: s
   const host = await hostSet(d, project, repo);
   const given = { hostConnections: host.connections, secrets: { repo: secrets, host: host.secrets } };
   const connections = { shipped: connectionsFor(given, usable.file, true), custom: connectionsFor(given, usable.file) };
-  const guard = guardFor(repo, lookup, host.privateOk);
+  const guard = guardFor(repo, lookup ?? shownLookup, host.privateOk);
   // The server holds these in test mode while the Jira bridge does their job; it answers for them, so no CLI runs them live.
   const held = await heldPlugins(d, project);
   const plugins = [];
