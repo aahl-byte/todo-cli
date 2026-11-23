@@ -11,7 +11,9 @@ import { db } from "@/lib/db";
 import { markRead } from "@/lib/inbox";
 import { TERMINAL } from "@/lib/model";
 import * as build from "@/lib/ops-builder";
+import { usualRepo } from "@/lib/repo-choices";
 import { COOKIE, requireUser } from "@/lib/session";
+import { repoChoices } from "@/lib/views";
 
 export type { ActionState };
 
@@ -20,15 +22,17 @@ const str = (fd: FormData, k: string) => String(fd.get(k) ?? "");
 export async function requestAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
   const project = str(fd, "project");
   const user = await requireUser();
+  const d = await db();
+  const app = str(fd, "app");
+  const repo = str(fd, "repo").trim() || usualRepo(await repoChoices(d, project), app);
   let ops: Op[];
   try {
     ops = build.requestOps({ title: str(fd, "title"), type: str(fd, "type"), priority: str(fd, "priority"),
       description: str(fd, "description"), developer: str(fd, "developer"), qa_assignee: str(fd, "qa"),
-      app: str(fd, "app"), section: str(fd, "section"), url: str(fd, "url") }, user.handle);
+      app, section: str(fd, "section"), repo, url: str(fd, "url") }, user.handle);
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
-  const d = await db();
   let results: Result[];
   try {
     results = await applyOps(d, project, ops, { handle: user.handle });

@@ -4,9 +4,10 @@ import { requestAction } from "@/app/actions";
 import { AppFields, type Apps } from "./AppFields";
 import { Composer } from "./Composer";
 import { ITEM_TYPES } from "@/lib/model";
+import type { RepoChoices } from "@/lib/repo-choices";
 
-export function RequestForm({ project, users, uploads, apps }: {
-  project: string; users: string[]; uploads: { project: string; scope: string } | null; apps: Apps;
+export function RequestForm({ project, users, uploads, apps, repos }: {
+  project: string; users: string[]; uploads: { project: string; scope: string } | null; apps: Apps; repos: RepoChoices;
 }) {
   const [state, action, pending] = useActionState(requestAction, { ok: true });
   return (
@@ -18,7 +19,7 @@ export function RequestForm({ project, users, uploads, apps }: {
         <select name="priority" defaultValue="medium" aria-label="priority">{["low", "medium", "high", "urgent"].map((p) => <option key={p}>{p}</option>)}</select>
       </div>
       <div className="row">
-        <AppFields apps={apps} />
+        <AppFields apps={apps} repos={repos} />
         <input name="url" type="url" aria-label="URL" placeholder="where it happens (URL)" className="grow" />
       </div>
       <Composer name="description" users={users} rows={8} uploads={uploads} placeholder="Background, steps to reproduce, what done looks like — paste screenshots" />
