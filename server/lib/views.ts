@@ -7,6 +7,8 @@ import { matchEntries, matches, type Entry } from "./filters";
 import { unresolvedEdges, type GitFacts } from "./gitfacts";
 import { waitLines, type WaitLine } from "./waits";
 import type { PrStatus } from "./github";
+import { repoKey } from "./checkouts";
+import type { RepoChoices } from "./repo-choices";
 
 export interface Project {
   key: string;
@@ -260,6 +262,32 @@ async function related(d: Db, key: string, uid: string) {
     else out.set(r.uid, { uid: r.uid, id: r.id, title: r.title, status: r.status, developer: r.developer, notes: [note] });
   }
   return [...out.values()];
+}
+
+/** Repos the project's items name, and which one each app's items use most. */
+export async function repoChoices(d: Db, key: string): Promise<RepoChoices> {
+  const rows = await d.query(
+    `select coalesce(extra->>'app', '') as app, extra->>'repo' as repo, count(*)::int as n from items
+      where project = $1 and coalesce(extra->>'repo', '') <> '' group by 1, 2`, [key]);
+  const tally = (counts: Map<string, number>, k: string, n: number) => counts.set(k, (counts.get(k) ?? 0) + n);
+  const top = (counts: Map<string, number>) => [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? null;
+  const spellings = new Map<string, Map<string, number>>();
+  const perApp = new Map<string, Map<string, number>>();
+  const overall = new Map<string, number>();
+  for (const r of rows) {
+    const k = repoKey(r.repo);
+    if (!k) continue;
+    tally(spellings.get(k) ?? spellings.set(k, new Map()).get(k)!, r.repo.trim(), r.n);
+    if (r.app) tally(perApp.get(r.app) ?? perApp.set(r.app, new Map()).get(r.app)!, k, r.n);
+    tally(overall, k, r.n);
+  }
+  const spelled = (k: string) => top(spellings.get(k)!)!;
+  const usual = top(overall);
+  return {
+    repos: [...spellings.keys()].sort().map(spelled),
+    byApp: Object.fromEntries([...perApp].map(([app, counts]) => [app, spelled(top(counts)!)])),
+    usual: usual ? spelled(usual) : null,
+  };
 }
 
 /** App and section values already used in the project, for pickers. */

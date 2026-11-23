@@ -68,11 +68,11 @@ export function approveOps(item: Ref, deployStep: boolean): Op[] {
 
 export function requestOps(form: { title: string; type: string; priority: string; description: string;
                                    developer?: string | null; qa_assignee?: string | null;
-                                   app?: string | null; section?: string | null; url?: string | null }, me: string): Op[] {
+                                   app?: string | null; section?: string | null; repo?: string | null; url?: string | null }, me: string): Op[] {
   const title = form.title.trim();
   if (!title) throw new Error("A request needs a title.");
   const url = requestUrl(form.url);
-  const extra = Object.fromEntries((["app", "section"] as const).map((k) => [k, form[k]?.trim()]).filter(([, v]) => v));
+  const extra = Object.fromEntries((["app", "section", "repo"] as const).map((k) => [k, form[k]?.trim()]).filter(([, v]) => v));
   const item = createOp("item", "", {
     title, type: ITEM_TYPES.includes(form.type ?? "") ? form.type : "feature", priority: form.priority || "medium", status: "requested",
     creator: me, developer: form.developer || null, qa_assignee: form.qa_assignee || null, created: nowIso(),

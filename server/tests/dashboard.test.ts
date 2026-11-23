@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import * as build from "@/lib/ops-builder";
 import { allowedMove, deriveCalcStatus, itemBranches, moves, NEXT_STATUSES, PAST_TRIAGE } from "@/lib/model";
-import { board, bounceCount, choices, deployPlan, item as loadItem, project, qaQueue } from "@/lib/views";
+import { board, bounceCount, choices, deployPlan, item as loadItem, project, qaQueue, repoChoices } from "@/lib/views";
+import { usualRepo } from "@/lib/repo-choices";
 import { backfillRequestVersions, type Op } from "@/lib/apply";
 import { child, item, set, world, type World } from "./helpers";
 
@@ -400,6 +401,24 @@ describe("status override", () => {
 });
 
 describe("request fields, relations and phase titles", () => {
+  it("files the repo a request names", () => {
+    const [op] = build.requestOps({ title: "Cart", type: "bug", priority: "high", description: "", app: "web", repo: " acme/web " }, "alice");
+    expect(op.data!.extra).toEqual({ app: "web", repo: "acme/web" });
+  });
+
+  it("suggests the repo an app's items use most, and the project's when the app has none", async () => {
+    await w.apply("alice",
+      item("A1", { extra: { app: "web", repo: "Acme/web" } }), item("A2", { extra: { app: "web", repo: "acme/web" } }),
+      item("A3", { extra: { app: "web", repo: "acme/tools" } }), item("A4", { extra: { app: "ops", repo: "acme/tools" } }),
+      item("A5", { extra: { app: "docs" } }), item("A6", { extra: { repo: "acme/web" } }));
+    const repos = await repoChoices(w.d, "p");
+    expect(repos.repos).toEqual(["acme/tools", "acme/web"]);
+    expect(usualRepo(repos, "web")).toBe("acme/web");
+    expect(usualRepo(repos, "ops")).toBe("acme/tools");
+    expect(usualRepo(repos, "docs")).toBe("acme/web");
+    expect(usualRepo(repos, "")).toBe("acme/web");
+  });
+
   it("files app, section and URL with a request, and refuses a non-http URL", async () => {
     const ops = build.requestOps({ title: "Cart", type: "bug", priority: "high", description: "steps", app: "web", section: "checkout",
                                    url: "https://example.com/cart" }, "alice");
